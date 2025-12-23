@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "runos": {
+      "command": "go",
+      "args": ["run", "main.go", "mcp"],
+      "cwd": "/Users/didierbreedt/runos/code/cli"
+    },
+    "conductor": {
+      "command": "bash",
+      "args": ["scripts/conductor-mcp.sh"],
+      "cwd": "/Users/didierbreedt/runos/code/cli"
+    }
+  }
+}
