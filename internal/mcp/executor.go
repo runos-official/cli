@@ -114,7 +114,10 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]interface{}) 
 	}
 
 	// Build endpoint URL
-	endpoint := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef)
+	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef)
+	if err != nil {
+		return "", err
+	}
 
 	// Build request body (for POST/PUT/PATCH)
 	body := e.buildBody(args, cmdDef)
@@ -164,21 +167,47 @@ func (e *CommandExecutor) getAuthToken(cfg *config.Config) (string, error) {
 	return refreshResp.IDToken, nil
 }
 
-func (e *CommandExecutor) buildEndpoint(endpoint string, args map[string]interface{}, cmdDef *manifest.Command) string {
+func (e *CommandExecutor) buildEndpoint(endpoint string, args map[string]interface{}, cmdDef *manifest.Command) (string, error) {
 	result := endpoint
 
+	// Load config for account ID and default cluster ID
+	cfg, err := config.Load()
+	if err != nil {
+		return "", fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Substitute :aid with account ID from config
+	if strings.Contains(result, ":aid") {
+		if cfg.AccountID == "" {
+			return "", fmt.Errorf("account ID not set: run 'runos login' first")
+		}
+		result = strings.ReplaceAll(result, ":aid", cfg.AccountID)
+	}
+
+	// Substitute :cid with cluster ID from config
+	if strings.Contains(result, ":cid") {
+		cid := cfg.GetDefaultClusterID()
+		if cid == "" {
+			return "", fmt.Errorf("cluster ID required: set default with 'runos config set cid <cluster-id>'")
+		}
+		result = strings.ReplaceAll(result, ":cid", cid)
+	}
+
+	// Substitute positional field placeholders
 	if cmdDef.Input != nil {
 		for _, field := range cmdDef.Input.Fields {
 			if field.Positional {
-				placeholder := "{" + field.Name + "}"
 				if val, ok := args[field.Name]; ok {
-					result = strings.Replace(result, placeholder, fmt.Sprintf("%v", val), 1)
+					valStr := fmt.Sprintf("%v", val)
+					// Handle both placeholder styles: {name} and :name
+					result = strings.Replace(result, "{"+field.Name+"}", valStr, -1)
+					result = strings.Replace(result, ":"+field.Name, valStr, -1)
 				}
 			}
 		}
 	}
 
-	return e.baseURL + result
+	return e.baseURL + result, nil
 }
 
 func (e *CommandExecutor) buildBody(args map[string]interface{}, cmdDef *manifest.Command) map[string]interface{} {
