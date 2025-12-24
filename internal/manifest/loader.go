@@ -8,13 +8,19 @@ import (
 	"path/filepath"
 	"time"
 
+	"cli/internal/auth"
+	"cli/internal/cache"
+	"cli/internal/config"
+
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	manifestFileName = "manifest.yaml"
-	versionEndpoint  = "/api/public/manifest-version"
-	manifestEndpoint = "/api/public/manifest"
+	manifestFileName       = "manifest.yaml"
+	versionEndpoint        = "/cli/manifest-version"
+	manifestEndpoint       = "/cli/manifest"
+	versionCheckCacheKey   = "manifest_version_check"
+	versionCheckTTL        = 1 * time.Hour
 )
 
 // Loader handles loading and caching of the manifest
@@ -35,9 +41,15 @@ func NewLoader(baseURL, configDir string) *Loader {
 	}
 }
 
-// Load loads the manifest, checking for updates if possible
+// Load loads the manifest, checking for updates if cache has expired
 func (l *Loader) Load() (*Manifest, error) {
 	localManifest, localErr := l.loadLocal()
+	cacheManager := cache.NewManager(l.configDir)
+
+	// Check if we should skip version check (cache still valid)
+	if localErr == nil && !cacheManager.IsExpired(versionCheckCacheKey) {
+		return localManifest, nil
+	}
 
 	// Try to check for updates
 	remoteVersion, err := l.fetchVersion()
@@ -48,6 +60,9 @@ func (l *Loader) Load() (*Manifest, error) {
 		}
 		return nil, fmt.Errorf("no manifest available: %w", localErr)
 	}
+
+	// Update cache timestamp for version check
+	_ = cacheManager.Set(versionCheckCacheKey, remoteVersion, versionCheckTTL)
 
 	// Check if we need to update
 	if localErr == nil && localManifest.Version == remoteVersion {
@@ -111,10 +126,39 @@ type versionResponse struct {
 	Version string `json:"version"`
 }
 
+func (l *Loader) getAuthToken() (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+
+	if cfg.RefreshToken == "" || cfg.Firebase == nil {
+		return "", fmt.Errorf("not authenticated")
+	}
+
+	refreshResp, err := auth.RefreshIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	if err != nil {
+		return "", err
+	}
+
+	return refreshResp.IDToken, nil
+}
+
 func (l *Loader) fetchVersion() (string, error) {
+	token, err := l.getAuthToken()
+	if err != nil {
+		return "", err
+	}
+
 	url := l.baseURL + versionEndpoint
 
-	resp, err := l.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := l.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -133,9 +177,20 @@ func (l *Loader) fetchVersion() (string, error) {
 }
 
 func (l *Loader) fetchManifest() (*Manifest, error) {
+	token, err := l.getAuthToken()
+	if err != nil {
+		return nil, err
+	}
+
 	url := l.baseURL + manifestEndpoint
 
-	resp, err := l.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := l.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +201,7 @@ func (l *Loader) fetchManifest() (*Manifest, error) {
 	}
 
 	var m Manifest
-	if err := yaml.NewDecoder(resp.Body).Decode(&m); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return nil, err
 	}
 

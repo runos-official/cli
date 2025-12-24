@@ -48,6 +48,12 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return fmt.Errorf("authentication required: run 'runos login' first")
 	}
 
+	// Get cluster ID from flag or config default
+	cid, _ := cmd.Flags().GetString("cid")
+	if cid == "" {
+		cid = cfg.GetDefaultClusterID()
+	}
+
 	// Collect input
 	body, err := e.collectInput(cmd, args, cmdDef)
 	if err != nil {
@@ -55,7 +61,10 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	}
 
 	// Build endpoint URL with path parameters substituted
-	endpoint := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef)
+	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid)
+	if err != nil {
+		return err
+	}
 
 	// Make request
 	resp, err := e.doRequest(cmdDef.Method, endpoint, body, token)
@@ -160,24 +169,41 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 	return result, nil
 }
 
-func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest.Command) string {
+func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest.Command, cfg *config.Config, cid string) (string, error) {
 	result := endpoint
 
-	if cmdDef.Input == nil {
-		return e.baseURL + result
+	// Substitute :aid with account ID from config
+	if strings.Contains(result, ":aid") {
+		if cfg.AccountID == "" {
+			return "", fmt.Errorf("account ID not set: run 'runos login' first")
+		}
+		result = strings.Replace(result, ":aid", cfg.AccountID, -1)
 	}
 
-	// Substitute positional args into path parameters
-	argIndex := 0
-	for _, field := range cmdDef.Input.Fields {
-		if field.Positional && argIndex < len(args) {
-			placeholder := "{" + field.Name + "}"
-			result = strings.Replace(result, placeholder, args[argIndex], 1)
-			argIndex++
+	// Substitute :cid with cluster ID
+	if strings.Contains(result, ":cid") {
+		if cid == "" {
+			return "", fmt.Errorf("cluster ID required: use --cid flag or set default with 'runos config set cid <cluster-id>'")
+		}
+		result = strings.Replace(result, ":cid", cid, -1)
+	}
+
+	// Substitute field placeholders from input
+	if cmdDef.Input != nil {
+		argIndex := 0
+		for _, field := range cmdDef.Input.Fields {
+			if field.Positional && argIndex < len(args) {
+				value := args[argIndex]
+				argIndex++
+
+				// Handle both placeholder styles: {name} and :name
+				result = strings.Replace(result, "{"+field.Name+"}", value, -1)
+				result = strings.Replace(result, ":"+field.Name, value, -1)
+			}
 		}
 	}
 
-	return e.baseURL + result
+	return e.baseURL + result, nil
 }
 
 func (e *Executor) doRequest(method, url string, body map[string]interface{}, token string) (*http.Response, error) {

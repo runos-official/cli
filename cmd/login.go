@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"net/url"
 	"time"
 
 	"cli/internal/api"
@@ -40,11 +39,11 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	deviceID := initResp.DeviceID
 	token := initResp.Token
 
-	// Build browser URL with query params
-	browserURL := fmt.Sprintf("%s/auth/device?deviceId=%s&token=%s",
+	// Build browser URL with deviceId-token in path
+	browserURL := fmt.Sprintf("%s/account/connect-device/%s-%s",
 		cfg.GetConsoleURL(),
-		url.QueryEscape(deviceID),
-		url.QueryEscape(token),
+		deviceID,
+		token,
 	)
 
 	fmt.Printf("Opening browser to authenticate...\n")

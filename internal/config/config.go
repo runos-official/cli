@@ -21,11 +21,12 @@ type FirebaseConfig struct {
 }
 
 type Config struct {
-	ConsoleURL   string          `json:"console_url,omitempty"`
-	ConductorURL string          `json:"conductor_url,omitempty"`
-	AccountID    string          `json:"account_id,omitempty"`
-	RefreshToken string          `json:"refresh_token,omitempty"`
-	Firebase     *FirebaseConfig `json:"firebase,omitempty"`
+	ConsoleURL       string          `json:"console_url,omitempty"`
+	ConductorURL     string          `json:"conductor_url,omitempty"`
+	AccountID        string          `json:"account_id,omitempty"`
+	DefaultClusterID string          `json:"default_cluster_id,omitempty"`
+	RefreshToken     string          `json:"refresh_token,omitempty"`
+	Firebase         *FirebaseConfig `json:"firebase,omitempty"`
 }
 
 func configDir() (string, error) {
@@ -141,4 +142,11 @@ func (c *Config) GetConductorURL() string {
 		return c.ConductorURL
 	}
 	return DefaultConductorURL
+}
+
+func (c *Config) GetDefaultClusterID() string {
+	if envCID := os.Getenv("RUNOS_CLUSTER_ID"); envCID != "" {
+		return envCID
+	}
+	return c.DefaultClusterID
 }

@@ -31,13 +31,13 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	loader := manifest.NewLoader(cfg.GetConsoleURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}
 
-	executor := mcp.NewCommandExecutor(m, cfg.GetConsoleURL())
+	executor := mcp.NewCommandExecutor(m, cfg.GetConductorURL())
 	server := mcp.NewServer(m, executor, Version)
 
 	return server.Run()

@@ -105,6 +105,11 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 		cmd.Flags().StringP("file", "f", "", "YAML file with input values")
 	}
 
+	// Add --cid flag for cluster ID (if endpoint uses :cid)
+	if strings.Contains(cmdDef.Endpoint, ":cid") {
+		cmd.Flags().String("cid", "", "Cluster ID (uses default from config if not specified)")
+	}
+
 	// Add --json flag for JSON output
 	cmd.Flags().Bool("json", false, "Output as JSON")
 

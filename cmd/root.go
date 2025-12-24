@@ -29,6 +29,7 @@ func init() {
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(configCmd)
 
 	// Dynamic commands from manifest
 	if err := registerDynamicCommands(); err != nil {
@@ -50,15 +51,15 @@ func registerDynamicCommands() error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	// Load manifest
-	loader := manifest.NewLoader(cfg.GetConsoleURL(), configDir)
+	// Load manifest from Conductor API
+	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return err
 	}
 
 	// Build and register commands
-	executor := dynacmd.NewExecutor(cfg.GetConsoleURL())
+	executor := dynacmd.NewExecutor(cfg.GetConductorURL())
 	builder := dynacmd.NewBuilder(m, executor)
 
 	for _, cmd := range builder.BuildCommands() {
