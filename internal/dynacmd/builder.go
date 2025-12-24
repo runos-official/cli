@@ -1,6 +1,7 @@
 package dynacmd
 
 import (
+	"fmt"
 	"strings"
 
 	"cli/internal/manifest"
@@ -90,6 +91,22 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 		Use:   b.buildUseLine(name, cmdDef),
 		Short: cmdDef.Description,
 		RunE: func(c *cobra.Command, args []string) error {
+			// Check if required positional args are missing
+			if cmdDef.Input != nil {
+				argIndex := 0
+				for _, field := range cmdDef.Input.Fields {
+					if field.Positional {
+						if argIndex >= len(args) && field.Required {
+							// Missing required positional arg - show available options if enum exists
+							if len(field.Enum) > 0 {
+								return showEnumOptions(c, field)
+							}
+							return fmt.Errorf("missing required argument: %s", field.Name)
+						}
+						argIndex++
+					}
+				}
+			}
 			return b.executor.Execute(c, args, cmdDef)
 		},
 	}
@@ -182,4 +199,13 @@ func addBoolFlags(cmd *cobra.Command, flags []manifest.Flag) {
 	for _, flag := range flags {
 		cmd.Flags().Bool(flag.Name, flag.Default, flag.Description)
 	}
+}
+
+func showEnumOptions(cmd *cobra.Command, field manifest.Field) error {
+	fmt.Printf("Available options for <%s>:\n\n", field.Name)
+	for _, option := range field.Enum {
+		fmt.Printf("  %s\n", option)
+	}
+	fmt.Printf("\nUsage: %s <%s>\n", cmd.CommandPath(), field.Name)
+	return nil
 }
