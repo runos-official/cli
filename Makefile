@@ -7,8 +7,8 @@ CYAN := \033[0;36m
 GRAY := \033[0;90m
 NC := \033[0m
 
-# Extract version from version/version.go
-VERSION := $(shell grep 'var Version' version/version.go | sed 's/.*"\(.*\)".*/\1/')
+# Extract version from latest git tag (falls back to "dev")
+VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev")
 
 # Default target
 .DEFAULT_GOAL := help
