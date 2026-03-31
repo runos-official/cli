@@ -8,12 +8,12 @@ type Manifest struct {
 
 // Command defines a single CLI command
 type Command struct {
-	Command     string   `yaml:"command" json:"command"`                           // e.g., "services/add/valkey"
+	Command     string   `yaml:"command" json:"command"` // e.g., "services/add/valkey"
 	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	Endpoint    string   `yaml:"endpoint" json:"endpoint"`                         // e.g., "/api/v1/services/valkey"
-	Method      string   `yaml:"method" json:"method"`                             // GET, POST, DELETE, etc.
-	Sensitive   bool     `yaml:"sensitive,omitempty" json:"sensitive,omitempty"`   // Contains sensitive data (credentials, secrets)
-	MCP         []string `yaml:"mcp,omitempty" json:"mcp,omitempty"`               // MCP servers: read, sensitive_read, write, sensitive_write
+	Endpoint    string   `yaml:"endpoint" json:"endpoint"`                       // e.g., "/api/v1/services/valkey"
+	Method      string   `yaml:"method" json:"method"`                           // GET, POST, DELETE, etc.
+	Sensitive   bool     `yaml:"sensitive,omitempty" json:"sensitive,omitempty"` // Contains sensitive data (credentials, secrets)
+	MCP         []string `yaml:"mcp,omitempty" json:"mcp,omitempty"`             // MCP servers: read, sensitive_read, write, sensitive_write
 	Input       *Input   `yaml:"input,omitempty" json:"input,omitempty"`
 	Output      *Output  `yaml:"output,omitempty" json:"output,omitempty"`
 	ReturnsJob  bool     `yaml:"returnsJob,omitempty" json:"returnsJob,omitempty"` // Supports --wait flag
@@ -27,14 +27,14 @@ type Input struct {
 
 // Field defines a single input field
 type Field struct {
-	Name        string      `yaml:"name" json:"name"`
-	Type        string      `yaml:"type" json:"type"`                                   // string, integer, array, etc.
-	Description string      `yaml:"description,omitempty" json:"description,omitempty"`
-	Required    bool        `yaml:"required,omitempty" json:"required,omitempty"`
-	Default     any `yaml:"default,omitempty" json:"default,omitempty"`
-	Enum        []string    `yaml:"enum,omitempty" json:"enum,omitempty"`
-	Format      string      `yaml:"format,omitempty" json:"format,omitempty"`           // e.g., "key_value" for tags
-	Positional  bool        `yaml:"positional,omitempty" json:"positional,omitempty"`   // true = positional arg, not flag
+	Name        string   `yaml:"name" json:"name"`
+	Type        string   `yaml:"type" json:"type"` // string, integer, array, etc.
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Required    bool     `yaml:"required,omitempty" json:"required,omitempty"`
+	Default     any      `yaml:"default,omitempty" json:"default,omitempty"`
+	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`
+	Format      string   `yaml:"format,omitempty" json:"format,omitempty"`         // e.g., "key_value" for tags
+	Positional  bool     `yaml:"positional,omitempty" json:"positional,omitempty"` // true = positional arg, not flag
 }
 
 // Flag defines a boolean flag

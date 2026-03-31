@@ -186,12 +186,12 @@ MULTI_EQUALS=key=value=extra
 		}
 
 		expected := map[string]string{
-			"DB_HOST":    "localhost",
-			"DB_PORT":    "5432",
-			"DB_NAME":    "mydb",
-			"DB_PASS":    "secret",
+			"DB_HOST":      "localhost",
+			"DB_PORT":      "5432",
+			"DB_NAME":      "mydb",
+			"DB_PASS":      "secret",
 			"MULTI_EQUALS": "key=value=extra",
-			"SPACED_KEY": "spaced_value",
+			"SPACED_KEY":   "spaced_value",
 		}
 
 		for k, want := range expected {

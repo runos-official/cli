@@ -23,24 +23,24 @@ var placeholderRegex = regexp.MustCompile(`/?\{[^}]+\}`)
 // Request represents a JSON-RPC 2.0 request message.
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      any     `json:"id,omitempty"`
+	ID      any             `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 // Response represents a JSON-RPC 2.0 response message.
 type Response struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      any `json:"id,omitempty"`
-	Result  any `json:"result,omitempty"`
-	Error   *Error      `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	ID      any    `json:"id,omitempty"`
+	Result  any    `json:"result,omitempty"`
+	Error   *Error `json:"error,omitempty"`
 }
 
 // Error represents a JSON-RPC 2.0 error object.
 type Error struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    any `json:"data,omitempty"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 // ServerInfo describes the MCP server's name and version.
@@ -96,7 +96,7 @@ type ToolsListResult struct {
 
 // CallToolParams represents the parameters for a tools/call request.
 type CallToolParams struct {
-	Name      string                 `json:"name"`
+	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
 

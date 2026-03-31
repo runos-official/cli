@@ -26,10 +26,10 @@ import (
 )
 
 const (
-	cdnBaseURL            = "https://github.com/runos-official/cli/releases/download"
-	configEndpoint        = "/system-config"
-	updateCheckCacheKey   = "cli_update_check"
-	updateCheckTTL        = 1 * time.Hour
+	cdnBaseURL          = "https://github.com/runos-official/cli/releases/download"
+	configEndpoint      = "/system-config"
+	updateCheckCacheKey = "cli_update_check"
+	updateCheckTTL      = 1 * time.Hour
 )
 
 // Updater checks for and applies CLI updates by comparing versions and downloading new binaries.

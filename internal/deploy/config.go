@@ -65,11 +65,11 @@ type DeployConfig struct {
 
 // ServiceRequirement defines a dependent service (e.g., PostgreSQL, Valkey)
 type ServiceRequirement struct {
-	ID     string                 `yaml:"id,omitempty" json:"id,omitempty"`
-	Type   string                 `yaml:"type" json:"type"`
-	Class  string                 `yaml:"class,omitempty" json:"class,omitempty"`
-	Config map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
-	Env    map[string]string      `yaml:"env,omitempty" json:"env,omitempty"`
+	ID     string            `yaml:"id,omitempty" json:"id,omitempty"`
+	Type   string            `yaml:"type" json:"type"`
+	Class  string            `yaml:"class,omitempty" json:"class,omitempty"`
+	Config map[string]any    `yaml:"config,omitempty" json:"config,omitempty"`
+	Env    map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
 // LoadConfig reads and parses a runos.yaml config file
