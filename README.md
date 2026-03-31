@@ -86,13 +86,16 @@ The `runos deploy` command deploys applications from a `runos.yaml` configuratio
 
 ```yaml
 app: my-app
-port: 8080
-requirements:
-  cpu: "0.25"
-  memory: 256Mi
-  replicas: 1
-services:
-  - type: postgres
+port: 3000
+requires:
+    my-app-db:
+        type: postgresql
+        class: postgresql.c0.beff
+        config:
+            databaseName: myapp
+            databaseUsername: myapp
+        env:
+            url: DATABASE_URL
 ```
 
 The CLI creates a tarball of your source code (respecting `.dockerignore`), uploads it to your cluster, and tracks the build/deploy job to completion.
