@@ -3,7 +3,6 @@
 [![CI](https://github.com/runos-official/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/runos-official/cli/actions/workflows/ci.yml)
 [![Release](https://github.com/runos-official/cli/actions/workflows/release.yml/badge.svg)](https://github.com/runos-official/cli/actions/workflows/release.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/runos-official/cli)](https://goreportcard.com/report/github.com/runos-official/cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Command-line interface for [RunOS](https://runos.com) -- a self-hosted cloud platform where you bring your own hardware to run cloud infrastructure across multiple providers.
 
