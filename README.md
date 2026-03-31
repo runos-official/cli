@@ -19,22 +19,18 @@ This CLI communicates with the same REST API used by the RunOS web console, givi
 
 ## Installation
 
-### From GitHub Releases
-
-Download the latest binary for your platform from [Releases](https://github.com/runos-official/cli/releases).
+### Install Script
 
 **macOS / Linux:**
 
 ```bash
-tar -xzf runos-*.tar.gz
-./install.sh
+curl -fsSL https://get.beta.runos.com/cli.sh | bash
 ```
 
-**Windows:**
+**Windows (PowerShell):**
 
 ```powershell
-Expand-Archive runos-*.zip -DestinationPath .
-.\install.ps1
+irm https://get.beta.runos.com/cli.ps1 | iex
 ```
 
 ### From Source
