@@ -59,6 +59,7 @@ type DeployConfig struct {
 	CPULimitMc      int                           `yaml:"cpuLimitMc,omitempty" json:"cpuLimitMc,omitempty"`
 	MemoryRequestMb int                           `yaml:"memoryRequestMb,omitempty" json:"memoryRequestMb,omitempty"`
 	MemoryLimitMb   int                           `yaml:"memoryLimitMb,omitempty" json:"memoryLimitMb,omitempty"`
+	StandardHttps   *bool                         `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
 	Requires        map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
 	CustomEnvVars   map[string]string             `yaml:"-" json:"customEnvVars,omitempty"`
 }
