@@ -178,9 +178,10 @@ DB_PASS='secret'
 MULTI_EQUALS=key=value=extra
   SPACED_KEY = spaced_value
 `
-		writeFile(t, filepath.Join(dir, ".runos.test-cluster.env"), content)
+		path := filepath.Join(dir, ".runos.test-cluster.env")
+		writeFile(t, path, content)
 
-		envVars, err := LoadEnvFile(dir, "test-cluster")
+		envVars, err := LoadEnvFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -207,8 +208,17 @@ MULTI_EQUALS=key=value=extra
 	})
 
 	t.Run("missing file returns nil", func(t *testing.T) {
-		dir := t.TempDir()
-		envVars, err := LoadEnvFile(dir, "nonexistent")
+		envVars, err := LoadEnvFile("/nonexistent/path/.env")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if envVars != nil {
+			t.Fatalf("expected nil, got %v", envVars)
+		}
+	})
+
+	t.Run("empty path returns nil", func(t *testing.T) {
+		envVars, err := LoadEnvFile("")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -226,9 +236,10 @@ KEY=value
 
 # another comment
 `
-		writeFile(t, filepath.Join(dir, ".runos.cid1.env"), content)
+		path := filepath.Join(dir, "my.env")
+		writeFile(t, path, content)
 
-		envVars, err := LoadEnvFile(dir, "cid1")
+		envVars, err := LoadEnvFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -242,9 +253,10 @@ KEY=value
 
 	t.Run("double-quoted values have quotes stripped", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, ".runos.c1.env"), `VAL="hello world"`)
+		path := filepath.Join(dir, "test.env")
+		writeFile(t, path, `VAL="hello world"`)
 
-		envVars, err := LoadEnvFile(dir, "c1")
+		envVars, err := LoadEnvFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -255,9 +267,10 @@ KEY=value
 
 	t.Run("single-quoted values have quotes stripped", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, ".runos.c2.env"), `VAL='hello world'`)
+		path := filepath.Join(dir, "test.env")
+		writeFile(t, path, `VAL='hello world'`)
 
-		envVars, err := LoadEnvFile(dir, "c2")
+		envVars, err := LoadEnvFile(path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -265,34 +278,72 @@ KEY=value
 			t.Errorf("got %q, want %q", envVars["VAL"], "hello world")
 		}
 	})
+}
 
-	t.Run("path traversal CID is rejected", func(t *testing.T) {
+// ---------------------------------------------------------------------------
+// ResolveEnvPath()
+// ---------------------------------------------------------------------------
+
+func TestResolveEnvPath(t *testing.T) {
+	t.Run("explicit env in config is used as-is", func(t *testing.T) {
 		dir := t.TempDir()
-		_, err := LoadEnvFile(dir, "../etc/passwd")
-		if err == nil {
-			t.Fatal("expected error for path traversal CID, got nil")
+		config := &DeployConfig{App: "myapp", Port: 8080, Env: "custom.env"}
+
+		path, changed := ResolveEnvPath(dir, config, "cid1")
+		if changed {
+			t.Fatal("expected changed=false when env is already set")
 		}
-		if !contains(err.Error(), "invalid cluster ID") {
-			t.Fatalf("expected 'invalid cluster ID' error, got %q", err.Error())
+		if path != filepath.Join(dir, "custom.env") {
+			t.Errorf("got %q, want %q", path, filepath.Join(dir, "custom.env"))
 		}
 	})
 
-	t.Run("CID with backslash is rejected", func(t *testing.T) {
+	t.Run("legacy file is detected and config updated", func(t *testing.T) {
 		dir := t.TempDir()
-		_, err := LoadEnvFile(dir, `foo\bar`)
-		if err == nil {
-			t.Fatal("expected error for backslash in CID, got nil")
+		legacyPath := filepath.Join(dir, ".runos.abc.env")
+		writeFile(t, legacyPath, "KEY=val\n")
+
+		config := &DeployConfig{App: "myapp", Port: 8080}
+
+		path, changed := ResolveEnvPath(dir, config, "abc")
+		if !changed {
+			t.Fatal("expected changed=true for legacy file detection")
 		}
-		if !contains(err.Error(), "invalid cluster ID") {
-			t.Fatalf("expected 'invalid cluster ID' error, got %q", err.Error())
+		if config.Env != ".runos.abc.env" {
+			t.Errorf("config.Env = %q, want %q", config.Env, ".runos.abc.env")
+		}
+		if path != legacyPath {
+			t.Errorf("got %q, want %q", path, legacyPath)
 		}
 	})
 
-	t.Run("CID with dots is rejected", func(t *testing.T) {
+	t.Run("default uses CID and ID", func(t *testing.T) {
 		dir := t.TempDir()
-		_, err := LoadEnvFile(dir, "foo..bar")
-		if err == nil {
-			t.Fatal("expected error for dots in CID, got nil")
+		config := &DeployConfig{App: "myapp", Port: 8080, ID: "app123"}
+
+		path, changed := ResolveEnvPath(dir, config, "cid1")
+		if !changed {
+			t.Fatal("expected changed=true for default path")
+		}
+		expectedFilename := ".runos.cid1.app123.env"
+		if config.Env != expectedFilename {
+			t.Errorf("config.Env = %q, want %q", config.Env, expectedFilename)
+		}
+		if path != filepath.Join(dir, expectedFilename) {
+			t.Errorf("got %q, want %q", path, filepath.Join(dir, expectedFilename))
+		}
+	})
+
+	t.Run("no ID returns empty path", func(t *testing.T) {
+		dir := t.TempDir()
+		config := &DeployConfig{App: "myapp", Port: 8080}
+
+		path, changed := ResolveEnvPath(dir, config, "cid1")
+		if changed {
+			t.Fatal("expected changed=false when no ID")
+		}
+		if path != "" {
+			t.Errorf("expected empty path, got %q", path)
 		}
 	})
 }

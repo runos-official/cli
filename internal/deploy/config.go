@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -53,6 +54,7 @@ type DeployConfig struct {
 	ID              string                        `yaml:"id,omitempty" json:"id,omitempty"`
 	CID             string                        `yaml:"cid,omitempty" json:"cid,omitempty"`
 	AID             string                        `yaml:"aid,omitempty" json:"aid,omitempty"`
+	Env             string                        `yaml:"env,omitempty" json:"env,omitempty"`
 	Domain          StringOrSlice                 `yaml:"domain,omitempty" json:"domain,omitempty"`
 	Dockerfile      string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
 	CPURequestMc    int                           `yaml:"cpuRequestMc,omitempty" json:"cpuRequestMc,omitempty"`
@@ -131,29 +133,52 @@ func ValidateAID(configAID, sessionAID string) error {
 	return fmt.Errorf("config file AID (%s) does not match session AID (%s). Ensure you're logged into the correct account", configAID, sessionAID)
 }
 
-// LoadEnvFile reads a .runos.{CID}.env file and returns key-value pairs
-func LoadEnvFile(dir, cid string) (map[string]string, error) {
-	// Validate cid to prevent path traversal
-	if strings.ContainsAny(cid, "/\\..") {
-		return nil, fmt.Errorf("invalid cluster ID: %s", cid)
+// ResolveEnvPath determines the env file path based on config state.
+// Priority: 1) explicit env field in config, 2) legacy .runos.{CID}.env file,
+// 3) default .runos.{CID}.{ID}.env if app ID is known.
+// Returns the resolved absolute path and whether the config was modified (needs saving).
+func ResolveEnvPath(configDir string, config *DeployConfig, cid string) (string, bool) {
+	// Explicit env path in config — use as-is
+	if config.Env != "" {
+		return filepath.Join(configDir, config.Env), false
 	}
 
-	filename := fmt.Sprintf(".runos.%s.env", cid)
-	path := filepath.Join(dir, filename)
+	// Backwards compat: check for legacy .runos.{CID}.env
+	legacyFilename := fmt.Sprintf(".runos.%s.env", cid)
+	legacyPath := filepath.Join(configDir, legacyFilename)
+	if _, err := os.Stat(legacyPath); err == nil {
+		config.Env = legacyFilename
+		return legacyPath, true
+	}
 
-	// Ensure resolved path stays within the expected directory
-	cleanDir := filepath.Clean(dir)
-	cleanPath := filepath.Clean(path)
-	if !strings.HasPrefix(cleanPath, cleanDir+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("invalid cluster ID: path traversal detected")
+	// Default: .runos.{CID}.{ID}.env (only if ID is known)
+	if config.ID != "" {
+		filename := fmt.Sprintf(".runos.%s.%s.env", cid, config.ID)
+		config.Env = filename
+		return filepath.Join(configDir, filename), true
+	}
+
+	return "", false
+}
+
+// DefaultEnvFilename returns the default env filename for a given cluster and app ID.
+func DefaultEnvFilename(cid, appID string) string {
+	return fmt.Sprintf(".runos.%s.%s.env", cid, appID)
+}
+
+// LoadEnvFile reads an env file at the given path and returns key-value pairs.
+// Returns nil, nil if the path is empty or the file does not exist.
+func LoadEnvFile(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil // File not found is OK, return empty
+			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read %s: %w", filename, err)
+		return nil, fmt.Errorf("failed to read %s: %w", filepath.Base(path), err)
 	}
 
 	envVars := make(map[string]string)
@@ -161,17 +186,40 @@ func LoadEnvFile(dir, cid string) (map[string]string, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
-			continue // Skip empty lines and comments
+			continue
 		}
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
-			// Remove surrounding quotes if present
 			value = strings.Trim(value, `"'`)
 			envVars[key] = value
 		}
 	}
 
 	return envVars, nil
+}
+
+// SaveEnvFile writes env vars to the given path.
+func SaveEnvFile(path string, envVars map[string]string) error {
+	if path == "" {
+		return fmt.Errorf("env file path is required")
+	}
+
+	var lines []string
+	keys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		lines = append(lines, fmt.Sprintf("%s=%s", k, envVars[k]))
+	}
+
+	content := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return fmt.Errorf("failed to write %s: %w", filepath.Base(path), err)
+	}
+
+	return nil
 }

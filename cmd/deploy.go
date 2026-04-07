@@ -103,16 +103,8 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Load custom env vars from .runos.{CID}.env if it exists
-	customEnvVars, err := deploy.LoadEnvFile(filepath.Dir(configPath), cid)
-	if err != nil {
-		return fmt.Errorf("failed to load env file: %w", err)
-	}
-	if customEnvVars != nil {
-		deployConfig.CustomEnvVars = customEnvVars
-	}
-
 	// Create deploy service
+	configDir := filepath.Dir(configPath)
 	svc := deploy.NewService(cfg.GetConductorURL(), token, cid, cfg.AccountID)
 
 	// Check if app already exists but config has no ID
@@ -126,8 +118,23 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	}
 
 	// Pre-deploy sync: catch any console-side changes before deploying
-	if err := preDeploySync(svc, deployConfig, configPath); err != nil {
+	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: pre-deploy sync failed: %v\n", err)
+	}
+
+	// Load env vars from env file AFTER sync so remote changes are included
+	envPath, envConfigChanged := deploy.ResolveEnvPath(configDir, deployConfig, cid)
+	if envConfigChanged {
+		if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to update config with env path: %v\n", err)
+		}
+	}
+	customEnvVars, err := deploy.LoadEnvFile(envPath)
+	if err != nil {
+		return fmt.Errorf("failed to load env file: %w", err)
+	}
+	if customEnvVars != nil {
+		deployConfig.CustomEnvVars = customEnvVars
 	}
 
 	fmt.Printf("Deploying %s...\n", deployConfig.App)
@@ -146,7 +153,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	// Create tarball
 	fmt.Println("Creating archive...")
-	configDir := filepath.Dir(configPath)
 	tarball, err := deploy.CreateTarball(configDir)
 	if err != nil {
 		return fmt.Errorf("failed to create archive: %w", err)
@@ -203,6 +209,11 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Post-deploy sync: pick up env vars from newly provisioned services (also covers first deploy)
+	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: post-deploy sync failed: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -230,41 +241,97 @@ func syncConfigFromPrepareResponse(deployConfig *deploy.DeployConfig, configPath
 	return deploy.SaveConfig(configPath, deployConfig)
 }
 
-// preDeploySync syncs config from deployed app state before deploying (catches console-side changes)
-func preDeploySync(svc *deploy.Service, deployConfig *deploy.DeployConfig, configPath string) error {
+// syncResult holds what changed during a sync operation
+type syncResult struct {
+	deps    []deploy.AppDependency
+	envVars map[string]string
+}
+
+// syncAppState syncs dependencies and env vars from the deployed app state.
+// It updates the config and env file in place. Returns a result for summary printing.
+func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, configPath, cid string) (*syncResult, error) {
 	if deployConfig.ID == "" {
-		return nil // No existing app, nothing to sync
+		return nil, nil
 	}
 
-	// Fetch current dependencies from deployed app
+	configDir := filepath.Dir(configPath)
+	result := &syncResult{}
+
+	// Fetch and sync dependencies
 	deps, err := svc.GetAppDependencies(deployConfig.ID)
 	if err != nil {
-		return nil // Non-fatal, just skip
-	}
-
-	changed := false
-
-	// Update requires block with any changes from console
-	if deps != nil && deployConfig.Requires != nil {
-		for _, dep := range deps {
-			if req, ok := deployConfig.Requires[dep.Name]; ok {
-				if req.Type == dep.Type && req.ID != dep.ID {
-					req.ID = dep.ID
-					deployConfig.Requires[dep.Name] = req
-					changed = true
+		fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", err)
+	} else {
+		result.deps = deps
+		if deps != nil && deployConfig.Requires != nil {
+			for _, dep := range deps {
+				if req, ok := deployConfig.Requires[dep.Name]; ok {
+					if req.Type == dep.Type {
+						req.ID = dep.ID
+						deployConfig.Requires[dep.Name] = req
+					}
 				}
 			}
 		}
 	}
 
-	if changed {
-		if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
-			return err
-		}
-		fmt.Println("Config synced with deployed app state.")
+	// Fetch and sync env vars
+	envVars, err := svc.GetAppEnvVars(deployConfig.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", err)
+	} else {
+		result.envVars = envVars
 	}
 
-	return nil
+	if len(envVars) > 0 {
+		envPath, _ := deploy.ResolveEnvPath(configDir, deployConfig, cid)
+		if envPath == "" {
+			deployConfig.Env = deploy.DefaultEnvFilename(cid, deployConfig.ID)
+			envPath = filepath.Join(configDir, deployConfig.Env)
+		}
+
+		localEnvVars, err := deploy.LoadEnvFile(envPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read existing env file: %v\n", err)
+		}
+
+		// Check for conflicts: same key, different value
+		var conflicts []string
+		for key, localVal := range localEnvVars {
+			if remoteVal, exists := envVars[key]; exists && localVal != remoteVal {
+				conflicts = append(conflicts, key)
+			}
+		}
+		if len(conflicts) > 0 {
+			fmt.Fprintf(os.Stderr, "\nEnv var conflicts detected (local value differs from remote):\n")
+			for _, key := range conflicts {
+				fmt.Fprintf(os.Stderr, "  %s\n    local:  %s\n    remote: %s\n", key, localEnvVars[key], envVars[key])
+			}
+			return result, fmt.Errorf("resolve env var conflicts in %s before syncing", deployConfig.Env)
+		}
+
+		// Merge: start with remote vars, add any local-only vars
+		merged := make(map[string]string, len(envVars)+len(localEnvVars))
+		for k, v := range envVars {
+			merged[k] = v
+		}
+		for k, v := range localEnvVars {
+			if _, exists := merged[k]; !exists {
+				merged[k] = v
+			}
+		}
+
+		if err := deploy.SaveEnvFile(envPath, merged); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save env file: %v\n", err)
+		}
+	}
+
+	// Save config
+	if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
+		return result, fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return result, nil
 }
 
 func getDeployAuthToken(cfg *config.Config) (string, error) {
@@ -324,7 +391,7 @@ func runDeploySync(cmd *cobra.Command, args []string) error {
 	// Create deploy service
 	svc := deploy.NewService(cfg.GetConductorURL(), token, cid, cfg.AccountID)
 
-	// Find the app by name
+	// Find the app by name and set core IDs
 	fmt.Printf("Looking up app '%s' on cluster %s...\n", deployConfig.App, cid)
 	app, err := svc.FindAppByName(deployConfig.App)
 	if err != nil {
@@ -334,34 +401,15 @@ func runDeploySync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("app '%s' not found on cluster %s. Run 'runos deploy' first", deployConfig.App, cid)
 	}
 
-	// Fetch dependencies
-	fmt.Println("Fetching app dependencies...")
-	deps, err := svc.GetAppDependencies(app.ID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", err)
-		deps = nil
-	}
-
-	// Update config
 	deployConfig.ID = app.ID
 	deployConfig.CID = cid
 	deployConfig.AID = cfg.AccountID
 
-	// Match dependencies to requires block
-	if deps != nil && deployConfig.Requires != nil {
-		for _, dep := range deps {
-			if req, ok := deployConfig.Requires[dep.Name]; ok {
-				if req.Type == dep.Type {
-					req.ID = dep.ID
-					deployConfig.Requires[dep.Name] = req
-				}
-			}
-		}
-	}
-
-	// Save config
-	if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	// Sync dependencies and env vars
+	fmt.Println("Syncing app state...")
+	result, err := syncAppState(svc, deployConfig, configPath, cid)
+	if err != nil {
+		return err
 	}
 
 	// Print summary
@@ -369,11 +417,14 @@ func runDeploySync(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  App ID: %s\n", deployConfig.ID)
 	fmt.Printf("  Cluster: %s\n", deployConfig.CID)
 	fmt.Printf("  Account: %s\n", deployConfig.AID)
-	if len(deps) > 0 {
+	if result != nil && len(result.deps) > 0 {
 		fmt.Println("  Dependencies:")
-		for _, dep := range deps {
+		for _, dep := range result.deps {
 			fmt.Printf("    %s (%s): %s\n", dep.Name, dep.Type, dep.ID)
 		}
+	}
+	if result != nil && len(result.envVars) > 0 {
+		fmt.Printf("  Env vars: %d synced to %s\n", len(result.envVars), deployConfig.Env)
 	}
 
 	return nil

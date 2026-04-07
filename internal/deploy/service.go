@@ -224,6 +224,41 @@ type AppDependency struct {
 	Name string `json:"name"`
 }
 
+// GetAppEnvVars fetches environment variables for an application
+func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
+	// Endpoint: /:aid/:cid/apps/:id/envs
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/envs", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var envVars map[string]string
+	if err := json.Unmarshal(body, &envVars); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return envVars, nil
+}
+
 // GetAppDependencies fetches dependencies for an application
 func (s *Service) GetAppDependencies(appID string) ([]AppDependency, error) {
 	// Endpoint: /:aid/:cid/apps/:id/dependencies

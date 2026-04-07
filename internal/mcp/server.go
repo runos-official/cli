@@ -124,27 +124,28 @@ IMPORTANT: Before using any tools, call mcp_bootstrap to learn available topics,
 
 Access sensitive data like credentials, connection strings, and secrets. Data returned will be visible to the LLM.
 
-IMPORTANT: Before using any tools, call mcp_bootstrap to learn available topics, service types, and valid parameter values. Do not guess or invent values.`,
+IMPORTANT: Ensure you have called mcp_bootstrap on the runos (read-only) server before using these tools.`,
 
 	"write": `RunOS MCP Server (Write)
 
 Create, update, and manage clusters, services, and applications. Changes affect live infrastructure.
 
-IMPORTANT: Before using any tools, call mcp_bootstrap to learn available topics, service types, and valid parameter values. Do not guess or invent values.`,
+IMPORTANT: Ensure you have called mcp_bootstrap on the runos (read-only) server before using these tools.`,
 
 	"sensitive_write": `RunOS MCP Server (Sensitive Write)
 
 Perform sensitive write operations like credential rotation and secret management. Changes affect live infrastructure and security-critical data.
 
-IMPORTANT: Before using any tools, call mcp_bootstrap to learn available topics, service types, and valid parameter values. Do not guess or invent values.`,
+IMPORTANT: Ensure you have called mcp_bootstrap on the runos (read-only) server before using these tools.`,
 }
 
 // Server is the MCP server that handles JSON-RPC requests over stdio.
 type Server struct {
-	manifest *manifest.Manifest
-	executor ToolExecutor
-	version  string
-	category string // "read", "sensitive_read", "write", "sensitive_write"
+	manifest     *manifest.Manifest
+	executor     ToolExecutor
+	version      string
+	category     string // "read", "sensitive_read", "write", "sensitive_write"
+	bootstrapped bool   // true after mcp_bootstrap has been called successfully
 }
 
 // ToolExecutor defines the interface for executing MCP tools against the API.
@@ -321,6 +322,40 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 				Code:    -32602,
 				Message: "Invalid params",
 				Data:    err.Error(),
+			},
+		}
+	}
+
+	// Bootstrap gate: handle mcp_bootstrap specially and enforce bootstrap-first on read server
+	if params.Name == "mcp_bootstrap" {
+		result, err := s.executor.Execute(params.Name, params.Arguments)
+		if err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: CallToolResult{
+					Content: []ContentBlock{{Type: "text", Text: err.Error()}},
+					IsError: true,
+				},
+			}
+		}
+		s.bootstrapped = true
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: CallToolResult{
+				Content: []ContentBlock{{Type: "text", Text: result}},
+			},
+		}
+	}
+
+	if !s.bootstrapped && s.category == "read" {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: CallToolResult{
+				Content: []ContentBlock{{Type: "text", Text: "ERROR: You must call the mcp_bootstrap tool before using any other tools. Call mcp_bootstrap now (no arguments needed) to receive critical instructions for correct RunOS usage."}},
+				IsError: true,
 			},
 		}
 	}
