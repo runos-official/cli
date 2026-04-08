@@ -204,10 +204,34 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 
 	// Substitute field placeholders from args (both positional and non-positional)
 	// With the new manifest structure, fields like "id" are no longer positional
-	// but still need to be substituted in the endpoint path
+	// but still need to be substituted in the endpoint path.
+	// AI models may prefix generic field names (e.g. sending "app_id" instead of "id"),
+	// so we fall back to matching the URL-path entity as a prefix.
 	if cmdDef.Input != nil {
 		for _, field := range cmdDef.Input.Fields {
-			if val, ok := args[field.Name]; ok {
+			val, ok := args[field.Name]
+			if !ok {
+				// Derive the expected prefix from the endpoint path segment before the placeholder.
+				// e.g. endpoint "/:aid/:cid/apps/:id/status" → segment before ":id" is "apps" → try "apps_id", "app_id"
+				placeholder := ":" + field.Name
+				if idx := strings.Index(result, placeholder); idx > 0 {
+					prefix := result[:idx]
+					parts := strings.Split(strings.Trim(prefix, "/"), "/")
+					if len(parts) > 0 {
+						entity := parts[len(parts)-1]
+						if v, found := args[entity+"_"+field.Name]; found {
+							val = v
+							ok = true
+						} else if singular := strings.TrimSuffix(entity, "s"); singular != entity {
+							if v, found := args[singular+"_"+field.Name]; found {
+								val = v
+								ok = true
+							}
+						}
+					}
+				}
+			}
+			if ok {
 				valStr := fmt.Sprintf("%v", val)
 				// Handle both placeholder styles: {name} and :name (URL-encode for safety)
 				escapedVal := url.PathEscape(valStr)
