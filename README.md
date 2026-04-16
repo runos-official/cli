@@ -173,6 +173,13 @@ cli/
 └── version/                # Version variable (set via ldflags)
 ```
 
+### Releasing
+
+1. Add a `## vX.Y.Z` section to `CHANGELOG.md` with release notes
+2. Commit, tag (`git tag vX.Y.Z`), and push with `--tags`
+3. CI builds all platforms, extracts the matching changelog section, and creates the GitHub release with those notes
+4. If no changelog entry exists for the version, CI falls back to auto-generated notes from commits
+
 ### How Dynamic Commands Work
 
 The CLI fetches a manifest from the API that defines available commands, their flags, and endpoint mappings. This means most commands are generated at runtime -- when the API adds new endpoints, the CLI picks them up automatically on the next `runos manifest update` (or when the cached manifest expires after 1 hour).

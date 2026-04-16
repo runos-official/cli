@@ -139,3 +139,9 @@ Store auth tokens securely in `~/.runos/`. Consider implementing API key fallbac
 
 ### Build & Install
 After making code changes, always run `make local` to build and install the CLI to `~/.local/bin/runos`.
+
+### Releasing
+1. Add a `## vX.Y.Z` section to `CHANGELOG.md` with release notes
+2. Commit, tag (`git tag vX.Y.Z`), and push with `--tags`
+3. CI builds all platforms, extracts the matching section from `CHANGELOG.md`, and creates the GitHub release with those notes
+4. If no changelog entry exists for the version, CI falls back to auto-generated notes from commits

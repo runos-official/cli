@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.9
+
+### Improvements
+- **Fix changelog extraction in release workflow** — release notes were not being extracted due to a broken awk/sed command
+- **Add CI test for changelog extraction** — verifies all changelog entries are extractable on every push/PR
+- **Document release process** in README and CLAUDE.md
+
 ## v0.3.8
 
 ### Improvements
