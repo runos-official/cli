@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/runos-official/cli/internal/manifest"
+	"github.com/runos-official/cli/version"
 )
 
 // placeholderRegex matches {name} patterns in command paths
@@ -367,6 +369,14 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	if params.Name == "deploy" {
 		result, err = s.handleDeploy(params.Arguments)
 	} else {
+		// Auto-inject CLI version and OS for version check tool
+		if params.Name == "cli_version-check" {
+			if params.Arguments == nil {
+				params.Arguments = make(map[string]any)
+			}
+			params.Arguments["version"] = version.Version
+			params.Arguments["os"] = runtime.GOOS
+		}
 		// All other tools go to executor
 		result, err = s.executor.Execute(params.Name, params.Arguments)
 	}
@@ -538,6 +548,8 @@ func (s *Server) mapType(t string) string {
 		return "number"
 	case "array":
 		return "array"
+	case "boolean":
+		return "boolean"
 	default:
 		return "string"
 	}
