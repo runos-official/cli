@@ -72,8 +72,25 @@ jobs:
           echo "Generated checksums:"
           cat checksums.txt
 
+      - name: Extract release notes
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          # Extract the section for this version from CHANGELOG.md
+          # Grab everything between "## vX.Y.Z" and the next "## v" heading
+          NOTES=$(awk "/^## ${VERSION}$/,/^## v/" CHANGELOG.md | sed '1d;$d' | sed '/^$/N;/^\n$/d')
+          if [ -z "$NOTES" ]; then
+            echo "No changelog entry found for ${VERSION}, using auto-generated notes"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            # Write to file to avoid escaping issues
+            echo "$NOTES" > release_notes.txt
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.found == 'true' && 'release_notes.txt' || '' }}
+          generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           files: dist/*
