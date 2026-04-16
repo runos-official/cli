@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.8
+
+### Improvements
+- **Changelog-driven release notes** — GitHub releases now pull notes from CHANGELOG.md, falling back to auto-generated notes if no entry exists
+
 ## v0.3.7
 
 ### Bug fixes
