@@ -33,7 +33,7 @@ func NewService() (*Service, error) {
 	}
 
 	return &Service{
-		baseURL: cfg.GetConductorURL(),
+		baseURL: cfg.GetAPIURL(),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},

@@ -89,10 +89,10 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		cfg.DefaultClusterID = value
 	case "console-url":
 		cfg.ConsoleURL = value
-	case "conductor-url":
+	case "api-url":
 		cfg.ConductorURL = value
 	default:
-		return fmt.Errorf("unknown config key: %s\nAvailable keys: cid, console-url, conductor-url", key)
+		return fmt.Errorf("unknown config key: %s\nAvailable keys: cid, console-url, api-url", key)
 	}
 
 	if err := cfg.Save(); err != nil {
@@ -111,11 +111,11 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 
 	if len(args) == 0 {
 		// Show all config
-		fmt.Printf("env:           %s\n", cfg.Env)
-		fmt.Printf("account-id:    %s\n", cfg.AccountID)
-		fmt.Printf("cid:           %s\n", cfg.DefaultClusterID)
-		fmt.Printf("console-url:   %s\n", cfg.GetConsoleURL())
-		fmt.Printf("conductor-url: %s\n", cfg.GetConductorURL())
+		fmt.Printf("env:         %s\n", cfg.Env)
+		fmt.Printf("account-id:  %s\n", cfg.AccountID)
+		fmt.Printf("cid:         %s\n", cfg.DefaultClusterID)
+		fmt.Printf("console-url: %s\n", cfg.GetConsoleURL())
+		fmt.Printf("api-url:     %s\n", cfg.GetAPIURL())
 		return nil
 	}
 
@@ -127,8 +127,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.AccountID)
 	case "console-url":
 		fmt.Println(cfg.GetConsoleURL())
-	case "conductor-url":
-		fmt.Println(cfg.GetConductorURL())
+	case "api-url":
+		fmt.Println(cfg.GetAPIURL())
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}

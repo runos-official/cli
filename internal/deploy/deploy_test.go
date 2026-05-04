@@ -9,10 +9,235 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ---------------------------------------------------------------------------
+// DeployConfig field-order alignment with apps.PulledApp
+// ---------------------------------------------------------------------------
+
+// TestDeployConfig_AppSpecBlockOrderMatchesPulledApp asserts the order
+// in which DeployConfig marshals its AppSpec fields. The expectation
+// mirrors apps.PulledApp's marshal order so a yaml written by deploy
+// diffs byte-clean against a server-rendered PulledApp. We do this by
+// inspecting the marshaled output rather than struct reflection so the
+// guarantee survives field renames as long as the tags stay aligned.
+func TestDeployConfig_AppSpecBlockOrderMatchesPulledApp(t *testing.T) {
+	replicas := 3
+	cfg := &DeployConfig{
+		App:                        "web",
+		DeployType:                 "cli",
+		ID:                         "ab12c",
+		CID:                        "k1",
+		AID:                        "acc-1",
+		Env:                        ".env",
+		Replicas:                   &replicas,
+		ClusterDomainID:            "elpfn",
+		ResourceRequirementClassID: "app.sl1.beff",
+		ServicePortMappings: []ServicePortMapping{
+			{Port: 3000},
+		},
+	}
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(out)
+
+	// Required ordering: each successor must appear AFTER its predecessor.
+	expectedOrder := []string{
+		"app:",
+		"deployType:",
+		"id:",
+		"cid:",
+		"aid:",
+		"env:",
+		"replicas:",
+		"clusterDomainId:",
+		"resourceRequirementClassId:",
+		"servicePortMappings:",
+	}
+	prev := -1
+	for _, key := range expectedOrder {
+		idx := indexOf(got, key)
+		if idx < 0 {
+			t.Errorf("expected key %q in marshaled yaml, got:\n%s", key, got)
+			continue
+		}
+		if idx <= prev {
+			t.Errorf("key %q appears before an earlier key (idx %d, prev %d). Output:\n%s", key, idx, prev, got)
+		}
+		prev = idx
+	}
+}
+
+// indexOf returns the byte offset of needle in haystack, or -1.
+func indexOf(haystack, needle string) int {
+	return bytes.Index([]byte(haystack), []byte(needle))
+}
+
+// TestDeployConfig_SourceDirRoundTrip pins yaml round-tripping for the
+// directory-per-app field. Empty stays omitted, set stays set.
+func TestDeployConfig_SourceDirRoundTrip(t *testing.T) {
+	t.Run("set sourceDir round-trips", func(t *testing.T) {
+		cfg := &DeployConfig{App: "web", SourceDir: ".."}
+		out, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(out), "sourceDir: ..") {
+			t.Errorf("marshaled yaml missing sourceDir: ..\n%s", out)
+		}
+		var got DeployConfig
+		if err := yaml.Unmarshal(out, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.SourceDir != ".." {
+			t.Errorf("round-tripped SourceDir = %q, want %q", got.SourceDir, "..")
+		}
+	})
+
+	t.Run("empty sourceDir is omitted from output", func(t *testing.T) {
+		cfg := &DeployConfig{App: "web"}
+		out, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "sourceDir:") {
+			t.Errorf("empty SourceDir must be omitted; got:\n%s", out)
+		}
+	})
+
+	t.Run("sourceDir is not sent in JSON to conductor", func(t *testing.T) {
+		// json:"-" keeps it CLI-side. Conductor doesn't know or care.
+		cfg := &DeployConfig{App: "web", SourceDir: ".."}
+		out, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "sourceDir") {
+			t.Errorf("sourceDir must not appear in JSON payload; got %s", out)
+		}
+	})
+}
+
+// TestDeployConfig_NilPointerFieldsRoundTripCleanly guards against the
+// Replicas/HealthCheckPort/MetricsPort/StorageMb pointer fields leaking
+// into the marshaled yaml as zero values when the user never set them.
+// A spurious "replicas: 0" or "metricsPort: 0" would cause a fresh
+// DeployConfig-written yaml to drift against the server's PulledApp
+// projection (which only emits these when the server returns non-zero).
+func TestDeployConfig_NilPointerFieldsRoundTripCleanly(t *testing.T) {
+	cfg := &DeployConfig{
+		App:  "web",
+		Port: 3000,
+	}
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(out)
+	for _, key := range []string{"replicas:", "healthCheckPort:", "metricsPort:", "storageMb:"} {
+		if strings.Contains(got, key) {
+			t.Errorf("yaml contains %q despite nil pointer; output:\n%s", key, got)
+		}
+	}
+
+	// And that an explicit zero, when callers really want one, IS preserved.
+	zero := 0
+	cfg2 := &DeployConfig{App: "web", Port: 3000, Replicas: &zero}
+	out2, err := yaml.Marshal(cfg2)
+	if err != nil {
+		t.Fatalf("marshal explicit zero: %v", err)
+	}
+	if !strings.Contains(string(out2), "replicas: 0") {
+		t.Errorf("explicit replicas=0 should marshal to 'replicas: 0', got:\n%s", out2)
+	}
+
+	// Round-trip: unmarshaling yaml without these keys should leave the
+	// pointers nil (not point to zero).
+	var back DeployConfig
+	if err := yaml.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Replicas != nil {
+		t.Errorf("Replicas should remain nil after round-trip, got %v", *back.Replicas)
+	}
+	if back.HealthCheckPort != nil {
+		t.Errorf("HealthCheckPort should remain nil after round-trip, got %v", *back.HealthCheckPort)
+	}
+	if back.MetricsPort != nil {
+		t.Errorf("MetricsPort should remain nil after round-trip, got %v", *back.MetricsPort)
+	}
+	if back.StorageMb != nil {
+		t.Errorf("StorageMb should remain nil after round-trip, got %v", *back.StorageMb)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HasLegacyFields — gate uses this to emit migration-tailored output
+// ---------------------------------------------------------------------------
+
+func TestHasLegacyFields(t *testing.T) {
+	stdHttps := true
+	tests := []struct {
+		name string
+		in   *DeployConfig
+		want bool
+	}{
+		{
+			name: "nil",
+			in:   nil,
+			want: false,
+		},
+		{
+			name: "fully canonical (no legacy)",
+			in: &DeployConfig{
+				App: "x",
+				ServicePortMappings: []ServicePortMapping{
+					{Port: 8080},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "legacy port at top level",
+			in:   &DeployConfig{App: "x", Port: 8080},
+			want: true,
+		},
+		{
+			name: "legacy domain at top level",
+			in:   &DeployConfig{App: "x", Domain: StringOrSlice{"example.com"}},
+			want: true,
+		},
+		{
+			name: "legacy standardHttps at top level",
+			in:   &DeployConfig{App: "x", StandardHttps: &stdHttps},
+			want: true,
+		},
+		{
+			name: "mixed legacy + canonical also flagged",
+			in: &DeployConfig{
+				App:  "x",
+				Port: 8080,
+				ServicePortMappings: []ServicePortMapping{
+					{Port: 8080},
+				},
+			},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasLegacyFields(tt.in); got != tt.want {
+				t.Errorf("HasLegacyFields(%+v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // DeployConfig.Validate()
@@ -298,7 +523,11 @@ func TestResolveEnvPath(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy file is detected and config updated", func(t *testing.T) {
+	t.Run("legacy .runos.<cid>.env is no longer auto-loaded", func(t *testing.T) {
+		// The cluster-scoped form was app-agnostic and would silently
+		// hand the wrong app's env to a sibling deploy in a multi-yaml
+		// directory. Removing the fallback is the correctness fix; the
+		// rename hint lives in WarnLegacyEnv (separate test below).
 		dir := t.TempDir()
 		legacyPath := filepath.Join(dir, ".runos.abc.env")
 		writeFile(t, legacyPath, "KEY=val\n")
@@ -306,14 +535,32 @@ func TestResolveEnvPath(t *testing.T) {
 		config := &DeployConfig{App: "myapp", Port: 8080}
 
 		path, changed := ResolveEnvPath(dir, config, "abc")
-		if !changed {
-			t.Fatal("expected changed=true for legacy file detection")
+		// With no app id and no explicit env, the resolver returns
+		// empty rather than fishing the legacy file out.
+		if changed {
+			t.Errorf("legacy fallback should not mutate config; got config.Env=%q", config.Env)
 		}
-		if config.Env != ".runos.abc.env" {
-			t.Errorf("config.Env = %q, want %q", config.Env, ".runos.abc.env")
+		if path != "" {
+			t.Errorf("legacy fallback should not be auto-resolved; got %q", path)
 		}
-		if path != legacyPath {
-			t.Errorf("got %q, want %q", path, legacyPath)
+		if config.Env != "" {
+			t.Errorf("config.Env should remain empty; got %q", config.Env)
+		}
+	})
+
+	t.Run("explicit env beats legacy file when both present", func(t *testing.T) {
+		// If the user has migrated by setting env: in runos.yaml, the
+		// resolver honours that and the legacy file becomes inert.
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, ".runos.abc.env"), "OLD=1\n")
+
+		config := &DeployConfig{App: "myapp", Port: 8080, Env: "current.env"}
+		path, changed := ResolveEnvPath(dir, config, "abc")
+		if changed {
+			t.Errorf("explicit env should not flag a config change")
+		}
+		if path != filepath.Join(dir, "current.env") {
+			t.Errorf("got %q, want %q", path, filepath.Join(dir, "current.env"))
 		}
 	})
 
@@ -344,6 +591,137 @@ func TestResolveEnvPath(t *testing.T) {
 		}
 		if path != "" {
 			t.Errorf("expected empty path, got %q", path)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ResolveArchiveRoot()
+// ---------------------------------------------------------------------------
+
+func TestResolveArchiveRoot(t *testing.T) {
+	t.Run("empty sourceDir resolves to configDir", func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := ResolveArchiveRoot(dir, "")
+		if err != nil {
+			t.Fatalf("ResolveArchiveRoot: %v", err)
+		}
+		if got != filepath.Clean(dir) {
+			t.Errorf("got %q, want %q", got, filepath.Clean(dir))
+		}
+	})
+
+	t.Run(`"." sourceDir resolves to configDir`, func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := ResolveArchiveRoot(dir, ".")
+		if err != nil {
+			t.Fatalf("ResolveArchiveRoot: %v", err)
+		}
+		if got != filepath.Clean(dir) {
+			t.Errorf("got %q, want %q", got, filepath.Clean(dir))
+		}
+	})
+
+	t.Run(`".." resolves to parent`, func(t *testing.T) {
+		// Directory-per-app shape: yaml in <project>/runos.<cid>.<id>/,
+		// source at <project>. sourceDir: ".." must resolve to <project>.
+		parent := t.TempDir()
+		appDir := filepath.Join(parent, "runos.mycluster3.appid4")
+		mkdirAll(t, appDir)
+
+		got, err := ResolveArchiveRoot(appDir, "..")
+		if err != nil {
+			t.Fatalf("ResolveArchiveRoot: %v", err)
+		}
+		if got != filepath.Clean(parent) {
+			t.Errorf("got %q, want %q", got, filepath.Clean(parent))
+		}
+	})
+
+	t.Run("absolute sourceDir is rejected", func(t *testing.T) {
+		// Yaml stays portable: an absolute path locks to one machine.
+		dir := t.TempDir()
+		_, err := ResolveArchiveRoot(dir, "/etc")
+		if err == nil {
+			t.Fatal("expected error for absolute sourceDir")
+		}
+		if !strings.Contains(err.Error(), "relative") {
+			t.Errorf("error should explain why absolute is rejected; got %q", err.Error())
+		}
+	})
+
+	t.Run("non-existent sourceDir is rejected with clear error", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := ResolveArchiveRoot(dir, "does-not-exist")
+		if err == nil {
+			t.Fatal("expected error for missing sourceDir")
+		}
+		if !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("error should mention 'does not exist'; got %q", err.Error())
+		}
+	})
+
+	t.Run("file (not directory) sourceDir is rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "afile"), "x\n")
+		_, err := ResolveArchiveRoot(dir, "afile")
+		if err == nil {
+			t.Fatal("expected error for file sourceDir")
+		}
+		if !strings.Contains(err.Error(), "not a directory") {
+			t.Errorf("error should mention not-a-directory; got %q", err.Error())
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// WarnLegacyEnv()
+// ---------------------------------------------------------------------------
+
+func TestWarnLegacyEnv(t *testing.T) {
+	t.Run("silent when env: explicitly set", func(t *testing.T) {
+		// User has migrated to the explicit form; nothing to warn about
+		// even if the old file is still on disk.
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, ".runos.abc.env"), "X=1\n")
+		config := &DeployConfig{App: "a", Port: 1, Env: "elsewhere.env"}
+
+		stderr := captureStderr(t, func() {
+			WarnLegacyEnv(dir, config, "abc")
+		})
+		if stderr != "" {
+			t.Errorf("expected no warning when env: is set, got %q", stderr)
+		}
+	})
+
+	t.Run("silent when no legacy file present", func(t *testing.T) {
+		// Fresh project, nothing to migrate.
+		dir := t.TempDir()
+		config := &DeployConfig{App: "a", Port: 1}
+
+		stderr := captureStderr(t, func() {
+			WarnLegacyEnv(dir, config, "abc")
+		})
+		if stderr != "" {
+			t.Errorf("expected no warning when no legacy file, got %q", stderr)
+		}
+	})
+
+	t.Run("warns when legacy file exists and env unset", func(t *testing.T) {
+		// The case multi-yaml broke. User must see the rename hint
+		// because their env vars stopped being loaded silently.
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, ".runos.abc.env"), "X=1\n")
+		config := &DeployConfig{App: "a", Port: 1, ID: "appid4"}
+
+		stderr := captureStderr(t, func() {
+			WarnLegacyEnv(dir, config, "abc")
+		})
+		if !strings.Contains(stderr, ".runos.abc.env") {
+			t.Errorf("warning should reference legacy filename; got %q", stderr)
+		}
+		if !strings.Contains(stderr, ".runos.abc.appid4.env") {
+			t.Errorf("warning should suggest the per-app filename; got %q", stderr)
 		}
 	})
 }
@@ -499,7 +877,7 @@ func TestMatchDoublestar(t *testing.T) {
 		path    string
 		expect  bool
 	}{
-		// **/node_modules — matches at any depth
+		// **/node_modules, matches at any depth
 		{
 			name:    "root level match",
 			pattern: "**/node_modules",
@@ -531,7 +909,7 @@ func TestMatchDoublestar(t *testing.T) {
 			expect:  false,
 		},
 
-		// **/*.log — match files with extension at any depth
+		// **/*.log, match files with extension at any depth
 		{
 			name:    "wildcard suffix at root",
 			pattern: "**/*.log",
@@ -551,7 +929,7 @@ func TestMatchDoublestar(t *testing.T) {
 			expect:  false,
 		},
 
-		// prefix/**/suffix — match with prefix directory
+		// prefix/**/suffix, match with prefix directory
 		{
 			name:    "prefix doublestar suffix direct child",
 			pattern: "src/**/test.go",
@@ -577,7 +955,7 @@ func TestMatchDoublestar(t *testing.T) {
 			expect:  false,
 		},
 
-		// prefix/** — match everything under prefix
+		// prefix/**, match everything under prefix
 		{
 			name:    "prefix doublestar matches child",
 			pattern: "vendor/**",
@@ -873,6 +1251,117 @@ func TestCreateTarball(t *testing.T) {
 			t.Errorf("content mismatch:\ngot:  %q\nwant: %q", got, content)
 		}
 	})
+
+	t.Run("runos manifests are unconditionally excluded", func(t *testing.T) {
+		// A multi-yaml directory (staging + prod sharing one source tree)
+		// must not bleed either yaml or its overrides into the source
+		// archive uploaded for either app. The walker enforces this even
+		// without a .dockerignore — that's the security guarantee.
+		dir := t.TempDir()
+
+		writeFile(t, filepath.Join(dir, "runos.yaml"), "app: a\n")
+		writeFile(t, filepath.Join(dir, "runos.mycluster3.appid4.yaml"), "app: a\n")
+		writeFile(t, filepath.Join(dir, "runos.mycluster2.appid5.yml"), "app: a\n")
+		mkdirAll(t, filepath.Join(dir, "overrides"))
+		writeFile(t, filepath.Join(dir, "overrides", "patch.yaml"), "spec: {}\n")
+		writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine\n")
+		writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
+
+		buf, err := CreateTarball(dir)
+		if err != nil {
+			t.Fatalf("CreateTarball error: %v", err)
+		}
+
+		files := extractTarballFiles(t, buf)
+		fileSet := make(map[string]bool)
+		for _, f := range files {
+			fileSet[f] = true
+		}
+		for _, leak := range []string{
+			"runos.yaml",
+			"runos.mycluster3.appid4.yaml",
+			"runos.mycluster2.appid5.yml",
+			"overrides",
+			"overrides/patch.yaml",
+		} {
+			if fileSet[leak] {
+				t.Errorf("%q should be excluded from tarball; got %v", leak, files)
+			}
+		}
+		for _, want := range []string{"Dockerfile", "main.go"} {
+			if !fileSet[want] {
+				t.Errorf("%q should be in tarball; got %v", want, files)
+			}
+		}
+	})
+
+	t.Run("per-app runos.* subdirectories are pruned", func(t *testing.T) {
+		// Directory-per-app shape: app B in runos.mycluster2.appid5/ deploys with
+		// sourceDir: ".." which puts the walker at the project root. App
+		// A's runos.mycluster3.appid4/ subdir must not be walked or written, so
+		// nothing inside it (yaml, env, secrets) leaks into B's archive,
+		// and no empty runos.mycluster3.appid4/ dir entry shows up in the tarball.
+		dir := t.TempDir()
+
+		// Project root: source files plus a sibling app's per-app dir.
+		writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM alpine\n")
+		writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
+		writeFile(t, filepath.Join(dir, "go.mod"), "module x\n")
+
+		appA := filepath.Join(dir, "runos.mycluster3.appid4")
+		mkdirAll(t, appA)
+		writeFile(t, filepath.Join(appA, "runos.yaml"), "app: a\n")
+		writeFile(t, filepath.Join(appA, "should-not-leak.txt"), "secret\n")
+		mkdirAll(t, filepath.Join(appA, "nested"))
+		writeFile(t, filepath.Join(appA, "nested", "deep.txt"), "deeper secret\n")
+
+		buf, err := CreateTarball(dir)
+		if err != nil {
+			t.Fatalf("CreateTarball error: %v", err)
+		}
+
+		files := extractTarballFiles(t, buf)
+		fileSet := make(map[string]bool, len(files))
+		for _, f := range files {
+			fileSet[f] = true
+		}
+		// Source files at the root must be present.
+		for _, want := range []string{"Dockerfile", "main.go", "go.mod"} {
+			if !fileSet[want] {
+				t.Errorf("source file %q should be in tarball; got %v", want, files)
+			}
+		}
+		// The pruned per-app subdir must not appear at all (no empty dir
+		// entry, no children of any kind).
+		for _, f := range files {
+			if strings.HasPrefix(f, "runos.mycluster3.appid4") {
+				t.Errorf("per-app subdir leaked into tarball: %q", f)
+			}
+		}
+	})
+
+	t.Run("runos env and source-version sidecars stay excluded", func(t *testing.T) {
+		// These are already covered by the hidden-file rule, but assert
+		// explicitly so a future relaxation of isHidden doesn't silently
+		// start uploading per-app secrets.
+		dir := t.TempDir()
+
+		writeFile(t, filepath.Join(dir, ".runos.mycluster3.appid4.env"), "SECRET=x\n")
+		writeFile(t, filepath.Join(dir, ".runos.mycluster3.appid4.source-version"), "abc123\n")
+		writeFile(t, filepath.Join(dir, ".runos-source-version"), "legacy\n")
+		writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
+
+		buf, err := CreateTarball(dir)
+		if err != nil {
+			t.Fatalf("CreateTarball error: %v", err)
+		}
+
+		for _, f := range extractTarballFiles(t, buf) {
+			if strings.HasPrefix(filepath.Base(f), ".runos") {
+				t.Errorf("runos sidecar %q must not appear in tarball", f)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +1462,37 @@ func mkdirAll(t *testing.T, path string) {
 	if err := os.MkdirAll(path, 0755); err != nil {
 		t.Fatalf("failed to create directory %s: %v", path, err)
 	}
+}
+
+// captureStderr swaps os.Stderr for a pipe while fn runs, then returns
+// everything fn wrote. Restores the real Stderr unconditionally.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	prev := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = prev })
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	out := <-done
+	if err := r.Close(); err != nil {
+		t.Fatalf("close pipe reader: %v", err)
+	}
+	return out
 }
 
 // extractTarballFiles reads a gzipped tarball and returns all entry names.

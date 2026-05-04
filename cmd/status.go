@@ -43,8 +43,8 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	if cfg.Env != "" {
 		status["environment"] = cfg.Env
 	}
-	if conductorURL := cfg.GetConductorURL(); conductorURL != "" {
-		status["conductorUrl"] = conductorURL
+	if apiURL := cfg.GetAPIURL(); apiURL != "" {
+		status["apiUrl"] = apiURL
 	}
 	if consoleURL := cfg.GetConsoleURL(); consoleURL != "" {
 		status["consoleUrl"] = consoleURL
@@ -105,8 +105,8 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	if env, ok := status["environment"].(string); ok {
 		fmt.Printf("Environment:    %s\n", env)
 	}
-	if conductorURL, ok := status["conductorUrl"].(string); ok {
-		fmt.Printf("Conductor:      %s\n", conductorURL)
+	if apiURL, ok := status["apiUrl"].(string); ok {
+		fmt.Printf("API:            %s\n", apiURL)
 	}
 	if consoleURL, ok := status["consoleUrl"].(string); ok {
 		fmt.Printf("Console:        %s\n", consoleURL)

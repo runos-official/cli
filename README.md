@@ -67,7 +67,7 @@ Configuration is stored in `~/.runos/config.json`.
 
 | Variable | Description |
 |---|---|
-| `CONDUCTOR_API_URL` | Override the API endpoint |
+| `RUNOS_API_URL` | Override the API endpoint |
 | `CONSOLE_URL` | Override the web console URL |
 | `RUNOS_CLUSTER_ID` | Set the default cluster ID |
 
@@ -76,7 +76,7 @@ Configuration is stored in `~/.runos/config.json`.
 For local development or custom API endpoints:
 
 ```bash
-runos config set conductor-url http://localhost:3025
+runos config set api-url http://localhost:3025
 runos config set console-url http://localhost:5177
 ```
 
@@ -133,6 +133,16 @@ runos mcp configure gemini
 runos mcp configure opencode
 ```
 
+### How tools are exposed
+
+Tools surface to MCP clients via two paths:
+
+1. **Manifest-driven (the default).** Most tools come from the RunOS API CLI manifest at `~/.runos/manifest.json`. Each command entry maps directly to an HTTP endpoint, so adding a new API on the server side automatically produces a new MCP tool the next time `runos manifest update` runs. Categorisation (`read` / `sensitive-read` / `write` / `sensitive-write`) is set per command via the manifest's `mcp` field.
+
+2. **Custom handlers.** A small set of tools need orchestration that a single API call can't express -- e.g. `deploy` (tar + upload + poll), and `apps_pull` / `apps_diff` / `apps_sync` / `apps_list_previous_uploads` (which combine API calls with local filesystem work). These live in [internal/mcp/](internal/mcp/) and run as `runos` subprocesses so behaviour stays in lockstep with the CLI. To add one: register a `Tool` descriptor in `buildTools()` (or a helper called from it) and dispatch by name in `handleToolsCall()`.
+
+If a feature can be a single endpoint, prefer adding it to the manifest. Reach for a custom handler only when the tool needs to drive multiple endpoints, touch the local filesystem, or run a long subprocess.
+
 ## Development
 
 ### Prerequisites
@@ -159,7 +169,7 @@ make test
 cli/
 ├── cmd/                    # Cobra command definitions
 ├── internal/
-│   ├── api/                # HTTP client for the Conductor API
+│   ├── api/                # HTTP client for the RunOS API
 │   ├── auth/               # Firebase authentication
 │   ├── cache/              # File-based TTL cache
 │   ├── config/             # Configuration management

@@ -73,10 +73,15 @@ func configPath() (string, error) {
 	return filepath.Join(dir, configFileName), nil
 }
 
-// ErrConfigNotFound is returned when the config file doesn't exist.
+// ErrConfigNotFound is returned when the config file doesn't exist AND
+// no env-var fallback is in play. CI runners using RUNOS_API_KEY +
+// RUNOS_ACCOUNT_ID + RUNOS_API_URL won't trip this.
 var ErrConfigNotFound = fmt.Errorf("config not found - run 'runos config env <environment>' to set up")
 
-// Load reads and parses the config file from disk.
+// Load reads and parses the config file from disk. When the file is
+// missing AND CI-style env vars (RUNOS_API_KEY) are set, returns an
+// empty config the caller can populate from env via the Get* helpers
+// — useful for headless CI where no on-disk config exists.
 func Load() (*Config, error) {
 	path, err := configPath()
 	if err != nil {
@@ -85,6 +90,33 @@ func Load() (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		// CI fallback: a PAT-based caller doesn't need a local
+		// config file or interactive `runos login`. Pull the
+		// default environment's URLs from the CDN so the user only
+		// needs to set RUNOS_API_KEY (and RUNOS_ACCOUNT_ID).
+		//
+		// We inline the CDN fetch rather than calling InitFromRemote
+		// because that helper writes to disk via applyRemoteEnv,
+		// which itself calls Load() to preserve existing auth state.
+		// That would recurse straight back into this branch.
+		// Returning an in-memory Config keeps the CI runner's
+		// filesystem clean and avoids the recursion.
+		//
+		// CDN failure is non-fatal: return an empty Config and let
+		// RUNOS_API_URL env var override (or surface the
+		// "URL is empty" error downstream). Don't block the run on
+		// a transient CDN hiccup.
+		if os.Getenv("RUNOS_API_KEY") != "" {
+			cfg := &Config{}
+			if rc, rerr := FetchRemoteConfig(); rerr == nil {
+				if env, ok := rc.Environments[rc.Default]; ok {
+					cfg.Env = rc.Default
+					cfg.ConsoleURL = env.Domains.Console
+					cfg.ConductorURL = env.Domains.Conductor
+				}
+			}
+			return cfg, nil
+		}
 		return nil, ErrConfigNotFound
 	}
 	if err != nil {
@@ -97,6 +129,20 @@ func Load() (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// GetAccountID returns the account ID, preferring the RUNOS_ACCOUNT_ID
+// env var. Used by every API-touching subcommand to find which account
+// to address. CI runners using a PAT set this env var so the CLI
+// doesn't need a local config with the field stamped in by `runos login`.
+func (c *Config) GetAccountID() string {
+	if envAID := os.Getenv("RUNOS_ACCOUNT_ID"); envAID != "" {
+		return envAID
+	}
+	if c == nil {
+		return ""
+	}
+	return c.AccountID
 }
 
 // Save writes the config to disk, creating the config directory if needed.
@@ -131,14 +177,18 @@ func (c *Config) GetConsoleURL() string {
 	return c.ConsoleURL
 }
 
-// GetConductorURL returns the Conductor API URL, preferring the CONDUCTOR_API_URL environment variable.
-func (c *Config) GetConductorURL() string {
+// GetAPIURL returns the RunOS API base URL, preferring the
+// RUNOS_API_URL environment variable. The internal ConductorURL
+// struct field name and conductor_url JSON key are kept as-is to
+// preserve the on-disk config schema; user-facing surfaces use
+// "API" / "RUNOS_API_URL" exclusively.
+func (c *Config) GetAPIURL() string {
 	u := c.ConductorURL
-	if envURL := os.Getenv("CONDUCTOR_API_URL"); envURL != "" {
+	if envURL := os.Getenv("RUNOS_API_URL"); envURL != "" {
 		u = envURL
 	}
 	if u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://localhost") {
-		fmt.Fprintf(os.Stderr, "Warning: conductor URL uses non-HTTPS scheme: %s\n", u)
+		fmt.Fprintf(os.Stderr, "Warning: API URL uses non-HTTPS scheme: %s\n", u)
 	}
 	return u
 }

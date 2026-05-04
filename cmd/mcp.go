@@ -160,13 +160,13 @@ func runMCPServe(category string) error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}
 
-	executor := mcp.NewCommandExecutor(m, cfg.GetConductorURL())
+	executor := mcp.NewCommandExecutor(m, cfg.GetAPIURL())
 	server := mcp.NewServer(m, executor, version.Version, category)
 
 	return server.Run()
@@ -254,7 +254,7 @@ func runMCPConfigureRoo(cmd *cobra.Command, args []string) error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
@@ -806,7 +806,7 @@ func runMCPConfigureCodex(cmd *cobra.Command, args []string) error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)

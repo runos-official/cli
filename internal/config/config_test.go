@@ -56,7 +56,7 @@ func TestGetConsoleURL(t *testing.T) {
 	}
 }
 
-func TestGetConductorURL(t *testing.T) {
+func TestGetAPIURL(t *testing.T) {
 	tests := []struct {
 		name       string
 		configURL  string
@@ -91,15 +91,15 @@ func TestGetConductorURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Unsetenv("CONDUCTOR_API_URL")
+			os.Unsetenv("RUNOS_API_URL")
 			if tt.envURL != "" {
-				t.Setenv("CONDUCTOR_API_URL", tt.envURL)
+				t.Setenv("RUNOS_API_URL", tt.envURL)
 			}
 
 			cfg := &Config{ConductorURL: tt.configURL}
-			got := cfg.GetConductorURL()
+			got := cfg.GetAPIURL()
 			if got != tt.wantResult {
-				t.Errorf("GetConductorURL() = %q, want %q", got, tt.wantResult)
+				t.Errorf("GetAPIURL() = %q, want %q", got, tt.wantResult)
 			}
 		})
 	}

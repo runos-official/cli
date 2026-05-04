@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -10,7 +11,9 @@ const (
 	pollInterval = 1 * time.Second
 )
 
-// FollowJob polls a job until completion, displaying live progress to the terminal.
+// FollowJob polls a job until completion, emitting one line per state
+// change. Suitable for CI and LLM consumers; no terminal escape codes,
+// no spinners, no repaints.
 func FollowJob(jobID string) error {
 	svc, err := NewService()
 	if err != nil {
@@ -24,10 +27,16 @@ func FollowJob(jobID string) error {
 	return FollowJobWithService(ctx, svc, jobID)
 }
 
-// FollowJobWithService polls a job using the provided Service until it reaches a terminal state.
-// The context allows callers to cancel or set timeouts on the polling loop.
+// FollowJobWithService polls a job using the provided Service until it
+// reaches a terminal state, emitting deltas via EmitFollowDeltas. The
+// context allows callers to cancel or set timeouts on the polling loop.
+//
+// Returns nil on terminal "completed", a non-nil error on terminal
+// "failed" (containing the job's error message). The terminal state
+// line itself is emitted before this function returns, so CI logs end
+// with the final job line whichever way it goes.
 func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error {
-	spinnerIdx := 0
+	state := NewFollowState()
 
 	for {
 		select {
@@ -46,18 +55,15 @@ func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error
 			return err
 		}
 
-		isFinal := job.IsTerminal()
+		EmitFollowDeltas(os.Stdout, job, items.WorkItems, state)
 
-		DisplayFollow(job, items.WorkItems, spinnerIdx, isFinal)
-
-		if isFinal {
+		if job.IsTerminal() {
 			if job.Status == "failed" {
 				return fmt.Errorf("job failed: %s", job.Error)
 			}
 			return nil
 		}
 
-		spinnerIdx++
 		time.Sleep(pollInterval)
 	}
 }

@@ -141,11 +141,7 @@ func (l *Loader) getAuthToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	if cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return auth.GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	return auth.ResolveToken(cfg)
 }
 
 func (l *Loader) fetchVersion() (string, error) {

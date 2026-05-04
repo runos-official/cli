@@ -61,3 +61,4 @@ debug/
 tmp/
 temp/
 *.tmp
+gitignored/

@@ -57,6 +57,11 @@ The manifest contains all endpoint definitions including:
 - Prefer composition over inheritance
 - Handle errors explicitly, don't ignore them
 - Use meaningful variable names; avoid single letters except in short scopes
+- Initialisms stay all-caps in exported names: `URL`, `ID`, `MD5`, `HTTP`, `API`, `JSON`, `CID`, `AID` (not `Url`, `Id`, `Md5`, etc.). Lowercase initialisms in unexported short locals (`cid`, `aid`, `url`) are fine.
+- Detect specific error conditions with typed sentinels (`var ErrXxx = errors.New(...)`) and `errors.Is` / `errors.As`, not `strings.Contains(err.Error(), ...)`
+- Use stdlib `sort.Slice` / `sort.Strings`; never hand-roll bubble or insertion sorts
+- Doc comment every exported type, function, and const block. Lead with the symbol name
+- Network timeouts, body-size caps, and similar magic numbers live as named constants near the top of the package, not inline at call sites
 
 ### Project Structure
 ```
@@ -127,15 +132,25 @@ Store auth tokens securely in `~/.runos/`. Consider implementing API key fallbac
 
 ### Security
 - Never log or display credentials unless explicitly outputting them
-- Secrets can be displayed in plain text when requested (no confirmation needed)
+- Secrets can be displayed in plain text when requested at the CLI surface (no confirmation needed). The MCP surface is different: tool output flows into LLM context and may be persisted, so any path that emits env values, secret-file content, or unified diffs of either MUST redact (use `apps.RedactEnvUnifiedDiff`, or pass `--redact-secrets` when shelling to the CLI from an MCP tool).
 - Store tokens with appropriate file permissions (0600)
 - Validate user input before sending to API
+- **Server-supplied identifiers are untrusted on the client.** App IDs, cluster IDs, archive IDs, and similar values returned by conductor must be charset-validated (`apps.ValidateIdentifier` or equivalent) before being joined into `filepath.Join`, used in shell arguments, or otherwise interpreted by the local filesystem.
+- HTTP client baseline: every `*http.Client` sets a `Timeout`; every response `defer resp.Body.Close()`; response reads wrap in `io.LimitReader`; server-supplied download URLs validate scheme (no protocol downgrade) and disable redirects (`CheckRedirect: http.ErrUseLastResponse`); pre-check `Content-Length` against the size cap before streaming.
+- Tar/zip extraction must reject zip-slip (entries that escape the destination after `filepath.Join`), reject symlinks pointing outside the destination, cap total decompressed size, and open writes with `O_NOFOLLOW` when overwriting on top of existing trees.
 
 ### Error Handling
 - Use descriptive error messages
 - Include context about what operation failed
 - Exit with appropriate codes (0 = success, 1 = error)
 - Don't panic; return errors up the call stack
+
+### Testing
+- Use `t.Helper()` in test helpers so failures point at the calling test
+- Use `t.Cleanup(fn)` over `defer fn()`; helpers can register their own cleanup
+- Use `t.TempDir()` for filesystem fixtures, `t.Chdir(dir)` (Go 1.24+) for cwd changes (avoid `defer os.Chdir(prev)`)
+- Table-driven tests with `t.Run(tt.name, ...)` for any function with more than two cases
+- Tests for security-sensitive validators (charset checks, URL validation, redaction, zip-slip protection) are mandatory, not optional
 
 ### Build & Install
 After making code changes, always run `make local` to build and install the CLI to `~/.local/bin/runos`.

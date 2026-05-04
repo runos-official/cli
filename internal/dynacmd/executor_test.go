@@ -285,3 +285,57 @@ func TestParseKeyValueTags(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatDependentsError(t *testing.T) {
+	t.Parallel()
+	t.Run("non-409 returns false", func(t *testing.T) {
+		_, ok := formatDependentsError(&APIError{StatusCode: 404, Body: []byte(`{"error":"nope"}`)})
+		if ok {
+			t.Error("expected false for non-409")
+		}
+	})
+	t.Run("409 with no dependents returns false", func(t *testing.T) {
+		body := []byte(`{"error":"some other 409"}`)
+		_, ok := formatDependentsError(&APIError{StatusCode: 409, Body: body})
+		if ok {
+			t.Error("expected false when dependents list is missing")
+		}
+	})
+	t.Run("409 with dependents formats nicely", func(t *testing.T) {
+		body := []byte(`{
+			"error": "service has dependents",
+			"dependents": [
+				{"type":"app","id":"abc12","name":"poll-app","alias":"poll-app-db"},
+				{"type":"app","id":"def34","name":"auth-svc","alias":"auth-db"}
+			]
+		}`)
+		msg, ok := formatDependentsError(&APIError{StatusCode: 409, Body: body})
+		if !ok {
+			t.Fatal("expected ok=true when dependents present")
+		}
+		for _, want := range []string{"service has dependents", "poll-app", "abc12", "poll-app-db", "auth-svc"} {
+			if !contains(msg, want) {
+				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
+			}
+		}
+	})
+	t.Run("non-APIError returns false", func(t *testing.T) {
+		_, ok := formatDependentsError(errString("some other error"))
+		if ok {
+			t.Error("expected false for non-APIError")
+		}
+	})
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

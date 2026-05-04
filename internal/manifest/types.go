@@ -1,5 +1,7 @@
 package manifest
 
+import "encoding/json"
+
 // Manifest is the root structure for the CLI manifest
 type Manifest struct {
 	Version  string    `yaml:"version" json:"version"`
@@ -44,8 +46,69 @@ type Flag struct {
 	Default     bool   `yaml:"default" json:"default"`
 }
 
-// Output defines the output schema for a command
+// Output defines the output schema for a command.
+//
+// Fields may be a mix of bare strings (legacy, name-only) and rich
+// objects (name + type + description + enum). The CLI normalises both
+// into OutputField; callers that only need the field names should use
+// FieldNames() rather than ranging over Fields directly.
 type Output struct {
-	Type   string   `yaml:"type,omitempty" json:"type,omitempty"`     // "object" or "array"
-	Fields []string `yaml:"fields,omitempty" json:"fields,omitempty"` // Fields to display in table output
+	Type   string        `yaml:"type,omitempty" json:"type,omitempty"`
+	Fields []OutputField `yaml:"fields,omitempty" json:"fields,omitempty"`
+}
+
+// FieldNames returns the names of every entry in Fields, in declaration
+// order. Convenience helper for callers (output formatter, dynacmd
+// hasJobIdOutput) that don't care about per-field type/enum metadata.
+func (o *Output) FieldNames() []string {
+	if o == nil {
+		return nil
+	}
+	out := make([]string, 0, len(o.Fields))
+	for _, f := range o.Fields {
+		out = append(out, f.Name)
+	}
+	return out
+}
+
+// OutputField describes one column / key in a command's output. The
+// JSON unmarshaller accepts either a bare string (legacy shape: name
+// only) or a full object with name + type + description + enum.
+type OutputField struct {
+	Name        string   `yaml:"name" json:"name"`
+	Type        string   `yaml:"type,omitempty" json:"type,omitempty"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`
+}
+
+// UnmarshalJSON accepts either a bare string (legacy: just the field
+// name) or a full object. Strings become OutputField{Name: s}; objects
+// are unmarshalled normally.
+func (f *OutputField) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var name string
+		if err := json.Unmarshal(data, &name); err != nil {
+			return err
+		}
+		f.Name = name
+		return nil
+	}
+	type rawOutputField OutputField
+	var raw rawOutputField
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*f = OutputField(raw)
+	return nil
+}
+
+// MarshalJSON writes a bare string when only Name is populated (legacy
+// round-trip), or a full object when richer metadata is present. Keeps
+// `runos manifest update` writes byte-stable for legacy entries.
+func (f OutputField) MarshalJSON() ([]byte, error) {
+	if f.Type == "" && f.Description == "" && len(f.Enum) == 0 {
+		return json.Marshal(f.Name)
+	}
+	type rawOutputField OutputField
+	return json.Marshal(rawOutputField(f))
 }

@@ -59,7 +59,7 @@ func NewUpdater() (*Updater, error) {
 	}
 
 	return &Updater{
-		baseURL: cfg.GetConductorURL(),
+		baseURL: cfg.GetAPIURL(),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -507,7 +507,7 @@ func CheckForUpdate() string {
 
 	// Check for latest version
 	client := &http.Client{Timeout: 5 * time.Second}
-	url := fmt.Sprintf("%s/%s%s?key=CLI_VERSION", cfg.GetConductorURL(), cfg.AccountID, configEndpoint)
+	url := fmt.Sprintf("%s/%s%s?key=CLI_VERSION", cfg.GetAPIURL(), cfg.AccountID, configEndpoint)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

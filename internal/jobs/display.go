@@ -2,20 +2,18 @@ package jobs
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"sort"
 	"strings"
-
-	"golang.org/x/term"
 )
 
 const (
 	maxResultLength = 80
 )
 
-var spinnerChars = []string{"-", "\\", "|", "/"}
-
-// DisplayStatus prints a summary of the job's current status to stdout.
+// DisplayStatus prints a one-shot summary of the job's current status.
+// Used by `runos jobs show`. Line-oriented and stable; safe for CI logs
+// and LLM consumers.
 func DisplayStatus(job *JobStatus) {
 	fmt.Printf("Job:      %s\n", job.ID)
 	fmt.Printf("Type:     %s\n", job.Type)
@@ -27,83 +25,95 @@ func DisplayStatus(job *JobStatus) {
 	}
 }
 
-// DisplayFollow renders the follow-mode display with job status and work item progress.
-func DisplayFollow(job *JobStatus, items []WorkItem, spinnerIdx int, isFinal bool) {
-	// Clear screen and move cursor to top (only when writing to a terminal)
-	if term.IsTerminal(int(os.Stdout.Fd())) {
-		fmt.Print("\033[2J\033[H")
+// FollowState carries the "last seen" snapshot the polling loop uses to
+// emit deltas instead of repaints. Persists across iterations of
+// FollowJobWithService.
+//
+// JobStatus is the previous job-level status string ("running",
+// "completed", ...). JobProgress is the previous progress string.
+// ItemStatus maps work-item id to its previous status so we can detect
+// transitions (and surface only when one changes).
+type FollowState struct {
+	JobStatus   string
+	JobProgress string
+	ItemStatus  map[string]string
+}
+
+// NewFollowState returns a fresh state ready for the first poll. All
+// fields are empty so the first emit is treated as a transition.
+func NewFollowState() *FollowState {
+	return &FollowState{ItemStatus: map[string]string{}}
+}
+
+// EmitFollowDeltas writes one line per state change since the previous
+// poll to w. No screen-clear, no spinner, no repaint. Designed for CI
+// logs and LLM consumers where every byte ends up in the transcript.
+//
+// Lines:
+//   - "job <id>: <status> (<progress>)" when job-level status or
+//     progress changed.
+//   - "step <n> <name>: <status>" when a work item appears or its
+//     status transitions. Terminal item statuses (completed/failed)
+//     also include the result if non-empty, truncated to one line.
+//   - "job <id>: failed: <error>" on terminal failure (the job-level
+//     status line carries the error message).
+//
+// The state map is mutated in-place to record the new last-seen values,
+// so the next call only emits genuine deltas. w is typically os.Stdout
+// when called from FollowJobWithService; tests pass a bytes.Buffer.
+func EmitFollowDeltas(w io.Writer, job *JobStatus, items []WorkItem, state *FollowState) {
+	// Job-level status / progress: emit when either side changes.
+	if job.Status != state.JobStatus || job.Progress != state.JobProgress {
+		line := fmt.Sprintf("job %s: %s", job.ID, job.Status)
+		if job.Progress != "" {
+			line += " (" + job.Progress + ")"
+		}
+		if job.Status == "failed" && job.Error != "" {
+			line += ": " + job.Error
+		}
+		fmt.Fprintln(w, line)
+		state.JobStatus = job.Status
+		state.JobProgress = job.Progress
 	}
 
-	// Header
-	fmt.Printf("Job: %s (%s)\n\n", job.ID, job.Type)
-
-	// Sort work items by step number
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].StepNumber < items[j].StepNumber
+	// Work items: stable order by step number so logs read top-to-
+	// bottom in the same order the user expects.
+	sorted := make([]WorkItem, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].StepNumber < sorted[j].StepNumber
 	})
 
-	// Display each work item
-	for i := range items {
-		item := &items[i]
-		icon := getStatusIcon(item.Status, spinnerIdx)
-		fmt.Printf("  %s  %s\n", icon, item.Name)
-
-		// Show result if available
-		if result := item.Result(); result != "" {
-			formatted := formatResult(result, isFinal)
-			// Indent result lines
-			lines := strings.Split(formatted, "\n")
-			for _, line := range lines {
-				if line != "" {
-					fmt.Printf("          %s\n", line)
-				}
+	for i := range sorted {
+		item := &sorted[i]
+		prev, seen := state.ItemStatus[item.ID]
+		if seen && prev == item.Status {
+			continue
+		}
+		line := fmt.Sprintf("step %d %s: %s", item.StepNumber, item.Name, item.Status)
+		if item.Status == "completed" || item.Status == "failed" {
+			if r := truncResult(item.Result()); r != "" {
+				line += " (" + r + ")"
 			}
 		}
-	}
-
-	// Footer
-	fmt.Println()
-	fmt.Printf("Status: %s (%s)\n", job.Status, job.Progress)
-
-	if job.Error != "" {
-		fmt.Printf("Error: %s\n", job.Error)
+		fmt.Fprintln(w, line)
+		state.ItemStatus[item.ID] = item.Status
 	}
 }
 
-// getStatusIcon returns the appropriate icon for a work item status
-func getStatusIcon(status string, spinnerIdx int) string {
-	switch status {
-	case "completed":
-		return "[done]"
-	case "failed":
-		return "[fail]"
-	case "in_progress", "running":
-		return "[" + spinnerChars[spinnerIdx%len(spinnerChars)] + "]"
-	default:
-		return "[   ]"
-	}
-}
-
-// formatResult truncates or formats the result string
-func formatResult(result string, showFull bool) string {
+// truncResult collapses a result string to a single line and truncates
+// it for the per-step log output. Multi-line results get the first
+// line; long results get the leading slice plus an ellipsis.
+func truncResult(result string) string {
 	result = strings.TrimSpace(result)
-
-	if showFull {
-		return result
+	if result == "" {
+		return ""
 	}
-
-	// For in-progress display, truncate long results
+	if idx := strings.IndexByte(result, '\n'); idx > 0 {
+		result = result[:idx]
+	}
 	if len(result) > maxResultLength {
-		return result[:maxResultLength-3] + "..."
+		result = result[:maxResultLength-3] + "..."
 	}
-
-	// Truncate to first line if multi-line
-	if idx := strings.Index(result, "\n"); idx > 0 {
-		if idx > maxResultLength {
-			return result[:maxResultLength-3] + "..."
-		}
-		return result[:idx] + "..."
-	}
-
 	return result
 }

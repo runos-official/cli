@@ -259,7 +259,7 @@ func hasJobIdOutput(cmdDef manifest.Command) bool {
 		return false
 	}
 	for _, field := range cmdDef.Output.Fields {
-		if field == "jobId" {
+		if field.Name == "jobId" {
 			return true
 		}
 	}

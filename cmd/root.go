@@ -74,6 +74,7 @@ func init() {
 	// with dynamic subcommands from the manifest (e.g., "clusters list", "clusters show")
 	rootCmd.AddCommand(clustersCmd)
 	rootCmd.AddCommand(servicesCmd)
+	rootCmd.AddCommand(appsCmd)
 
 	// Dynamic commands from manifest
 	if err := registerDynamicCommands(); err != nil {
@@ -95,7 +96,7 @@ func registerDynamicCommands() error {
 	configDir := filepath.Join(home, ".runos")
 
 	// Load manifest from Conductor API
-	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return err
@@ -103,9 +104,9 @@ func registerDynamicCommands() error {
 
 	// Build and register commands
 	// Pass existing commands that have static subcommands so dynamic commands merge with them
-	executor := dynacmd.NewExecutor(cfg.GetConductorURL())
+	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)

@@ -183,12 +183,15 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 		return "", fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Substitute :aid with account ID from config
+	// Substitute :aid with account ID. GetAccountID() prefers the
+	// RUNOS_ACCOUNT_ID env var so headless CI runs without a config
+	// file's account_id field.
 	if strings.Contains(result, ":aid") {
-		if cfg.AccountID == "" {
-			return "", fmt.Errorf("account ID not set: run 'runos login' first")
+		aid := cfg.GetAccountID()
+		if aid == "" {
+			return "", fmt.Errorf("account ID not set: run 'runos login' or set RUNOS_ACCOUNT_ID")
 		}
-		result = strings.ReplaceAll(result, ":aid", url.PathEscape(cfg.AccountID))
+		result = strings.ReplaceAll(result, ":aid", url.PathEscape(aid))
 	}
 
 	// Substitute :cid with cluster ID - use passed cid if provided, otherwise use default

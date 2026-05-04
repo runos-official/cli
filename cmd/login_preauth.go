@@ -35,7 +35,7 @@ func runPreauth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	conductorClient := api.NewClient(cfg.GetConductorURL())
+	conductorClient := api.NewClient(cfg.GetAPIURL())
 	resp, err := conductorClient.PollDeviceAuth(deviceID, token)
 	if err != nil {
 		return fmt.Errorf("failed to check authorization: %w", err)

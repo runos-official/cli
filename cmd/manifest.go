@@ -19,8 +19,8 @@ var manifestCmd = &cobra.Command{
 
 var manifestUpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Force download the latest manifest from Conductor",
-	Long: `Force download the latest manifest from Conductor, bypassing the cache.
+	Short: "Force download the latest manifest from the RunOS API",
+	Long: `Force download the latest manifest from the RunOS API, bypassing the cache.
 
 This is useful when new API endpoints or commands have been added and you want
 to ensure you have the latest definitions.`,
@@ -43,9 +43,9 @@ func runManifestUpdate(cmd *cobra.Command, args []string) error {
 	}
 	configDir := filepath.Join(home, ".runos")
 
-	loader := manifest.NewLoader(cfg.GetConductorURL(), configDir)
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 
-	fmt.Println("Fetching latest manifest from Conductor...")
+	fmt.Println("Fetching latest manifest from the RunOS API...")
 	m, err := loader.ForceUpdate()
 	if err != nil {
 		return fmt.Errorf("failed to update manifest: %w", err)

@@ -97,3 +97,10 @@ jobs:
           body_path: ${{ steps.notes.outputs.found == 'true' && 'release_notes.txt' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           files: dist/*
+          # Tags containing "-" (semver pre-release suffix: -rc1, -alpha,
+          # -beta, ...) are marked as GitHub prereleases. Prereleases are
+          # excluded from the repo's "Latest release" pointer, so the
+          # `releases/latest/download/...` URL keeps serving the most
+          # recent stable. Testers opt in to a prerelease explicitly via
+          # `https://get.runos.com/cli.sh?release=<tag>`.
+          prerelease: ${{ contains(github.ref_name, '-') }}

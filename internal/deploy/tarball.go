@@ -58,6 +58,19 @@ func CreateTarball(dir string) (*bytes.Buffer, error) {
 			return nil
 		}
 
+		// Skip RunOS-managed manifests and directories unconditionally.
+		// Defense-in-depth against cross-cluster config bleed: a project
+		// with multiple runos.<cid>.<id>.yaml files (staging + prod, etc.)
+		// would otherwise upload every yaml and the overrides/ dir as
+		// part of every app's source archive. apps_pull also writes a
+		// .dockerignore covering the same set as discoverable documentation.
+		if shouldAlwaysExclude(relPath, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		// Skip dockerignore patterns
 		if shouldIgnore(relPath, d.IsDir(), ignorePatterns) {
 			if d.IsDir() {
@@ -211,6 +224,51 @@ var alwaysIncludeFiles = []string{
 	"Dockerfile",
 	"dockerfile",
 	".dockerignore",
+}
+
+// alwaysExcludePatterns lists basename globs the walker excludes
+// unconditionally, ahead of any .dockerignore evaluation. These are the
+// visible (non-dot-prefixed) RunOS manifest files: leaving them in the
+// source archive would leak cross-cluster config when one project
+// directory holds multiple runos.<cid>.<id>.yaml files. The hidden-file
+// rule (isHidden) already covers .runos.<cid>.<id>.env,
+// .runos*.source-version, and .secret-files/.
+var alwaysExcludePatterns = []string{
+	"runos.yaml",
+	"runos.*.yaml",
+	"runos.*.yml",
+}
+
+// alwaysExcludeDirPatterns lists directory basename globs the walker
+// prunes in their entirety. Both literal names ("overrides") and globs
+// ("runos.*") go through filepath.Match so the patterns compose:
+//
+//   - overrides: pulled manifest fragments are per-cluster state, not
+//     source code.
+//   - runos.*: per-app subdirectories from the directory-per-app
+//     layout (e.g. runos.mycluster3.appid4/). When app B deploys with
+//     sourceDir: ".." and the source code lives at the project root
+//     intermixed with sibling app dirs, those subdirs must be pruned.
+var alwaysExcludeDirPatterns = []string{
+	"overrides",
+	"runos.*",
+}
+
+// shouldAlwaysExclude reports whether path must be skipped regardless
+// of any .dockerignore. Files match alwaysExcludePatterns by basename
+// glob; directories match alwaysExcludeDirPatterns the same way.
+func shouldAlwaysExclude(path string, isDir bool) bool {
+	base := filepath.Base(path)
+	patterns := alwaysExcludePatterns
+	if isDir {
+		patterns = alwaysExcludeDirPatterns
+	}
+	for _, pattern := range patterns {
+		if matched, err := filepath.Match(pattern, base); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldIgnore checks if a path matches any dockerignore pattern

@@ -44,11 +44,14 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 		return nil
 	}
 
+	// FieldNames extracts just the names from the manifest's output
+	// field schema (which can be a mix of bare strings and richer
+	// objects). The formatter only uses names for table columns.
 	switch outputDef.Type {
 	case "array":
-		return f.formatArray(data, outputDef.Fields)
+		return f.formatArray(data, outputDef.FieldNames())
 	case "object":
-		return f.formatObject(data, outputDef.Fields)
+		return f.formatObject(data, outputDef.FieldNames())
 	default:
 		fmt.Println(string(data))
 	}

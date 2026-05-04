@@ -47,23 +47,102 @@ func (s StringOrSlice) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]string(s))
 }
 
-// DeployConfig represents the runos.yaml configuration file
+// MappingDomain mirrors the conductor's MappingDomain. One FQDN attached to
+// a port mapping, with optional Cloudflare proxy ("orange cloud"). The object
+// form is intentional so future per-domain knobs (path matching, requestCert
+// overrides, etc.) can be added without another schema change.
+type MappingDomain struct {
+	Fqdn string `yaml:"fqdn" json:"fqdn"`
+	// EnableCloudflareProxy routes traffic via Cloudflare's edge instead of
+	// resolving directly to the cluster. Requires a Cloudflare DNS
+	// integration covering the zone to take effect; without one, the flag is
+	// stored but inert until the integration is added.
+	EnableCloudflareProxy bool `yaml:"enableCloudflareProxy,omitempty" json:"enableCloudflareProxy,omitempty"`
+}
+
+// ServicePortMapping mirrors the conductor's canonical ServicePortMapping.
+// Sent verbatim to the prepare-cli-deployment endpoint.
+//
+// Domains belong on the mapping they route to: each FQDN listed under
+// `domains` is created as a standalone domain record whose target is this
+// mapping's port. Multi-port apps can therefore say "this domain → port 3000,
+// that domain → port 9090" unambiguously.
+type ServicePortMapping struct {
+	Port          int             `yaml:"port" json:"port"`
+	StandardHttps *bool           `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
+	Domains       []MappingDomain `yaml:"domains,omitempty" json:"domains,omitempty"`
+}
+
+// DeployConfig represents the runos.yaml configuration file.
+//
+// Field order intentionally mirrors apps.PulledApp's marshal order for
+// the fields they share, so a yaml written by deploy round-trips
+// byte-clean against a yaml rendered by `apps pull` / the diff engine.
+// The two structs are not identical (DeployConfig has CLI-only fields
+// like Dockerfile/Domain/Requires that PulledApp doesn't track) but
+// the AppSpec block in the middle aligns one-for-one.
+//
+// Three logical groups:
+//
+//  1. AppSpec block (matches PulledApp): App, DeployType, ID, CID, AID,
+//     Env, Replicas, ClusterDomainID, ResourceRequirementClassID,
+//     CPU/Memory overrides, ServicePortMappings, Metrics*, HealthCheck*.
+//     The conductor accepts these verbatim on prepare-cli-deployment
+//     and PATCH /apps/:id.
+//
+//  2. CLI-only block: Domain, Dockerfile, Requires, CustomEnvVars,
+//     StorageMb. Used by the CLI (and the upload path) but not part of
+//     PulledApp's projection of server state.
+//
+//  3. Legacy shorthand: Port, StandardHttps, sugar for a single
+//     ServicePortMappings entry. Normalized server-side. Kept for
+//     backwards compatibility with older runos.yaml files.
+//
+// All fields use omitempty so minimal configs and pulled yamls both
+// round-trip cleanly.
 type DeployConfig struct {
-	App             string                        `yaml:"app" json:"app"`
-	Port            int                           `yaml:"port" json:"port"`
-	ID              string                        `yaml:"id,omitempty" json:"id,omitempty"`
-	CID             string                        `yaml:"cid,omitempty" json:"cid,omitempty"`
-	AID             string                        `yaml:"aid,omitempty" json:"aid,omitempty"`
-	Env             string                        `yaml:"env,omitempty" json:"env,omitempty"`
-	Domain          StringOrSlice                 `yaml:"domain,omitempty" json:"domain,omitempty"`
-	Dockerfile      string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
-	CPURequestMc    int                           `yaml:"cpuRequestMc,omitempty" json:"cpuRequestMc,omitempty"`
-	CPULimitMc      int                           `yaml:"cpuLimitMc,omitempty" json:"cpuLimitMc,omitempty"`
-	MemoryRequestMb int                           `yaml:"memoryRequestMb,omitempty" json:"memoryRequestMb,omitempty"`
-	MemoryLimitMb   int                           `yaml:"memoryLimitMb,omitempty" json:"memoryLimitMb,omitempty"`
-	StandardHttps   *bool                         `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
-	Requires        map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
-	CustomEnvVars   map[string]string             `yaml:"-" json:"customEnvVars,omitempty"`
+	// --- AppSpec block (PulledApp-aligned) ---
+	App                        string               `yaml:"app" json:"app"`
+	DeployType                 string               `yaml:"deployType,omitempty" json:"deployType,omitempty"`
+	ID                         string               `yaml:"id,omitempty" json:"id,omitempty"`
+	CID                        string               `yaml:"cid,omitempty" json:"cid,omitempty"`
+	AID                        string               `yaml:"aid,omitempty" json:"aid,omitempty"`
+	Env                        string               `yaml:"env,omitempty" json:"env,omitempty"`
+	// SourceDir is the build-context path (relative to this yaml's
+	// directory) that `runos deploy` tarballs and uploads. Empty defaults
+	// to "." (the yaml's own directory). Set to ".." when the yaml lives
+	// in a per-app subdirectory and the source code lives at the parent
+	// (project root). Inert for VCS-deployed apps, CI owns the build
+	// context. Not sent to conductor; never appears in JSON requests.
+	SourceDir                  string               `yaml:"sourceDir,omitempty" json:"-"`
+	Replicas                   *int                 `yaml:"replicas,omitempty" json:"replicas,omitempty"`
+	ClusterDomainID            string               `yaml:"clusterDomainId,omitempty" json:"clusterDomainId,omitempty"`
+	ResourceRequirementClassID string               `yaml:"resourceRequirementClassId,omitempty" json:"resourceRequirementClassId,omitempty"`
+	CPURequestMc               int                  `yaml:"cpuRequestMc,omitempty" json:"cpuRequestMc,omitempty"`
+	CPULimitMc                 int                  `yaml:"cpuLimitMc,omitempty" json:"cpuLimitMc,omitempty"`
+	MemoryRequestMb            int                  `yaml:"memoryRequestMb,omitempty" json:"memoryRequestMb,omitempty"`
+	MemoryLimitMb              int                  `yaml:"memoryLimitMb,omitempty" json:"memoryLimitMb,omitempty"`
+	ServicePortMappings        []ServicePortMapping `yaml:"servicePortMappings,omitempty" json:"servicePortMappings,omitempty"`
+	HealthCheck                string               `yaml:"healthCheck,omitempty" json:"healthCheck,omitempty"`
+	HealthCheckPort            *int                 `yaml:"healthCheckPort,omitempty" json:"healthCheckPort,omitempty"`
+	HealthCheckPath            string               `yaml:"healthCheckPath,omitempty" json:"healthCheckPath,omitempty"`
+	MetricsPort                *int                 `yaml:"metricsPort,omitempty" json:"metricsPort,omitempty"`
+	MetricsPath                string               `yaml:"metricsPath,omitempty" json:"metricsPath,omitempty"`
+
+	// --- CLI-only / not-in-PulledApp ---
+	// Domain is the legacy top-level domain field. New yamls put FQDNs
+	// under `servicePortMappings[].domains` so each domain binds to a
+	// specific port. The conductor still accepts top-level `domain` and
+	// folds it into the first mapping's `domains` for backwards compat.
+	Domain        StringOrSlice                 `yaml:"domain,omitempty" json:"domain,omitempty"`
+	Dockerfile    string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
+	StorageMb     *int                          `yaml:"storageMb,omitempty" json:"storageMb,omitempty"`
+	Requires      map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
+	CustomEnvVars map[string]string             `yaml:"-" json:"customEnvVars,omitempty"`
+
+	// --- Legacy shorthand (normalized server-side into ServicePortMappings) ---
+	Port          int   `yaml:"port,omitempty" json:"port,omitempty"`
+	StandardHttps *bool `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
 }
 
 // ServiceRequirement defines a dependent service (e.g., PostgreSQL, Valkey)
@@ -97,13 +176,30 @@ func LoadConfig(path string) (*DeployConfig, error) {
 	return &config, nil
 }
 
-// Validate checks that required fields are present
+// Validate checks that required fields are present.
+//
+// A port specification is required, supplied either via the legacy scalar
+// `port` field or via the canonical `servicePortMappings` array. The two are
+// mutually compatible: when both are set, the conductor prefers the canonical
+// form. Each port must fall in 1-65535.
 func (c *DeployConfig) Validate() error {
 	if c.App == "" {
 		return fmt.Errorf("app name is required in runos.yaml")
 	}
-	if c.Port <= 0 || c.Port > 65535 {
-		return fmt.Errorf("valid port (1-65535) is required in runos.yaml")
+
+	hasMappings := len(c.ServicePortMappings) > 0
+	if !hasMappings {
+		if c.Port <= 0 || c.Port > 65535 {
+			return fmt.Errorf("valid port (1-65535) is required in runos.yaml (or set servicePortMappings)")
+		}
+		return nil
+	}
+
+	// Canonical mappings supplied, validate each entry.
+	for i, m := range c.ServicePortMappings {
+		if m.Port <= 0 || m.Port > 65535 {
+			return fmt.Errorf("servicePortMappings[%d].port must be 1-65535", i)
+		}
 	}
 	return nil
 }
@@ -134,21 +230,20 @@ func ValidateAID(configAID, sessionAID string) error {
 }
 
 // ResolveEnvPath determines the env file path based on config state.
-// Priority: 1) explicit env field in config, 2) legacy .runos.{CID}.env file,
-// 3) default .runos.{CID}.{ID}.env if app ID is known.
-// Returns the resolved absolute path and whether the config was modified (needs saving).
+// Priority: 1) explicit env field in config, 2) default .runos.{CID}.{ID}.env
+// if app ID is known.
+// Returns the resolved absolute path and whether the config was modified
+// (needs saving).
+//
+// The cluster-scoped legacy form (.runos.{CID}.env, no app id) used to be
+// a third fallback, but it's app-agnostic: two apps in the same cluster
+// sharing one directory would silently pick up each other's env vars.
+// Removed when multi-yaml support landed. WarnLegacyEnv surfaces the
+// rename hint for any user still on that layout.
 func ResolveEnvPath(configDir string, config *DeployConfig, cid string) (string, bool) {
-	// Explicit env path in config — use as-is
+	// Explicit env path in config, use as-is
 	if config.Env != "" {
 		return filepath.Join(configDir, config.Env), false
-	}
-
-	// Backwards compat: check for legacy .runos.{CID}.env
-	legacyFilename := fmt.Sprintf(".runos.%s.env", cid)
-	legacyPath := filepath.Join(configDir, legacyFilename)
-	if _, err := os.Stat(legacyPath); err == nil {
-		config.Env = legacyFilename
-		return legacyPath, true
 	}
 
 	// Default: .runos.{CID}.{ID}.env (only if ID is known)
@@ -161,9 +256,102 @@ func ResolveEnvPath(configDir string, config *DeployConfig, cid string) (string,
 	return "", false
 }
 
+// LegacyEnvFilename returns the cluster-scoped, app-agnostic env filename
+// (.runos.{CID}.env) that older CLI versions used as a fallback when the
+// yaml didn't carry an explicit env path. Exposed so callers can detect
+// stragglers and nudge users to migrate; never written to.
+func LegacyEnvFilename(cid string) string {
+	return fmt.Sprintf(".runos.%s.env", cid)
+}
+
+// ResolveArchiveRoot returns the absolute directory `runos deploy` should
+// tarball, given the yaml's directory and the optional sourceDir field.
+// sourceDir is interpreted relative to configDir so the value stays
+// portable across machines (a yaml committed to git keeps working after
+// clone). Empty sourceDir means configDir itself, the historic default.
+//
+// Rejects:
+//   - absolute sourceDir (would lock the yaml to one user's filesystem).
+//   - sourceDir resolving to a non-existent path or a non-directory.
+//
+// Does NOT reject `..` — escaping the yaml's directory is the whole
+// point of the field for the directory-per-app shape (yaml in
+// runos.<cid>.<id>/, source at the parent project root).
+func ResolveArchiveRoot(configDir, sourceDir string) (string, error) {
+	trimmed := strings.TrimSpace(sourceDir)
+	if trimmed == "" {
+		trimmed = "."
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("sourceDir must be relative (got absolute path %q); relative paths keep the yaml portable across machines", trimmed)
+	}
+	resolved := filepath.Clean(filepath.Join(configDir, trimmed))
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("sourceDir %q (resolved to %q) does not exist", trimmed, resolved)
+		}
+		return "", fmt.Errorf("stat sourceDir %q: %w", resolved, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("sourceDir %q (resolved to %q) is not a directory", trimmed, resolved)
+	}
+	return resolved, nil
+}
+
+// WarnLegacyEnv prints a one-line stderr hint when configDir contains a
+// pre-multi-yaml env file (.runos.{CID}.env, no app id) and the loaded
+// yaml doesn't pin an explicit env path. Non-blocking: deploy proceeds
+// either way. The check is best-effort, stat errors are swallowed.
+func WarnLegacyEnv(configDir string, config *DeployConfig, cid string) {
+	if config.Env != "" {
+		return
+	}
+	legacy := filepath.Join(configDir, LegacyEnvFilename(cid))
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	target := ".runos." + cid + ".<id>.env"
+	if config.ID != "" {
+		target = fmt.Sprintf(".runos.%s.%s.env", cid, config.ID)
+	}
+	fmt.Fprintf(os.Stderr,
+		"Warning: %s is the pre-multi-yaml env layout and is no longer auto-loaded. "+
+			"Rename it to %s, or set 'env: <path>' in runos.yaml.\n",
+		LegacyEnvFilename(cid), target,
+	)
+}
+
 // DefaultEnvFilename returns the default env filename for a given cluster and app ID.
 func DefaultEnvFilename(cid, appID string) string {
 	return fmt.Sprintf(".runos.%s.%s.env", cid, appID)
+}
+
+// HasLegacyFields reports whether the loaded config uses any of the
+// deprecated top-level fields that have been superseded by
+// servicePortMappings:
+//   - port            (use servicePortMappings[].port)
+//   - standardHttps   (use servicePortMappings[].standardHttps)
+//   - domain          (use servicePortMappings[].domains[].fqdn)
+//
+// Used by the pre-deploy gate to surface a tailored "migrate via
+// `runos apps pull --force`" message instead of the generic drift
+// refusal — the LLM driving the deploy then knows to recommend the
+// migration path rather than `--force`.
+func HasLegacyFields(c *DeployConfig) bool {
+	if c == nil {
+		return false
+	}
+	if c.Port > 0 {
+		return true
+	}
+	if c.StandardHttps != nil {
+		return true
+	}
+	if len(c.Domain) > 0 {
+		return true
+	}
+	return false
 }
 
 // LoadEnvFile reads an env file at the given path and returns key-value pairs.

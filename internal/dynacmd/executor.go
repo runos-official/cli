@@ -39,6 +39,21 @@ func NewExecutor(baseURL string) *Executor {
 	}
 }
 
+// APIError is returned by ExecuteWithInput (and the shared dispatch path)
+// when the conductor responds with a non-2xx status. Callers can errors.As
+// it to format the body specially (e.g. format the dependents list out of a
+// 409 from services delete).
+type APIError struct {
+	StatusCode int
+	Body       []byte
+}
+
+// Error renders the same one-liner the historic Execute path emitted, so
+// behaviour is unchanged for callers that don't unwrap.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (%d): %s", e.StatusCode, string(e.Body))
+}
+
 // Execute runs the command
 func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Command) error {
 	// Get auth token
@@ -64,32 +79,18 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return fmt.Errorf("failed to collect input: %w", err)
 	}
 
-	// Build endpoint URL with path parameters substituted
-	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
+	respBody, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
 	if err != nil {
+		// Conductor's services delete returns 409 with a structured
+		// dependents list when other apps/services reference the
+		// target. Render it as a multi-line message so the user
+		// (and any LLM running this) immediately sees what's blocking
+		// the delete instead of a JSON dump in the default
+		// APIError.Error() form.
+		if msg, ok := formatDependentsError(err); ok {
+			return fmt.Errorf("%s", msg)
+		}
 		return err
-	}
-
-	// Remove path parameters from body before sending request
-	// Fields used in URL path (e.g., :id, :cid) should not be in the request body
-	requestBody := filterPathParamsFromBody(body, cmdDef)
-
-	// Make request
-	resp, err := e.doRequest(cmdDef.Method, endpoint, requestBody, token)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body (limit to 10 MB)
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Check for errors
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	// Handle --follow flag for commands that return jobs (detected by jobId in output)
@@ -123,6 +124,115 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	return nil
 }
 
+// ExecuteWithInput drives a manifest command without going through cobra
+// flag parsing. Used by static commands (e.g. services_pull / services_diff
+// / services_sync) that already have their input as a typed map. Returns
+// the raw response body on 2xx; on non-2xx, returns an *APIError that
+// carries the status code and the raw body so callers can format it (e.g.
+// 409 dependents list out of services delete).
+//
+// positionalArgs feeds the same buildEndpoint path that Execute uses, so
+// fields marked positional in the manifest are substituted into the URL.
+// input contains every non-positional value the command needs (PATCH/POST
+// body fields, GET/DELETE query parameters); the dispatch path filters out
+// keys that double as path parameters.
+//
+// cid empty falls back to the default cluster id from config, matching
+// Execute's "no --cid means use default" behaviour.
+func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []string, input map[string]any, cid string) ([]byte, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+	token, err := e.getAuthToken(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("authentication required: run 'runos login' first (%w)", err)
+	}
+	if cid == "" {
+		cid = cfg.GetDefaultClusterID()
+	}
+	return e.dispatch(cmdDef, positionalArgs, input, cid, cfg, token)
+}
+
+// formatDependentsError checks whether err is an *APIError carrying a
+// 409 with a structured dependents body (the shape conductor's services
+// delete handler returns when other apps/services reference the target).
+// Returns a friendly multi-line rendering plus true; (_, false) for any
+// other error so callers can fall back to the default formatting.
+//
+// This is a generic helper; nothing about it is services-specific. Any
+// future endpoint that surfaces a 409+dependents body gets the same
+// treatment automatically.
+func formatDependentsError(err error) (string, bool) {
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusConflict {
+		return "", false
+	}
+	var body struct {
+		Error      string `json:"error"`
+		Dependents []struct {
+			Type  string `json:"type"`
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Alias string `json:"alias"`
+		} `json:"dependents"`
+	}
+	if err := json.Unmarshal(apiErr.Body, &body); err != nil {
+		return "", false
+	}
+	if len(body.Dependents) == 0 {
+		return "", false
+	}
+	var sb strings.Builder
+	if body.Error != "" {
+		sb.WriteString("refused: ")
+		sb.WriteString(body.Error)
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("refused: this resource has dependents\n")
+	}
+	sb.WriteString("dependents:\n")
+	for _, d := range body.Dependents {
+		switch {
+		case d.Alias != "" && d.Name != "":
+			sb.WriteString(fmt.Sprintf("  - %s %s (%s), alias %q\n", d.Type, d.Name, d.ID, d.Alias))
+		case d.Alias != "":
+			sb.WriteString(fmt.Sprintf("  - %s (%s), alias %q\n", d.Type, d.ID, d.Alias))
+		case d.Name != "":
+			sb.WriteString(fmt.Sprintf("  - %s %s (%s)\n", d.Type, d.Name, d.ID))
+		default:
+			sb.WriteString(fmt.Sprintf("  - %s (%s)\n", d.Type, d.ID))
+		}
+	}
+	sb.WriteString("Reconcile each dependent (e.g. update its requires: to point elsewhere, or delete it first) and re-run.")
+	return sb.String(), true
+}
+
+// dispatch is the shared HTTP path used by both Execute and
+// ExecuteWithInput. It builds the endpoint, filters out path-param fields
+// from the body, sends the request, and reads the response. Non-2xx
+// responses are returned as *APIError so callers can branch on status.
+func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string) ([]byte, error) {
+	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
+	if err != nil {
+		return nil, err
+	}
+	requestBody := filterPathParamsFromBody(body, cmdDef)
+	resp, err := e.doRequest(cmdDef.Method, endpoint, requestBody, token)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: respBody}
+	}
+	return respBody, nil
+}
+
 func (e *Executor) followJob(respBody []byte) error {
 	// Extract jobId from response
 	var response map[string]any
@@ -138,11 +248,11 @@ func (e *Executor) followJob(respBody []byte) error {
 	return jobs.FollowJob(jobID)
 }
 
+// getAuthToken resolves the bearer token for outgoing requests. Prefers
+// RUNOS_API_KEY when set (CI/CD path); otherwise falls back to the
+// Firebase refresh-token exchange that `runos login` set up.
 func (e *Executor) getAuthToken(cfg *config.Config) (string, error) {
-	if cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return auth.GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	return auth.ResolveToken(cfg)
 }
 
 func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manifest.Command) (map[string]any, error) {
@@ -216,12 +326,15 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest.Command, cfg *config.Config, cid string, body map[string]any) (string, error) {
 	result := endpoint
 
-	// Substitute :aid with account ID from config
+	// Substitute :aid with account ID. GetAccountID() prefers the
+	// RUNOS_ACCOUNT_ID env var so headless CI runs without a config
+	// file's account_id field.
 	if strings.Contains(result, ":aid") {
-		if cfg.AccountID == "" {
-			return "", fmt.Errorf("account ID not set: run 'runos login' first")
+		aid := cfg.GetAccountID()
+		if aid == "" {
+			return "", fmt.Errorf("account ID not set: run 'runos login' or set RUNOS_ACCOUNT_ID")
 		}
-		result = strings.ReplaceAll(result, ":aid", url.PathEscape(cfg.AccountID))
+		result = strings.ReplaceAll(result, ":aid", url.PathEscape(aid))
 	}
 
 	// Substitute :cid with cluster ID

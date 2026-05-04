@@ -20,15 +20,24 @@ type Service struct {
 	aid        string
 }
 
-// PrepareResponse is the response from the prepareCliDeployment endpoint
+// PrepareResponse is the response from the prepare-cli-deployment endpoint.
+//
+// CliUploadID is the same identifier that GET /:aid/:cid/apps/:id/cli-archives
+// uses to key archives, and is what `prepare-cli-pull` accepts. The CLI
+// records it in the per-app sidecar (.runos-source-version) right after a
+// successful upload, so future deploys can detect upstream archives that
+// have appeared since this one. JobID is the orchestrating deploy job (used
+// by --follow polling); the two ids are conceptually different even when
+// they happen to share a value.
 type PrepareResponse struct {
-	JobID     string               `json:"jobId"`
-	OSID      string               `json:"osid"`
-	AppID     string               `json:"appId"`
-	UploadURL string               `json:"uploadUrl"`
-	Token     string               `json:"token"`
-	ExpiresAt string               `json:"expiresAt"`
-	Services  []ProvisionedService `json:"services,omitempty"`
+	JobID       string               `json:"jobId"`
+	OSID        string               `json:"osid"`
+	AppID       string               `json:"appId"`
+	UploadURL   string               `json:"uploadUrl"`
+	Token       string               `json:"token"`
+	ExpiresAt   string               `json:"expiresAt"`
+	CliUploadID string               `json:"cliUploadId,omitempty"`
+	Services    []ProvisionedService `json:"services,omitempty"`
 }
 
 // ProvisionedService represents a service that will be provisioned for an app dependency
@@ -52,10 +61,10 @@ func NewService(baseURL, token, cid, aid string) *Service {
 	}
 }
 
-// PrepareDeployment calls the prepareCliDeployment endpoint to get an upload token
+// PrepareDeployment calls the prepare-cli-deployment endpoint to get an upload token
 func (s *Service) PrepareDeployment(config *DeployConfig) (*PrepareResponse, error) {
-	// Endpoint: /:aid/:cid/prepareCliDeployment (from manifest)
-	reqURL := fmt.Sprintf("%s/%s/%s/prepareCliDeployment", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid))
+	// Endpoint: /:aid/:cid/prepare-cli-deployment (camelCase alias still works)
+	reqURL := fmt.Sprintf("%s/%s/%s/prepare-cli-deployment", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid))
 
 	jsonBody, err := json.Marshal(config)
 	if err != nil {
@@ -226,8 +235,8 @@ type AppDependency struct {
 
 // GetAppEnvVars fetches environment variables for an application
 func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
-	// Endpoint: /:aid/:cid/apps/:id/envs
-	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/envs", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	// Endpoint: /:aid/:cid/apps/:id/env-vars (renamed from /envs).
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {

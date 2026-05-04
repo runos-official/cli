@@ -114,13 +114,22 @@ type ContentBlock struct {
 	Text string `json:"text,omitempty"`
 }
 
+// minTopicsRead is the number of distinct documentation topics the LLM must
+// consume (via mcp_topics_search or mcp_topics_show) after bootstrap before
+// other tools become available on the read server.
+const minTopicsRead = 3
+
 // Server instructions by category
 var serverInstructions = map[string]string{
 	"read": `RunOS MCP Server (Read-Only)
 
 Query clusters, services, apps, and infrastructure state. No modifications.
 
-IMPORTANT: Before using any tools, call mcp_bootstrap to learn available topics, service types, and valid parameter values. Do not guess or invent values.`,
+REQUIRED FIRST STEPS (in order):
+1. Call mcp_bootstrap to receive critical instructions and the topic index.
+2. Read documentation for at least 3 distinct topics relevant to the user's task using mcp_topics_search (preferred, by keywords) or mcp_topics_show (by exact key). Other tools are blocked until this is satisfied.
+
+Do not guess or invent values. The documentation tells you the correct ones.`,
 
 	"sensitive_read": `RunOS MCP Server (Sensitive Read)
 
@@ -148,6 +157,10 @@ type Server struct {
 	version      string
 	category     string // "read", "sensitive_read", "write", "sensitive_write"
 	bootstrapped bool   // true after mcp_bootstrap has been called successfully
+	// topicsRead is the set of distinct topic keys the LLM has consumed via
+	// mcp_topics_search or mcp_topics_show during this session. Used to gate
+	// non-topic tools on the read server until minTopicsRead is reached.
+	topicsRead map[string]struct{}
 }
 
 // ToolExecutor defines the interface for executing MCP tools against the API.
@@ -362,12 +375,63 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 	}
 
+	// Topic-reading tools (mcp_topics_search, mcp_topics_show) are always allowed
+	// after bootstrap. Track the distinct topic keys the LLM consumes so we can
+	// enforce the read-at-least-N-topics gate below.
+	if params.Name == "mcp_topics_search" || params.Name == "mcp_topics_show" {
+		result, err := s.executor.Execute(params.Name, params.Arguments)
+		if err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: CallToolResult{
+					Content: []ContentBlock{{Type: "text", Text: err.Error()}},
+					IsError: true,
+				},
+			}
+		}
+		s.recordTopicsRead(params.Name, params.Arguments, result)
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: CallToolResult{
+				Content: []ContentBlock{{Type: "text", Text: result}},
+			},
+		}
+	}
+
+	// Topic-read gate: on the read server, require minTopicsRead distinct topic
+	// keys to have been consumed before any non-topic, non-bootstrap tool runs.
+	if s.category == "read" && len(s.topicsRead) < minTopicsRead {
+		msg := fmt.Sprintf(
+			"ERROR: You have read %d/%d required topics. Before using other tools, read documentation for at least %d distinct topics relevant to the user's task. Use mcp_topics_search with keywords (e.g. \"deploy\", \"postgresql\", \"dockerfile\"), or mcp_topics_show with an exact key from the bootstrap topic index. This ensures you follow correct RunOS procedures instead of guessing.",
+			len(s.topicsRead), minTopicsRead, minTopicsRead,
+		)
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: CallToolResult{
+				Content: []ContentBlock{{Type: "text", Text: msg}},
+				IsError: true,
+			},
+		}
+	}
+
 	var result string
 	var err error
 
 	// Special handling for deploy (calls runos deploy subprocess)
 	if params.Name == "deploy" {
 		result, err = s.handleDeploy(params.Arguments)
+	} else if isStaticAppsTool(params.Name) {
+		// Static apps subcommands (pull, diff, sync, list-previous-uploads)
+		// are not in the manifest; they orchestrate local filesystem
+		// alongside API calls and run as runos subprocesses.
+		result, err = s.handleAppsCommand(params.Name, params.Arguments)
+	} else if isStaticServicesTool(params.Name) {
+		// Static services subcommands (pull, diff, sync) follow the same
+		// pattern: yaml-file driven, manifest-aware, run via subprocess.
+		result, err = s.handleServicesCommand(params.Name, params.Arguments)
 	} else {
 		// Auto-inject CLI version and OS for version check tool
 		if params.Name == "cli_version-check" {
@@ -401,6 +465,39 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	}
 }
 
+// recordTopicsRead records the distinct topic keys consumed by a successful
+// mcp_topics_search or mcp_topics_show call. For search, it parses topic keys
+// out of the response. For show, it uses the requested key argument.
+func (s *Server) recordTopicsRead(toolName string, args map[string]any, result string) {
+	if s.topicsRead == nil {
+		s.topicsRead = make(map[string]struct{})
+	}
+	switch toolName {
+	case "mcp_topics_show":
+		if k, ok := args["key"].(string); ok && k != "" {
+			s.topicsRead[k] = struct{}{}
+		}
+	case "mcp_topics_search":
+		var resp map[string]any
+		if err := json.Unmarshal([]byte(result), &resp); err != nil {
+			return
+		}
+		topics, ok := resp["topics"].([]any)
+		if !ok {
+			return
+		}
+		for _, item := range topics {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if k, ok := m["key"].(string); ok && k != "" {
+				s.topicsRead[k] = struct{}{}
+			}
+		}
+	}
+}
+
 func (s *Server) handleDeploy(args map[string]any) (string, error) {
 	// Get the runos executable path (same binary that's running this MCP server)
 	execPath, err := os.Executable()
@@ -408,14 +505,7 @@ func (s *Server) handleDeploy(args map[string]any) (string, error) {
 		return "", fmt.Errorf("failed to find runos executable: %w", err)
 	}
 
-	// Build command arguments
-	cmdArgs := []string{"deploy", "--follow"}
-
-	// Add cid if provided by the AI - this allows deployment without a default cid set
-	// Extract short ID from format "xyz (Cluster Name)"
-	if cid, ok := args["cid"].(string); ok && cid != "" {
-		cmdArgs = append(cmdArgs, "--cid", extractCID(cid))
-	}
+	cmdArgs := buildDeployArgs(args)
 
 	// Execute the deploy command with a 10-minute timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -476,14 +566,31 @@ func (s *Server) buildTools() []Tool {
 		if toolName == "deploy" {
 			// Add deploy tool with custom description and cid parameter
 			tools = append(tools, Tool{
-				Name:        "deploy",
-				Description: "Deploy an application from local source. BEFORE CALLING: Check for large files (>1MB) or build artifacts that should be in .dockerignore to avoid slow uploads. Requires runos.yaml and Dockerfile. The Dockerfile MUST run as non-root user.",
+				Name: "deploy",
+				Description: `Deploy an application from local source.
+
+BEFORE CALLING: Check for large files (>1MB) or build artifacts that should be in .dockerignore to avoid slow uploads. Requires runos.yaml (or a runos.<cid>.<id>.yaml passed via yaml_file) and a Dockerfile. The Dockerfile MUST run as non-root user.
+
+MULTI-YAML PROJECTS: a project directory can hold multiple runos.<cid>.<id>.yaml files (e.g. staging + prod sharing one source tree). When more than one runos*.yaml exists, you MUST pass yaml_file explicitly so the right manifest is deployed. Without yaml_file, deploy falls back to the literal runos.yaml in the cwd, which may be the wrong app.
+
+Pre-deploy drift gate: when the yaml has id/cid/aid set (i.e. it's a pulled-app yaml, not a fresh deploy), deploy first compares local against the running app on the server. If anything has changed on the server that isn't reflected locally, the deploy refuses with the diff in the error so the user can decide whether to overwrite. Pass force=true to bypass the gate and overwrite server state with the local version. Fresh yamls (no id) skip the gate entirely.
+
+LEGACY YAML MIGRATION: when the deploy refusal output contains "deprecated field names" or "deprecated fields (port:/domain:/standardHttps:)", the user's yaml uses the legacy schema (top-level port:/standardHttps:/domain: instead of servicePortMappings:[{port,standardHttps,domains:[{fqdn,enableCloudflareProxy}]}]). DO NOT recommend force=true in this case, forcing keeps the user on the legacy shape and the same drift returns on every deploy. Instead, recommend they run "runos apps pull <yaml-path> --force" (which rewrites the local file from the canonical server state), then re-call this deploy tool. Migration is one-time per yaml.`,
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
 						"cid": {
 							Type:        "string",
 							Description: "Cluster ID to deploy to, in format 'xyz (Cluster Name)' e.g. 'mycluster2 (Local AI Cluster)'. REQUIRED if no default cluster is set. Get from user or use clusters_list.",
+						},
+						"yaml_file": {
+							Type:        "string",
+							Description: "Path to the runos*.yaml manifest to deploy. Optional when only one runos*.yaml is present in the project directory. REQUIRED when the directory holds multiple manifests (multi-cluster projects), otherwise the wrong app may be deployed. The CLI subprocess loads this via the --config flag.",
+						},
+						"force": {
+							Type:        "boolean",
+							Description: "Bypass the pre-deploy drift gate and overwrite server state with the local version. Only set this after the user has reviewed the drift and explicitly chosen to proceed. DO NOT set this when the gate output mentions deprecated/legacy fields, recommend `apps_pull <yaml> force=true` to migrate first.",
+							Default:     false,
 						},
 					},
 				},
@@ -538,6 +645,13 @@ func (s *Server) buildTools() []Tool {
 
 		tools = append(tools, tool)
 	}
+
+	// Append static apps_* tools (pull/diff/sync/list-previous-uploads)
+	// for the categories they belong to. These aren't manifest-driven.
+	tools = append(tools, staticAppsTools(s.category)...)
+	// Append static services_* tools (pull/diff/sync). Same rationale:
+	// orchestrating local yaml files, not pure API operations.
+	tools = append(tools, staticServicesTools(s.category)...)
 
 	return tools
 }

@@ -30,7 +30,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initiate device auth with Conductor API
-	conductorClient := api.NewClient(cfg.GetConductorURL())
+	conductorClient := api.NewClient(cfg.GetAPIURL())
 	initResp, err := conductorClient.InitiateDeviceAuth()
 	if err != nil {
 		return fmt.Errorf("failed to initiate device auth: %w", err)

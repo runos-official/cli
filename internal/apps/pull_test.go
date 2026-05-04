@@ -1,0 +1,1738 @@
+package apps
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// ---------------------------------------------------------------------------
+// SanitizeName
+// ---------------------------------------------------------------------------
+
+func TestSanitizeName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "my-app", "my-app"},
+		{"spaces become dashes", "My App", "My-App"},
+		{"slashes become dashes", "team/service", "team-service"},
+		{"mixed awkward chars", "a b/c:d", "a-b-c-d"},
+		{"underscores and dots kept", "my_app.v2", "my_app.v2"},
+		{"alphanumeric unchanged", "abc123XYZ", "abc123XYZ"},
+		{"all-invalid falls back to 'app'", "@@@", "---"},
+		{"empty falls back to 'app'", "", "app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeName(tt.in)
+			if got != tt.want {
+				t.Fatalf("SanitizeName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Filename builders
+// ---------------------------------------------------------------------------
+
+func TestDefaultBaseName(t *testing.T) {
+	tests := []struct {
+		name string
+		cid  string
+		id   string
+		want string
+	}{
+		{"plain", "k1", "ab12c", "runos.k1.ab12c"},
+		{"lowercases cid + id", "PROD-01", "AB12C", "runos.prod-01.ab12c"},
+		{"two apps in same cluster get distinct bases", "k1", "ab12c", "runos.k1.ab12c"},
+		{"two apps in same cluster get distinct bases (2)", "k1", "xy99z", "runos.k1.xy99z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DefaultBaseName(tt.cid, tt.id); got != tt.want {
+				t.Errorf("DefaultBaseName(%q, %q) = %q, want %q", tt.cid, tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Requires (service dependencies)
+// ---------------------------------------------------------------------------
+
+// TestPulledApp_RequiresRoundTrip pins the on-disk yaml shape for the
+// requires block. Pulled yamls must re-deploy byte-clean, so every
+// field the user can author has to round-trip.
+func TestPulledApp_RequiresRoundTrip(t *testing.T) {
+	app := &PulledApp{
+		App: "poll-app", ID: "appid3", CID: "mycluster3", AID: "myacct",
+		Requires: map[string]ServiceRequirement{
+			"poll-app-db": {
+				ID:    "mjn1d",
+				Type:  "postgresql",
+				Class: "postgresql.c0.tiny", // creation-time spec, preserved if user keeps it
+				Config: map[string]any{
+					"databaseName":     "pollapp",
+					"databaseUsername": "pollapp",
+				},
+				Env: map[string]string{"url": "DATABASE_URL"},
+			},
+		},
+	}
+	out, err := yaml.Marshal(app)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		"requires:",
+		"poll-app-db:",
+		"id: mjn1d",
+		"type: postgresql",
+		"class: postgresql.c0.tiny",
+		"databaseName: pollapp",
+		"url: DATABASE_URL",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("marshaled yaml missing %q\n%s", want, out)
+		}
+	}
+	var got PulledApp
+	if err := yaml.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	gotReq, ok := got.Requires["poll-app-db"]
+	if !ok {
+		t.Fatalf("requires.poll-app-db missing after round-trip; got %+v", got.Requires)
+	}
+	if gotReq.ID != "mjn1d" || gotReq.Type != "postgresql" || gotReq.Class != "postgresql.c0.tiny" {
+		t.Errorf("type/id/class mismatch: %+v", gotReq)
+	}
+	if gotReq.Config["databaseName"] != "pollapp" {
+		t.Errorf("config.databaseName lost: %+v", gotReq.Config)
+	}
+	if gotReq.Env["url"] != "DATABASE_URL" {
+		t.Errorf("env mapping lost: %+v", gotReq.Env)
+	}
+}
+
+func TestPulledApp_RequiresOmittedWhenEmpty(t *testing.T) {
+	app := &PulledApp{App: "web", ID: "appid4", CID: "mycluster3", AID: "myacct"}
+	out, err := yaml.Marshal(app)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "requires:") {
+		t.Errorf("empty requires must be omitted; got:\n%s", out)
+	}
+}
+
+// TestMergeRequiresUserAuthored covers the post-/requires merge:
+// server is authoritative for Type, ID, Config, and Env; Class is the
+// only local-only field that always wins. Empty server Config/Env trigger
+// the legacy fallback.
+func TestMergeRequiresUserAuthored(t *testing.T) {
+	t.Run("server config/env wins when populated, class merged from local", func(t *testing.T) {
+		// Modern flow: server returns the full {type, id, config, env}.
+		// Class comes from local only. Local config/env are ignored
+		// because the server has truth.
+		target := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {
+					ID:     "mjn1d",
+					Type:   "postgresql",
+					Config: map[string]any{"databaseName": "server-side"},
+					Env:    map[string]string{"url": "SERVER_DB_URL"},
+				},
+			},
+		}
+		local := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {
+					ID:     "mjn1d",
+					Type:   "postgresql",
+					Class:  "postgresql.c0.tiny",
+					Config: map[string]any{"databaseName": "local-stale"},
+					Env:    map[string]string{"url": "LOCAL_STALE"},
+				},
+			},
+		}
+		MergeRequiresUserAuthored(target, local)
+		got := target.Requires["poll-app-db"]
+		if got.Class != "postgresql.c0.tiny" {
+			t.Errorf("class should be merged from local; got %q", got.Class)
+		}
+		if got.Config["databaseName"] != "server-side" {
+			t.Errorf("server config must win over local; got %+v", got.Config)
+		}
+		if got.Env["url"] != "SERVER_DB_URL" {
+			t.Errorf("server env must win over local; got %+v", got.Env)
+		}
+	})
+
+	t.Run("legacy: empty server config falls back to local", func(t *testing.T) {
+		// Apps deployed before /requires landed return empty
+		// Config/Env. Until the next deploy populates the server side,
+		// the local yaml's values must survive a pull.
+		target := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {ID: "mjn1d", Type: "postgresql"},
+			},
+		}
+		local := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {
+					ID:    "mjn1d",
+					Type:  "postgresql",
+					Class: "postgresql.c0.tiny",
+					Config: map[string]any{
+						"databaseName":     "pollapp",
+						"databaseUsername": "pollapp",
+					},
+					Env: map[string]string{"url": "DATABASE_URL"},
+				},
+			},
+		}
+		MergeRequiresUserAuthored(target, local)
+		got := target.Requires["poll-app-db"]
+		if got.Class != "postgresql.c0.tiny" {
+			t.Errorf("class should be merged from local; got %q", got.Class)
+		}
+		if got.Config["databaseName"] != "pollapp" {
+			t.Errorf("legacy: empty server config should fall back to local; got %+v", got.Config)
+		}
+		if got.Env["url"] != "DATABASE_URL" {
+			t.Errorf("legacy: empty server env should fall back to local; got %+v", got.Env)
+		}
+	})
+
+	t.Run("server type/id wins over local on mismatch", func(t *testing.T) {
+		target := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {ID: "mjn1d", Type: "postgresql"},
+			},
+		}
+		local := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {
+					ID:    "OLD-ID",
+					Type:  "postgresql",
+					Class: "postgresql.c0.tiny",
+				},
+			},
+		}
+		MergeRequiresUserAuthored(target, local)
+		got := target.Requires["poll-app-db"]
+		if got.ID != "mjn1d" {
+			t.Errorf("server id must win over local; got %q", got.ID)
+		}
+		if got.Class != "postgresql.c0.tiny" {
+			t.Errorf("class should still be merged even on id drift; got %q", got.Class)
+		}
+	})
+
+	t.Run("server-only alias stays untouched", func(t *testing.T) {
+		target := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-cache": {ID: "xY9zW", Type: "valkey"},
+			},
+		}
+		local := &PulledApp{Requires: map[string]ServiceRequirement{}}
+		MergeRequiresUserAuthored(target, local)
+		got := target.Requires["poll-app-cache"]
+		if got.ID != "xY9zW" || got.Type != "valkey" {
+			t.Errorf("server-only alias must remain; got %+v", got)
+		}
+		if got.Class != "" || len(got.Config) != 0 || len(got.Env) != 0 {
+			t.Errorf("server-only alias should have no user-authored fields; got %+v", got)
+		}
+	})
+
+	t.Run("local-only alias is dropped", func(t *testing.T) {
+		// The server no longer lists this dependency; pull must not
+		// resurrect it. Only aliases conductor reports survive.
+		target := &PulledApp{
+			Requires: map[string]ServiceRequirement{},
+		}
+		local := &PulledApp{
+			Requires: map[string]ServiceRequirement{
+				"poll-app-db": {
+					ID: "mjn1d", Type: "postgresql",
+					Class: "postgresql.c0.tiny",
+				},
+			},
+		}
+		MergeRequiresUserAuthored(target, local)
+		if _, ok := target.Requires["poll-app-db"]; ok {
+			t.Errorf("alias the server doesn't report must not be merged in; got %+v", target.Requires)
+		}
+	})
+
+	t.Run("nil-safe", func(t *testing.T) {
+		MergeRequiresUserAuthored(nil, nil)
+		MergeRequiresUserAuthored(&PulledApp{}, nil)
+		MergeRequiresUserAuthored(nil, &PulledApp{})
+		// No panic, no crash.
+	})
+}
+
+// TestPulledApp_SourceDirRoundTrip mirrors the DeployConfig round-trip
+// guard. The on-disk yaml shape must agree between pull and deploy so
+// pulled yamls re-deploy cleanly.
+func TestPulledApp_SourceDirRoundTrip(t *testing.T) {
+	t.Run("set sourceDir survives marshal -> unmarshal", func(t *testing.T) {
+		app := &PulledApp{App: "web", ID: "appid4", CID: "mycluster3", AID: "myacct", SourceDir: ".."}
+		out, err := yaml.Marshal(app)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(out), "sourceDir: ..") {
+			t.Errorf("marshaled yaml missing sourceDir: ..\n%s", out)
+		}
+		var got PulledApp
+		if err := yaml.Unmarshal(out, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.SourceDir != ".." {
+			t.Errorf("round-tripped SourceDir = %q, want %q", got.SourceDir, "..")
+		}
+	})
+
+	t.Run("empty sourceDir is omitted from output", func(t *testing.T) {
+		app := &PulledApp{App: "web", ID: "appid4", CID: "mycluster3", AID: "myacct"}
+		out, err := yaml.Marshal(app)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "sourceDir:") {
+			t.Errorf("empty SourceDir must be omitted; got:\n%s", out)
+		}
+	})
+}
+
+func TestFilenameBuilders(t *testing.T) {
+	// Empty per-app dir: YAMLFilename returns the canonical "runos.yaml".
+	// Multi-yaml resolution is covered by TestYAMLFilename_* below.
+	dir := t.TempDir()
+	got, err := YAMLFilename(dir, "k1", "ab12c")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.yaml" {
+		t.Errorf("YAMLFilename(empty dir) = %q, want runos.yaml", got)
+	}
+	if got := SuffixedYAMLFilename("k1", "ab12c"); got != "runos.k1.ab12c.yaml" {
+		t.Errorf("SuffixedYAMLFilename = %q, want runos.k1.ab12c.yaml", got)
+	}
+	if got := EnvFilename("k1", "ab12c"); got != ".runos.k1.ab12c.env" {
+		t.Errorf("EnvFilename(k1, ab12c) = %q, want .runos.k1.ab12c.env", got)
+	}
+	// Lowercases inputs, matching DefaultBaseName.
+	if got := EnvFilename("PROD-01", "AB12C"); got != ".runos.prod-01.ab12c.env" {
+		t.Errorf("EnvFilename(PROD-01, AB12C) = %q, want .runos.prod-01.ab12c.env", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// asInt
+// ---------------------------------------------------------------------------
+
+func TestAsInt(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    any
+		want  int
+		wantOK bool
+	}{
+		{"int", 42, 42, true},
+		{"int64", int64(42), 42, true},
+		{"float64 (JSON number)", float64(42), 42, true},
+		{"float64 with fraction truncates", float64(42.9), 42, true},
+		{"string is not a number", "42", 0, false},
+		{"nil", nil, 0, false},
+		{"bool", true, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := asInt(tt.in)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("asInt(%v) = (%d, %v), want (%d, %v)", tt.in, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildPulledApp
+// ---------------------------------------------------------------------------
+
+func TestBuildPulledApp_CliDeploy_RRCPreset(t *testing.T) {
+	// Mirrors the "greenfingers" shape from production data.
+	raw := map[string]any{
+		"id":                         "appid4",
+		"name":                       "greenfingers",
+		"replicas":                   float64(1),
+		"clusterDomainId":            "elpfn",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"integrationType":            nil,
+		"cpuRequestMc":               float64(0),
+		"cpuLimitMc":                 float64(1000),
+		"memoryRequestMb":            float64(0),
+		"memoryLimitMb":              float64(2048),
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(8080), "standardHttps": true},
+		},
+	}
+
+	p := BuildPulledApp(raw, "mycluster3", "myacct")
+
+	if p.DeployType != "cli" {
+		t.Errorf("DeployType = %q, want cli", p.DeployType)
+	}
+	if p.Integration != nil {
+		t.Errorf("Integration should be nil for cli deploy, got %+v", p.Integration)
+	}
+	if p.ResourceRequirementClassID != "app.sl1.beff" {
+		t.Errorf("ResourceRequirementClassID = %q, want app.sl1.beff", p.ResourceRequirementClassID)
+	}
+	if p.CPURequestMc != nil || p.CPULimitMc != nil || p.MemoryRequestMb != nil || p.MemoryLimitMb != nil {
+		t.Errorf("cpu/mem pointers should be nil when rrc preset is set")
+	}
+	if len(p.ServicePortMappings) != 1 || p.ServicePortMappings[0].Port != 8080 || !p.ServicePortMappings[0].StandardHttps {
+		t.Errorf("Ports = %+v, want [{8080 true}]", p.ServicePortMappings)
+	}
+	if p.HealthCheck != "" {
+		t.Errorf("HealthCheck should be empty when server reports none, got %q", p.HealthCheck)
+	}
+	if p.MetricsPort != nil {
+		t.Errorf("MetricsPort should be nil when server reports none")
+	}
+}
+
+func TestBuildPulledApp_VcsIntegration_PassesThroughIntegrationType(t *testing.T) {
+	// Mirrors the "Laravel from Gitlab" shape.
+	raw := map[string]any{
+		"id":                         "wr7yu",
+		"name":                       "Laravel from Gitlab",
+		"replicas":                   float64(1),
+		"clusterDomainId":            "elpfn",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"integrationType":            "gitlab-runner",
+		"vcsIntegrationId":           "tr6mj",
+		"repoId":                     8.1034699e+07,
+		"repoName":                   "runos-tests/laravel-v1",
+		"branchName":                 "main",
+		"healthCheck":                "none",
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(8080), "standardHttps": false},
+		},
+	}
+
+	p := BuildPulledApp(raw, "mycluster3", "myacct")
+
+	if p.DeployType != "gitlab-runner" {
+		t.Errorf("DeployType = %q, want gitlab-runner", p.DeployType)
+	}
+	if p.Integration == nil {
+		t.Fatal("Integration should be populated for vcs deployType")
+	}
+	if p.Integration.ID != "tr6mj" {
+		t.Errorf("Integration.ID = %q, want tr6mj", p.Integration.ID)
+	}
+	if p.Integration.RepoID != 81034699 {
+		t.Errorf("Integration.RepoID = %d, want 81034699 (float coercion)", p.Integration.RepoID)
+	}
+	if p.Integration.RepoName != "runos-tests/laravel-v1" {
+		t.Errorf("Integration.RepoName = %q", p.Integration.RepoName)
+	}
+	if p.Integration.BranchName != "main" {
+		t.Errorf("Integration.BranchName = %q", p.Integration.BranchName)
+	}
+	if p.HealthCheck != "none" {
+		t.Errorf("HealthCheck = %q, want %q", p.HealthCheck, "none")
+	}
+}
+
+func TestBuildPulledApp_CustomResources_EmitsAllFourFieldsEvenWhenZero(t *testing.T) {
+	tests := []struct {
+		name string
+		rrc  any
+	}{
+		{"rrc missing", nil},
+		{"rrc empty string", ""},
+		{"rrc literal 'custom'", "custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := map[string]any{
+				"name":            "svc",
+				"cpuRequestMc":    float64(0), // zero is still a set value in custom mode
+				"cpuLimitMc":      float64(500),
+				"memoryRequestMb": float64(0),
+				"memoryLimitMb":   float64(1024),
+			}
+			if tt.rrc != nil {
+				raw["resourceRequirementClassId"] = tt.rrc
+			}
+
+			p := BuildPulledApp(raw, "k1", "acc-1")
+
+			if p.ResourceRequirementClassID != "" {
+				t.Errorf("ResourceRequirementClassID should be empty for custom, got %q", p.ResourceRequirementClassID)
+			}
+			if p.CPURequestMc == nil || *p.CPURequestMc != 0 {
+				t.Errorf("CPURequestMc = %v, want *0", p.CPURequestMc)
+			}
+			if p.CPULimitMc == nil || *p.CPULimitMc != 500 {
+				t.Errorf("CPULimitMc = %v, want *500", p.CPULimitMc)
+			}
+			if p.MemoryRequestMb == nil || *p.MemoryRequestMb != 0 {
+				t.Errorf("MemoryRequestMb = %v, want *0", p.MemoryRequestMb)
+			}
+			if p.MemoryLimitMb == nil || *p.MemoryLimitMb != 1024 {
+				t.Errorf("MemoryLimitMb = %v, want *1024", p.MemoryLimitMb)
+			}
+		})
+	}
+}
+
+func TestBuildPulledApp_EmptyPortsForWorker(t *testing.T) {
+	raw := map[string]any{"name": "worker", "replicas": float64(3)}
+
+	p := BuildPulledApp(raw, "k1", "acc-1")
+
+	if p.ServicePortMappings == nil {
+		t.Fatal("Ports must be an empty slice, not nil, so YAML emits [] instead of null")
+	}
+	if len(p.ServicePortMappings) != 0 {
+		t.Errorf("Ports = %+v, want []", p.ServicePortMappings)
+	}
+}
+
+func TestBuildPulledApp_SecretFilesNilByDefault(t *testing.T) {
+	// SecretFiles must start as nil so yaml omits the key entirely when
+	// the app has no secret files. Present-but-empty ([]) would be
+	// authoritative for a future up-sync ("delete all secret files"),
+	// which is a destructive default we don't want on pull.
+	p := BuildPulledApp(map[string]any{"name": "svc"}, "k1", "acc-1")
+
+	if p.SecretFiles != nil {
+		t.Fatalf("SecretFiles should be nil (omitted from yaml), got %+v", p.SecretFiles)
+	}
+}
+
+func TestBuildPulledApp_SecretFilesKeyOmittedInYAMLWhenNil(t *testing.T) {
+	p := BuildPulledApp(map[string]any{"name": "svc"}, "k1", "acc-1")
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	if strings.Contains(string(out), "secretFiles") {
+		t.Errorf("yaml should not contain secretFiles key when slice is nil:\n%s", out)
+	}
+}
+
+func TestPulledApp_EnvKeyOmittedInYAMLWhenEmpty(t *testing.T) {
+	p := BuildPulledApp(map[string]any{"name": "svc"}, "k1", "acc-1")
+	// Leave Env unset; on a real pull the cmd layer only assigns it when
+	// the app has at least one env var.
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	if strings.Contains(string(out), "env:") {
+		t.Errorf("yaml should not contain env key when Env is empty:\n%s", out)
+	}
+}
+
+func TestPulledApp_EnvKeyPresentInYAMLWhenSet(t *testing.T) {
+	p := BuildPulledApp(map[string]any{"name": "svc"}, "k1", "acc-1")
+	p.Env = ".runos.k1.svc.env"
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "env: .runos.k1.svc.env") {
+		t.Errorf("yaml should contain env key when Env is set:\n%s", out)
+	}
+}
+
+func TestBuildPulledApp_SecretFilesKeyPresentInYAMLWhenSet(t *testing.T) {
+	p := BuildPulledApp(map[string]any{"name": "svc"}, "k1", "acc-1")
+	p.SecretFiles = []SecretFile{
+		{Filename: "server.crt", MountPath: "/etc/ssl/server.crt", Local: ".x.secret-files/server.crt", MD5: "abc"},
+	}
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	text := string(out)
+	if !strings.Contains(text, "secretFiles:") {
+		t.Errorf("yaml should contain secretFiles key when slice is populated:\n%s", text)
+	}
+	if !strings.Contains(text, "filename: server.crt") {
+		t.Errorf("yaml should contain file entry:\n%s", text)
+	}
+}
+
+func TestBuildPulledApp_HealthCheckFullyPopulated(t *testing.T) {
+	raw := map[string]any{
+		"name":            "svc",
+		"healthCheck":     "standard",
+		"healthCheckPort": float64(8080),
+		"healthCheckPath": "/healthz",
+	}
+
+	p := BuildPulledApp(raw, "k1", "acc-1")
+
+	if p.HealthCheck != "standard" {
+		t.Errorf("HealthCheck = %q, want standard", p.HealthCheck)
+	}
+	if p.HealthCheckPort == nil || *p.HealthCheckPort != 8080 {
+		t.Errorf("HealthCheckPort = %v, want *8080", p.HealthCheckPort)
+	}
+	if p.HealthCheckPath != "/healthz" {
+		t.Errorf("HealthCheckPath = %q, want /healthz", p.HealthCheckPath)
+	}
+}
+
+func TestBuildPulledApp_MetricsPopulatedWhenPortSet(t *testing.T) {
+	raw := map[string]any{
+		"name":        "svc",
+		"metricsPort": float64(9090),
+		"metricsPath": "/metrics",
+	}
+
+	p := BuildPulledApp(raw, "k1", "acc-1")
+
+	if p.MetricsPort == nil || *p.MetricsPort != 9090 {
+		t.Errorf("MetricsPort = %v, want *9090", p.MetricsPort)
+	}
+	if p.MetricsPath != "/metrics" {
+		t.Errorf("MetricsPath = %q, want /metrics", p.MetricsPath)
+	}
+}
+
+func TestBuildPulledApp_MetricsOmittedWhenPortZero(t *testing.T) {
+	raw := map[string]any{
+		"name":        "svc",
+		"metricsPort": float64(0),
+		"metricsPath": "/metrics",
+	}
+
+	p := BuildPulledApp(raw, "k1", "acc-1")
+
+	if p.MetricsPort != nil {
+		t.Errorf("MetricsPort should be nil when port is 0, got *%d", *p.MetricsPort)
+	}
+}
+
+// YAML round-trip smoke test: ensures the on-disk file matches the expected
+// ordering and shape for a realistic full-featured app.
+func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
+	raw := map[string]any{
+		"id":                         "wr7yu",
+		"name":                       "Laravel from Gitlab",
+		"replicas":                   float64(1),
+		"clusterDomainId":            "elpfn",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"integrationType":            "gitlab-runner",
+		"vcsIntegrationId":           "tr6mj",
+		"repoId":                     8.1034699e+07,
+		"repoName":                   "runos-tests/laravel-v1",
+		"branchName":                 "main",
+		"healthCheck":                "none",
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(8080), "standardHttps": false},
+		},
+	}
+	p := BuildPulledApp(raw, "mycluster3", "myacct")
+	p.Env = ".runos.mycluster3.laravel-from-gitlab.env"
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	got := string(out)
+
+	// Verify ordering: app first, deployType second, id/cid/aid, then env,
+	// replicas, clusterDomainId, rrc, integration, ports, healthCheck.
+	// secretFiles intentionally absent from this ordering check because this
+	// test doesn't populate any; its presence/absence is covered separately.
+	expectedOrder := []string{
+		"app:", "deployType:", "id:", "cid:", "aid:", "env:", "replicas:",
+		"clusterDomainId:", "resourceRequirementClassId:",
+		"integration:", "servicePortMappings:", "healthCheck:",
+	}
+	lastIdx := -1
+	for _, key := range expectedOrder {
+		idx := strings.Index(got, key)
+		if idx == -1 {
+			t.Errorf("missing key %q in output:\n%s", key, got)
+			continue
+		}
+		if idx < lastIdx {
+			t.Errorf("key %q appeared before expected predecessor in:\n%s", key, got)
+		}
+		lastIdx = idx
+	}
+
+	// Things that must NOT be in the file any more.
+	for _, bad := range []string{"osid:", "status:", "domain:", "networkAccess:", "extras:", "dockerfile:", "createdAt:", "updatedAt:"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("output should not contain %q:\n%s", bad, got)
+		}
+	}
+
+	// repoId must be a plain integer, not scientific notation.
+	if !strings.Contains(got, "repoId: 81034699") {
+		t.Errorf("repoId should render as 81034699 (int), got:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveYAML + SaveEnv (filesystem behaviour)
+// ---------------------------------------------------------------------------
+
+func TestSaveYAML_WritesMarshaledFileWith0644(t *testing.T) {
+	dir := t.TempDir()
+	app := &PulledApp{
+		App:        "web",
+		DeployType: "cli",
+		ID:         "ab12c",
+		CID:        "k1",
+		AID:        "acc-1",
+		Replicas:   1,
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+	}
+	base := DefaultBaseName(app.CID, app.ID)
+
+	res, err := SaveYAML(dir, base, app)
+	if err != nil {
+		t.Fatalf("SaveYAML: %v", err)
+	}
+	if res.InSync {
+		t.Errorf("first write should not be InSync, got %+v", res)
+	}
+
+	want := filepath.Join(dir, "runos.k1.ab12c", "runos.yaml")
+	if res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+
+	info, err := os.Stat(res.Path)
+	if err != nil {
+		t.Fatalf("stat yaml: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Errorf("yaml perm = %o, want 0644", perm)
+		}
+	}
+
+	data, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("read yaml: %v", err)
+	}
+	var round PulledApp
+	if err := yaml.Unmarshal(data, &round); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if round.App != app.App || round.ID != app.ID || round.CID != app.CID {
+		t.Errorf("round-trip mismatch: %+v", round)
+	}
+	if len(round.ServicePortMappings) != 1 || round.ServicePortMappings[0].Port != 3000 || !round.ServicePortMappings[0].StandardHttps {
+		t.Errorf("ports round-trip mismatch: %+v", round.ServicePortMappings)
+	}
+	// Sanity: output should use the expected camelCase top-level keys.
+	text := string(data)
+	for _, key := range []string{"app:", "deployType:", "id:", "cid:", "aid:", "replicas:", "servicePortMappings:"} {
+		if !strings.Contains(text, key) {
+			t.Errorf("expected key %q in yaml output, got:\n%s", key, text)
+		}
+	}
+}
+
+func TestSaveYAML_OverwritesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	app := &PulledApp{
+		App:        "web",
+		DeployType: "cli",
+		ID:         "ab12c",
+		CID:        "k1",
+		AID:        "acc-1",
+		Replicas:   1,
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+	}
+	base := DefaultBaseName(app.CID, app.ID)
+
+	if _, err := SaveYAML(dir, base, app); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	// Mutate the in-memory app so the second write is distinguishable.
+	app.ServicePortMappings = []Port{{Port: 9000, StandardHttps: true}}
+	res, err := SaveYAML(dir, base, app)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if res.InSync {
+		t.Error("second save should not be InSync when content differs")
+	}
+
+	// Content should reflect the new bytes; only one file lives in the dir
+	// (no timestamped backup, because rotation is gone).
+	newBytes, _ := os.ReadFile(res.Path)
+	if !strings.Contains(string(newBytes), "port: 9000") {
+		t.Errorf("new file missing updated port, content:\n%s", newBytes)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected 1 file (no backup), got %d: %v", len(entries), names)
+	}
+}
+
+func TestSaveEnv_WritesSortedKeysWith0600(t *testing.T) {
+	dir := t.TempDir()
+	envs := map[string]string{
+		"DATABASE_URL": "postgres://...",
+		"API_KEY":      "secret",
+		"LOG_LEVEL":    "info",
+	}
+
+	base := DefaultBaseName("k1", "ab12c")
+	res, err := SaveEnv(dir, base, "k1", "ab12c", envs)
+	if err != nil {
+		t.Fatalf("SaveEnv: %v", err)
+	}
+	want := filepath.Join(dir, "runos.k1.ab12c", ".runos.k1.ab12c.env")
+	if res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+
+	info, err := os.Stat(res.Path)
+	if err != nil {
+		t.Fatalf("stat env: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("env perm = %o, want 0600", perm)
+		}
+	}
+
+	data, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	want = "API_KEY=secret\nDATABASE_URL=postgres://...\nLOG_LEVEL=info\n"
+	if string(data) != want {
+		t.Errorf("env content =\n%q\nwant\n%q", data, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// YAMLFilename — multi-yaml resolution
+// ---------------------------------------------------------------------------
+
+func TestYAMLFilename_EmptyDirIsRunosYaml(t *testing.T) {
+	got, err := YAMLFilename(t.TempDir(), "mycluster3", "appid4")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.yaml" {
+		t.Errorf("got %q, want runos.yaml (empty dir is back-compat default)", got)
+	}
+}
+
+func TestYAMLFilename_NonExistentDirIsRunosYaml(t *testing.T) {
+	// ensureAppDir will create the dir on the next call; the resolver
+	// must not fail just because the dir is absent.
+	parent := t.TempDir()
+	got, err := YAMLFilename(filepath.Join(parent, "nope"), "mycluster3", "appid4")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.yaml" {
+		t.Errorf("got %q, want runos.yaml for non-existent dir", got)
+	}
+}
+
+func TestYAMLFilename_SameAppReusesRunosYaml(t *testing.T) {
+	// Single-app project re-pull: existing runos.yaml parses to the
+	// same (cid, id), so the canonical name stays.
+	dir := t.TempDir()
+	body := "app: web\ndeployType: cli\nid: appid4\ncid: mycluster3\naid: myacct\n"
+	if err := os.WriteFile(filepath.Join(dir, "runos.yaml"), []byte(body), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := YAMLFilename(dir, "mycluster3", "appid4")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.yaml" {
+		t.Errorf("got %q, want runos.yaml (same app should reuse the canonical leaf)", got)
+	}
+}
+
+func TestYAMLFilename_OccupiedByDifferentAppSuffixes(t *testing.T) {
+	// runos.yaml is for cluster mycluster3 app A; we're pulling cluster mycluster2
+	// app B. The resolver must hand back the suffixed name so the
+	// new pull does not clobber the existing manifest.
+	dir := t.TempDir()
+	bodyA := "app: web\ndeployType: cli\nid: appid4\ncid: mycluster3\naid: myacct\n"
+	if err := os.WriteFile(filepath.Join(dir, "runos.yaml"), []byte(bodyA), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := YAMLFilename(dir, "mycluster2", "appid5")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.mycluster2.appid5.yaml" {
+		t.Errorf("got %q, want runos.mycluster2.appid5.yaml (occupied dir must auto-suffix)", got)
+	}
+}
+
+func TestYAMLFilename_PerAppFilenameAlreadyExistsWins(t *testing.T) {
+	// Re-pull of an app whose manifest already lives under the suffixed
+	// name. The resolver must return that name even when a separate
+	// runos.yaml exists for a different app.
+	dir := t.TempDir()
+	bodyA := "app: web\ndeployType: cli\nid: appid4\ncid: mycluster3\naid: myacct\n"
+	bodyB := "app: api\ndeployType: cli\nid: appid5\ncid: mycluster2\naid: myacct\n"
+	if err := os.WriteFile(filepath.Join(dir, "runos.yaml"), []byte(bodyA), 0644); err != nil {
+		t.Fatalf("seed runos.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runos.mycluster2.appid5.yaml"), []byte(bodyB), 0644); err != nil {
+		t.Fatalf("seed suffixed: %v", err)
+	}
+	got, err := YAMLFilename(dir, "mycluster2", "appid5")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.mycluster2.appid5.yaml" {
+		t.Errorf("got %q, want runos.mycluster2.appid5.yaml (suffixed file must win when present)", got)
+	}
+}
+
+func TestYAMLFilename_UnparseableRunosYamlSuffixes(t *testing.T) {
+	// A garbage runos.yaml in the dir is treated as occupied. The
+	// resolver must not overwrite it with the new app's content.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "runos.yaml"), []byte("::: not yaml :::\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := YAMLFilename(dir, "mycluster3", "appid4")
+	if err != nil {
+		t.Fatalf("YAMLFilename: %v", err)
+	}
+	if got != "runos.mycluster3.appid4.yaml" {
+		t.Errorf("got %q, want runos.mycluster3.appid4.yaml (unparseable runos.yaml must not be clobbered)", got)
+	}
+}
+
+func TestSaveYAML_AutoSuffixesWhenDirOccupied(t *testing.T) {
+	// Integration: SaveYAML resolves the leaf via YAMLFilename and writes
+	// to the right file. Two consecutive saves (different apps) must both
+	// land on disk without clobber.
+	dir := t.TempDir()
+
+	first := &PulledApp{
+		App: "web", DeployType: "cli",
+		ID: "appid4", CID: "mycluster3", AID: "myacct",
+		Replicas: 1,
+	}
+	resA, err := SaveYAML(dir, "", first)
+	if err != nil {
+		t.Fatalf("save A: %v", err)
+	}
+	if filepath.Base(resA.Path) != "runos.yaml" {
+		t.Errorf("first save should land on runos.yaml; got %q", resA.Path)
+	}
+
+	second := &PulledApp{
+		App: "api", DeployType: "cli",
+		ID: "appid5", CID: "mycluster2", AID: "myacct",
+		Replicas: 1,
+	}
+	resB, err := SaveYAML(dir, "", second)
+	if err != nil {
+		t.Fatalf("save B: %v", err)
+	}
+	if filepath.Base(resB.Path) != "runos.mycluster2.appid5.yaml" {
+		t.Errorf("second save should auto-suffix; got %q", resB.Path)
+	}
+
+	// Original yaml must be untouched.
+	data, err := os.ReadFile(resA.Path)
+	if err != nil {
+		t.Fatalf("read A: %v", err)
+	}
+	var roundA PulledApp
+	if err := yaml.Unmarshal(data, &roundA); err != nil {
+		t.Fatalf("unmarshal A: %v", err)
+	}
+	if roundA.ID != "appid4" || roundA.CID != "mycluster3" {
+		t.Errorf("first yaml clobbered; got %+v", roundA)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnsureDockerignore
+// ---------------------------------------------------------------------------
+
+func TestEnsureDockerignore_CreatesWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	res, err := EnsureDockerignore(dir)
+	if err != nil {
+		t.Fatalf("EnsureDockerignore: %v", err)
+	}
+	if res.InSync {
+		t.Errorf("first call must report a write (InSync=false), got %+v", res)
+	}
+	wantPath := filepath.Join(dir, ".dockerignore")
+	if res.Path != wantPath {
+		t.Errorf("Path = %q, want %q", res.Path, wantPath)
+	}
+
+	got, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read .dockerignore: %v", err)
+	}
+	// Spot-check every pattern the security guarantee depends on. The
+	// precise text of the header comment is not load-bearing.
+	for _, pattern := range []string{
+		"runos.yaml",
+		"runos.*.yaml",
+		"runos.*.yml",
+		".runos.*.env",
+		".runos*.source-version",
+		".secret-files/",
+		"overrides/",
+	} {
+		if !strings.Contains(string(got), pattern) {
+			t.Errorf("default .dockerignore missing pattern %q; got:\n%s", pattern, got)
+		}
+	}
+}
+
+func TestEnsureDockerignore_PreservesExisting(t *testing.T) {
+	// Pre-existing .dockerignore must never be modified, even if it
+	// fails to exclude every RunOS-managed file. The tarball walker is
+	// the security boundary; this helper only writes documentation when
+	// there's no user file to fight with.
+	dir := t.TempDir()
+	custom := "node_modules/\n*.log\n"
+	path := filepath.Join(dir, ".dockerignore")
+	if err := os.WriteFile(path, []byte(custom), 0644); err != nil {
+		t.Fatalf("seed .dockerignore: %v", err)
+	}
+
+	res, err := EnsureDockerignore(dir)
+	if err != nil {
+		t.Fatalf("EnsureDockerignore: %v", err)
+	}
+	if !res.InSync {
+		t.Errorf("pre-existing .dockerignore should produce InSync=true; got %+v", res)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read .dockerignore: %v", err)
+	}
+	if string(got) != custom {
+		t.Errorf("existing .dockerignore must not be rewritten; got %q want %q", got, custom)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Override helpers
+// ---------------------------------------------------------------------------
+
+func TestOverridesDirname(t *testing.T) {
+	if got := OverridesDirname(); got != "overrides" {
+		t.Errorf("OverridesDirname = %q, want overrides", got)
+	}
+}
+
+func TestSanitizeOverrideName(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"Deployed By RunOS", "deployed-by-runos"},
+		{"pod-security", "pod-security"},
+		{"  leading space", "leading-space"},
+		{"Multiple    Spaces", "multiple-spaces"},
+		{"!!!only-symbols!!!", "only-symbols"},
+		{"unicode: 日本", "unicode"},
+		{"CamelCaseName", "camelcasename"},
+		{"", ""},
+		// Edge cases: filesystem-meaningful names must be rejected.
+		{".", ""},
+		{"..", ""},
+		{".hidden", "hidden"},
+		{"...", ""},
+		{"..foo", "foo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := sanitizeOverrideName(tt.in); got != tt.want {
+				t.Errorf("sanitizeOverrideName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateIdentifier(t *testing.T) {
+	t.Run("rejects empty", func(t *testing.T) {
+		if err := ValidateIdentifier("app id", ""); err == nil {
+			t.Fatal("expected error for empty value")
+		}
+	})
+
+	t.Run("accepts alphanumeric, dash, underscore", func(t *testing.T) {
+		good := []string{
+			"abcde",
+			"ABC123",
+			"app-id",
+			"app_id",
+			"a", // single char
+			"AppID-123_xyz",
+		}
+		for _, v := range good {
+			if err := ValidateIdentifier("app id", v); err != nil {
+				t.Errorf("ValidateIdentifier(%q) returned %v, want nil", v, err)
+			}
+		}
+	})
+
+	t.Run("rejects path traversal and special chars", func(t *testing.T) {
+		bad := []string{
+			"../etc",
+			"foo/bar",
+			"foo\\bar",
+			"foo bar",        // space
+			"foo.bar",        // dot
+			"foo\x00bar",     // null byte
+			"foo;ls",         // shell metacharacter
+			"foo\nbar",       // newline
+			"foo:bar",        // colon
+			"日本",             // non-ASCII
+			"appid4/../tmp",   // documented attack shape
+		}
+		for _, v := range bad {
+			if err := ValidateIdentifier("app id", v); err == nil {
+				t.Errorf("ValidateIdentifier(%q) returned nil, want error", v)
+			}
+		}
+	})
+
+	t.Run("error mentions kind label", func(t *testing.T) {
+		err := ValidateIdentifier("cluster id", "../bad")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "cluster id") {
+			t.Errorf("error %q should mention kind label", err.Error())
+		}
+	})
+}
+
+func TestOverrideFilenames_NoCollisions(t *testing.T) {
+	got := OverrideFilenames([]OverrideSummary{
+		{ID: "abc123xyz", Name: "Deployed By RunOS"},
+		{ID: "defghiuvw", Name: "Priority Class"},
+	})
+	want := []string{"deployed-by-runos.yaml", "priority-class.yaml"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("filenames = %v, want %v", got, want)
+	}
+}
+
+func TestOverrideFilenames_DisambiguatesOnCollision(t *testing.T) {
+	got := OverrideFilenames([]OverrideSummary{
+		{ID: "firstId000", Name: "Same Name"},
+		{ID: "secondId00", Name: "Same Name"},
+	})
+	// Both must have unique suffixes when names collide.
+	if got[0] == got[1] {
+		t.Fatalf("filenames collided: %v", got)
+	}
+	for _, name := range got {
+		if !strings.HasPrefix(name, "same-name-") {
+			t.Errorf("expected collision-suffixed name, got %q", name)
+		}
+	}
+}
+
+func TestOverrideFilenames_FallsBackToIdWhenNameEmpty(t *testing.T) {
+	got := OverrideFilenames([]OverrideSummary{
+		{ID: "abc123xyz", Name: ""},
+	})
+	if got[0] != "abc123.yaml" {
+		t.Errorf("filename = %q, want abc123.yaml", got[0])
+	}
+}
+
+func TestSaveOverride_Writes0644InOverridesDir(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+	content := []byte("spec:\n  replicas: 2\n")
+
+	res, err := SaveOverride(dir, base, "pod-security.yaml", content)
+	if err != nil {
+		t.Fatalf("SaveOverride: %v", err)
+	}
+
+	wantDir := filepath.Join(dir, "runos.k1.ab12c", "overrides")
+	wantFile := filepath.Join(wantDir, "pod-security.yaml")
+	if res.Path != wantFile {
+		t.Errorf("Path = %q, want %q", res.Path, wantFile)
+	}
+
+	if runtime.GOOS != "windows" {
+		// Overrides are plain manifest fragments, not secrets, so both the
+		// directory and file should be world-readable (0755 / 0644).
+		dirInfo, err := os.Stat(wantDir)
+		if err != nil {
+			t.Fatalf("stat dir: %v", err)
+		}
+		if perm := dirInfo.Mode().Perm(); perm != 0o755 {
+			t.Errorf("dir perm = %o, want 0755", perm)
+		}
+		fileInfo, err := os.Stat(res.Path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if perm := fileInfo.Mode().Perm(); perm != 0o644 {
+			t.Errorf("file perm = %o, want 0644", perm)
+		}
+	}
+
+	got, _ := os.ReadFile(res.Path)
+	if string(got) != string(content) {
+		t.Errorf("content mismatch: %q", got)
+	}
+}
+
+func TestSaveOverride_RejectsPathSeparators(t *testing.T) {
+	_, err := SaveOverride(t.TempDir(), "runos.k1.web", "../escape.yaml", []byte("x"))
+	if err == nil || !strings.Contains(err.Error(), "path separator") {
+		t.Fatalf("expected path separator error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InSync (no-op) behaviour
+// ---------------------------------------------------------------------------
+
+func TestSaveYAML_InSyncWhenContentMatches(t *testing.T) {
+	dir := t.TempDir()
+	app := &PulledApp{
+		App:        "web",
+		DeployType: "cli",
+		ID:         "ab12c",
+		CID:        "k1",
+		AID:        "acc-1",
+		Replicas:   1,
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+	}
+	base := DefaultBaseName(app.CID, app.ID)
+
+	first, err := SaveYAML(dir, base, app)
+	if err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	if first.InSync {
+		t.Fatalf("first save should not be InSync, got %+v", first)
+	}
+
+	// Second save with identical content should be a no-op.
+	firstInfo, _ := os.Stat(first.Path)
+	second, err := SaveYAML(dir, base, app)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if !second.InSync {
+		t.Errorf("expected InSync=true, got %+v", second)
+	}
+
+	// Verify the file on disk was not rewritten (mod time unchanged) and
+	// no backup was created.
+	secondInfo, _ := os.Stat(second.Path)
+	if !secondInfo.ModTime().Equal(firstInfo.ModTime()) {
+		t.Errorf("file was rewritten even though content matched")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected 1 file in dir, got %d: %v", len(entries), names)
+	}
+}
+
+func TestSaveEnv_InSyncWhenContentMatches(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+	vars := map[string]string{"A": "1", "B": "2"}
+
+	if _, err := SaveEnv(dir, base, "k1", "ab12c", vars); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+
+	res, err := SaveEnv(dir, base, "k1", "ab12c", vars)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !res.InSync {
+		t.Errorf("expected InSync=true, got %+v", res)
+	}
+}
+
+func TestSaveSecretFile_InSyncWhenContentMatches(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+	content := []byte("-----BEGIN CERT-----\n...\n")
+
+	if _, err := SaveSecretFile(dir, base, "server.crt", content); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+
+	res, err := SaveSecretFile(dir, base, "server.crt", content)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !res.InSync {
+		t.Errorf("expected InSync=true, got %+v", res)
+	}
+
+	// No backup file should have been created alongside.
+	dirEntries, _ := os.ReadDir(filepath.Join(dir, "runos.k1.ab12c", ".secret-files"))
+	if len(dirEntries) != 1 {
+		names := []string{}
+		for _, e := range dirEntries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected 1 file in secret-files dir, got %d: %v", len(dirEntries), names)
+	}
+}
+
+func TestSaveEnv_EmptyMapProducesEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	res, err := SaveEnv(dir, DefaultBaseName("k1", "ab12c"), "k1", "ab12c", map[string]string{})
+	if err != nil {
+		t.Fatalf("SaveEnv: %v", err)
+	}
+	data, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("expected empty file, got %q", data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Secret file helpers
+// ---------------------------------------------------------------------------
+
+func TestValidateSecretFilename(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr string
+	}{
+		{"plain", "server.crt", ""},
+		{"dotted", ".env", ""},
+		{"empty", "", "empty"},
+		{"forward slash", "sub/foo", "path separator"},
+		{"back slash", `sub\foo`, "path separator"},
+		{"dot", ".", "cannot be"},
+		{"dotdot", "..", "cannot be"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSecretFilename(tt.in)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSecretFilesDirname(t *testing.T) {
+	if got := SecretFilesDirname(); got != ".secret-files" {
+		t.Errorf("SecretFilesDirname = %q, want .secret-files", got)
+	}
+}
+
+func TestSaveSecretFile_CreatesDir0700File0600(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+	content := []byte("-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n")
+
+	res, err := SaveSecretFile(dir, base, "server.crt", content)
+	if err != nil {
+		t.Fatalf("SaveSecretFile: %v", err)
+	}
+
+	wantDir := filepath.Join(dir, "runos.k1.ab12c", ".secret-files")
+	wantFile := filepath.Join(wantDir, "server.crt")
+	if res.Path != wantFile {
+		t.Errorf("Path = %q, want %q", res.Path, wantFile)
+	}
+
+	if runtime.GOOS != "windows" {
+		dirInfo, err := os.Stat(wantDir)
+		if err != nil {
+			t.Fatalf("stat dir: %v", err)
+		}
+		if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+			t.Errorf("dir perm = %o, want 0700", perm)
+		}
+		fileInfo, err := os.Stat(res.Path)
+		if err != nil {
+			t.Fatalf("stat file: %v", err)
+		}
+		if perm := fileInfo.Mode().Perm(); perm != 0o600 {
+			t.Errorf("file perm = %o, want 0600", perm)
+		}
+	}
+
+	got, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("content mismatch\ngot:  %q\nwant: %q", got, content)
+	}
+}
+
+func TestSaveSecretFile_TightensModeOnExistingLooseFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file mode bits behave differently on Windows")
+	}
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+
+	// Pre-seed the secret file at 0644 to mimic something an older tool
+	// or a sloppy umask left behind. SaveSecretFile must end at 0600
+	// regardless of whether the content actually changed.
+	preDir := filepath.Join(dir, "runos.k1.ab12c", ".secret-files")
+	if err := os.MkdirAll(preDir, 0700); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	prePath := filepath.Join(preDir, "server.crt")
+	content := []byte("cert-bytes")
+	if err := os.WriteFile(prePath, content, 0644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	if _, err := SaveSecretFile(dir, base, "server.crt", content); err != nil {
+		t.Fatalf("SaveSecretFile (in-sync path): %v", err)
+	}
+	info, err := os.Stat(prePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("after in-sync save: file perm = %o, want 0600", perm)
+	}
+
+	// And again with new content (the write path), starting from 0644.
+	if err := os.Chmod(prePath, 0644); err != nil {
+		t.Fatalf("relax mode: %v", err)
+	}
+	if _, err := SaveSecretFile(dir, base, "server.crt", []byte("new-bytes")); err != nil {
+		t.Fatalf("SaveSecretFile (overwrite path): %v", err)
+	}
+	info, err = os.Stat(prePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("after overwrite: file perm = %o, want 0600", perm)
+	}
+}
+
+func TestSaveSecretFile_OverwritesWithoutBackup(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+
+	if _, err := SaveSecretFile(dir, base, "server.crt", []byte("v1")); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	res, err := SaveSecretFile(dir, base, "server.crt", []byte("v2"))
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if res.InSync {
+		t.Error("second save should not report InSync when content differs")
+	}
+
+	// Only one file in the secret-files dir (no backup file retained).
+	entries, _ := os.ReadDir(filepath.Join(dir, "runos.k1.ab12c", ".secret-files"))
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected 1 file, got %d: %v", len(entries), names)
+	}
+	current, _ := os.ReadFile(res.Path)
+	if string(current) != "v2" {
+		t.Errorf("current carrying wrong content: %q", current)
+	}
+}
+
+func TestSaveSecretFile_RejectsPathTraversalFilenames(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+
+	_, err := SaveSecretFile(dir, base, "../outside", []byte("x"))
+	if err == nil {
+		t.Fatal("expected error for path-traversal filename")
+	}
+	if !strings.Contains(err.Error(), "path separator") {
+		t.Errorf("error should mention path separator, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FindPulledYAMLs (auto-detect)
+// ---------------------------------------------------------------------------
+
+func TestFindPulledYAMLs_UniqueMatch(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	body := []byte(`app: x
+deployType: cli
+id: appid5
+cid: mycluster3
+aid: myacct
+replicas: 1
+`)
+	if err := os.WriteFile(yamlPath, body, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid) != 1 || got.Valid[0] != yamlPath {
+		t.Errorf("Valid = %v, want [%q]", got.Valid, yamlPath)
+	}
+	if len(got.Partial) != 0 {
+		t.Errorf("Partial should be empty, got %v", got.Partial)
+	}
+}
+
+func TestFindPulledYAMLs_OldLayoutFilenameMatches(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.mycluster3.appid5.yaml")
+	body := []byte(`app: x
+deployType: cli
+id: appid5
+cid: mycluster3
+aid: myacct
+replicas: 1
+`)
+	if err := os.WriteFile(yamlPath, body, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid) != 1 || got.Valid[0] != yamlPath {
+		t.Errorf("Valid = %v, want [%q]", got.Valid, yamlPath)
+	}
+}
+
+func TestFindPulledYAMLs_MultipleCandidates(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`app: x
+deployType: cli
+id: appid5
+cid: mycluster3
+aid: myacct
+replicas: 1
+`)
+	for _, name := range []string{"runos.yaml", "runos.prod.yaml", "myrunos.yml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid) != 3 {
+		t.Errorf("expected 3 valid candidates, got %d: %v", len(got.Valid), got.Valid)
+	}
+}
+
+func TestFindPulledYAMLs_IgnoresFilesWithoutRunos(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`id: x
+cid: mycluster3
+aid: myacct
+`), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid)+len(got.Partial) != 0 {
+		t.Errorf("filename without 'runos' should not match: %+v", got)
+	}
+}
+
+func TestFindPulledYAMLs_PartialBucketCapturesYamlWithoutRequiredFields(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-deploy yaml that matches the filename pattern but lacks id/cid/aid.
+	// Should land in Partial so the caller can give a "looks like a fresh
+	// deploy yaml, run pull first" hint instead of "no yaml found".
+	partialPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(partialPath, []byte(`app: my-app
+port: 3000
+`), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid) != 0 {
+		t.Errorf("yaml without id/cid/aid should not be in Valid: %v", got.Valid)
+	}
+	if len(got.Partial) != 1 || got.Partial[0] != partialPath {
+		t.Errorf("Partial = %v, want [%q]", got.Partial, partialPath)
+	}
+}
+
+func TestFindPulledYAMLs_IgnoresSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "runos.mycluster3.appid5")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Yaml inside the subdir; FindPulledYAMLs should not recurse.
+	if err := os.WriteFile(filepath.Join(subdir, "runos.yaml"), []byte(`id: x
+cid: mycluster3
+aid: myacct
+`), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := FindPulledYAMLs(dir)
+	if err != nil {
+		t.Fatalf("FindPulledYAMLs: %v", err)
+	}
+	if len(got.Valid)+len(got.Partial) != 0 {
+		t.Errorf("subdirectory yaml should be ignored: %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveX with empty base (flat layout)
+// ---------------------------------------------------------------------------
+
+func TestSaveYAML_EmptyBaseWritesIntoParentDirectly(t *testing.T) {
+	dir := t.TempDir()
+	app := &PulledApp{App: "x", DeployType: "cli", ID: "appid5", CID: "mycluster3", AID: "myacct", Replicas: 1}
+
+	res, err := SaveYAML(dir, "", app)
+	if err != nil {
+		t.Fatalf("SaveYAML: %v", err)
+	}
+	want := filepath.Join(dir, "runos.yaml")
+	if res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("yaml not written: %v", err)
+	}
+}
+
+func TestSaveSecretFile_EmptyBaseWritesIntoParentDotDir(t *testing.T) {
+	dir := t.TempDir()
+	res, err := SaveSecretFile(dir, "", "tls.key", []byte("secret"))
+	if err != nil {
+		t.Fatalf("SaveSecretFile: %v", err)
+	}
+	want := filepath.Join(dir, ".secret-files", "tls.key")
+	if res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+}
+
+func TestSaveOverride_EmptyBaseWritesIntoParentOverridesDir(t *testing.T) {
+	dir := t.TempDir()
+	res, err := SaveOverride(dir, "", "pod-security.yaml", []byte("spec: {}\n"))
+	if err != nil {
+		t.Fatalf("SaveOverride: %v", err)
+	}
+	want := filepath.Join(dir, "overrides", "pod-security.yaml")
+	if res.Path != want {
+		t.Errorf("Path = %q, want %q", res.Path, want)
+	}
+}
+
+func TestSaveEnv_OverwritesWithoutBackup(t *testing.T) {
+	dir := t.TempDir()
+	base := DefaultBaseName("k1", "ab12c")
+	if _, err := SaveEnv(dir, base, "k1", "ab12c", map[string]string{"A": "1"}); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	res, err := SaveEnv(dir, base, "k1", "ab12c", map[string]string{"A": "2"})
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if res.InSync {
+		t.Error("second save should not report InSync when content differs")
+	}
+	// Only one env file lives in the dir (no backup file retained).
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected 1 env file, got %d: %v", len(entries), names)
+	}
+	current, _ := os.ReadFile(res.Path)
+	if !strings.Contains(string(current), "A=2") {
+		t.Errorf("current file missing updated content: %q", current)
+	}
+}
+
