@@ -91,16 +91,26 @@ jobs:
             echo "$NOTES" > release_notes.txt
           fi
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           body_path: ${{ steps.notes.outputs.found == 'true' && 'release_notes.txt' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
           files: dist/*
-          # Tags containing "-" (semver pre-release suffix: -rc1, -alpha,
+          # Tags containing "-" (semver pre-release suffix: -rc.1, -alpha,
           # -beta, ...) are marked as GitHub prereleases. Prereleases are
           # excluded from the repo's "Latest release" pointer, so the
           # `releases/latest/download/...` URL keeps serving the most
           # recent stable. Testers opt in to a prerelease explicitly via
           # `https://get.runos.com/cli.sh?release=<tag>`.
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # The repo has Immutable Releases enabled: assets cannot be
+          # uploaded after a release is published. We create the release
+          # as a draft so this action's asset upload step succeeds, then
+          # flip it to published in the next step.
+          draft: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false

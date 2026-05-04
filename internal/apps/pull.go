@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -701,7 +700,7 @@ func writeIfNeeded(path string, newContent []byte, mode fs.FileMode) (WriteResul
 	// O_TRUNC, an existing regular file gets clobbered (intended); an
 	// existing symlink at the same path returns ELOOP and we surface
 	// that as an error rather than silently following.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|nofollowOpenFlag, mode)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("failed to open %s: %w", filepath.Base(path), err)
 	}

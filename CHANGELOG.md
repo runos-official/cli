@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0-rc.2
+
+Build fix on top of v1.0.0-rc.1. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.2`.
+
+### Bug fixes
+
+- **Windows build**: `syscall.O_NOFOLLOW` (used in `apps_pull`'s symlink-refusal write path) doesn't exist on Windows, so the rc.1 release workflow failed at the `windows/amd64` step. Replaced with a build-tagged constant: protection is preserved on Unix; the flag is a no-op on Windows where the equivalent OS-level guarantee isn't available.
+
 ## v1.0.0-rc.1
 
 Foundational release. Introduces IaC workflows for both apps and services, headless authentication for CI/CD, and a topic-driven documentation system for AI assistants. This is a release candidate for testing; install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.1`. The default install URL keeps serving the previous stable.
@@ -11,7 +19,7 @@ Foundational release. Introduces IaC workflows for both apps and services, headl
 - **Service yaml shape is desired-state only**: `runos.service.<cid>.<type>.<sid>.yaml` contains exactly the fields the user can set (`add.Input.Fields ∪ update.Input.Fields ∪ add.Input.Flags`). Audit, derived, and operational fields the show response carries are filtered out automatically. Filename is convention; renames are tolerated via header-based lookup.
 - **Apps integration with services IaC**: `apps_pull` cascades into pulling linked service yamls; `apps_sync` refuses `requires:` entries without an `id:` (provisioning is the service-yaml's job); `runos deploy` keeps the `requires.<alias>.class` shorthand and now writes a service yaml on first-time provisioning.
 - **PAT-based authentication**: `runos account api-keys add` / `list` / `show` / `update` / `revoke` for managing personal access tokens. The CLI consumes a PAT via `RUNOS_API_KEY` (plus `RUNOS_ACCOUNT_ID`, optional `RUNOS_API_URL`); when set, the CLI bypasses Firebase entirely. Headless CI runners need no `~/.runos/config.json` and no interactive `runos login`.
-- **Topic-driven MCP documentation**: four topic files (apps, services, api-keys, cicd) under `gitignored/mcp-topics/`. The MCP read server requires the LLM to consume a minimum number of distinct topics before non-topic tools unlock, so AI assistants ground themselves in the workflow before executing it.
+- **Topic-driven MCP documentation**: the MCP read server now requires the LLM to consume a minimum number of distinct topics (apps, services, api-keys, cicd, ...) before non-topic tools unlock, so AI assistants ground themselves in the workflow before executing it. Topic content is delivered to MCP clients separately from the CLI binary.
 - **Service delete guard (409)**: `DELETE /services/<type>/<id>` returns a structured 409 listing dependent apps when any reference the service. The CLI renders this as a multi-line refusal naming each dependent and its alias, with reconcile guidance.
 - **`runos follow <jobId>`**: blocking job-status follower with line-oriented output (one line per state change, no escape codes, no spinners, no repaints). Suitable for CI logs and AI consumers; exit code gates downstream pipeline steps.
 
