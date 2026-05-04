@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0-rc.5
+
+Bug fix on top of v1.0.0-rc.4. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.5`.
+
+### Bug fixes
+
+- **`services pull` no longer projects class-derived cpu/memory/replica fields when a real resource class is stored**: now that the API manifest declares `replicas` / `cpuRequestMc` / `cpuLimitMc` / `memoryRequestMb` / `memoryLimitMb` as settable on `services/<type>/{id}/update` (so they can be overridden), the manifest-driven pull was projecting them into every yaml regardless of the stored class. With a real class set, the API encapsulates those values, so the yaml only needs the class. The CLI now mirrors the apps_pull preset-wins gate: real class → strip the five derived fields; `custom` (or empty / legacy) → keep them as the user-owned source of truth. Eliminates the false drift introduced by rc.4 on every service whose manifest exposes resource fields.
+
 ## v1.0.0-rc.4
 
 CI/CD UX fixes on top of v1.0.0-rc.3. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.4`.

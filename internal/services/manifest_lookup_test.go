@@ -19,6 +19,51 @@ func namesAsFields(names ...string) []manifest.OutputField {
 	return out
 }
 
+// manifestWithFullResourcesUpdateFields returns a manifest declaring a
+// `traefik` type whose update endpoint accepts every class-coupled
+// field (replicas + cpu/memory request/limit) plus resourceRequirementClassId
+// itself. Used to drive the preset-wins gate in BuildPulledService through
+// every field it can strip.
+func manifestWithFullResourcesUpdateFields(t *testing.T) *manifest.Manifest {
+	t.Helper()
+	return &manifest.Manifest{
+		Version: "test",
+		Commands: []manifest.Command{
+			{
+				Command:  "services/traefik/{id}/show",
+				Method:   "GET",
+				Endpoint: "/:aid/:cid/services/traefik/:id",
+				Output:   &manifest.Output{Fields: namesAsFields("id", "name", "version", "resourceRequirementClassId", "replicas", "cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb")},
+			},
+			{
+				Command:  "services/traefik/add",
+				Method:   "POST",
+				Endpoint: "/:aid/:cid/services/traefik",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "name", Type: "string"},
+					{Name: "resourceRequirementClassId", Type: "string"},
+				}},
+			},
+			{
+				Command:  "services/traefik/{id}/update",
+				Method:   "PATCH",
+				Endpoint: "/:aid/:cid/services/traefik/:id",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "id", Type: "string", Required: true, Positional: true},
+					{Name: "name", Type: "string"},
+					{Name: "version", Type: "string"},
+					{Name: "resourceRequirementClassId", Type: "string"},
+					{Name: "replicas", Type: "integer"},
+					{Name: "cpuRequestMc", Type: "integer"},
+					{Name: "cpuLimitMc", Type: "integer"},
+					{Name: "memoryRequestMb", Type: "integer"},
+					{Name: "memoryLimitMb", Type: "integer"},
+				}},
+			},
+		},
+	}
+}
+
 // fakeValkeyLikeManifest returns a minimal manifest with a `valkey` type
 // whose add command declares Input.Flags. Used to exercise the flags
 // projection path in BuildPulledService.

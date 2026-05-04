@@ -8,6 +8,23 @@ import (
 	"github.com/runos-official/cli/internal/manifest"
 )
 
+// classCoupledFields are the cpu/memory/replica values a non-custom
+// resource class encapsulates server-side. The API exposes them on the
+// update endpoint so they CAN be overridden, but a server-stored class
+// other than "custom" means the values are the class's, not the user's.
+// Pulling them back into yaml in that case would re-pin derived values
+// the next sync would either echo (no-op) or accidentally flip the
+// class to "custom" (see services topic, "Resource class + overrides").
+//
+// Mirrors the apps_pull preset-wins gate in internal/apps/pull.go.
+var classCoupledFields = []string{
+	"replicas",
+	"cpuRequestMc",
+	"cpuLimitMc",
+	"memoryRequestMb",
+	"memoryLimitMb",
+}
+
 // Pull fetches the current server state of a single service via the
 // services/<type>/{id}/show endpoint and projects it into a ServiceYAML.
 //
@@ -103,6 +120,18 @@ func BuildPulledService(raw map[string]any, serviceType, cid, aid, sid string, a
 	for k := range settable {
 		if v, ok := raw[k]; ok {
 			out.Fields[k] = v
+		}
+	}
+
+	// Preset-wins: when the stored class is a real class (not "custom"
+	// or empty), strip the cpu/memory/replica fields the class supplies
+	// from the projection. Otherwise the yaml records the class AND the
+	// derived values, which round-trips as drift and (on sync) would
+	// flip the server-stored class to "custom" because the API treats
+	// any class-plus-override submission as a custom config.
+	if classID, _ := out.Fields["resourceRequirementClassId"].(string); classID != "" && classID != "custom" {
+		for _, f := range classCoupledFields {
+			delete(out.Fields, f)
 		}
 	}
 

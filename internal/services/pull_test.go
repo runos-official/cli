@@ -40,14 +40,97 @@ func TestBuildPulledService_StripsServerOnlyFields(t *testing.T) {
 			t.Errorf("field %q must be filtered out, got %v", banned, got.Fields[banned])
 		}
 	}
+	// Note: replicas is in the update endpoint's Input.Fields (so it's
+	// a settable field), but the stored class is a real class
+	// (postgresql.c0.beff != "custom"), so the preset-wins gate strips
+	// it from the projection. See the dedicated preset-wins test below
+	// for the full class-coupled field set.
 	want := map[string]any{
 		"name":                       "poll-app-db",
 		"resourceRequirementClassId": "postgresql.c0.beff",
 		"version":                    "17.6",
-		"replicas":                   1,
 	}
 	if !reflect.DeepEqual(got.Fields, want) {
 		t.Errorf("Fields mismatch:\n got %v\nwant %v", got.Fields, want)
+	}
+}
+
+// TestBuildPulledService_PresetWinsStripsClassCoupledFields verifies the
+// preset-wins gate: when the stored resourceRequirementClassId is a real
+// class, the cpu/memory/replica fields the class encapsulates server-side
+// are dropped from the yaml projection. When the class is "custom" (or
+// empty / legacy), those fields are kept because the user has explicitly
+// diverged and the values are the source of truth.
+//
+// Without this gate the yaml round-trips with both class AND derived
+// values, producing false drift on diff and (on sync) flipping the
+// server-stored class to "custom" because the API treats class +
+// override as a custom config.
+func TestBuildPulledService_PresetWinsStripsClassCoupledFields(t *testing.T) {
+	t.Parallel()
+	// Build a manifest that declares ALL class-coupled fields as
+	// settable on update, so the projection sees them and the gate
+	// has something to strip. The fakeManifest only has replicas, but
+	// real types like traefik declare cpu/memory too.
+	m := manifestWithFullResourcesUpdateFields(t)
+	addCmd, _ := AddCommand(m, "traefik")
+	updateCmd, _ := UpdateCommand(m, "traefik")
+
+	rawWithRealClass := map[string]any{
+		"id":                         "ek6is",
+		"name":                       "traefik-ek6is",
+		"resourceRequirementClassId": "traefik.c0.beff",
+		"version":                    "v3.6.10",
+		"replicas":                   1,
+		"cpuRequestMc":               0,
+		"cpuLimitMc":                 250,
+		"memoryRequestMb":            0,
+		"memoryLimitMb":              256,
+	}
+	got := BuildPulledService(rawWithRealClass, "traefik", "mycluster3", "acct1", "ek6is", addCmd, updateCmd)
+	for _, banned := range []string{"replicas", "cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb"} {
+		if _, ok := got.Fields[banned]; ok {
+			t.Errorf("real class: field %q must be stripped (class encapsulates it), got %v", banned, got.Fields[banned])
+		}
+	}
+	if got.Fields["resourceRequirementClassId"] != "traefik.c0.beff" {
+		t.Errorf("real class: resourceRequirementClassId = %v, want traefik.c0.beff", got.Fields["resourceRequirementClassId"])
+	}
+
+	rawWithCustom := map[string]any{
+		"id":                         "ek6is",
+		"name":                       "traefik-ek6is",
+		"resourceRequirementClassId": "custom",
+		"version":                    "v3.6.10",
+		"replicas":                   2,
+		"cpuRequestMc":               1000,
+		"cpuLimitMc":                 4000,
+		"memoryRequestMb":            512,
+		"memoryLimitMb":              4096,
+	}
+	got = BuildPulledService(rawWithCustom, "traefik", "mycluster3", "acct1", "ek6is", addCmd, updateCmd)
+	for _, kept := range []string{"replicas", "cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb"} {
+		if _, ok := got.Fields[kept]; !ok {
+			t.Errorf("custom class: field %q must be kept (user-owned values), absent", kept)
+		}
+	}
+
+	// Empty class (legacy / pre-class data): keep cpu/memory/replicas
+	// because they're the only signal of how the service is sized.
+	rawNoClass := map[string]any{
+		"id":              "ek6is",
+		"name":            "traefik-ek6is",
+		"replicas":        1,
+		"cpuLimitMc":      250,
+		"memoryLimitMb":   256,
+		"cpuRequestMc":    0,
+		"memoryRequestMb": 0,
+	}
+	got = BuildPulledService(rawNoClass, "traefik", "mycluster3", "acct1", "ek6is", addCmd, updateCmd)
+	for _, kept := range []string{"replicas", "cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb"} {
+		if _, ok := got.Fields[kept]; !ok {
+			t.Errorf("empty class: field %q must be kept (legacy fallback), absent", kept)
+		}
 	}
 }
 
