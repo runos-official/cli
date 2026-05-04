@@ -36,14 +36,14 @@ type appsCmdContext struct {
 	svc   *apps.Service
 }
 
-// prepareAppsCmd loads config, fetches a fresh ID token, resolves the
-// cluster id from --cid (or the configured default), and constructs the
-// Service. All apps subcommands need exactly this prelude, extracted to
-// keep the cmd files focused on their actual logic.
+// prepareAppsCmd loads config, fetches a fresh ID token, and reads --cid
+// or the configured default. The returned context may have an empty cid
+// when neither was set: callers that have a yaml positional resolve cid
+// from the yaml itself via ctx.bindToYAML; callers that don't have a
+// yaml (apps_pull) call ctx.requireCID first.
 //
-// The cluster id is treated as the user's expected cluster context.
-// Subcommands that consume a yaml file are expected to cross-check the
-// yaml's cid: against ctx.cid.
+// The Service is built lazily — only once a cid is known — because
+// apps.NewService bakes the cid into every URL it constructs.
 func prepareAppsCmd(cmd *cobra.Command) (*appsCmdContext, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -61,16 +61,46 @@ func prepareAppsCmd(cmd *cobra.Command) (*appsCmdContext, error) {
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
 	}
-	if cid == "" {
-		return nil, fmt.Errorf("cluster ID required: pass --cid or set default with 'runos clusters default <cid>'")
-	}
 	cfg.AccountID = aid
-	return &appsCmdContext{
+	ctx := &appsCmdContext{
 		cfg:   cfg,
 		token: token,
 		cid:   cid,
-		svc:   apps.NewService(cfg.GetAPIURL(), token, cid, aid),
-	}, nil
+	}
+	if cid != "" {
+		ctx.svc = apps.NewService(cfg.GetAPIURL(), token, cid, aid)
+	}
+	return ctx, nil
+}
+
+// bindToYAML adopts the cid declared in a loaded yaml. When the user
+// also passed --cid (or had a default set), the two must match — this
+// is the cross-cluster-push guard. When no cid was set at all, the yaml
+// is treated as the source of truth so users can run sync/diff against
+// any committed yaml without redundantly naming the cluster.
+//
+// On success the Service is constructed (or kept) and ctx.cid is final.
+func (c *appsCmdContext) bindToYAML(yamlCID string) error {
+	switch {
+	case c.cid == "":
+		c.cid = yamlCID
+	case c.cid != yamlCID:
+		return fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q, refusing to push to a different cluster than expected", yamlCID, c.cid)
+	}
+	if c.svc == nil {
+		c.svc = apps.NewService(c.cfg.GetAPIURL(), c.token, c.cid, c.cfg.AccountID)
+	}
+	return nil
+}
+
+// requireCID errors when no cid was resolved. Used by commands without
+// a yaml positional (apps_pull) where there's nothing to source cid
+// from on the local side.
+func (c *appsCmdContext) requireCID() error {
+	if c.cid == "" {
+		return fmt.Errorf("cluster ID required: pass --cid or set default with 'runos clusters default <cid>'")
+	}
+	return nil
 }
 
 // resolveYamlArg returns an absolute yaml path for diff/sync. If args

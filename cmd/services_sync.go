@@ -38,7 +38,7 @@ Examples:
 }
 
 func init() {
-	servicesSyncCmd.Flags().String("cid", "", "cluster ID (overrides default; cross-checked against the yaml)")
+	servicesSyncCmd.Flags().String("cid", "", "cluster ID (optional; defaults to the yaml's cid: field, cross-checked against the yaml when set)")
 	servicesSyncCmd.Flags().Bool("dry-run", false, "compute the plan but don't apply anything")
 	servicesSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	servicesSyncCmd.Flags().Bool("redact-secrets", false, "redact field values in the plan output (used by the MCP wrapper)")
@@ -68,8 +68,8 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 	if local.AID != ctx.cfg.AccountID {
 		return fmt.Errorf("yaml is for account %q but you're logged in as %q", local.AID, ctx.cfg.AccountID)
 	}
-	if local.CID != ctx.cid {
-		return fmt.Errorf("cluster mismatch: yaml is for %q but --cid (or default) is %q", local.CID, ctx.cid)
+	if err := ctx.bindToYAML(local.CID); err != nil {
+		return err
 	}
 	if !services.IsSupportedType(ctx.manifest, local.Type) {
 		return fmt.Errorf("service type %q is not supported by the current manifest (run 'runos manifest update'?). Known types: %v", local.Type, services.ListSupportedTypes(ctx.manifest))

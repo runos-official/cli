@@ -25,9 +25,10 @@ dir, run runos apps diff" works with no arguments). Zero or multiple
 matches produce a directly-actionable error.
 
 The yaml file is the manifest. Diff reads the cid + id + aid from inside
-it. You must still supply --cid (or have a default set) as a context
-guard, it's cross-checked against the yaml's cid: field so you can't
-diff a yaml against the wrong cluster.
+it. Pass --cid (or set a default) only if you want to assert a specific
+cluster, it's cross-checked against the yaml's cid: field and any
+mismatch refuses the diff so you can't compare a yaml against the wrong
+cluster.
 
 Examples:
   cd runos.mycluster3.appid4 && runos apps diff                   # auto-detect
@@ -39,7 +40,7 @@ Examples:
 }
 
 func init() {
-	appsDiffCmd.Flags().String("cid", "", "cluster ID (context guard; cross-checked against the yaml)")
+	appsDiffCmd.Flags().String("cid", "", "cluster ID (optional; defaults to the yaml's cid: field, cross-checked against the yaml when set)")
 	appsDiffCmd.Flags().Bool("show-secrets", false, "also print decoded content diff for drifted secret files (sensitive)")
 	appsDiffCmd.Flags().BoolP("json", "j", false, "emit diff report as JSON")
 	appsDiffCmd.Flags().Bool("redact-secrets", false, "replace env values in the env section's unified diff with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
@@ -65,6 +66,9 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	}
 	if localApp.ID == "" || localApp.CID == "" || localApp.AID == "" {
 		return fmt.Errorf("yaml at %q is missing id/cid/aid, pull again to refresh", yamlPath)
+	}
+	if err := ctx.bindToYAML(localApp.CID); err != nil {
+		return err
 	}
 
 	jsonOutput, _ := cmd.Flags().GetBool("json")

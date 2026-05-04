@@ -35,7 +35,7 @@ Examples:
 }
 
 func init() {
-	servicesPullCmd.Flags().String("cid", "", "cluster ID (overrides default)")
+	servicesPullCmd.Flags().String("cid", "", "cluster ID (required for --type+--service-id mode; sourced from the yaml's cid: field when re-pulling a yaml positional)")
 	servicesPullCmd.Flags().String("type", "", "service type (e.g. postgresql, valkey, mysql)")
 	servicesPullCmd.Flags().String("service-id", "", "service id (5-char identifier)")
 	servicesPullCmd.Flags().StringP("out", "o", "", "output directory (defaults to cwd; ignored when re-pulling a yaml-file positional)")
@@ -83,14 +83,17 @@ func runServicesPull(cmd *cobra.Command, args []string) error {
 		if existing.AID != ctx.cfg.AccountID {
 			return fmt.Errorf("yaml is for account %q but you're logged in as %q", existing.AID, ctx.cfg.AccountID)
 		}
-		if existing.CID != ctx.cid {
-			return fmt.Errorf("cluster mismatch: yaml is for %q but --cid (or default) is %q", existing.CID, ctx.cid)
+		if err := ctx.bindToYAML(existing.CID); err != nil {
+			return err
 		}
 		if existing.ID == "" {
 			return fmt.Errorf("yaml at %q has no id, run 'runos services sync' to provision first", yamlPath)
 		}
 		serviceType, sid, destPath = existing.Type, existing.ID, yamlPath
 	case typeFlag != "" && sidFlag != "":
+		if err := ctx.requireCID(); err != nil {
+			return err
+		}
 		serviceType, sid = typeFlag, sidFlag
 		dir := outFlag
 		if dir == "" {

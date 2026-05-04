@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.0-rc.4
+
+CI/CD UX fixes on top of v1.0.0-rc.3. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.4`.
+
+### Improvements
+
+- **Yaml is the source of truth for cluster id**: `apps sync` / `apps diff` / `apps pull <yaml>` / `apps pull` (auto-detect) / `apps list-previous-uploads` and `services sync` / `services diff` / `services pull <yaml>` now read the cluster id from the yaml's `cid:` field. `--cid` (and `RUNOS_CLUSTER_ID`) become optional cross-check guards: passed values are still validated against the yaml, and any mismatch refuses the operation. CI loops over committed yamls no longer need a default cluster set, no `--cid` per call, no `RUNOS_CLUSTER_ID` env var. Commands that don't have a local yaml to source from (`apps pull --all`, `apps pull --app-id`, `services pull --type+--service-id`) still require an explicit cluster id.
+- **CDN config schema**: `RemoteDomains` now reads the canonical `api` field, falling back to the legacy `conductor` field for older payloads. Driven by a new `APIURL()` resolver, used everywhere the CDN environment is consumed.
+
 ## v1.0.0-rc.3
 
 Build + release-workflow fixes on top of v1.0.0-rc.1. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.3`. (rc.2 was an aborted attempt: the tag exists on GitHub but no release was published, and rc.3 supersedes it.)

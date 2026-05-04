@@ -29,9 +29,26 @@ type FirebaseConfig struct {
 }
 
 // RemoteDomains holds the domain URLs for a RunOS environment.
+//
+// The CDN config publishes both `api` (current) and `conductor` (legacy)
+// pointing at the same URL during the rename transition. APIURL()
+// prefers `api` and falls back to `conductor` so older CDN payloads
+// keep working until the legacy field is dropped.
 type RemoteDomains struct {
 	Console   string `json:"console"`
-	Conductor string `json:"conductor"`
+	API       string `json:"api,omitempty"`
+	Conductor string `json:"conductor,omitempty"`
+}
+
+// APIURL returns the API URL for this environment, preferring the
+// canonical `api` field and falling back to the legacy `conductor`
+// field. Always use this rather than reading the struct fields
+// directly, so adding more aliases later is a one-line change.
+func (d RemoteDomains) APIURL() string {
+	if d.API != "" {
+		return d.API
+	}
+	return d.Conductor
 }
 
 // RemoteEnvironment represents a single environment entry in the remote config.
@@ -112,7 +129,7 @@ func Load() (*Config, error) {
 				if env, ok := rc.Environments[rc.Default]; ok {
 					cfg.Env = rc.Default
 					cfg.ConsoleURL = env.Domains.Console
-					cfg.ConductorURL = env.Domains.Conductor
+					cfg.ConductorURL = env.Domains.APIURL()
 				}
 			}
 			return cfg, nil
@@ -279,7 +296,7 @@ func applyRemoteEnv(rc *RemoteConfig, envName string) (*Config, error) {
 
 	cfg.Env = envName
 	cfg.ConsoleURL = env.Domains.Console
-	cfg.ConductorURL = env.Domains.Conductor
+	cfg.ConductorURL = env.Domains.APIURL()
 
 	if err := cfg.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)

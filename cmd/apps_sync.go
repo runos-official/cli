@@ -28,10 +28,10 @@ The yaml file is the manifest. Sync reads it, follows the file references
 inside (env, secretFiles[].local, overrides[].local), and pushes the lot
 to the cluster identified by the yaml's own cid + aid + id fields.
 
-You must still supply --cid (or have a default set via "runos clusters
-default") as a context guard. The flag value is cross-checked against the
-yaml's cid: field; if they differ, sync refuses to run so you can't push
-the wrong file to the wrong cluster.
+The cluster id comes from the yaml's cid: field by default. Pass --cid
+(or set a default via "runos clusters default") to assert a specific
+cluster: the value is cross-checked against the yaml and any mismatch
+refuses the push, so you can't accidentally target the wrong cluster.
 
 Sync runs in two phases:
   1. Plan: fetch current server state, compare against your local files,
@@ -58,7 +58,7 @@ Examples:
 }
 
 func init() {
-	appsSyncCmd.Flags().String("cid", "", "cluster ID (context guard; cross-checked against the yaml)")
+	appsSyncCmd.Flags().String("cid", "", "cluster ID (optional; defaults to the yaml's cid: field, cross-checked against the yaml when set)")
 	appsSyncCmd.Flags().Bool("dry-run", false, "compute the plan but don't apply anything")
 	appsSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace env values in the plan output with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
@@ -92,8 +92,8 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	if localApp.AID != ctx.cfg.AccountID {
 		return fmt.Errorf("yaml is for account %q but you're logged in as %q", localApp.AID, ctx.cfg.AccountID)
 	}
-	if localApp.CID != ctx.cid {
-		return fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q, refusing to push to a different cluster than expected", localApp.CID, ctx.cid)
+	if err := ctx.bindToYAML(localApp.CID); err != nil {
+		return err
 	}
 
 	// Sync no longer provisions services. Any requires entry without an

@@ -186,8 +186,26 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	noServices, _ := cmd.Flags().GetBool("no-services")
 
+	// --all and --app-id paths have no local yaml to source cid from, so
+	// the user must have provided one explicitly. Yaml-positional and
+	// auto-detect modes defer this check: cid is sourced from the yaml
+	// after resolvePullPlan reads it.
+	if all || appIDFlag != "" {
+		if err := ctx.requireCID(); err != nil {
+			return err
+		}
+	}
+
 	plan, err := resolvePullPlan(args, all, appIDFlag, outFlag, ctx.cid, ctx.cfg.AccountID)
 	if err != nil {
+		return err
+	}
+	if plan.yamlCID != "" {
+		if err := ctx.bindToYAML(plan.yamlCID); err != nil {
+			return err
+		}
+	}
+	if err := ctx.requireCID(); err != nil {
 		return err
 	}
 	if err := validatePullPlan(plan, force, codeFlag); err != nil {
@@ -321,6 +339,7 @@ type pullPlan struct {
 	appID      string // empty for bulk
 	bulkParent string // for bulk only: parent dir in which per-app subdirs are created
 	fixedDir   string // for single modes: the resolved appDir for the one target
+	yamlCID    string // populated in yaml-positional / auto-detect modes; empty otherwise
 }
 
 // appDirFor returns the destination directory for a given resolved
@@ -355,6 +374,12 @@ func (p pullPlan) defaultSourceDir() string {
 // roundtrip: mutually-exclusive flag combinations, yaml/cid/aid sanity
 // checks, and the auto-detect fallback for "no positional, no --app-id,
 // no --all".
+//
+// expectedCID is used for two purposes: as the dir name fragment in
+// `id-subdir` mode (where there's no yaml to source the cid from) and
+// as the cross-check value for yaml-positional / auto-detect modes
+// (when non-empty). Pass "" to skip the cross-check; the caller binds
+// to plan.yamlCID afterwards.
 func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, expectedAID string) (pullPlan, error) {
 	if all && len(args) > 0 {
 		return pullPlan{}, fmt.Errorf("--all and a positional yaml file are mutually exclusive")
@@ -435,7 +460,7 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		if localApp.AID != expectedAID {
 			return pullPlan{}, fmt.Errorf("yaml is for account %q but you're logged in as %q", localApp.AID, expectedAID)
 		}
-		if localApp.CID != expectedCID {
+		if expectedCID != "" && localApp.CID != expectedCID {
 			return pullPlan{}, fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q", localApp.CID, expectedCID)
 		}
 		if appIDFlag != "" && appIDFlag != localApp.ID {
@@ -445,7 +470,7 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		if fixed == "" {
 			fixed = filepath.Dir(yamlPath)
 		}
-		return pullPlan{mode: "yaml", appID: localApp.ID, fixedDir: fixed}, nil
+		return pullPlan{mode: "yaml", appID: localApp.ID, fixedDir: fixed, yamlCID: localApp.CID}, nil
 	}
 
 	// --app-id without yaml. With --out: flat into that dir. Without --out:

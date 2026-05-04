@@ -77,8 +77,8 @@ func runAppsListPreviousUploads(cmd *cobra.Command, args []string) error {
 	if localApp.AID != ctx.cfg.AccountID {
 		return fmt.Errorf("yaml is for account %q but you're logged in as %q", localApp.AID, ctx.cfg.AccountID)
 	}
-	if localApp.CID != ctx.cid {
-		return fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q", localApp.CID, ctx.cid)
+	if err := ctx.bindToYAML(localApp.CID); err != nil {
+		return err
 	}
 
 	archives, err := ctx.svc.ListCliArchives(localApp.ID)

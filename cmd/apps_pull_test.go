@@ -108,6 +108,7 @@ servicePortMappings:
 		wantMode    string
 		wantAppID   string
 		wantDir     string // for single modes; "" to skip check
+		wantYAMLCID string // populated only by yaml-positional / auto-detect modes
 		wantErr     string
 	}{
 		{
@@ -118,6 +119,7 @@ servicePortMappings:
 			wantMode:    "yaml",
 			wantAppID:   "appid4",
 			wantDir:     dir,
+			wantYAMLCID: "mycluster3",
 		},
 		{
 			name:        "yaml positional + --out → --out wins",
@@ -128,6 +130,7 @@ servicePortMappings:
 			wantMode:    "yaml",
 			wantAppID:   "appid4",
 			wantDir:     "/tmp/somewhere",
+			wantYAMLCID: "mycluster3",
 		},
 		{
 			name:        "--all → bulk",
@@ -179,6 +182,7 @@ servicePortMappings:
 			expectedAID: "myacct",
 			wantMode:    "yaml",
 			wantAppID:   "appid4",
+			wantYAMLCID: "mycluster3",
 		},
 		{
 			name:        "yaml + mismatched --app-id → error",
@@ -194,6 +198,18 @@ servicePortMappings:
 			expectedCID: "k1",
 			expectedAID: "myacct",
 			wantErr:     "cluster mismatch",
+		},
+		{
+			// expectedCID empty: cross-check skipped, plan.yamlCID
+			// surfaces the yaml's cid for the caller to bind to.
+			name:        "yaml positional with no --cid → plan carries yaml's cid",
+			args:        []string{yamlPath},
+			expectedCID: "",
+			expectedAID: "myacct",
+			wantMode:    "yaml",
+			wantAppID:   "appid4",
+			wantDir:     dir,
+			wantYAMLCID: "mycluster3",
 		},
 		{
 			name:        "yaml on wrong account → error",
@@ -233,6 +249,9 @@ servicePortMappings:
 			}
 			if tt.wantDir != "" && got.fixedDir != tt.wantDir {
 				t.Errorf("fixedDir = %q, want %q", got.fixedDir, tt.wantDir)
+			}
+			if got.yamlCID != tt.wantYAMLCID {
+				t.Errorf("yamlCID = %q, want %q", got.yamlCID, tt.wantYAMLCID)
 			}
 		})
 	}

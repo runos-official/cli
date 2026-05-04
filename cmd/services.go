@@ -39,13 +39,19 @@ type servicesCmdContext struct {
 	manifest *manifest.Manifest
 }
 
-// prepareServicesCmd loads config, fetches a fresh ID token, resolves
-// the cluster id, builds the dynacmd Executor, and loads the local
-// manifest cache. Mirrors prepareAppsCmd for the apps subcommands.
+// prepareServicesCmd loads config, fetches a fresh ID token, reads
+// --cid (or the configured default), builds the dynacmd Executor, and
+// loads the local manifest cache. Mirrors prepareAppsCmd for the apps
+// subcommands.
+//
+// The returned context may have an empty cid: callers that have a yaml
+// positional resolve cid from the yaml itself via ctx.bindToYAML;
+// callers that don't (services_pull --type+--service-id) call
+// ctx.requireCID. The Executor is cid-independent, so it's always built.
 //
 // The manifest is loaded from the local cache; users who need a fresh
 // shape after a conductor manifest change should run `runos manifest
-// update` first. Same convention as every other manifest-driven path.
+// update` first.
 func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -63,9 +69,6 @@ func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 	cid, _ := cmd.Flags().GetString("cid")
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
-	}
-	if cid == "" {
-		return nil, fmt.Errorf("cluster ID required: pass --cid or set default with 'runos clusters default <cid>'")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -87,4 +90,28 @@ func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 		exec:     dynacmd.NewExecutor(cfg.GetAPIURL()),
 		manifest: m,
 	}, nil
+}
+
+// bindToYAML adopts the cid declared in a loaded service yaml. When
+// the user also passed --cid (or had a default set), the two must
+// match. When neither was set, the yaml is the source of truth so
+// users can run sync/diff against any committed yaml without naming
+// the cluster again.
+func (c *servicesCmdContext) bindToYAML(yamlCID string) error {
+	switch {
+	case c.cid == "":
+		c.cid = yamlCID
+	case c.cid != yamlCID:
+		return fmt.Errorf("cluster mismatch: yaml is for %q but --cid (or default) is %q", yamlCID, c.cid)
+	}
+	return nil
+}
+
+// requireCID errors when no cid was resolved. Used by services_pull
+// in --type+--service-id mode where there's no yaml on disk yet.
+func (c *servicesCmdContext) requireCID() error {
+	if c.cid == "" {
+		return fmt.Errorf("cluster ID required: pass --cid or set default with 'runos clusters default <cid>'")
+	}
+	return nil
 }
