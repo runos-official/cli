@@ -1,12 +1,13 @@
 # Changelog
 
-## v1.0.0-rc.2
+## v1.0.0-rc.3
 
-Build fix on top of v1.0.0-rc.1. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.2`.
+Build + release-workflow fixes on top of v1.0.0-rc.1. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.3`. (rc.2 was an aborted attempt: the tag exists on GitHub but no release was published, and rc.3 supersedes it.)
 
 ### Bug fixes
 
 - **Windows build**: `syscall.O_NOFOLLOW` (used in `apps_pull`'s symlink-refusal write path) doesn't exist on Windows, so the rc.1 release workflow failed at the `windows/amd64` step. Replaced with a build-tagged constant: protection is preserved on Unix; the flag is a no-op on Windows where the equivalent OS-level guarantee isn't available.
+- **Release workflow under Immutable Releases**: the repo has Immutable Releases enabled, which disallows asset uploads after a release is published. The workflow now creates the release as a draft so asset uploads succeed, then publishes the draft in a follow-up step.
 
 ## v1.0.0-rc.1
 
