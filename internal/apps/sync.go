@@ -25,11 +25,21 @@ type SyncPlan struct {
 	AppName string `json:"appName"`
 	CID     string `json:"cid"`
 
+	// Notes are short informational messages rendered above the section
+	// headers. Mirror of DiffReport.Notes; same generator is used for both
+	// (see buildClassFlapNotes in diff.go).
+	Notes []string `json:"notes,omitempty"`
+
 	YAMLPatch   map[string]any `json:"yamlPatch,omitempty"`   // nil if no change
 	YAMLDiff    string         `json:"yamlDiff,omitempty"`    // unified diff for display
 	RefusedYAML []string       `json:"refusedYaml,omitempty"` // immutable fields the user touched
 
-	Env *EnvChange `json:"env,omitempty"` // nil when no env change
+	// SecretEnv covers the Secret-backed env vars (sensitive). Sourced from
+	// `.runos.{cid}.{id}.env`. Nil when no change.
+	SecretEnv *EnvChange `json:"secretEnv,omitempty"`
+	// Env covers the ConfigMap-backed env vars (plain, committed to VCS).
+	// Sourced from `runos.{cid}.{id}.config.env`. Nil when no change.
+	Env *EnvChange `json:"env,omitempty"`
 
 	SecretFiles *SecretFilesChange `json:"secretFiles,omitempty"` // nil when no secret-file change
 
@@ -38,14 +48,29 @@ type SyncPlan struct {
 
 // EnvChange captures the destructive nature of replace-all env updates so
 // the renderer can highlight removals.
+//
+// Remove vs PreservedByPlatform: the secret-env-vars Secret is the union of
+// the user's env file and the requires-derived env vars (DATABASE_URL,
+// REDIS_HOST, etc.) the conductor injects on every push. When the local
+// file is missing one of those names, naive set-diff lists it under Remove
+// alongside genuinely-removed user keys. The conductor's
+// `app.updateSecretEnvVars` orchestration re-derives requires-injected vars
+// from the registered requires on every call and always wins on conflict
+// (see conductor `util/services/syncRequires.ts:mergeRequiresAndUser`), so
+// those names will reappear on the next push. Splitting the bucket keeps
+// the plan honest: the user reads "platform-injected, will not be deleted"
+// instead of a misleading "replace-all will delete DATABASE_URL".
 type EnvChange struct {
-	Add    map[string]string `json:"add,omitempty"`
-	Update map[string]string `json:"update,omitempty"` // keys present on both sides, value differs
-	Remove []string          `json:"remove,omitempty"` // keys server has, local doesn't
-	Final  map[string]string `json:"final"`            // the full set we'll send
+	Add                 map[string]string `json:"add,omitempty"`
+	Update              map[string]string `json:"update,omitempty"`              // keys present on both sides, value differs
+	Remove              []string          `json:"remove,omitempty"`              // keys server has, local doesn't, NOT requires-injected
+	PreservedByPlatform []string          `json:"preservedByPlatform,omitempty"` // server has, local doesn't, but a requires.<alias>.env claims the name
+	Final               map[string]string `json:"final"`                         // the full set we'll send
 }
 
 // HasChanges reports whether the change actually differs from the server.
+// PreservedByPlatform is intentionally excluded: those keys WILL come back
+// on the next push, so they don't represent a meaningful state delta.
 func (e *EnvChange) HasChanges() bool {
 	return len(e.Add) > 0 || len(e.Update) > 0 || len(e.Remove) > 0
 }
@@ -96,6 +121,9 @@ func (p *SyncPlan) HasChanges() bool {
 	if len(p.YAMLPatch) > 0 {
 		return true
 	}
+	if p.SecretEnv != nil && p.SecretEnv.HasChanges() {
+		return true
+	}
 	if p.Env != nil && p.Env.HasChanges() {
 		return true
 	}
@@ -109,12 +137,14 @@ func (p *SyncPlan) HasChanges() bool {
 // passed into ComputeSyncPlan. Splitting it out keeps the function signature
 // readable and makes tests easy.
 type SyncInputs struct {
-	LocalApp        *PulledApp
-	LocalEnvVars    map[string]string
-	LocalSecretFiles map[string][]byte // filename -> raw decoded bytes
-	LocalOverrides  []LocalOverride
+	LocalApp           *PulledApp
+	LocalSecretEnvVars map[string]string  // sensitive (Secret-backed)
+	LocalEnvVars       map[string]string  // plain (ConfigMap-backed)
+	LocalSecretFiles   map[string][]byte  // filename -> raw decoded bytes
+	LocalOverrides     []LocalOverride
 
 	ServerRaw           map[string]any
+	ServerSecretEnvVars map[string]string
 	ServerEnvVars       map[string]string
 	ServerSecretFiles   []SecretFileSummary
 	ServerOverrides     []OverrideSummary
@@ -147,7 +177,15 @@ func ComputeSyncPlan(in SyncInputs) *SyncPlan {
 	}
 
 	plan.YAMLPatch, plan.YAMLDiff, plan.RefusedYAML = computeYAMLPatch(in.LocalApp, in.ServerRaw, in.ServerRequires)
-	plan.Env = computeEnvChange(in.LocalEnvVars, in.ServerEnvVars)
+	plan.Notes = buildClassFlapNotes(in.LocalApp, in.ServerRaw)
+	// Requires-injected names live only in the secret-env-vars Secret (never
+	// in the plain ConfigMap), so the partition only applies to the secret
+	// side. Built from the local yaml because it's the authoritative record
+	// of what the user has linked; the server's /requires response could be
+	// used too but we prefer the local view for plan-time honesty.
+	platformInjected := requiresOwnedEnvNames(in.LocalApp)
+	plan.SecretEnv = computeEnvChange(in.LocalSecretEnvVars, in.ServerSecretEnvVars, platformInjected)
+	plan.Env = computeEnvChange(in.LocalEnvVars, in.ServerEnvVars, nil)
 	plan.SecretFiles = computeSecretFilesChange(in.LocalSecretFiles, in.ServerSecretFiles)
 	plan.Overrides = computeOverrideOps(in.LocalOverrides, in.ServerOverrides)
 
@@ -237,7 +275,13 @@ func requiresPatchPayload(local *PulledApp) map[string]any {
 
 // computeEnvChange compares two env-var maps and produces the buckets.
 // Returns nil when the maps are equal, sync should leave env alone.
-func computeEnvChange(local, server map[string]string) *EnvChange {
+//
+// platformInjected names server keys the user did NOT explicitly write that
+// nonetheless reappear on every push because a requires.<alias>.env entry
+// claims them. Pass nil for the plain (ConfigMap) side, which never gets
+// requires-derived injection. See the EnvChange doc comment for the full
+// rationale.
+func computeEnvChange(local, server map[string]string, platformInjected map[string]bool) *EnvChange {
 	change := &EnvChange{Final: local}
 	for k, v := range local {
 		if existing, ok := server[k]; !ok {
@@ -253,15 +297,44 @@ func computeEnvChange(local, server map[string]string) *EnvChange {
 		}
 	}
 	for k := range server {
-		if _, ok := local[k]; !ok {
-			change.Remove = append(change.Remove, k)
+		if _, ok := local[k]; ok {
+			continue
 		}
+		if platformInjected[k] {
+			change.PreservedByPlatform = append(change.PreservedByPlatform, k)
+			continue
+		}
+		change.Remove = append(change.Remove, k)
 	}
 	sort.Strings(change.Remove)
+	sort.Strings(change.PreservedByPlatform)
+	// PreservedByPlatform alone is a no-op (those keys always come back),
+	// so a section with only that bucket would just confuse the user.
 	if !change.HasChanges() {
 		return nil
 	}
 	return change
+}
+
+// requiresOwnedEnvNames returns the set of env-var names claimed by some
+// requires.<alias>.env mapping in the local yaml. The right-hand side of
+// each requires.env entry names a runtime-injected env var, so any server
+// key with that name is platform-managed even if the local file doesn't
+// list it. Used by computeEnvChange to keep the secret-side Remove bucket
+// honest.
+func requiresOwnedEnvNames(app *PulledApp) map[string]bool {
+	if app == nil || len(app.Requires) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, req := range app.Requires {
+		for _, envName := range req.Env {
+			if envName != "" {
+				out[envName] = true
+			}
+		}
+	}
+	return out
 }
 
 // computeSecretFilesChange compares local secret-file bytes (md5'd
@@ -475,13 +548,19 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 
 	// VCS / integration: not patchable. Surface user changes as refused so
 	// they know to use the console.
+	//
+	// `deployType` is its own dimension ('cli' | 'vcs'); we compare it
+	// against the server's deployType, NOT against integrationType (which is
+	// the provider slug 'github-arc' / 'gitlab-runner' and lives separately).
+	// Earlier code conflated these and produced perpetual drift on every
+	// pulled-then-synced VCS app — see the matching note in pull.go.
 	if localApp.Integration != nil {
-		serverIntegrationType := stringOr(server, "integrationType")
+		serverDeployType := stringOr(server, "deployType")
 		serverIntegrationID := stringOr(server, "vcsIntegrationId")
 		serverRepoID := int64Or(server, "repoId")
 		serverRepoName := stringOr(server, "repoName")
 		serverBranch := stringOr(server, "branchName")
-		if localApp.DeployType != serverIntegrationType ||
+		if localApp.DeployType != serverDeployType ||
 			localApp.Integration.ID != serverIntegrationID ||
 			localApp.Integration.RepoID != serverRepoID ||
 			localApp.Integration.RepoName != serverRepoName ||
@@ -785,21 +864,33 @@ func LoadLocalOverrides(yamlDir string, overrides []Override) ([]LocalOverride, 
 	return out, nil
 }
 
+// parseEnvBytes parses a dotenv-style payload into a map. Tolerant of:
+//   - blank lines
+//   - lines starting with `#` (comments)
+//   - leading/trailing whitespace around key and value
+//   - values wrapped in single or double quotes (stripped)
+//
+// Mirrors deploy.LoadEnvFile so the same `.env` file round-trips through
+// `runos deploy` and `runos apps_*` identically. The plain (config) env
+// file uses the same format and the same parser.
 func parseEnvBytes(b []byte) map[string]string {
 	out := map[string]string{}
 	start := 0
 	for i := 0; i <= len(b); i++ {
 		if i == len(b) || b[i] == '\n' {
-			line := string(b[start:i])
+			line := strings.TrimSpace(string(b[start:i]))
 			start = i + 1
-			if line == "" {
+			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
 			eq := strings.IndexByte(line, '=')
 			if eq < 0 {
 				continue
 			}
-			out[line[:eq]] = line[eq+1:]
+			key := strings.TrimSpace(line[:eq])
+			value := strings.TrimSpace(line[eq+1:])
+			value = strings.Trim(value, `"'`)
+			out[key] = value
 		}
 	}
 	return out

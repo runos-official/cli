@@ -90,6 +90,90 @@ cli/
 - Use kebab-case for multi-word commands: `create-cluster`, `list-nodes`
 - Group related commands under parent commands: `runos postgres create`, `runos postgres list`
 
+## Deploy verb: dispatch on app.deployType
+
+`runos deploy` is a single verb that handles both deploy types. The dispatch is in [cmd/deploy.go](cmd/deploy.go); the VCS branch lives in [cmd/deploy_vcs.go](cmd/deploy_vcs.go).
+
+| App type | What `runos deploy` does | Endpoint |
+|---|---|---|
+| `deployType: cli` | Tarballs the local source dir, uploads, build server runs BuildKit + push + rollout | `POST /:aid/:cid/prepare-cli-deployment` |
+| `deployType: vcs` | Sends `{sha, configPath}` only; conductor + cluster agent pull source from the linked GitHub/GitLab integration at the SHA | `POST /:aid/:cid/apps/:id/deploy` |
+
+VCS dispatch logic in `runDeploy`:
+
+1. `--app <id>` flag → CI mode, no yaml load. Cid must come from `--cid` or config default. Server-side deployType check rejects passing `--app` against a CLI-deploy app.
+2. Otherwise: load yaml, fall back to yaml's `cid:` field if neither flag nor config default. Resolve deployType from `deployConfig.DeployType` first, then from a server lookup if absent.
+3. CLI-deploy guard: passing `--sha` / `--allow-dirty` against a CLI-deploy app is a hard error so the two modes never silently intermingle.
+
+### Three cluster-id sources, priority order
+
+Set in `cmd/deploy.go`. **Yaml-as-third-source matters**: a checked-in `runos.yaml` that already carries `cid:` should not require a per-machine flag/config to deploy from a fresh clone.
+
+1. `--cid` flag.
+2. CLI config default (`runos config set cid <id>`).
+3. The yaml's `cid:` field (loaded from disk).
+
+Hard error fires only after step 3, so a yaml-bearing deploy works out of the box. The `--app` CI-mode branch errors at step 2 since no yaml is loaded.
+
+### SHA resolution and the dirty-tree gate (VCS only)
+
+In [cmd/deploy_vcs.go](cmd/deploy_vcs.go):
+
+- `--sha` flag wins.
+- Otherwise: `git rev-parse HEAD` if inside a git checkout. Error if not.
+- `git status --porcelain` after resolution: if dirty, **refuse** unless `--allow-dirty`. The build runs against the committed source on the git host; uncommitted edits would silently not be in the build.
+
+### configPath: yaml is the source of truth for its own repo location
+
+VCS apps can live in monorepo subdirectories (e.g. `apps/billing/runos.dev.yaml`). The cluster agent reads the committed yaml at a `configPath` stored on the AppDocument. The CLI auto-populates this every laptop deploy:
+
+[cmd/deploy_vcs.go:resolveVcsConfigPath](cmd/deploy_vcs.go) — three sources:
+
+1. Explicit `configPath:` field in the local yaml (escape hatch for non-standard layouts).
+2. Auto-derived from the yaml's filesystem path relative to `git rev-parse --show-toplevel`. The common case: user doesn't set anything.
+3. Empty (CI mode without a yaml on disk, or yaml lives outside the repo) — conductor falls back to whatever the AppDocument has stored.
+
+The CLI sends `configPath` in the `POST /apps/:id/deploy` body; conductor's `prepareVcsDeployment` persists it to the AppDocument before queueing the orchestration. Subsequent CI deploys (`runos deploy --app <id> --sha <sha>` without a yaml) inherit the persisted value automatically — yaml-as-source-of-truth invariant.
+
+The deploy output prints the resolved configPath (or `<not sent>`) so a missed auto-derive is visible immediately instead of cascading into a confusing "yaml not found" error from the cluster agent.
+
+### Env vars on VCS apps
+
+Env vars are split into two parallel sources, each backed by a different K8s resource. Both flow into the pod via `envFrom`, so app code reads them identically:
+
+| Source | Local file | K8s resource | VCS | Holds |
+|--------|-----------|--------------|-----|-------|
+| Secret | `.runos.<cid>.<id>.env` (0600, gitignored) | `<osid>-user-env-vars` Secret | no | credentials, tokens |
+| ConfigMap | `runos.<cid>.<id>.config.env` (0644, committed) | `<osid>-user-env-config` ConfigMap | yes | log level, feature flags, public URLs |
+
+The Secret keeps its legacy K8s resource name (`<osid>-user-env-vars`) on purpose: env vars set via the console pre-split read/write that exact name, so leaving it in place preserves existing data without a migration step. The new ConfigMap takes a distinct slot.
+
+A key may NOT appear in both files at once. The conductor hard-fails the deploy with a 400 listing the conflicting keys; `runos deploy` and `runos apps sync` also pre-flight the check on the client.
+
+Both sources are managed independently of `runos deploy --sha`. Set them via:
+
+- `runos apps sync <yaml>` — pushes both local files (replace-all per source: additions, edits, deletions).
+- Console UI / `POST /apps/:id/secret-env-vars` (sensitive) / `POST /apps/:id/env-vars` (plain) / `POST /apps/:id/secrets` (atomic combined).
+
+`runos deploy --sha <sha>` does NOT touch either source (intentionally — `.env` isn't committed; `.config.env` is, but env state is conceptually orthogonal to image deploys). The conductor's `deploy.vcs` orchestration reads both the existing Secret and the existing ConfigMap on its apply step and round-trips them, so env vars survive every VCS deploy. CI deploys (no laptop, no env files on the runner) just rebuild what's already on the server.
+
+## MCP integration
+
+The CLI also runs as an MCP server (`runos mcp`). Tools fall into two buckets:
+
+### Manifest-driven (the default path)
+
+The MCP server iterates `~/.runos/manifest.json` and generates one tool per command. Tool name = command path with `/` → `_` and `{id}` placeholders stripped (`apps/{id}/show` → `apps_show`). Input fields and output hints come straight from the manifest. **Adding a field to a manifest command exposes it on the corresponding MCP tool automatically** — no shim work needed.
+
+### Static / handcrafted (escape hatch)
+
+A short list lives in [internal/mcp/server.go](internal/mcp/server.go) (`isStaticAppsTool`) and [internal/mcp/apps.go](internal/mcp/apps.go) (`buildAppsCommandArgs`):
+
+- `apps_pull`, `apps_diff`, `apps_sync`, `apps_list_previous_uploads` — all dispatch to runos subprocesses with bespoke arg translation because they use the local filesystem (yaml/dockerfile/.env) which the manifest can't represent.
+- `deploy` — also handcrafted (in `server.go:566`, not in the static-apps list). Has a custom description covering the deployType branching and dirty-tree gate; new fields go through both the schema declaration and `buildDeployArgs`.
+
+When extending: prefer adding to the manifest if the field maps cleanly to an HTTP body field. Drop into the handcrafted path only when the tool needs local-filesystem awareness or branch-specific guidance the manifest can't carry.
+
 ## Output Formatting
 
 - **Default**: Plain text, human-readable

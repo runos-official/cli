@@ -100,7 +100,14 @@ requires:
 
 The CLI creates a tarball of your source code (respecting `.dockerignore`), uploads it to your cluster, and tracks the build/deploy job to completion.
 
-Environment variables can be defined in `.runos.<cluster-id>.env` files.
+Environment variables come from two parallel files:
+
+| File | Purpose | Permissions | VCS |
+|------|---------|-------------|-----|
+| `.runos.<cid>.<id>.env` | Sensitive credentials (Secret-backed) | 0600 | gitignored |
+| `runos.<cid>.<id>.config.env` | Plain config (ConfigMap-backed; log level, feature flags, public URLs) | 0644 | committed |
+
+Both flow into the running pod via `envFrom` so app code reads them identically as `process.env.X`. A key may not appear in both files at once; the conductor refuses the deploy if it does.
 
 ## MCP Integration
 

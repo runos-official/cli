@@ -329,8 +329,13 @@ func buildAppsSyncArgs(args map[string]any) ([]string, error) {
 // buildDeployArgs translates an MCP deploy tool call into a runos argv.
 // Always passes --follow so the AI sees the build/deploy job to
 // completion. Forwards cid (after stripping the "(Cluster Name)" suffix),
-// yaml_file (as the CLI's --config flag, required for multi-yaml dirs),
-// and force when set.
+// yaml_file (as --config, required for multi-yaml dirs), and force.
+//
+// VCS-deploy flags (sha, app, allow_dirty) flow through to the deploy
+// command; the binary itself decides whether they're valid for the target
+// app's deployType and rejects them on CLI-deploy apps with a clear error.
+// Don't pre-validate here: the CLI has the deployType lookup logic and one
+// source of truth for the rule beats two.
 func buildDeployArgs(args map[string]any) []string {
 	out := []string{"deploy", "--follow"}
 	if cid, ok := stringArg(args, "cid"); ok {
@@ -338,6 +343,15 @@ func buildDeployArgs(args map[string]any) []string {
 	}
 	if yamlFile, ok := stringArg(args, "yaml_file"); ok {
 		out = append(out, "--config", yamlFile)
+	}
+	if app, ok := stringArg(args, "app"); ok {
+		out = append(out, "--app", app)
+	}
+	if sha, ok := stringArg(args, "sha"); ok {
+		out = append(out, "--sha", sha)
+	}
+	if boolArg(args, "allow_dirty") {
+		out = append(out, "--allow-dirty")
 	}
 	if boolArg(args, "force") {
 		out = append(out, "--force")

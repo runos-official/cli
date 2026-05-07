@@ -16,6 +16,7 @@ func TestComputeEnvChange_NoOpWhenEqual(t *testing.T) {
 	got := computeEnvChange(
 		map[string]string{"A": "1", "B": "2"},
 		map[string]string{"A": "1", "B": "2"},
+		nil,
 	)
 	if got != nil {
 		t.Fatalf("expected nil for no-op, got %+v", got)
@@ -26,6 +27,7 @@ func TestComputeEnvChange_ClassifiesAddUpdateRemove(t *testing.T) {
 	got := computeEnvChange(
 		map[string]string{"NEW": "yes", "CHANGED": "v2", "SAME": "ok"},
 		map[string]string{"CHANGED": "v1", "SAME": "ok", "STALE": "x"},
+		nil,
 	)
 	if got == nil {
 		t.Fatal("expected change, got nil")
@@ -42,6 +44,45 @@ func TestComputeEnvChange_ClassifiesAddUpdateRemove(t *testing.T) {
 	// Final must equal the local map exactly, that's what gets sent.
 	if len(got.Final) != 3 || got.Final["NEW"] != "yes" || got.Final["CHANGED"] != "v2" || got.Final["SAME"] != "ok" {
 		t.Errorf("Final: %+v", got.Final)
+	}
+}
+
+// Server-only keys claimed by some requires.<alias>.env mapping must land in
+// PreservedByPlatform, not Remove. Conductor re-injects them on every push,
+// so listing them as "replace-all will delete" is a lie. Keys not claimed by
+// requires still go to Remove. Add/Update are unaffected by partitioning.
+func TestComputeEnvChange_PartitionsRequiresInjectedFromRemove(t *testing.T) {
+	platform := map[string]bool{"DATABASE_URL": true, "REDIS_HOST": true}
+	got := computeEnvChange(
+		map[string]string{"USER_VAR": "x"},
+		map[string]string{"USER_VAR": "x", "DATABASE_URL": "postgres://...", "REDIS_HOST": "valkey:6379", "STALE_USER_VAR": "drop-me"},
+		platform,
+	)
+	if got == nil {
+		t.Fatal("expected change, got nil")
+	}
+	if len(got.Remove) != 1 || got.Remove[0] != "STALE_USER_VAR" {
+		t.Errorf("Remove should contain only the user-authored stale key, got: %+v", got.Remove)
+	}
+	if len(got.PreservedByPlatform) != 2 ||
+		got.PreservedByPlatform[0] != "DATABASE_URL" ||
+		got.PreservedByPlatform[1] != "REDIS_HOST" {
+		t.Errorf("PreservedByPlatform should hold the requires-injected names sorted, got: %+v", got.PreservedByPlatform)
+	}
+}
+
+// A plan where only platform-injected names differ is a no-op: those keys
+// always come back, so showing a section just to say "nothing's actually
+// going to change" would be more noise than signal.
+func TestComputeEnvChange_NoOpWhenOnlyPlatformInjectedDiffer(t *testing.T) {
+	platform := map[string]bool{"DATABASE_URL": true}
+	got := computeEnvChange(
+		map[string]string{"USER_VAR": "x"},
+		map[string]string{"USER_VAR": "x", "DATABASE_URL": "postgres://..."},
+		platform,
+	)
+	if got != nil {
+		t.Fatalf("expected nil when only platform-injected names differ, got: %+v", got)
 	}
 }
 
@@ -376,11 +417,12 @@ func TestComputeYAMLPatch_DomainsCarryProxied(t *testing.T) {
 
 func TestComputeYAMLPatch_VCSChangeBecomesRefused(t *testing.T) {
 	local := &PulledApp{
-		Replicas: 1, DeployType: "gitlab-runner",
+		Replicas: 1, DeployType: "vcs",
 		Integration: &Integration{ID: "tr6mj", RepoID: 1, RepoName: "x/y", BranchName: "develop"},
 	}
 	server := map[string]any{
 		"replicas":         float64(1),
+		"deployType":       "vcs",
 		"integrationType":  "gitlab-runner",
 		"vcsIntegrationId": "tr6mj",
 		"repoId":           float64(1),

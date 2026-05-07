@@ -506,91 +506,58 @@ KEY=value
 }
 
 // ---------------------------------------------------------------------------
-// ResolveEnvPath()
+// ResolveEnvFiles()
 // ---------------------------------------------------------------------------
 
-func TestResolveEnvPath(t *testing.T) {
-	t.Run("explicit env in config is used as-is", func(t *testing.T) {
+func TestResolveEnvFiles(t *testing.T) {
+	t.Run("explicit secretEnv and env in config are used as-is", func(t *testing.T) {
 		dir := t.TempDir()
-		config := &DeployConfig{App: "myapp", Port: 8080, Env: "custom.env"}
+		config := &DeployConfig{App: "myapp", Port: 8080, SecretEnv: "custom-secret.env", Env: "custom.env"}
 
-		path, changed := ResolveEnvPath(dir, config, "cid1")
+		paths, changed := ResolveEnvFiles(dir, config, "cid1")
 		if changed {
-			t.Fatal("expected changed=false when env is already set")
+			t.Fatal("expected changed=false when both fields are already set")
 		}
-		if path != filepath.Join(dir, "custom.env") {
-			t.Errorf("got %q, want %q", path, filepath.Join(dir, "custom.env"))
+		if paths.Secret != filepath.Join(dir, "custom-secret.env") {
+			t.Errorf("Secret: got %q, want %q", paths.Secret, filepath.Join(dir, "custom-secret.env"))
+		}
+		if paths.Plain != filepath.Join(dir, "custom.env") {
+			t.Errorf("Plain: got %q, want %q", paths.Plain, filepath.Join(dir, "custom.env"))
 		}
 	})
 
-	t.Run("legacy .runos.<cid>.env is no longer auto-loaded", func(t *testing.T) {
-		// The cluster-scoped form was app-agnostic and would silently
-		// hand the wrong app's env to a sibling deploy in a multi-yaml
-		// directory. Removing the fallback is the correctness fix; the
-		// rename hint lives in WarnLegacyEnv (separate test below).
-		dir := t.TempDir()
-		legacyPath := filepath.Join(dir, ".runos.abc.env")
-		writeFile(t, legacyPath, "KEY=val\n")
-
-		config := &DeployConfig{App: "myapp", Port: 8080}
-
-		path, changed := ResolveEnvPath(dir, config, "abc")
-		// With no app id and no explicit env, the resolver returns
-		// empty rather than fishing the legacy file out.
-		if changed {
-			t.Errorf("legacy fallback should not mutate config; got config.Env=%q", config.Env)
-		}
-		if path != "" {
-			t.Errorf("legacy fallback should not be auto-resolved; got %q", path)
-		}
-		if config.Env != "" {
-			t.Errorf("config.Env should remain empty; got %q", config.Env)
-		}
-	})
-
-	t.Run("explicit env beats legacy file when both present", func(t *testing.T) {
-		// If the user has migrated by setting env: in runos.yaml, the
-		// resolver honours that and the legacy file becomes inert.
-		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, ".runos.abc.env"), "OLD=1\n")
-
-		config := &DeployConfig{App: "myapp", Port: 8080, Env: "current.env"}
-		path, changed := ResolveEnvPath(dir, config, "abc")
-		if changed {
-			t.Errorf("explicit env should not flag a config change")
-		}
-		if path != filepath.Join(dir, "current.env") {
-			t.Errorf("got %q, want %q", path, filepath.Join(dir, "current.env"))
-		}
-	})
-
-	t.Run("default uses CID and ID", func(t *testing.T) {
+	t.Run("default uses CID and ID for both files", func(t *testing.T) {
 		dir := t.TempDir()
 		config := &DeployConfig{App: "myapp", Port: 8080, ID: "app123"}
 
-		path, changed := ResolveEnvPath(dir, config, "cid1")
+		paths, changed := ResolveEnvFiles(dir, config, "cid1")
 		if !changed {
-			t.Fatal("expected changed=true for default path")
+			t.Fatal("expected changed=true for default paths")
 		}
-		expectedFilename := ".runos.cid1.app123.env"
-		if config.Env != expectedFilename {
-			t.Errorf("config.Env = %q, want %q", config.Env, expectedFilename)
+		if config.SecretEnv != ".runos.cid1.app123.env" {
+			t.Errorf("config.SecretEnv = %q, want %q", config.SecretEnv, ".runos.cid1.app123.env")
 		}
-		if path != filepath.Join(dir, expectedFilename) {
-			t.Errorf("got %q, want %q", path, filepath.Join(dir, expectedFilename))
+		if config.Env != "runos.cid1.app123.config.env" {
+			t.Errorf("config.Env = %q, want %q", config.Env, "runos.cid1.app123.config.env")
+		}
+		if paths.Secret != filepath.Join(dir, ".runos.cid1.app123.env") {
+			t.Errorf("Secret path: got %q", paths.Secret)
+		}
+		if paths.Plain != filepath.Join(dir, "runos.cid1.app123.config.env") {
+			t.Errorf("Plain path: got %q", paths.Plain)
 		}
 	})
 
-	t.Run("no ID returns empty path", func(t *testing.T) {
+	t.Run("no ID returns empty paths", func(t *testing.T) {
 		dir := t.TempDir()
 		config := &DeployConfig{App: "myapp", Port: 8080}
 
-		path, changed := ResolveEnvPath(dir, config, "cid1")
+		paths, changed := ResolveEnvFiles(dir, config, "cid1")
 		if changed {
 			t.Fatal("expected changed=false when no ID")
 		}
-		if path != "" {
-			t.Errorf("expected empty path, got %q", path)
+		if paths.Secret != "" || paths.Plain != "" {
+			t.Errorf("expected empty paths, got %+v", paths)
 		}
 	})
 }
@@ -679,18 +646,20 @@ func TestResolveArchiveRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWarnLegacyEnv(t *testing.T) {
-	t.Run("silent when env: explicitly set", func(t *testing.T) {
+	t.Run("silent when secretEnv: explicitly set", func(t *testing.T) {
 		// User has migrated to the explicit form; nothing to warn about
-		// even if the old file is still on disk.
+		// even if the old file is still on disk. (The legacy form was
+		// always for the secret env file, never the new plain config
+		// file.)
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, ".runos.abc.env"), "X=1\n")
-		config := &DeployConfig{App: "a", Port: 1, Env: "elsewhere.env"}
+		config := &DeployConfig{App: "a", Port: 1, SecretEnv: "elsewhere.env"}
 
 		stderr := captureStderr(t, func() {
 			WarnLegacyEnv(dir, config, "abc")
 		})
 		if stderr != "" {
-			t.Errorf("expected no warning when env: is set, got %q", stderr)
+			t.Errorf("expected no warning when secretEnv: is set, got %q", stderr)
 		}
 	})
 

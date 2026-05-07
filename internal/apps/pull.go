@@ -21,6 +21,11 @@ type PulledApp struct {
 	ID         string `yaml:"id"`
 	CID        string `yaml:"cid"`
 	AID        string `yaml:"aid"`
+	// SecretEnv: relative path to the file holding sensitive (Secret-backed)
+	// env vars. Default `.runos.{cid}.{id}.env`. Gitignored — never commit.
+	SecretEnv  string `yaml:"secretEnv,omitempty"`
+	// Env: relative path to the file holding plain (ConfigMap-backed) env
+	// vars committed to VCS. Default `runos.{cid}.{id}.config.env`.
 	Env        string `yaml:"env,omitempty"`
 	// SourceDir is the path (relative to the yaml's directory) to the
 	// build context tarballed by `runos deploy`. Empty defaults to "."
@@ -210,12 +215,28 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 		p.Replicas = n
 	}
 
-	// Deploy type: server's integrationType verbatim, or "cli" when null/empty.
+	// Deploy type: prefer the server's `deployType` ('cli' | 'vcs') from the
+	// canonical contract. Fall back to deriving from `integrationType` for
+	// legacy conductors that pre-date the deployType field on the GET
+	// response (treat any non-empty integrationType as a VCS app).
+	//
+	// Earlier versions of this code conflated the two fields and stored the
+	// provider name ('github-arc', 'gitlab-runner') as DeployType, producing
+	// perpetual drift on apps_diff because the server emits 'vcs' while the
+	// local yaml carried 'github-arc'. Provider identity now flows via the
+	// Integration block alongside repo/branch metadata, not via DeployType.
 	integrationType, _ := raw["integrationType"].(string)
-	if integrationType == "" {
-		p.DeployType = "cli"
-	} else {
-		p.DeployType = integrationType
+	deployType, _ := raw["deployType"].(string)
+	if deployType == "" {
+		if integrationType == "" {
+			deployType = "cli"
+		} else {
+			deployType = "vcs"
+		}
+	}
+	p.DeployType = deployType
+
+	if integrationType != "" {
 		intg := &Integration{
 			ID:         stringOr(raw, "vcsIntegrationId"),
 			RepoID:     int64Or(raw, "repoId"),
@@ -485,12 +506,19 @@ func YAMLFilename(appDir, cid, appID string) (string, error) {
 	return "runos.yaml", nil
 }
 
-// EnvFilename returns the env leaf name inside a per-app directory.
-// Format mirrors deploy's DefaultEnvFilename so a yaml written by
-// `apps pull` is readable by `runos deploy` without further config
-// (deploy looks for files matching .runos.{cid}.{id}.env).
-func EnvFilename(cid, appID string) string {
+// SecretEnvFilename returns the leaf name of the sensitive (Secret-backed)
+// env file inside a per-app directory. Mirrors deploy.DefaultSecretEnvFilename
+// so a yaml written by `apps pull` round-trips through `runos deploy`. The
+// leading dot keeps it gitignored by default.
+func SecretEnvFilename(cid, appID string) string {
 	return strings.ToLower(fmt.Sprintf(".runos.%s.%s.env", cid, appID))
+}
+
+// EnvFilename returns the leaf name of the plain (ConfigMap-backed) env file
+// inside a per-app directory. Mirrors deploy.DefaultEnvFilename. No leading
+// dot — this file IS committed to VCS.
+func EnvFilename(cid, appID string) string {
+	return strings.ToLower(fmt.Sprintf("runos.%s.%s.config.env", cid, appID))
 }
 
 // SecretFilesDirname returns the secret-files directory leaf name inside
@@ -828,16 +856,25 @@ func EnsureDockerignore(parentDir string) (WriteResult, error) {
 	return writeIfNeeded(path, []byte(defaultDockerignore), 0644)
 }
 
-// SaveEnv writes the env file inside <parentDir>/<base>/ with 0600 perms.
-// The env file is named .runos.<cid>.<appID>.env to match deploy's
-// DefaultEnvFilename, so a yaml written by pull works with `runos deploy`
-// without any path translation.
+// SaveSecretEnv writes the sensitive (Secret-backed) env file inside
+// <parentDir>/<base>/ with 0600 perms. Mirrors deploy.DefaultSecretEnvFilename
+// so a yaml written by pull works with `runos deploy` without translation.
+func SaveSecretEnv(parentDir, base, cid, appID string, envVars map[string]string) (WriteResult, error) {
+	appDir, err := ensureAppDir(parentDir, base)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	return writeIfNeeded(filepath.Join(appDir, SecretEnvFilename(cid, appID)), RenderEnvBytes(envVars), 0600)
+}
+
+// SaveEnv writes the plain (ConfigMap-backed) env file inside
+// <parentDir>/<base>/ with 0644 perms (this file is committed to VCS).
 func SaveEnv(parentDir, base, cid, appID string, envVars map[string]string) (WriteResult, error) {
 	appDir, err := ensureAppDir(parentDir, base)
 	if err != nil {
 		return WriteResult{}, err
 	}
-	return writeIfNeeded(filepath.Join(appDir, EnvFilename(cid, appID)), RenderEnvBytes(envVars), 0600)
+	return writeIfNeeded(filepath.Join(appDir, EnvFilename(cid, appID)), RenderEnvBytes(envVars), 0644)
 }
 
 // RenderEnvBytes produces the canonical on-disk representation of a set of

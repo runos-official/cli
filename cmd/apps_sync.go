@@ -118,10 +118,41 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	appID := localApp.ID
 	svc := ctx.svc
 
+	// Load both env-var sources independently. Each maps to its own K8s
+	// resource (Secret vs ConfigMap) on the cluster so syncs are diffed
+	// and applied per-side.
+	localSecretEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.SecretEnv)
+	if err != nil {
+		return fmt.Errorf("read local secret env file: %w", err)
+	}
 	localEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.Env)
 	if err != nil {
-		return fmt.Errorf("read local env: %w", err)
+		return fmt.Errorf("read local env file: %w", err)
 	}
+
+	// Pre-flight conflict check: a key in both files is a deterministic
+	// failure on the conductor side, refuse the sync up-front.
+	if conflicts := envKeyConflicts(localSecretEnv, localEnv); len(conflicts) > 0 {
+		return fmt.Errorf(
+			"env-var keys appear in both %s and %s: %s. "+
+				"Move each key to exactly one file before syncing.",
+			localApp.SecretEnv, localApp.Env, strings.Join(conflicts, ", "),
+		)
+	}
+
+	// Soft-warn about local secret-env keys claimed by requires.<alias>.env.
+	// Conductor drops these from customSecretEnvVars at sync time, so the
+	// push is harmless and we don't refuse it. The cleanup is purely
+	// cosmetic: the local file stays in sync with the file's apparent truth.
+	// Only applies to the secret side because requires-derived vars only
+	// land in the Secret.
+	syncRequiresEnvCollisions := apps.FindServerInjectedEnvCollisions(localSecretEnv, localApp.Requires)
+	if len(syncRequiresEnvCollisions) > 0 {
+		fmt.Fprint(os.Stderr, "Note: ")
+		fmt.Fprint(os.Stderr, apps.FormatServerInjectedEnvCollisions(syncRequiresEnvCollisions, localApp.SecretEnv))
+		fmt.Fprintln(os.Stderr)
+	}
+
 	localSecrets, err := apps.LoadLocalSecretFiles(yamlDir, localApp.SecretFiles)
 	if err != nil {
 		return fmt.Errorf("read local secret files: %w", err)
@@ -135,6 +166,10 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	raw, err := svc.GetApp(appID)
 	if err != nil {
 		return fmt.Errorf("fetch server app: %w", err)
+	}
+	serverSecretEnv, err := svc.GetAppSecretEnvVars(appID)
+	if err != nil {
+		return fmt.Errorf("fetch server secret env: %w", err)
 	}
 	serverEnv, err := svc.GetAppEnvVars(appID)
 	if err != nil {
@@ -154,15 +189,17 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	}
 
 	plan := apps.ComputeSyncPlan(apps.SyncInputs{
-		LocalApp:          localApp,
-		LocalEnvVars:      localEnv,
-		LocalSecretFiles:  localSecrets,
-		LocalOverrides:    localOverrides,
-		ServerRaw:         raw,
-		ServerEnvVars:     serverEnv,
-		ServerSecretFiles: serverSecrets,
-		ServerOverrides:   serverOverrides,
-		ServerRequires:    serverRequires,
+		LocalApp:            localApp,
+		LocalSecretEnvVars:  localSecretEnv,
+		LocalEnvVars:        localEnv,
+		LocalSecretFiles:    localSecrets,
+		LocalOverrides:      localOverrides,
+		ServerRaw:           raw,
+		ServerSecretEnvVars: serverSecretEnv,
+		ServerEnvVars:       serverEnv,
+		ServerSecretFiles:   serverSecrets,
+		ServerOverrides:     serverOverrides,
+		ServerRequires:      serverRequires,
 	})
 
 	redactSecrets, _ := cmd.Flags().GetBool("redact-secrets")
@@ -203,6 +240,11 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 func printSyncPlan(plan *apps.SyncPlan, redactEnv bool) {
 	fmt.Printf("Sync plan for %s (%s) on cluster %s\n", plan.AppName, plan.AppID, plan.CID)
 
+	for _, note := range plan.Notes {
+		fmt.Println()
+		fmt.Printf("Note: %s\n", note)
+	}
+
 	var unchanged []string
 
 	if len(plan.YAMLPatch) > 0 {
@@ -213,10 +255,20 @@ func printSyncPlan(plan *apps.SyncPlan, redactEnv bool) {
 		unchanged = append(unchanged, "yaml")
 	}
 
+	if plan.SecretEnv != nil && plan.SecretEnv.HasChanges() {
+		fmt.Println()
+		fmt.Println(sectionRule("secretEnv", "replace-all"))
+		printEnvChange(plan.SecretEnv, redactEnv)
+	} else {
+		unchanged = append(unchanged, "secretEnv")
+	}
+
 	if plan.Env != nil && plan.Env.HasChanges() {
 		fmt.Println()
 		fmt.Println(sectionRule("env", "replace-all"))
-		printEnvChange(plan.Env, redactEnv)
+		// Plain env values are non-sensitive by definition (they're committed
+		// to VCS); show them verbatim regardless of the redact flag.
+		printEnvChange(plan.Env, false)
 	} else {
 		unchanged = append(unchanged, "env")
 	}
@@ -272,6 +324,15 @@ func printEnvChange(e *apps.EnvChange, redact bool) {
 	for _, k := range e.Remove {
 		fmt.Printf("  - %s   (server has it; replace-all will delete)\n", k)
 	}
+	// Platform-injected names: server has them, local doesn't, but the local
+	// yaml's requires.<alias>.env claims them. Conductor's
+	// app.updateSecretEnvVars orchestration re-derives these on every push
+	// and they always win on conflict, so they're NOT going to be deleted.
+	// Render them under a separate marker so the user (and any LLM driving
+	// the sync) doesn't read the line as a destructive op.
+	for _, k := range e.PreservedByPlatform {
+		fmt.Printf("  = %s   (platform-injected via requires.<alias>.env; preserved on push)\n", k)
+	}
 }
 
 func printSecretFilesChange(s *apps.SecretFilesChange) {
@@ -324,16 +385,40 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
 		fmt.Printf("  yaml: PATCH ok%s\n", jobIDSuffix(jobID))
 	}
 
+	secretEnvChange := plan.SecretEnv != nil && plan.SecretEnv.HasChanges()
 	envChange := plan.Env != nil && plan.Env.HasChanges()
 	secChange := plan.SecretFiles != nil && plan.SecretFiles.HasChanges()
+
+	// Bundle into the atomic /secrets endpoint when more than one source
+	// changes, so the app only redeploys once. The narrow endpoints stay
+	// for the single-source cases where they're cheaper for the conductor
+	// (no template reapply on env-only changes).
 	switch {
-	case envChange && secChange:
-		add := plan.SecretFiles.AllAddPayloads()
-		jobID, err := svc.UpdateSecrets(plan.AppID, plan.Env.Final, add, plan.SecretFiles.Remove)
-		if err != nil {
-			return fmt.Errorf("env + secret files: %w", err)
+	case (secretEnvChange && envChange) || (secretEnvChange && secChange) || (envChange && secChange):
+		var secretFinal, envFinal map[string]string
+		if secretEnvChange {
+			secretFinal = plan.SecretEnv.Final
 		}
-		fmt.Printf("  env + secretFiles: atomic update ok%s\n", jobIDSuffix(jobID))
+		if envChange {
+			envFinal = plan.Env.Final
+		}
+		var add []apps.SecretFilePayload
+		var remove []string
+		if secChange {
+			add = plan.SecretFiles.AllAddPayloads()
+			remove = plan.SecretFiles.Remove
+		}
+		jobID, err := svc.UpdateSecrets(plan.AppID, secretFinal, envFinal, add, remove)
+		if err != nil {
+			return fmt.Errorf("secret env + env + secret files: %w", err)
+		}
+		fmt.Printf("  secretEnv/env/secretFiles: atomic update ok%s\n", jobIDSuffix(jobID))
+	case secretEnvChange:
+		jobID, err := svc.ReplaceSecretEnvVars(plan.AppID, plan.SecretEnv.Final)
+		if err != nil {
+			return fmt.Errorf("secret env: %w", err)
+		}
+		fmt.Printf("  secretEnv: replace ok%s\n", jobIDSuffix(jobID))
 	case envChange:
 		jobID, err := svc.ReplaceEnvVars(plan.AppID, plan.Env.Final)
 		if err != nil {

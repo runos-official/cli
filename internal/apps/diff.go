@@ -116,7 +116,20 @@ type DiffReport struct {
 	CID         string             `json:"cid"`
 	AppID       string             `json:"appId"`
 	AppName     string             `json:"appName"`
+	// Notes are short informational messages rendered above the section
+	// list. Currently used to flag the RRC custom-synthesis flap (server
+	// silently set class=custom because cpu/mem/replicas overrides
+	// disagreed with the named class), so users don't read the resulting
+	// `class` drift as a fresh problem on every sync.
+	Notes       []string           `json:"notes,omitempty"`
 	YAML        SectionDiff        `json:"yaml"`
+	// SecretEnv compares the local sensitive (Secret-backed) env file
+	// against the K8s Secret. Values are redacted in display by the
+	// diff command's --redact-secrets flag.
+	SecretEnv   SectionDiff        `json:"secretEnv"`
+	// Env compares the local plain (ConfigMap-backed) env file against
+	// the K8s ConfigMap. Values are committed to VCS by definition;
+	// no redaction.
 	Env         SectionDiff        `json:"env"`
 	SecretFiles SecretFilesDiff    `json:"secretFiles"`
 	Overrides   OverridesDiff      `json:"overrides"`
@@ -129,6 +142,7 @@ type DiffReport struct {
 // Use this for the diff command's exit code.
 func (r *DiffReport) HasDrift() bool {
 	if r.YAML.Status != StatusInSync ||
+		r.SecretEnv.Status != StatusInSync ||
 		r.Env.Status != StatusInSync ||
 		r.SecretFiles.Status != StatusInSync ||
 		r.Overrides.Status != StatusInSync {
@@ -148,6 +162,9 @@ func (r *DiffReport) HasDrift() bool {
 // A "true" here is the only thing that triggers pull's refusal.
 func (r *DiffReport) NeedsForceToOverwrite() bool {
 	if r.YAML.Status == StatusDrift && !r.YAML.AdditiveOnly {
+		return true
+	}
+	if r.SecretEnv.Status == StatusDrift && !r.SecretEnv.AdditiveOnly {
 		return true
 	}
 	if r.Env.Status == StatusDrift && !r.Env.AdditiveOnly {
@@ -690,6 +707,10 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 	if err != nil {
 		return nil, fmt.Errorf("fetch app: %w", err)
 	}
+	secretEnvVars, err := svc.GetAppSecretEnvVars(localApp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch secret env vars: %w", err)
+	}
 	envVars, err := svc.GetAppEnvVars(localApp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch env vars: %w", err)
@@ -707,7 +728,7 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 		return nil, fmt.Errorf("read requires: %w", err)
 	}
 
-	serverState := BuildServerStateForDiff(raw, localApp.CID, localApp.AID, envVars, secretFiles, overrides, requires)
+	serverState := BuildServerStateForDiff(raw, localApp.CID, localApp.AID, secretEnvVars, envVars, secretFiles, overrides, requires)
 	if serverState.App == "" {
 		serverState.App = localApp.App
 	}
@@ -724,6 +745,22 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 	yamlDiff, err := ComputeYAMLDiff(yamlPath, serverState)
 	if err != nil {
 		return nil, fmt.Errorf("yaml diff: %w", err)
+	}
+
+	secretEnvDiff := SectionDiff{Status: StatusInSync}
+	if len(secretEnvVars) > 0 {
+		secretField := localApp.SecretEnv
+		if secretField == "" {
+			secretField = SecretEnvFilename(localApp.CID, localApp.ID)
+		}
+		secretPath := secretField
+		if !filepath.IsAbs(secretPath) {
+			secretPath = filepath.Join(yamlDir, secretPath)
+		}
+		secretEnvDiff, err = ComputeEnvDiff(secretPath, secretEnvVars)
+		if err != nil {
+			return nil, fmt.Errorf("secret env diff: %w", err)
+		}
 	}
 
 	envDiff := SectionDiff{Status: StatusInSync}
@@ -775,12 +812,40 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 		CID:         localApp.CID,
 		AppID:       serverState.ID,
 		AppName:     serverState.App,
+		Notes:       buildClassFlapNotes(localApp, raw),
 		YAML:        yamlDiff,
+		SecretEnv:   secretEnvDiff,
 		Env:         envDiff,
 		SecretFiles: secretFilesDiff,
 		Overrides:   overridesDiff,
 		Code:        code,
 	}, nil
+}
+
+// buildClassFlapNotes detects the resourceRequirementClassId custom-synthesis
+// flap and returns at most one heads-up line. The flap pattern: local yaml
+// names a real class (app.sl1.beff, valkey.c0.small, etc.) but server
+// returned `custom` because at least one of cpu/mem/replicas was overridden
+// to a value that disagrees with the named class's defaults
+// (`util/services/resolveRRC.ts:hasCustomOverrides`). On every subsequent
+// pull/diff this looks like genuine class drift even though it's working as
+// designed. The note nudges the user toward the round-trip-clean fix
+// without explaining which field caused the flip (the field-level diff
+// already shows that).
+func buildClassFlapNotes(localApp *PulledApp, server map[string]any) []string {
+	if localApp == nil || server == nil {
+		return nil
+	}
+	localClass := localApp.ResourceRequirementClassID
+	serverClass := stringOr(server, "resourceRequirementClassId")
+	if serverClass != "custom" || localClass == "" || localClass == "custom" {
+		return nil
+	}
+	return []string{
+		"server stored resourceRequirementClassId=custom (overrides on cpu/memory/replicas disagree " +
+			"with " + localClass + "'s defaults). To round-trip cleanly: drop the override, or set " +
+			"resourceRequirementClassId: custom and pin all of cpu/memory/replicas explicitly.",
+	}
 }
 
 // BuildServerStateForDiff produces the PulledApp shape the server would
@@ -795,7 +860,7 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 // available (the field is then omitted via omitempty); pass an empty
 // non-nil map to assert "this app has no dependencies". Class is never
 // returned by the server; pull merges it from the local yaml.
-func BuildServerStateForDiff(raw map[string]any, cid, aid string, envVars map[string]string, secretFiles []SecretFileSummary, overrides []OverrideSummary, requires map[string]ServiceRequirement) *PulledApp {
+func BuildServerStateForDiff(raw map[string]any, cid, aid string, secretEnvVars, envVars map[string]string, secretFiles []SecretFileSummary, overrides []OverrideSummary, requires map[string]ServiceRequirement) *PulledApp {
 	p := BuildPulledApp(raw, cid, aid)
 
 	if requires != nil {
@@ -812,6 +877,9 @@ func BuildServerStateForDiff(raw map[string]any, cid, aid string, envVars map[st
 		}
 	}
 
+	if len(secretEnvVars) > 0 {
+		p.SecretEnv = SecretEnvFilename(p.CID, p.ID)
+	}
 	if len(envVars) > 0 {
 		p.Env = EnvFilename(p.CID, p.ID)
 	}

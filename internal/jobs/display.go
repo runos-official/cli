@@ -32,17 +32,23 @@ func DisplayStatus(job *JobStatus) {
 // JobStatus is the previous job-level status string ("running",
 // "completed", ...). JobProgress is the previous progress string.
 // ItemStatus maps work-item id to its previous status so we can detect
-// transitions (and surface only when one changes).
+// transitions (and surface only when one changes). ItemLogCursor maps
+// work-item id to the last log entry id we printed, so each tick of the
+// poller only fetches new lines.
 type FollowState struct {
-	JobStatus   string
-	JobProgress string
-	ItemStatus  map[string]string
+	JobStatus     string
+	JobProgress   string
+	ItemStatus    map[string]string
+	ItemLogCursor map[string]string
 }
 
 // NewFollowState returns a fresh state ready for the first poll. All
 // fields are empty so the first emit is treated as a transition.
 func NewFollowState() *FollowState {
-	return &FollowState{ItemStatus: map[string]string{}}
+	return &FollowState{
+		ItemStatus:    map[string]string{},
+		ItemLogCursor: map[string]string{},
+	}
 }
 
 // EmitFollowDeltas writes one line per state change since the previous
@@ -98,6 +104,39 @@ func EmitFollowDeltas(w io.Writer, job *JobStatus, items []WorkItem, state *Foll
 		}
 		fmt.Fprintln(w, line)
 		state.ItemStatus[item.ID] = item.Status
+	}
+}
+
+// EmitFollowLogs prints any new work-item log lines since the previous
+// poll, indented under their parent step. Lines come from the conductor's
+// work-item-logs endpoint which is fed by `jobState.log()` calls in the
+// orchestration (and, for VCS deploys, by the cluster-agent's build log
+// table forwarded through the parent job).
+//
+// Skips work items in `pending` state (no logs to fetch) and any item
+// whose status hasn't transitioned yet (the very first poll). Advances
+// state.ItemLogCursor in-place so the next call only requests new lines.
+//
+// Errors fetching logs are best-effort: a single failed call doesn't
+// abort the deploy, it just means logs may appear on a later tick.
+func EmitFollowLogs(w io.Writer, svc *Service, jobID string, items []WorkItem, state *FollowState) {
+	for i := range items {
+		item := items[i]
+		if item.Status == "pending" || item.Status == "" {
+			continue
+		}
+		cursor := state.ItemLogCursor[item.ID]
+		resp, err := svc.GetWorkItemLogs(jobID, item.ID, cursor)
+		if err != nil {
+			continue
+		}
+		for _, entry := range resp.Logs {
+			line := strings.TrimRight(entry.Message, "\n")
+			fmt.Fprintf(w, "  %s\n", line)
+		}
+		if resp.NextCursor != nil {
+			state.ItemLogCursor[item.ID] = *resp.NextCursor
+		}
 	}
 }
 

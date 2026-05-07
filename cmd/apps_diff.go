@@ -91,8 +91,10 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	// the redaction wins (we never want to leak values into an LLM
 	// context just because the wrapper happened to also set show-secrets).
 	if redact, _ := cmd.Flags().GetBool("redact-secrets"); redact {
-		if report.Env.UnifiedDiff != "" {
-			report.Env.UnifiedDiff = apps.RedactEnvUnifiedDiff(report.Env.UnifiedDiff)
+		// Only the secret env section is sensitive. Plain env vars are
+		// committed to VCS by definition, so they never get redacted.
+		if report.SecretEnv.UnifiedDiff != "" {
+			report.SecretEnv.UnifiedDiff = apps.RedactEnvUnifiedDiff(report.SecretEnv.UnifiedDiff)
 		}
 		// Secret-file content can only land in the report via
 		// --show-secrets above; if --redact-secrets is set we strip it
@@ -140,12 +142,22 @@ const sectionRuleWidth = 64
 // Callers are responsible for any context lead-in (e.g. "Comparing X
 // against cluster Y") and trailer (e.g. "Drift detected.").
 func printDiffReport(r *apps.DiffReport) {
+	for _, note := range r.Notes {
+		fmt.Println()
+		fmt.Printf("Note: %s\n", note)
+	}
+
 	var inSync []string
 
 	if r.YAML.Status == apps.StatusInSync {
 		inSync = append(inSync, "yaml")
 	} else {
 		printSection("yaml", r.YAML)
+	}
+	if r.SecretEnv.Status == apps.StatusInSync {
+		inSync = append(inSync, "secretEnv")
+	} else {
+		printSection("secretEnv", r.SecretEnv)
 	}
 	if r.Env.Status == apps.StatusInSync {
 		inSync = append(inSync, "env")

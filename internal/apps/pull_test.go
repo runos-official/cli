@@ -331,12 +331,18 @@ func TestFilenameBuilders(t *testing.T) {
 	if got := SuffixedYAMLFilename("k1", "ab12c"); got != "runos.k1.ab12c.yaml" {
 		t.Errorf("SuffixedYAMLFilename = %q, want runos.k1.ab12c.yaml", got)
 	}
-	if got := EnvFilename("k1", "ab12c"); got != ".runos.k1.ab12c.env" {
-		t.Errorf("EnvFilename(k1, ab12c) = %q, want .runos.k1.ab12c.env", got)
+	if got := SecretEnvFilename("k1", "ab12c"); got != ".runos.k1.ab12c.env" {
+		t.Errorf("SecretEnvFilename(k1, ab12c) = %q, want .runos.k1.ab12c.env", got)
+	}
+	if got := SecretEnvFilename("PROD-01", "AB12C"); got != ".runos.prod-01.ab12c.env" {
+		t.Errorf("SecretEnvFilename(PROD-01, AB12C) = %q, want .runos.prod-01.ab12c.env", got)
+	}
+	if got := EnvFilename("k1", "ab12c"); got != "runos.k1.ab12c.config.env" {
+		t.Errorf("EnvFilename(k1, ab12c) = %q, want runos.k1.ab12c.config.env", got)
 	}
 	// Lowercases inputs, matching DefaultBaseName.
-	if got := EnvFilename("PROD-01", "AB12C"); got != ".runos.prod-01.ab12c.env" {
-		t.Errorf("EnvFilename(PROD-01, AB12C) = %q, want .runos.prod-01.ab12c.env", got)
+	if got := EnvFilename("PROD-01", "AB12C"); got != "runos.prod-01.ab12c.config.env" {
+		t.Errorf("EnvFilename(PROD-01, AB12C) = %q, want runos.prod-01.ab12c.config.env", got)
 	}
 }
 
@@ -417,13 +423,17 @@ func TestBuildPulledApp_CliDeploy_RRCPreset(t *testing.T) {
 }
 
 func TestBuildPulledApp_VcsIntegration_PassesThroughIntegrationType(t *testing.T) {
-	// Mirrors the "Laravel from Gitlab" shape.
+	// Mirrors the "Laravel from Gitlab" shape. Server now emits both
+	// `deployType: vcs` (the canonical 'cli' | 'vcs' discriminator) and
+	// `integrationType: gitlab-runner` (provider slug). The yaml stores
+	// `deployType: vcs`; provider identity flows via the Integration block.
 	raw := map[string]any{
 		"id":                         "wr7yu",
 		"name":                       "Laravel from Gitlab",
 		"replicas":                   float64(1),
 		"clusterDomainId":            "elpfn",
 		"resourceRequirementClassId": "app.sl1.beff",
+		"deployType":                 "vcs",
 		"integrationType":            "gitlab-runner",
 		"vcsIntegrationId":           "tr6mj",
 		"repoId":                     8.1034699e+07,
@@ -437,8 +447,8 @@ func TestBuildPulledApp_VcsIntegration_PassesThroughIntegrationType(t *testing.T
 
 	p := BuildPulledApp(raw, "mycluster3", "myacct")
 
-	if p.DeployType != "gitlab-runner" {
-		t.Errorf("DeployType = %q, want gitlab-runner", p.DeployType)
+	if p.DeployType != "vcs" {
+		t.Errorf("DeployType = %q, want vcs", p.DeployType)
 	}
 	if p.Integration == nil {
 		t.Fatal("Integration should be populated for vcs deployType")
@@ -646,6 +656,7 @@ func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
 		"replicas":                   float64(1),
 		"clusterDomainId":            "elpfn",
 		"resourceRequirementClassId": "app.sl1.beff",
+		"deployType":                 "vcs",
 		"integrationType":            "gitlab-runner",
 		"vcsIntegrationId":           "tr6mj",
 		"repoId":                     8.1034699e+07,
@@ -815,9 +826,11 @@ func TestSaveEnv_WritesSortedKeysWith0600(t *testing.T) {
 	}
 
 	base := DefaultBaseName("k1", "ab12c")
-	res, err := SaveEnv(dir, base, "k1", "ab12c", envs)
+	// The 0600-perm path is the sensitive Secret-backed env file. The
+	// plain-file SaveEnv variant uses 0644 by design (committed to VCS).
+	res, err := SaveSecretEnv(dir, base, "k1", "ab12c", envs)
 	if err != nil {
-		t.Fatalf("SaveEnv: %v", err)
+		t.Fatalf("SaveSecretEnv: %v", err)
 	}
 	want := filepath.Join(dir, "runos.k1.ab12c", ".runos.k1.ab12c.env")
 	if res.Path != want {

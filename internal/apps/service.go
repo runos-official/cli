@@ -187,8 +187,22 @@ func (s *Service) ListOverrides(appID string) ([]OverrideSummary, error) {
 	return out, nil
 }
 
-// GetAppEnvVars fetches environment variables for an app.
-// Endpoint: GET /:aid/:cid/apps/:id/env-vars (sensitive_read)
+// GetAppSecretEnvVars fetches the sensitive (Secret-backed) env vars for an
+// app. Backed by the {osid}-user-secret-env-vars Kubernetes Secret.
+// Endpoint: GET /:aid/:cid/apps/:id/secret-env-vars (sensitive_read)
+func (s *Service) GetAppSecretEnvVars(appID string) (map[string]string, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secret-env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	var out map[string]string
+	if err := s.get(reqURL, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetAppEnvVars fetches the plain (ConfigMap-backed) env vars for an app.
+// Backed by the {osid}-user-env-vars Kubernetes ConfigMap. Non-sensitive —
+// these are the values committed to VCS in runos.{cid}.{id}.config.env.
+// Endpoint: GET /:aid/:cid/apps/:id/env-vars (read)
 func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 	var out map[string]string
@@ -286,8 +300,21 @@ func (s *Service) UpdateApp(appID string, fields map[string]any) (string, error)
 	return ack.JobID, nil
 }
 
-// ReplaceEnvVars replaces every env var on the app with newVars. Server
-// returns a jobId because this triggers a rollout restart.
+// ReplaceSecretEnvVars replaces every secret (Secret-backed) env var on the
+// app with newVars. Server returns a jobId because this triggers a rollout
+// restart.
+// Endpoint: POST /:aid/:cid/apps/:id/secret-env-vars
+func (s *Service) ReplaceSecretEnvVars(appID string, newVars map[string]string) (string, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secret-env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	ack, err := s.writeJSON(http.MethodPost, reqURL, map[string]any{"envVars": newVars}, nil)
+	if err != nil {
+		return "", err
+	}
+	return ack.JobID, nil
+}
+
+// ReplaceEnvVars replaces every plain (ConfigMap-backed) env var on the app
+// with newVars. Triggers a rollout restart.
 // Endpoint: POST /:aid/:cid/apps/:id/env-vars
 func (s *Service) ReplaceEnvVars(appID string, newVars map[string]string) (string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
@@ -325,11 +352,23 @@ func (s *Service) UpdateSecretFiles(appID string, add []SecretFilePayload, remov
 }
 
 // UpdateSecrets is the atomic env + secret-files endpoint, preferred when
-// both change so the app only redeploys once.
+// multiple sources change so the app only redeploys once. Pass nil for any
+// of secretEnvVars / envVars / addFiles / removeFiles to leave that source
+// untouched. A non-nil but empty `secretEnvVars` / `envVars` clears that
+// source.
 // Endpoint: POST /:aid/:cid/apps/:id/secrets
-func (s *Service) UpdateSecrets(appID string, envVars map[string]string, addFiles []SecretFilePayload, removeFiles []string) (string, error) {
+func (s *Service) UpdateSecrets(
+	appID string,
+	secretEnvVars map[string]string,
+	envVars map[string]string,
+	addFiles []SecretFilePayload,
+	removeFiles []string,
+) (string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secrets", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 	body := map[string]any{}
+	if secretEnvVars != nil {
+		body["secretEnvVars"] = secretEnvVars
+	}
 	if envVars != nil {
 		body["envVars"] = envVars
 	}

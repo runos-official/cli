@@ -19,12 +19,13 @@ VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || 
 
 .PHONY: local
 local: clean
-	@go build -ldflags="-X github.com/runos-official/cli/version.Version=dev" -o runos .
+	$(eval BUILD_STAMP := dev-$(shell date -u +%Y-%m-%dT%H:%M:%SZ))
+	@go build -ldflags="-X github.com/runos-official/cli/version.Version=$(BUILD_STAMP)" -o runos .
 	@mkdir -p ~/.local/bin
 	@rm -f ~/.local/bin/runos
 	@cp runos ~/.local/bin/
 	@xattr -c ~/.local/bin/runos 2>/dev/null || true
-	@echo "$(GREEN)Installed runos dev to ~/.local/bin/runos$(NC)"
+	@echo "$(GREEN)Installed runos $(BUILD_STAMP) to ~/.local/bin/runos$(NC)"
 
 .PHONY: build
 build:

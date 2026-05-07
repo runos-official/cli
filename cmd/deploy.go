@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/runos-official/cli/internal/apps"
@@ -53,6 +54,12 @@ func init() {
 	deployCmd.Flags().BoolP("follow", "f", false, "follow job progress until completion")
 	deployCmd.Flags().BoolP("json", "j", false, "output response as JSON")
 	deployCmd.Flags().Bool("force", false, "deploy even when local diverges from the server (skips the pre-deploy drift gate)")
+	// VCS-only flags. --app targets a VCS app without needing runos.yaml on
+	// disk (CI mode); --sha pins the commit to deploy (defaults to HEAD when
+	// run from inside a git repo); --allow-dirty waives the dirty-tree refusal.
+	deployCmd.Flags().String("app", "", "VCS-only: app ID to deploy (when no runos.yaml is present)")
+	deployCmd.Flags().String("sha", "", "VCS-only: commit SHA to deploy (defaults to git rev-parse HEAD)")
+	deployCmd.Flags().Bool("allow-dirty", false, "VCS-only: deploy even when the working tree has uncommitted changes")
 
 	// Add sync subcommand
 	deploySyncCmd.Flags().StringP("config", "c", "runos.yaml", "path to config file")
@@ -73,13 +80,16 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("authentication required: run 'runos login' or set RUNOS_API_KEY (%w)", err)
 	}
 
-	// Get cluster ID
+	// Resolve cluster ID. Three sources in priority order:
+	//   1. --cid flag
+	//   2. CLI config default (`runos config set cid <id>`)
+	//   3. yaml's `cid:` field (loaded below; lets a checked-in
+	//      runos.yaml carry its target cluster without per-machine config).
+	// Source 3 only applies when running with a yaml on disk; the --app /
+	// CI-mode path errors immediately if neither flag nor default are set.
 	cid, _ := cmd.Flags().GetString("cid")
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
-	}
-	if cid == "" {
-		return fmt.Errorf("cluster ID required: use --cid flag or set default with 'runos config set cid <cluster-id>'")
 	}
 
 	// Get account ID (env var takes precedence so CI runs without a config file).
@@ -88,6 +98,50 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("account ID not set: run 'runos login' or set RUNOS_ACCOUNT_ID")
 	}
 	cfg.AccountID = aid
+
+	// VCS-deploy dispatch. Two paths into the VCS flow:
+	//
+	//   1. CI: `runos deploy --app <id> --sha <sha>`. No runos.yaml on disk;
+	//      we trust the flag and fetch the app's deployType from the API
+	//      to make sure we're not accidentally invoking VCS-deploy on a
+	//      CLI-deploy app.
+	//
+	//   2. Laptop: `runos deploy` from a checkout of a VCS app's repo.
+	//      runos.yaml is loaded as today; we branch when its deployType
+	//      (or the server-side fallback) is 'vcs'.
+	//
+	// CLI-deploy apps reject --sha / --allow-dirty so the two modes never
+	// silently intermingle.
+	flagApp, _ := cmd.Flags().GetString("app")
+	flagSha, _ := cmd.Flags().GetString("sha")
+	flagAllowDirty, _ := cmd.Flags().GetBool("allow-dirty")
+	flagFollow, _ := cmd.Flags().GetBool("follow")
+
+	if flagApp != "" {
+		// CI mode: --app pins the target, no yaml is consulted, so cid must
+		// come from flag/config — yaml fallback is unavailable here.
+		if cid == "" {
+			return fmt.Errorf("cluster ID required when using --app: pass --cid or set default with 'runos config set cid <cluster-id>'")
+		}
+		svc := deploy.NewService(cfg.GetAPIURL(), token, cid, cfg.AccountID)
+		// Verify deployType server-side so we don't try to VCS-deploy a
+		// CLI-deploy app.
+		app, err := svc.GetApp(flagApp)
+		if err != nil {
+			return fmt.Errorf("failed to look up app %s: %w", flagApp, err)
+		}
+		if app == nil {
+			return fmt.Errorf("app %s not found on cluster %s", flagApp, cid)
+		}
+		if app.DeployType != "vcs" {
+			return fmt.Errorf("--app is only valid for VCS-deployed apps; %s has deployType=%q", flagApp, app.DeployType)
+		}
+		cmd.SilenceUsage = true
+		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
+		// Conductor falls back to whatever the AppDocument has stored
+		// (typically set by an earlier laptop deploy that DID send it).
+		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow)
+	}
 
 	// Load deploy config
 	configPath, _ := cmd.Flags().GetString("config")
@@ -104,14 +158,47 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Yaml provides the third cid source: a checked-in runos.yaml that
+	// already carries `cid:` shouldn't need an extra flag/config to deploy.
+	if cid == "" && deployConfig.CID != "" {
+		cid = deployConfig.CID
+	}
+	if cid == "" {
+		return fmt.Errorf("cluster ID required: pass --cid, run 'runos config set cid <cluster-id>', or include cid: in %s", configPath)
+	}
+
 	// Validate AID
 	if err := deploy.ValidateAID(deployConfig.AID, cfg.AccountID); err != nil {
 		return err
 	}
 
-	// Create deploy service
-	configDir := filepath.Dir(configPath)
 	svc := deploy.NewService(cfg.GetAPIURL(), token, cid, cfg.AccountID)
+
+	// Laptop VCS path: if the loaded runos.yaml is for a VCS app, branch into
+	// the VCS flow. We trust deployConfig.DeployType when present (set by
+	// `apps pull` or a previous deploy); otherwise fall back to the server.
+	deployType := deployConfig.DeployType
+	if deployType == "" && deployConfig.ID != "" {
+		if app, err := svc.GetApp(deployConfig.ID); err == nil && app != nil {
+			deployType = app.DeployType
+		}
+	}
+
+	if deployType == "vcs" {
+		cmd.SilenceUsage = true
+		configPathForServer := resolveVcsConfigPath(deployConfig, configPath)
+		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow)
+	}
+
+	// CLI-deploy guard: the VCS-only flags must not silently no-op here.
+	if flagSha != "" || flagAllowDirty {
+		return fmt.Errorf("--sha and --allow-dirty are only valid for VCS-deployed apps; this app has deployType=%q", deployType)
+	}
+
+	// Resolve config dir for downstream env-file lookups, etc. The deploy
+	// service was already constructed earlier (svc) for the VCS-deploy branch
+	// and is reused below.
+	configDir := filepath.Dir(configPath)
 
 	// Check if app already exists but config has no ID
 	if deployConfig.ID == "" {
@@ -150,8 +237,13 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Pre-deploy sync: catch any console-side changes before deploying
-	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
+	// Pre-deploy sync: catch any console-side changes before deploying.
+	// Capture the result so we can warn at end-of-deploy about any
+	// keys the user removed from local .env that got silently merged
+	// back in from server (deploy's env handling is additive only;
+	// `runos apps sync` is the replace-all verb that actually deletes).
+	preDeploySync, err := syncAppState(svc, deployConfig, configPath, cid)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: pre-deploy sync failed: %v\n", err)
 	}
 
@@ -161,20 +253,53 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// apps in the same cluster + directory would silently share env vars.
 	deploy.WarnLegacyEnv(configDir, deployConfig, cid)
 
-	// Load env vars from env file AFTER sync so remote changes are included
-	envPath, envConfigChanged := deploy.ResolveEnvPath(configDir, deployConfig, cid)
+	// Load env vars from both env files AFTER sync so remote changes are
+	// included. Two parallel sources:
+	//  - secret env file (.runos.{cid}.{id}.env): sensitive, gitignored;
+	//    populates customSecretEnvVars and lands in the K8s Secret.
+	//  - plain env file (runos.{cid}.{id}.config.env): committed to VCS;
+	//    populates customEnvVars and lands in the K8s ConfigMap.
+	envPaths, envConfigChanged := deploy.ResolveEnvFiles(configDir, deployConfig, cid)
 	if envConfigChanged {
 		if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to update config with env path: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to update config with env paths: %v\n", err)
 		}
 	}
-	customEnvVars, err := deploy.LoadEnvFile(envPath)
+	customSecretEnvVars, err := deploy.LoadEnvFile(envPaths.Secret)
+	if err != nil {
+		return fmt.Errorf("failed to load secret env file: %w", err)
+	}
+	if customSecretEnvVars != nil {
+		deployConfig.CustomSecretEnvVars = customSecretEnvVars
+	}
+	customEnvVars, err := deploy.LoadEnvFile(envPaths.Plain)
 	if err != nil {
 		return fmt.Errorf("failed to load env file: %w", err)
 	}
 	if customEnvVars != nil {
 		deployConfig.CustomEnvVars = customEnvVars
 	}
+
+	// Pre-flight conflict check. The conductor enforces this server-side
+	// (and refuses the deploy with a 400), but failing fast on the client
+	// keeps the error closer to the user's edit.
+	if conflicts := envKeyConflicts(customSecretEnvVars, customEnvVars); len(conflicts) > 0 {
+		return fmt.Errorf(
+			"env-var keys appear in both %s and %s: %s. "+
+				"Move each key to exactly one file (typically secret values stay in the .env file, plain values move to the .config.env file).",
+			filepath.Base(envPaths.Secret), filepath.Base(envPaths.Plain), strings.Join(conflicts, ", "),
+		)
+	}
+
+	// Detect collisions between the secret env file and the names the
+	// platform will inject at runtime via requires.<alias>.env. We do
+	// the detection here (where the env path and parsed map are in
+	// scope) but defer printing until AFTER the deploy summary, so the
+	// warning is the last thing the user/MCP-driven LLM reads about
+	// this deploy and is much harder to gloss over than a banner that
+	// scrolls off above the upload + summary output.
+	requiresEnvCollisions := deployRequiresEnvCollisions(deployConfig, customSecretEnvVars)
+	requiresEnvCollisionsFile := envPaths.Secret
 
 	fmt.Printf("Deploying %s...\n", deployConfig.App)
 
@@ -288,6 +413,41 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// requires.config, requires.env) on disk should run apps_pull.
 	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: post-deploy sync failed: %v\n", err)
+	}
+
+	// Last thing printed: any local-env vs server-env warnings, ordered
+	// from "specifically wrong" to "generally additive." Putting them
+	// after the deploy summary makes them the final block of output an
+	// MCP-driven LLM reads, much harder to gloss over than a banner that
+	// scrolls off above the upload + summary.
+
+	// Generic safety net: keys the user removed from a local env file that
+	// the pre-deploy syncAppState merge silently re-introduced from server.
+	// Deploy's env handling is additive only, so the deletion silently
+	// doesn't take effect. Filter out keys already covered by the
+	// requires-env warning (which has a more specific actionable message
+	// about the runtime shadowing effect). Reported per-side because the
+	// two files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env)
+	// are independent.
+	requiresEnvNames := make(map[string]bool, len(requiresEnvCollisions))
+	for _, c := range requiresEnvCollisions {
+		requiresEnvNames[c.EnvVar] = true
+	}
+	if preDeploySync != nil {
+		warnLocalDeletions(envPaths.Secret, preDeploySync.secretLocalMissingServerHas, requiresEnvNames)
+		warnLocalDeletions(envPaths.Plain, preDeploySync.envLocalMissingServerHas, nil)
+	}
+
+	// Heads-up about local env keys claimed by requires.<alias>.env.
+	// Conductor filters these out of customEnvVars on every deploy and
+	// the platform-injected value wins at runtime, so the deploy is
+	// correct regardless. Tone is informational, not a warning, so
+	// LLMs don't gloss over an unrelated banner the way they did when
+	// `--force` reflexes were trained on noisier output.
+	if len(requiresEnvCollisions) > 0 {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprint(os.Stderr, "Note: ")
+		fmt.Fprint(os.Stderr, apps.FormatServerInjectedEnvCollisions(requiresEnvCollisions, requiresEnvCollisionsFile))
 	}
 
 	return nil
@@ -407,8 +567,19 @@ func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, pre
 
 // syncResult holds what changed during a sync operation
 type syncResult struct {
-	deps    []deploy.AppDependency
-	envVars map[string]string
+	deps          []deploy.AppDependency
+	secretEnvVars map[string]string
+	envVars       map[string]string
+	// secretLocalMissingServerHas / envLocalMissingServerHas are the lists of
+	// env-var names the server has stored that the local file did NOT have
+	// at the moment syncAppState read it. The merge step re-introduces
+	// these into the local file (deploy's env handling is additive), so a
+	// user who deleted them from the file and re-deployed will silently
+	// see the values come back. Surfaced to the caller so a post-deploy
+	// warning can tell the user to use `runos apps sync` (replace-all) for
+	// actual deletions.
+	secretLocalMissingServerHas []string
+	envLocalMissingServerHas    []string
 }
 
 // syncAppState syncs dependencies and env vars from the deployed app state.
@@ -439,54 +610,48 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 		}
 	}
 
-	// Fetch and sync env vars
-	envVars, err := svc.GetAppEnvVars(deployConfig.ID)
-	if err != nil {
+	// Fetch and sync env vars from both sources. Each side merges
+	// independently with its corresponding local file so the merge is
+	// surgical: a key in the secret Secret stays in .runos.{cid}.{id}.env
+	// and a key in the plain ConfigMap stays in
+	// runos.{cid}.{id}.config.env.
+	envPaths, _ := deploy.ResolveEnvFiles(configDir, deployConfig, cid)
+
+	// Secret side.
+	if secretEnvVars, err := svc.GetAppSecretEnvVars(deployConfig.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to fetch secret env vars: %v\n", err)
+	} else {
+		result.secretEnvVars = secretEnvVars
+		if len(secretEnvVars) > 0 {
+			path := envPaths.Secret
+			if path == "" {
+				deployConfig.SecretEnv = deploy.DefaultSecretEnvFilename(cid, deployConfig.ID)
+				path = filepath.Join(configDir, deployConfig.SecretEnv)
+			}
+			missing, mergeErr := mergeServerEnvIntoLocalFile(path, secretEnvVars, deployConfig.SecretEnv, "secret env vars")
+			if mergeErr != nil {
+				return result, mergeErr
+			}
+			result.secretLocalMissingServerHas = missing
+		}
+	}
+
+	// Plain side.
+	if envVars, err := svc.GetAppEnvVars(deployConfig.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", err)
 	} else {
 		result.envVars = envVars
-	}
-
-	if len(envVars) > 0 {
-		envPath, _ := deploy.ResolveEnvPath(configDir, deployConfig, cid)
-		if envPath == "" {
-			deployConfig.Env = deploy.DefaultEnvFilename(cid, deployConfig.ID)
-			envPath = filepath.Join(configDir, deployConfig.Env)
-		}
-
-		localEnvVars, err := deploy.LoadEnvFile(envPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to read existing env file: %v\n", err)
-		}
-
-		// Check for conflicts: same key, different value
-		var conflicts []string
-		for key, localVal := range localEnvVars {
-			if remoteVal, exists := envVars[key]; exists && localVal != remoteVal {
-				conflicts = append(conflicts, key)
+		if len(envVars) > 0 {
+			path := envPaths.Plain
+			if path == "" {
+				deployConfig.Env = deploy.DefaultEnvFilename(cid, deployConfig.ID)
+				path = filepath.Join(configDir, deployConfig.Env)
 			}
-		}
-		if len(conflicts) > 0 {
-			fmt.Fprintf(os.Stderr, "\nEnv var conflicts detected (local value differs from remote):\n")
-			for _, key := range conflicts {
-				fmt.Fprintf(os.Stderr, "  %s\n    local:  %s\n    remote: %s\n", key, localEnvVars[key], envVars[key])
+			missing, mergeErr := mergeServerEnvIntoLocalFile(path, envVars, deployConfig.Env, "env vars")
+			if mergeErr != nil {
+				return result, mergeErr
 			}
-			return result, fmt.Errorf("resolve env var conflicts in %s before syncing", deployConfig.Env)
-		}
-
-		// Merge: start with remote vars, add any local-only vars
-		merged := make(map[string]string, len(envVars)+len(localEnvVars))
-		for k, v := range envVars {
-			merged[k] = v
-		}
-		for k, v := range localEnvVars {
-			if _, exists := merged[k]; !exists {
-				merged[k] = v
-			}
-		}
-
-		if err := deploy.SaveEnvFile(envPath, merged); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to save env file: %v\n", err)
+			result.envLocalMissingServerHas = missing
 		}
 	}
 
@@ -810,4 +975,134 @@ func runDeploySync(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// deployRequiresEnvCollisions adapts deploy.DeployConfig.Requires (a
+// map keyed by alias of deploy.ServiceRequirement) into the
+// apps.ServiceRequirement shape FindServerInjectedEnvCollisions
+// accepts, then runs the check. The two ServiceRequirement types
+// have the same wire shape but live in different packages; this
+// keeps deploy from importing apps internals beyond the helper.
+func deployRequiresEnvCollisions(cfg *deploy.DeployConfig, localEnv map[string]string) []apps.ServerInjectedEnvCollision {
+	if len(cfg.Requires) == 0 || len(localEnv) == 0 {
+		return nil
+	}
+	adapted := make(map[string]apps.ServiceRequirement, len(cfg.Requires))
+	for alias, r := range cfg.Requires {
+		adapted[alias] = apps.ServiceRequirement{Env: r.Env}
+	}
+	return apps.FindServerInjectedEnvCollisions(localEnv, adapted)
+}
+
+// mergeServerEnvIntoLocalFile reconciles one server-side env-var map with
+// its corresponding local file. Returns the sorted list of keys the server
+// has that the local file lacked (reported by the caller as "got merged
+// back" warnings), and any error that should abort the deploy. Intentionally
+// per-side because the secret/plain split runs the same logic against
+// different files.
+func mergeServerEnvIntoLocalFile(
+	path string,
+	serverVars map[string]string,
+	relPathForErrors string,
+	label string,
+) ([]string, error) {
+	localVars, err := deploy.LoadEnvFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read existing %s file: %v\n", label, err)
+	}
+
+	// Local-missing tracking: keys the merge below is about to re-introduce.
+	// Only meaningful when the local file actually existed beforehand — a
+	// first-time materialisation is a legitimate fresh pull, not a
+	// deletion-that-got-reverted.
+	var missing []string
+	if _, statErr := os.Stat(path); statErr == nil {
+		for key := range serverVars {
+			if _, present := localVars[key]; !present {
+				missing = append(missing, key)
+			}
+		}
+		sort.Strings(missing)
+	}
+
+	// Conflict check: same key, different value. Same shape on both sides.
+	var conflicts []string
+	for key, localVal := range localVars {
+		if remoteVal, exists := serverVars[key]; exists && localVal != remoteVal {
+			conflicts = append(conflicts, key)
+		}
+	}
+	if len(conflicts) > 0 {
+		fmt.Fprintf(os.Stderr, "\n%s conflicts detected (local value differs from remote):\n", label)
+		for _, key := range conflicts {
+			fmt.Fprintf(os.Stderr, "  %s\n    local:  %s\n    remote: %s\n", key, localVars[key], serverVars[key])
+		}
+		return missing, fmt.Errorf("resolve %s conflicts in %s before syncing", label, relPathForErrors)
+	}
+
+	// Merge: start with remote vars, add any local-only vars.
+	merged := make(map[string]string, len(serverVars)+len(localVars))
+	for k, v := range serverVars {
+		merged[k] = v
+	}
+	for k, v := range localVars {
+		if _, exists := merged[k]; !exists {
+			merged[k] = v
+		}
+	}
+
+	if err := deploy.SaveEnvFile(path, merged); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to save %s file: %v\n", label, err)
+	}
+	return missing, nil
+}
+
+// warnLocalDeletions prints the post-deploy "got merged back" hint for one
+// env-file side. `path` is the file the user edits, `missing` is the list
+// of keys present on the server but absent from the local file at the
+// moment the pre-deploy merge ran. `requiresFiltered` (optional) filters
+// out keys already surfaced by the requires-env-shadowing warning so we
+// don't double-warn for the same key with two different framings.
+func warnLocalDeletions(path string, missing []string, requiresFiltered map[string]bool) {
+	if path == "" || len(missing) == 0 {
+		return
+	}
+	var filtered []string
+	for _, k := range missing {
+		if requiresFiltered != nil && requiresFiltered[k] {
+			continue
+		}
+		filtered = append(filtered, k)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr,
+		"Warning: %d env key(s) on the server were missing from %s and got merged back into the local file:\n",
+		len(filtered), path)
+	for _, k := range filtered {
+		fmt.Fprintf(os.Stderr, "  %s\n", k)
+	}
+	fmt.Fprintf(os.Stderr, "\n`runos deploy` is additive: it pulls server env vars down into local but never pushes deletions up.\n")
+	fmt.Fprintf(os.Stderr, "If you intended to remove these from the server, run `runos apps sync` (NOT another deploy);\n")
+	fmt.Fprintf(os.Stderr, "the replace-all env-vars push is the only way the CLI deletes server-side env vars.\n")
+}
+
+// envKeyConflicts returns the sorted intersection of two env-var maps.
+// A non-empty result means the user has the same key in both their
+// secret and plain env files, which the conductor refuses to apply
+// (envFrom merging would make the running pod's value ambiguous).
+func envKeyConflicts(secret, plain map[string]string) []string {
+	if len(secret) == 0 || len(plain) == 0 {
+		return nil
+	}
+	var conflicts []string
+	for k := range plain {
+		if _, ok := secret[k]; ok {
+			conflicts = append(conflicts, k)
+		}
+	}
+	sort.Strings(conflicts)
+	return conflicts
 }

@@ -113,6 +113,7 @@ type pulledAppEntry struct {
 	ID                 string            `json:"id"`
 	Name               string            `json:"name"`
 	YAML               apps.WriteResult  `json:"yaml"`
+	SecretEnv          *apps.WriteResult `json:"secretEnv,omitempty"`
 	Env                *apps.WriteResult `json:"env,omitempty"`
 	EnvVars            int               `json:"envVarCount"`
 	SecretFilesTotal   int               `json:"secretFilesTotal,omitempty"`
@@ -559,6 +560,10 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		return nil, nil, false, fmt.Errorf("fetch app: %w", err)
 	}
 
+	secretEnvVars, err := svc.GetAppSecretEnvVars(target.ID)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("fetch secret env vars: %w", err)
+	}
 	envVars, envErr := svc.GetAppEnvVars(target.ID)
 	if envErr != nil {
 		return nil, nil, false, fmt.Errorf("fetch env vars: %w", envErr)
@@ -579,7 +584,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		return nil, nil, false, fmt.Errorf("read requires: %w", err)
 	}
 
-	serverState := apps.BuildServerStateForDiff(raw, cid, aid, envVars, secretList, overrideList, requiresMap)
+	serverState := apps.BuildServerStateForDiff(raw, cid, aid, secretEnvVars, envVars, secretList, overrideList, requiresMap)
 	if serverState.App == "" {
 		serverState.App = target.Name
 	}
@@ -611,6 +616,14 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	yamlDiff, err := apps.ComputeYAMLDiff(yamlPath, serverState)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("yaml diff: %w", err)
+	}
+	secretEnvDiff := apps.SectionDiff{Status: apps.StatusInSync}
+	if len(secretEnvVars) > 0 {
+		secretEnvPath := filepath.Join(appDir, apps.SecretEnvFilename(cid, target.ID))
+		secretEnvDiff, err = apps.ComputeEnvDiff(secretEnvPath, secretEnvVars)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("secret env diff: %w", err)
+		}
 	}
 	envDiff := apps.SectionDiff{Status: apps.StatusInSync}
 	if len(envVars) > 0 {
@@ -648,8 +661,11 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 
 	report := &apps.DiffReport{
 		CID: cid, AppID: serverState.ID, AppName: serverState.App,
-		YAML: yamlDiff, Env: envDiff,
-		SecretFiles: secretFilesDiff, Overrides: overridesDiff,
+		YAML:        yamlDiff,
+		SecretEnv:   secretEnvDiff,
+		Env:         envDiff,
+		SecretFiles: secretFilesDiff,
+		Overrides:   overridesDiff,
 	}
 
 	if report.NeedsForceToOverwrite() && !force {
@@ -686,11 +702,18 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		ID:               serverState.ID,
 		Name:             serverState.App,
 		YAML:             yamlRes,
-		EnvVars:          len(envVars),
+		EnvVars:          len(secretEnvVars) + len(envVars),
 		SecretFilesTotal: len(serverState.SecretFiles),
 		OverridesTotal:   len(serverState.Overrides),
 	}
 
+	if len(secretEnvVars) > 0 {
+		secretEnvRes, err := apps.SaveSecretEnv(appDir, "", cid, target.ID, secretEnvVars)
+		if err != nil {
+			return entry, skips, false, fmt.Errorf("save secret env: %w", err)
+		}
+		entry.SecretEnv = &secretEnvRes
+	}
 	if len(envVars) > 0 {
 		envRes, err := apps.SaveEnv(appDir, "", cid, target.ID, envVars)
 		if err != nil {

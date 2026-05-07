@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.0.0-rc.6
+
+Adds VCS deploys, splits env vars into Secret + ConfigMap, and brings live build-log streaming to `runos deploy --follow`. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.6`.
+
+### New
+
+- **VCS deploys**: `runos deploy` now dispatches on the app's `deployType`. CLI-deploy apps still tarball the local source and upload (unchanged). VCS-deploy apps send `{sha, configPath}` only; the conductor and cluster agent pull source from the linked GitHub/GitLab integration at the SHA, build in-cluster, push, and roll out. New flags: `--app <id>` for CI mode (no yaml on disk), `--sha` (defaults to `git rev-parse HEAD`), `--allow-dirty` (waives the dirty-tree refusal). The two modes never silently intermingle: passing `--sha` / `--allow-dirty` against a CLI-deploy app is a hard error, and passing `--app` against a CLI-deploy app is rejected after a server-side `deployType` lookup.
+- **`configPath:` is the source of truth for a VCS yaml's repo location**: `runos deploy` auto-derives the repo-relative path of the local yaml (`git rev-parse --show-toplevel` + `filepath.Rel`) and sends it on every VCS deploy. Conductor persists it to the AppDocument, so subsequent CI deploys (`runos deploy --app <id> --sha <sha>` without a checkout) inherit the persisted value. Monorepos with apps under per-app subdirectories (`apps/billing/runos.dev.yaml`) work without manual config. Explicit `configPath:` field in the yaml is still honoured as the escape hatch for non-standard layouts.
+- **Env vars split into Secret + ConfigMap**: alongside the existing `.runos.<cid>.<id>.env` (sensitive, gitignored, K8s Secret), `runos deploy` / `apps pull` / `apps sync` / `apps diff` now also handle `runos.<cid>.<id>.config.env` (plain, committed, K8s ConfigMap). Both flow into the pod via `envFrom` so app code reads them identically. A key may not appear in both files at once; conductor refuses the deploy with a 400 listing conflicts, and the CLI pre-flights the same check. Pull/sync/diff round-trip both sides independently.
+- **`runos deploy --follow` streams per-step build logs**: the follow poller now fetches new work-item log entries on each tick (cursor-paginated via the new `/jobs/:id/workitems/:id/logs` endpoint) and indents them under their parent step. Previously only status transitions surfaced; long-running build steps now show progress in real time. GitHub Actions runs wrap the streamed output in a `::group::` block so it collapses by default and surface the public URL via `::notice::` after a successful deploy.
+- **`requires.<alias>.env` collision detection**: when a local env file hand-authors a key that the platform injects at runtime from a linked service's credentials (e.g. `DATABASE_URL` written locally while `requires.db.env.url=DATABASE_URL` claims it), `runos deploy` and `apps sync` flag it as informational dead config. Conductor drops the colliding key from `customEnvVars` on every deploy so the runtime value always reflects the linked service; the message points at the cosmetic cleanup.
+- **Pre-deploy code drift gate**: `runos deploy` refuses when newer CLI archives exist on the server (someone else deployed via console or CI between this directory's last `apps pull --code` / deploy and now). The check is fail-closed (API failure refuses the deploy) so a fail-open never lets through the very thing the gate exists to prevent. Pass `--force` to override.
+- **`runos deploy --force`**: a single bypass flag for both pre-deploy gates (yaml drift and code drift). The diff is shown either way.
+
+### Improvements
+
+- **`apps pull` / `apps diff` correctly read `deployType`**: prior versions conflated provider name with deploy type and stored `github-arc` / `gitlab-runner` as `deployType`, producing perpetual drift on `apps diff` because the server emits `vcs`. Provider identity now flows via the `Integration` block alongside repo/branch metadata; `deployType` carries the canonical `cli` | `vcs` value with `integrationType` as a legacy fallback for older conductors.
+- **Class-flap heads-up note on `apps diff`**: when the server stored `resourceRequirementClassId=custom` because cpu/memory/replicas overrides disagree with the named class's defaults (server's `resolveRRC` synthesis), the diff now surfaces a one-line note explaining the mechanic and how to round-trip cleanly. Previously this looked like fresh class drift on every sync.
+- **MCP `deploy` tool gains VCS parameters**: `app`, `sha`, `allow_dirty`. Pre-validation stays in the CLI binary (one source of truth for the deployType branching rule) so the MCP shim only translates args. The tool description spells out which flags belong with which deploy type.
+- **MCP JSON Schema for object/array fields**: the manifest-driven tool generator now emits `additionalProperties: {type: string}` for `object` fields and `items: {type: string}` for `array` fields. Strict-validating LLM clients (some Anthropic SDK tool wrappers) previously rejected the unannotated schemas. The `object` manifest type now maps to JSON Schema `object` instead of being collapsed to `string`.
+- **MCP defensive JSON-string coercion**: when an MCP client ignores the declared field type and sends an `object` / `array` field as a JSON-encoded string (`envVars: '{"K":"v"}'`), the executor now decodes in-place so the wire body matches the manifest's declared type. Conductor previously rejected it as "not an object".
+- **`apps pull` pulls both env-var sides independently**: secret env file is gitignored on first pull (created with mode 0600), plain config env file is created with mode 0644 ready to commit. Diff/sync round-trip each side against its corresponding K8s resource.
+- **Pre-deploy drift gate validates IDs as defence-in-depth**: app ID and cluster ID from the local yaml are charset-validated via `apps.ValidateIdentifier` before being joined into URLs, so a tampered yaml can't smuggle path components into API requests.
+- **Build stamp on local builds**: `make local` now stamps `dev-<utc-timestamp>` into the version string, so dev binaries are version-distinguishable in the wild. Stable releases continue to stamp the git tag.
+- **Documentation**: the README and CLAUDE.md gain a deploy-verb section covering the deployType dispatch, the three cluster-id sources (flag → config → yaml), the SHA / dirty-tree gate, and the env-var Secret/ConfigMap split.
+
+### Bug fixes
+
+- **`apps diff` `--redact-secrets` covers the new secret env section**: values in the new `SecretEnv` `SectionDiff` are redacted in the unified-diff output by the same flag that already redacts `.env` content. The MCP `apps_diff` tool keeps passing `--redact-secrets` so secret values never reach the LLM context.
+
 ## v1.0.0-rc.5
 
 Bug fix on top of v1.0.0-rc.4. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.5`.

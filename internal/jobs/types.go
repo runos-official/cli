@@ -52,3 +52,22 @@ type WorkItemsResponse struct {
 func (j *JobStatus) IsTerminal() bool {
 	return j.Status == "completed" || j.Status == "failed"
 }
+
+// WorkItemLog is one log line emitted by an in-flight work item. Used by
+// the follow poller to stream cluster-agent build progress and any other
+// per-step output back to the CLI's stdout.
+type WorkItemLog struct {
+	ID         string `json:"id"`
+	WorkItemID string `json:"workItemId"`
+	Level      string `json:"level"`
+	Message    string `json:"message"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+// WorkItemLogsResponse is the API response for /jobs/:id/workitems/:wid/logs.
+// NextCursor is the ID to pass as `after` on the next request.
+type WorkItemLogsResponse struct {
+	WorkItemID string        `json:"workItemId"`
+	Logs       []WorkItemLog `json:"logs"`
+	NextCursor *string       `json:"nextCursor"`
+}

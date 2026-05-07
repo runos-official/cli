@@ -425,10 +425,10 @@ func TestBuildServerStateForDiff_MatchesPullShape(t *testing.T) {
 		{Filename: "server.crt", MountPath: "/etc/ssl/server.crt", MD5: "abc"},
 	}
 
-	p := BuildServerStateForDiff(raw, "k1", "acc-1", envs, secretFiles, nil, nil)
+	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, envs, secretFiles, nil, nil)
 
-	if p.Env != ".runos.k1.ab12c.env" {
-		t.Errorf("Env = %q, want .runos.k1.ab12c.env (envs present)", p.Env)
+	if p.Env != "runos.k1.ab12c.config.env" {
+		t.Errorf("Env = %q, want runos.k1.ab12c.config.env (envs present)", p.Env)
 	}
 	if len(p.SecretFiles) != 1 {
 		t.Fatalf("SecretFiles len = %d, want 1", len(p.SecretFiles))
@@ -457,7 +457,7 @@ func TestBuildServerStateForDiff_RequiresFromMap(t *testing.T) {
 		},
 		"poll-app-cache": {Type: "valkey", ID: "xY9zW"},
 	}
-	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, requires)
+	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, requires)
 	if len(p.Requires) != 2 {
 		t.Fatalf("expected 2 requires entries, got %d: %+v", len(p.Requires), p.Requires)
 	}
@@ -484,7 +484,7 @@ func TestBuildServerStateForDiff_DefensiveCopy(t *testing.T) {
 	requires := map[string]ServiceRequirement{
 		"poll-app-db": {Type: "postgresql", ID: "mjn1d"},
 	}
-	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, requires)
+	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, requires)
 	delete(requires, "poll-app-db")
 	if _, ok := p.Requires["poll-app-db"]; !ok {
 		t.Error("PulledApp.Requires should not alias caller's map")
@@ -496,7 +496,7 @@ func TestBuildServerStateForDiff_DefensiveCopy(t *testing.T) {
 // map, which omitempty drops from the marshaled yaml.
 func TestBuildServerStateForDiff_NilRequiresLeavesRequiresNil(t *testing.T) {
 	raw := map[string]any{"id": "x", "name": "svc", "replicas": float64(1)}
-	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil)
+	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
 	if p.Requires != nil {
 		t.Errorf("nil deps must leave Requires nil; got %+v", p.Requires)
 	}
@@ -504,7 +504,7 @@ func TestBuildServerStateForDiff_NilRequiresLeavesRequiresNil(t *testing.T) {
 
 func TestBuildServerStateForDiff_OmitsEnvWhenEmpty(t *testing.T) {
 	raw := map[string]any{"id": "x", "name": "svc", "replicas": float64(1)}
-	p := BuildServerStateForDiff(raw, "k1", "acc-1", map[string]string{}, nil, nil, nil)
+	p := BuildServerStateForDiff(raw, "k1", "acc-1", nil, map[string]string{}, nil, nil, nil)
 	if p.Env != "" {
 		t.Errorf("Env should be empty when no envs, got %q", p.Env)
 	}
@@ -747,6 +747,7 @@ func TestNeedsForceToDeploy_SecretAndOverrideDriftIsBenign(t *testing.T) {
 func TestNeedsForceToDeploy_AllInSyncReturnsFalse(t *testing.T) {
 	r := &DiffReport{
 		YAML:        SectionDiff{Status: StatusInSync},
+		SecretEnv:   SectionDiff{Status: StatusInSync},
 		Env:         SectionDiff{Status: StatusInSync},
 		SecretFiles: SecretFilesDiff{Status: StatusInSync},
 		Overrides:   OverridesDiff{Status: StatusInSync},
@@ -777,6 +778,7 @@ func TestNeedsForceToOverwrite_DivergentEnvForces(t *testing.T) {
 func TestDiffReport_HasDrift(t *testing.T) {
 	allSync := &DiffReport{
 		YAML:        SectionDiff{Status: StatusInSync},
+		SecretEnv:   SectionDiff{Status: StatusInSync},
 		Env:         SectionDiff{Status: StatusInSync},
 		SecretFiles: SecretFilesDiff{Status: StatusInSync},
 		Overrides:   OverridesDiff{Status: StatusInSync},
@@ -823,7 +825,7 @@ func TestDiffReport_HasDrift(t *testing.T) {
 func TestDiffReport_NeedsForceToOverwrite(t *testing.T) {
 	// All in-sync: no force needed.
 	r := &DiffReport{
-		YAML: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
+		YAML: SectionDiff{Status: StatusInSync}, SecretEnv: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
 		SecretFiles: SecretFilesDiff{Status: StatusInSync}, Overrides: OverridesDiff{Status: StatusInSync},
 	}
 	if r.NeedsForceToOverwrite() {
@@ -832,8 +834,9 @@ func TestDiffReport_NeedsForceToOverwrite(t *testing.T) {
 
 	// local_missing is NOT drift for pull; fresh writes are safe.
 	r2 := &DiffReport{
-		YAML: SectionDiff{Status: StatusLocalMissing},
-		Env:  SectionDiff{Status: StatusLocalMissing},
+		YAML:      SectionDiff{Status: StatusLocalMissing},
+		SecretEnv: SectionDiff{Status: StatusLocalMissing},
+		Env:       SectionDiff{Status: StatusLocalMissing},
 		SecretFiles: SecretFilesDiff{Status: StatusLocalMissing, Entries: []SecretFileDiff{
 			{Filename: "a", Status: StatusLocalMissing},
 		}},
@@ -857,7 +860,7 @@ func TestDiffReport_NeedsForceToOverwrite(t *testing.T) {
 	// A single drifting secret file triggers the gate even if the aggregate
 	// status is drift + some entries are local_missing.
 	r4 := &DiffReport{
-		YAML: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
+		YAML: SectionDiff{Status: StatusInSync}, SecretEnv: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
 		SecretFiles: SecretFilesDiff{Status: StatusDrift, Entries: []SecretFileDiff{
 			{Filename: "a", Status: StatusLocalMissing},
 			{Filename: "b", Status: StatusDrift},
@@ -870,7 +873,7 @@ func TestDiffReport_NeedsForceToOverwrite(t *testing.T) {
 
 	// Same for overrides.
 	r5 := &DiffReport{
-		YAML: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
+		YAML: SectionDiff{Status: StatusInSync}, SecretEnv: SectionDiff{Status: StatusInSync}, Env: SectionDiff{Status: StatusInSync},
 		SecretFiles: SecretFilesDiff{Status: StatusInSync},
 		Overrides: OverridesDiff{Status: StatusDrift, Entries: []OverrideDiff{
 			{ID: "o1", Status: StatusDrift},
@@ -894,8 +897,12 @@ func fakeConductorForDiff(t *testing.T, raw map[string]any, env map[string]strin
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
-		case strings.HasSuffix(path, "/env-vars"):
+		case strings.HasSuffix(path, "/secret-env-vars"):
 			writeJSON(t, w, 200, env)
+		case strings.HasSuffix(path, "/env-vars"):
+			// Plain env-vars (ConfigMap). Default to empty; tests that need
+			// both populated should switch to a split helper.
+			writeJSON(t, w, 200, map[string]string{})
 		case strings.HasSuffix(path, "/secret-files"):
 			writeJSON(t, w, 200, map[string]any{"files": secrets})
 		case strings.HasSuffix(path, "/overrides"):
@@ -950,7 +957,7 @@ func TestBuildDiffReport_AllInSync(t *testing.T) {
 
 	// Local yaml = what BuildServerStateForDiff would produce, so bytes
 	// match exactly when the diff runs.
-	serverState := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil)
+	serverState := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
 	yamlBytes, err := yaml.Marshal(serverState)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -982,7 +989,7 @@ func TestBuildDiffReport_YamlDriftWhenReplicasDiffer(t *testing.T) {
 		"id":       "ab12c",
 		"name":     "web",
 		"replicas": float64(1),
-	}, "k1", "acc-1", nil, nil, nil, nil)
+	}, "k1", "acc-1", nil, nil, nil, nil, nil)
 	yamlBytes, _ := yaml.Marshal(localState)
 	yamlPath := filepath.Join(dir, "runos.yaml")
 	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {
@@ -1014,15 +1021,15 @@ func TestBuildDiffReport_YamlDriftWhenReplicasDiffer(t *testing.T) {
 	}
 }
 
-func TestBuildDiffReport_EnvDriftWhenServerHasExtra(t *testing.T) {
+func TestBuildDiffReport_SecretEnvDriftWhenServerHasExtra(t *testing.T) {
 	dir := t.TempDir()
 
-	// Local yaml has no env block; the env file holds A=1 only.
+	// Local yaml has no env block; the secret env file holds A=1 only.
 	localState := BuildServerStateForDiff(map[string]any{
 		"id":       "ab12c",
 		"name":     "web",
 		"replicas": float64(1),
-	}, "k1", "acc-1", map[string]string{"A": "1"}, nil, nil, nil)
+	}, "k1", "acc-1", map[string]string{"A": "1"}, nil, nil, nil, nil)
 	yamlBytes, _ := yaml.Marshal(localState)
 	yamlPath := filepath.Join(dir, "runos.yaml")
 	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {
@@ -1032,7 +1039,7 @@ func TestBuildDiffReport_EnvDriftWhenServerHasExtra(t *testing.T) {
 		t.Fatalf("write env: %v", err)
 	}
 
-	// Server has env A=1 + B=server-only.
+	// Server has secret env A=1 + B=server-only.
 	serverEnv := map[string]string{"A": "1", "B": "server-only"}
 	srv := fakeConductorForDiff(t, map[string]any{
 		"id":       "ab12c",
@@ -1042,19 +1049,19 @@ func TestBuildDiffReport_EnvDriftWhenServerHasExtra(t *testing.T) {
 	defer srv.Close()
 	svc := NewService(srv.URL, "tok", "k1", "acc-1")
 
-	localApp := &PulledApp{ID: "ab12c", CID: "k1", AID: "acc-1", App: "web", Env: ".env"}
+	localApp := &PulledApp{ID: "ab12c", CID: "k1", AID: "acc-1", App: "web", SecretEnv: ".env"}
 	report, err := BuildDiffReport(svc, localApp, yamlPath, "acc-1", "k1")
 	if err != nil {
 		t.Fatalf("BuildDiffReport: %v", err)
 	}
 	if !report.HasDrift() {
-		t.Fatal("expected drift (env section)")
+		t.Fatal("expected drift (secret env section)")
 	}
-	if report.Env.Status != StatusDrift {
-		t.Errorf("env status = %q, want drift", report.Env.Status)
+	if report.SecretEnv.Status != StatusDrift {
+		t.Errorf("secret env status = %q, want drift", report.SecretEnv.Status)
 	}
-	if !report.Env.AdditiveOnly {
-		t.Errorf("env drift should be additive-only when server has extra keys; got AdditiveOnly=%v", report.Env.AdditiveOnly)
+	if !report.SecretEnv.AdditiveOnly {
+		t.Errorf("secret env drift should be additive-only when server has extra keys; got AdditiveOnly=%v", report.SecretEnv.AdditiveOnly)
 	}
 }
 
@@ -1069,7 +1076,7 @@ func TestBuildDiffReport_PopulatesCodeSectionFromSidecar(t *testing.T) {
 		"name":     "web",
 		"replicas": float64(1),
 	}
-	state := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil)
+	state := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
 	yamlBytes, _ := yaml.Marshal(state)
 	yamlPath := filepath.Join(dir, "runos.yaml")
 	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {
@@ -1089,6 +1096,8 @@ func TestBuildDiffReport_PopulatesCodeSectionFromSidecar(t *testing.T) {
 				{CliUploadID: "v2", PushTime: "2026-04-27T10:00:00Z"},
 				{CliUploadID: "v3", PushTime: "2026-04-28T10:00:00Z"},
 			})
+		case strings.HasSuffix(r.URL.Path, "/secret-env-vars"):
+			writeJSON(t, w, 200, map[string]string{})
 		case strings.HasSuffix(r.URL.Path, "/env-vars"):
 			writeJSON(t, w, 200, map[string]string{})
 		case strings.HasSuffix(r.URL.Path, "/secret-files"):
@@ -1126,7 +1135,7 @@ func TestBuildDiffReport_PopulatesCodeSectionFromSidecar(t *testing.T) {
 func TestBuildDiffReport_NoSidecarOmitsCodeSection(t *testing.T) {
 	dir := t.TempDir()
 	raw := map[string]any{"id": "ab12c", "name": "web", "replicas": float64(1)}
-	state := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil)
+	state := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
 	yamlBytes, _ := yaml.Marshal(state)
 	yamlPath := filepath.Join(dir, "runos.yaml")
 	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {

@@ -185,6 +185,104 @@ type AppInfo struct {
 	Port int    `json:"port"`
 }
 
+// AppShow is the subset of GET /apps/:id the deploy command branches on. The
+// real response is much larger; we decode only what runos deploy needs to
+// pick between the cli- and vcs-deploy paths.
+type AppShow struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	DeployType string `json:"deployType"`
+}
+
+// VCSDeployResponse is what POST /apps/:id/deploy returns (202 + jobId).
+type VCSDeployResponse struct {
+	JobID string `json:"jobId"`
+}
+
+// GetApp fetches the app details for branching on deployType. Returns the
+// raw HTTP error so callers can distinguish 404 from other failures.
+func (s *Service) GetApp(appID string) (*AppShow, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result AppShow
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
+
+// DeployVCS triggers a VCS deploy at the given commit sha. The conductor
+// pulls source from the app's linked GitHub/GitLab integration, reconciles
+// runos.yaml + runos.service.*.yaml from the committed tree, builds (when
+// not already in Harbor), patches the deployment, and watches rollout.
+//
+// configPath is the repo-relative location of the runos.yaml the cluster
+// agent should read on this deploy. Empty string means "use whatever the
+// AppDocument has stored" (CI mode without a yaml on disk). Non-empty
+// values are persisted to the AppDocument so subsequent deploys inherit
+// them — the yaml is the source of truth for its own repo location.
+func (s *Service) DeployVCS(appID, sha, configPath string) (*VCSDeployResponse, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/deploy", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+
+	bodyMap := map[string]string{"sha": sha}
+	if configPath != "" {
+		bodyMap["configPath"] = configPath
+	}
+	jsonBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result VCSDeployResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
+
 // FindAppByName searches for an app by name in the cluster
 func (s *Service) FindAppByName(appName string) (*AppInfo, error) {
 	// Endpoint: /:aid/:cid/apps
@@ -233,11 +331,10 @@ type AppDependency struct {
 	Name string `json:"name"`
 }
 
-// GetAppEnvVars fetches environment variables for an application
-func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
-	// Endpoint: /:aid/:cid/apps/:id/env-vars (renamed from /envs).
-	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
-
+// fetchEnvVarMap is the shared implementation for GET /env-vars and
+// /secret-env-vars: an authenticated GET that decodes the response into a
+// flat string map.
+func (s *Service) fetchEnvVarMap(reqURL string) (map[string]string, error) {
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -266,6 +363,20 @@ func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
 	}
 
 	return envVars, nil
+}
+
+// GetAppSecretEnvVars fetches the sensitive (Secret-backed) env vars for an
+// application. Endpoint: /:aid/:cid/apps/:id/secret-env-vars
+func (s *Service) GetAppSecretEnvVars(appID string) (map[string]string, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secret-env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	return s.fetchEnvVarMap(reqURL)
+}
+
+// GetAppEnvVars fetches the plain (ConfigMap-backed) env vars for an
+// application. Endpoint: /:aid/:cid/apps/:id/env-vars
+func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	return s.fetchEnvVarMap(reqURL)
 }
 
 // GetAppDependencies fetches dependencies for an application

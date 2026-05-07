@@ -274,6 +274,31 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 	return e.baseURL + result, nil
 }
 
+// coerceJSONString tries to recover from clients that ignored the manifest's
+// declared field type and sent a JSON-encoded string. Only kicks in for
+// `object` / `array` declared types; anything else passes through. A
+// non-JSON string at an `object` field stays as-is so the downstream
+// "must be an object" error still surfaces.
+func coerceJSONString(val any, declaredType string) any {
+	str, ok := val.(string)
+	if !ok {
+		return val
+	}
+	switch declaredType {
+	case "object":
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(str), &decoded); err == nil {
+			return decoded
+		}
+	case "array":
+		var decoded []any
+		if err := json.Unmarshal([]byte(str), &decoded); err == nil {
+			return decoded
+		}
+	}
+	return val
+}
+
 func (e *CommandExecutor) buildBody(args map[string]any, cmdDef *manifest.Command) map[string]any {
 	if cmdDef.Method != http.MethodPost && cmdDef.Method != http.MethodPut && cmdDef.Method != http.MethodPatch {
 		return nil
@@ -297,6 +322,13 @@ func (e *CommandExecutor) buildBody(args map[string]any, cmdDef *manifest.Comman
 			continue
 		}
 		if val, ok := args[field.Name]; ok {
+			// Defensive coercion: some MCP clients ignore the JSON Schema
+			// type and send `object` / `array` fields as a JSON-encoded
+			// string. Without this, `envVars: '{"K":"v"}'` reaches the
+			// conductor as a literal string and the API rejects it as
+			// "not an object". Decode in-place so the wire body matches
+			// the manifest's declared type.
+			val = coerceJSONString(val, field.Type)
 			body[field.Name] = val
 		} else if field.Default != nil {
 			body[field.Name] = field.Default

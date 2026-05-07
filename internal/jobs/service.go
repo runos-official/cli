@@ -117,3 +117,40 @@ func (s *Service) GetWorkItems(jobID string) (*WorkItemsResponse, error) {
 
 	return &items, nil
 }
+
+// GetWorkItemLogs fetches log lines for a work item, returning entries
+// after the optional `after` cursor (the previous response's NextCursor).
+// Used by the follow poller to stream per-step output back to stdout.
+func (s *Service) GetWorkItemLogs(jobID, workItemID, after string) (*WorkItemLogsResponse, error) {
+	reqURL := fmt.Sprintf("%s/jobs/%s/workitems/%s/logs", s.baseURL, url.PathEscape(jobID), url.PathEscape(workItemID))
+	if after != "" {
+		reqURL += "?after=" + url.QueryEscape(after)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result WorkItemLogsResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}

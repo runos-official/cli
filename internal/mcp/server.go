@@ -89,6 +89,15 @@ type Property struct {
 	Description string   `json:"description,omitempty"`
 	Enum        []string `json:"enum,omitempty"`
 	Default     any      `json:"default,omitempty"`
+	// AdditionalProperties is set when Type=="object" to advertise the
+	// shape of values inside the map. Without it, some LLM client
+	// libraries fall back to stringifying the whole argument and
+	// downstream validation rejects it as "not an object". Mirrors how
+	// JSON Schema describes string-keyed maps.
+	AdditionalProperties *Property `json:"additionalProperties,omitempty"`
+	// Items is set when Type=="array" to declare the element type.
+	// Same motivation as AdditionalProperties.
+	Items *Property `json:"items,omitempty"`
 }
 
 // ToolsListResult represents the response to a tools/list request.
@@ -567,15 +576,27 @@ func (s *Server) buildTools() []Tool {
 			// Add deploy tool with custom description and cid parameter
 			tools = append(tools, Tool{
 				Name: "deploy",
-				Description: `Deploy an application from local source.
+				Description: `Deploy an application. The CLI dispatches on the app's deployType:
 
-BEFORE CALLING: Check for large files (>1MB) or build artifacts that should be in .dockerignore to avoid slow uploads. Requires runos.yaml (or a runos.<cid>.<id>.yaml passed via yaml_file) and a Dockerfile. The Dockerfile MUST run as non-root user.
+  - CLI deploy (deployType: cli): tarballs the local source and uploads to /prepare-cli-deployment. The classic flow.
+  - VCS deploy (deployType: vcs): no tarball. Conductor pulls source from the linked GitHub/GitLab integration at a specific commit sha, builds in-cluster, pushes, patches, waits for rollout. Trigger by passing sha (and optionally app to skip the local yaml load).
 
-MULTI-YAML PROJECTS: a project directory can hold multiple runos.<cid>.<id>.yaml files (e.g. staging + prod sharing one source tree). When more than one runos*.yaml exists, you MUST pass yaml_file explicitly so the right manifest is deployed. Without yaml_file, deploy falls back to the literal runos.yaml in the cwd, which may be the wrong app.
+WHEN TO USE WHICH SHAPE:
+  - CLI-deploy app, from a checkout: pass yaml_file (or rely on the single-runos*.yaml auto-detect). Do NOT pass sha/app/allow_dirty (rejected for CLI-deploy apps).
+  - VCS-deploy app, from a checkout: pass yaml_file. sha defaults to git rev-parse HEAD; pass sha to deploy a specific commit. allow_dirty waives the dirty-tree refusal.
+  - VCS-deploy app, no checkout (CI mode, or fast "deploy by id" from a laptop): pass app=<5-char id> and sha=<commit>. Skips the yaml load entirely.
 
-Pre-deploy drift gate: when the yaml has id/cid/aid set (i.e. it's a pulled-app yaml, not a fresh deploy), deploy first compares local against the running app on the server. If anything has changed on the server that isn't reflected locally, the deploy refuses with the diff in the error so the user can decide whether to overwrite. Pass force=true to bypass the gate and overwrite server state with the local version. Fresh yamls (no id) skip the gate entirely.
+DIRTY-TREE GATE (VCS only): when sha is auto-resolved from HEAD and the working tree has uncommitted changes, deploy refuses. Pass allow_dirty=true to proceed. The build uses the COMMITTED source at HEAD, NOT the dirty edits. Recommend committing first unless the user has explicitly accepted the gap.
 
-LEGACY YAML MIGRATION: when the deploy refusal output contains "deprecated field names" or "deprecated fields (port:/domain:/standardHttps:)", the user's yaml uses the legacy schema (top-level port:/standardHttps:/domain: instead of servicePortMappings:[{port,standardHttps,domains:[{fqdn,enableCloudflareProxy}]}]). DO NOT recommend force=true in this case, forcing keeps the user on the legacy shape and the same drift returns on every deploy. Instead, recommend they run "runos apps pull <yaml-path> --force" (which rewrites the local file from the canonical server state), then re-call this deploy tool. Migration is one-time per yaml.`,
+BEFORE CALLING (CLI-deploy only): check for large files (>1MB) or build artifacts that should be in .dockerignore to avoid slow uploads. Requires a Dockerfile that runs as non-root.
+
+MULTI-YAML PROJECTS: a project directory can hold multiple runos.<cid>.<id>.yaml files (e.g. staging + prod sharing one source tree). When more than one runos*.yaml exists, you MUST pass yaml_file explicitly so the right manifest is deployed. Monorepos with VCS apps under per-app subdirs use configPath (set on apps_add) so the cluster agent reads the per-app yaml from the committed tree.
+
+Pre-deploy drift gate (CLI-deploy only): when the yaml has id/cid/aid set, deploy first compares local against the running app on the server. If anything has changed on the server that isn't reflected locally, the deploy refuses with the diff in the error so the user can decide whether to overwrite. Pass force=true to bypass the gate and overwrite server state with the local version. Fresh yamls (no id) skip the gate entirely.
+
+LEGACY YAML MIGRATION (CLI-deploy only): when the deploy refusal output contains "deprecated field names" or "deprecated fields (port:/domain:/standardHttps:)", the user's yaml uses the legacy schema (top-level port:/standardHttps:/domain: instead of servicePortMappings:[{port,standardHttps,domains:[{fqdn,enableCloudflareProxy}]}]). DO NOT recommend force=true in this case, forcing keeps the user on the legacy shape and the same drift returns on every deploy. Instead, recommend they run "runos apps pull <yaml-path> --force" (which rewrites the local file from the canonical server state), then re-call this deploy tool. Migration is one-time per yaml.
+
+VCS deploys with an unchanged sha are near-instant: the orchestration short-circuits the build when the image is already in Harbor and only runs manifest reconcile + rollout watch. Use this to apply config drift after editing the yaml without a rebuild: edit yaml, commit, push, deploy with the new sha.`,
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -585,11 +606,24 @@ LEGACY YAML MIGRATION: when the deploy refusal output contains "deprecated field
 						},
 						"yaml_file": {
 							Type:        "string",
-							Description: "Path to the runos*.yaml manifest to deploy. Optional when only one runos*.yaml is present in the project directory. REQUIRED when the directory holds multiple manifests (multi-cluster projects), otherwise the wrong app may be deployed. The CLI subprocess loads this via the --config flag.",
+							Description: "Path to the runos*.yaml manifest to deploy. Optional when only one runos*.yaml is present in the project directory. REQUIRED when the directory holds multiple manifests (multi-cluster projects), otherwise the wrong app may be deployed. The CLI subprocess loads this via the --config flag. For VCS apps, the local yaml is consulted only for the app id; the committed yaml at <sha> is the source of truth for the build.",
+						},
+						"app": {
+							Type:        "string",
+							Description: "VCS-deploy only. App ID (5-char identifier) to deploy when running without a runos.yaml on disk (CI mode, or fast laptop deploys by id). Cannot be combined with yaml_file. Rejected for CLI-deploy apps.",
+						},
+						"sha": {
+							Type:        "string",
+							Description: "VCS-deploy only. Commit SHA (7-40 hex chars) to deploy. Defaults to `git rev-parse HEAD` when omitted and a checkout is present. Rejected for CLI-deploy apps. The cluster agent reads the committed runos.yaml at this sha for the build.",
+						},
+						"allow_dirty": {
+							Type:        "boolean",
+							Description: "VCS-deploy only. Waive the dirty-tree refusal when sha is auto-resolved from HEAD. The build uses the committed source at HEAD, NOT uncommitted edits. Recommend committing first unless the user has explicitly accepted the gap.",
+							Default:     false,
 						},
 						"force": {
 							Type:        "boolean",
-							Description: "Bypass the pre-deploy drift gate and overwrite server state with the local version. Only set this after the user has reviewed the drift and explicitly chosen to proceed. DO NOT set this when the gate output mentions deprecated/legacy fields, recommend `apps_pull <yaml> force=true` to migrate first.",
+							Description: "CLI-deploy only. Bypass the pre-deploy drift gate and overwrite server state with the local version. Only set this after the user has reviewed the drift and explicitly chosen to proceed. DO NOT set this when the gate output mentions deprecated/legacy fields, recommend `apps_pull <yaml> force=true` to migrate first.",
 							Default:     false,
 						},
 					},
@@ -626,6 +660,19 @@ LEGACY YAML MIGRATION: when the deploy refusal output contains "deprecated field
 				}
 				if field.Default != nil {
 					prop.Default = field.Default
+				}
+				// JSON Schema requires `additionalProperties` (for object) and
+				// `items` (for array) so clients know what to put inside the
+				// container. The manifest doesn't carry richer types yet, so
+				// we default to string values — every map[string]string and
+				// []string we currently expose works under that schema, and
+				// LLM libraries that strict-validate the schema (e.g. some
+				// versions of the Anthropic SDK's tool wrapper) accept it.
+				if prop.Type == "object" {
+					prop.AdditionalProperties = &Property{Type: "string"}
+				}
+				if prop.Type == "array" {
+					prop.Items = &Property{Type: "string"}
 				}
 				tool.InputSchema.Properties[field.Name] = prop
 
@@ -664,6 +711,8 @@ func (s *Server) mapType(t string) string {
 		return "array"
 	case "boolean":
 		return "boolean"
+	case "object":
+		return "object"
 	default:
 		return "string"
 	}

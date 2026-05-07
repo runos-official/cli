@@ -16,21 +16,25 @@ import (
 	"github.com/runos-official/cli/internal/deploy"
 )
 
-// fakeConductorForDeploy answers the four endpoints BuildDiffReport
-// calls (app, env-vars, secret-files, overrides). Pass nil for any
-// section that should be empty; the handler synthesises a valid empty
-// response.
+// fakeConductorForDeploy answers the endpoints BuildDiffReport / syncAppState
+// hit. The `env` arg seeds BOTH /secret-env-vars (Secret) and /env-vars
+// (ConfigMap) responses for callers that don't care about the split; tests
+// that need to differentiate can use fakeConductorForDeploySplit below.
 func fakeConductorForDeploy(t *testing.T, raw map[string]any, env map[string]string, secrets []apps.SecretFileSummary, overrides []apps.OverrideSummary) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var body any
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/env-vars"):
+		case strings.HasSuffix(r.URL.Path, "/secret-env-vars"):
 			if env == nil {
 				env = map[string]string{}
 			}
 			body = env
+		case strings.HasSuffix(r.URL.Path, "/env-vars"):
+			// Plain env vars (ConfigMap). Empty by default — tests that
+			// need both sides populated should use the split helper.
+			body = map[string]string{}
 		case strings.HasSuffix(r.URL.Path, "/secret-files"):
 			if secrets == nil {
 				secrets = []apps.SecretFileSummary{}
@@ -59,6 +63,89 @@ func fakeConductorForDeploy(t *testing.T, raw map[string]any, env map[string]str
 }
 
 // ---------------------------------------------------------------------------
+// syncAppState — localMissingServerHas tracking
+// ---------------------------------------------------------------------------
+
+func TestSyncAppState_LocalMissingServerHas_FlagsKeysServerHasButLocalDoesNot(t *testing.T) {
+	// Reproduces the user-deletes-key-from-.env, deploy-silently-re-adds
+	// scenario. The server has DATABASE_URL + APP_NAME; the local .env
+	// has only APP_NAME (user deleted DATABASE_URL). syncAppState must
+	// surface DATABASE_URL on the result so runDeploy can warn that
+	// the deletion didn't propagate.
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".smoke.env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=smoke\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, []byte("app: smoke\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	srv := fakeConductorForDeploy(t, nil, map[string]string{
+		"APP_NAME":     "smoke",
+		"DATABASE_URL": "postgresql://server/has/this",
+		"FEATURE_FLAG": "true",
+	}, nil, nil)
+	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
+
+	cfg := &deploy.DeployConfig{
+		ID:        "nrdhg",
+		App:       "smoke",
+		SecretEnv: ".smoke.env",
+	}
+	res, err := syncAppState(svc, cfg, yamlPath, "mycluster3")
+	if err != nil {
+		t.Fatalf("syncAppState: %v", err)
+	}
+	want := []string{"DATABASE_URL", "FEATURE_FLAG"}
+	if got := res.secretLocalMissingServerHas; !equalStrings(got, want) {
+		t.Errorf("secretLocalMissingServerHas = %v, want %v", got, want)
+	}
+}
+
+func TestSyncAppState_LocalMissingServerHas_EmptyWhenLocalEnvFileAbsent(t *testing.T) {
+	// First-time materialisation (no .env on disk yet): every server key
+	// IS technically "local-missing", but it's a fresh pull, not a
+	// reverted deletion. The warning would be misleading; the field
+	// must stay empty.
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, []byte("app: smoke\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	srv := fakeConductorForDeploy(t, nil, map[string]string{
+		"APP_NAME":     "smoke",
+		"DATABASE_URL": "postgresql://server/has/this",
+	}, nil, nil)
+	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
+
+	cfg := &deploy.DeployConfig{ID: "nrdhg", App: "smoke", SecretEnv: ".smoke.env"}
+	res, err := syncAppState(svc, cfg, yamlPath, "mycluster3")
+	if err != nil {
+		t.Fatalf("syncAppState: %v", err)
+	}
+	if len(res.secretLocalMissingServerHas) != 0 {
+		t.Errorf("expected empty secretLocalMissingServerHas on fresh pull, got %v", res.secretLocalMissingServerHas)
+	}
+}
+
+// equalStrings compares two string slices for equality (order matters).
+// Avoids pulling reflect just for this.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // preDeployDriftCheck
 // ---------------------------------------------------------------------------
 
@@ -67,7 +154,7 @@ func fakeConductorForDeploy(t *testing.T, raw map[string]any, env map[string]str
 // renderer produces, so the diff is byte-for-byte clean.
 func writePulledYaml(t *testing.T, dir string, raw map[string]any, cid, aid string) string {
 	t.Helper()
-	state := apps.BuildServerStateForDiff(raw, cid, aid, nil, nil, nil, nil)
+	state := apps.BuildServerStateForDiff(raw, cid, aid, nil, nil, nil, nil, nil)
 	bytes, err := yaml.Marshal(state)
 	if err != nil {
 		t.Fatalf("marshal yaml: %v", err)

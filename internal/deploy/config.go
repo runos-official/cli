@@ -107,14 +107,30 @@ type DeployConfig struct {
 	ID                         string               `yaml:"id,omitempty" json:"id,omitempty"`
 	CID                        string               `yaml:"cid,omitempty" json:"cid,omitempty"`
 	AID                        string               `yaml:"aid,omitempty" json:"aid,omitempty"`
+	// SecretEnv points at the local file holding sensitive (Secret-backed)
+	// env vars. Default `.runos.{cid}.{id}.env`. The leading dot keeps it
+	// gitignored by default; the file must NEVER be committed to VCS.
+	SecretEnv                  string               `yaml:"secretEnv,omitempty" json:"secretEnv,omitempty"`
+	// Env points at the local file holding plain (ConfigMap-backed) env vars.
+	// Default `runos.{cid}.{id}.config.env`. No leading dot — this file IS
+	// committed to VCS.
 	Env                        string               `yaml:"env,omitempty" json:"env,omitempty"`
 	// SourceDir is the build-context path (relative to this yaml's
 	// directory) that `runos deploy` tarballs and uploads. Empty defaults
 	// to "." (the yaml's own directory). Set to ".." when the yaml lives
 	// in a per-app subdirectory and the source code lives at the parent
-	// (project root). Inert for VCS-deployed apps, CI owns the build
-	// context. Not sent to conductor; never appears in JSON requests.
+	// (project root). For VCS apps the cluster agent now reads this from
+	// the committed yaml at deploy time too, so monorepo VCS apps in a
+	// subdirectory work with the same `sourceDir: ..` shape.
 	SourceDir                  string               `yaml:"sourceDir,omitempty" json:"-"`
+	// ConfigPath is the repo-relative path of THIS yaml file. Optional —
+	// when omitted, `runos deploy` for VCS apps auto-derives it from the
+	// yaml's location relative to the git repo root, so the user normally
+	// doesn't have to set it. Set explicitly only when auto-derivation is
+	// wrong (e.g. running outside the repo, deploying a vendored copy).
+	// Sent to conductor on every VCS deploy and persisted to the
+	// AppDocument so subsequent CI deploys (without a checkout) reuse it.
+	ConfigPath                 string               `yaml:"configPath,omitempty" json:"-"`
 	Replicas                   *int                 `yaml:"replicas,omitempty" json:"replicas,omitempty"`
 	ClusterDomainID            string               `yaml:"clusterDomainId,omitempty" json:"clusterDomainId,omitempty"`
 	ResourceRequirementClassID string               `yaml:"resourceRequirementClassId,omitempty" json:"resourceRequirementClassId,omitempty"`
@@ -138,7 +154,13 @@ type DeployConfig struct {
 	Dockerfile    string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
 	StorageMb     *int                          `yaml:"storageMb,omitempty" json:"storageMb,omitempty"`
 	Requires      map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
-	CustomEnvVars map[string]string             `yaml:"-" json:"customEnvVars,omitempty"`
+	// CustomSecretEnvVars holds the parsed contents of SecretEnv (sensitive,
+	// Secret-backed). Sent in the prepare-cli-deployment body and lands in
+	// the {osid}-user-secret-env-vars Secret on the cluster.
+	CustomSecretEnvVars map[string]string       `yaml:"-" json:"customSecretEnvVars,omitempty"`
+	// CustomEnvVars holds the parsed contents of Env (plain, ConfigMap-backed,
+	// VCS-committed). Lands in the {osid}-user-env-vars ConfigMap.
+	CustomEnvVars       map[string]string       `yaml:"-" json:"customEnvVars,omitempty"`
 
 	// --- Legacy shorthand (normalized server-side into ServicePortMappings) ---
 	Port          int   `yaml:"port,omitempty" json:"port,omitempty"`
@@ -229,31 +251,58 @@ func ValidateAID(configAID, sessionAID string) error {
 	return fmt.Errorf("config file AID (%s) does not match session AID (%s). Ensure you're logged into the correct account", configAID, sessionAID)
 }
 
-// ResolveEnvPath determines the env file path based on config state.
-// Priority: 1) explicit env field in config, 2) default .runos.{CID}.{ID}.env
-// if app ID is known.
-// Returns the resolved absolute path and whether the config was modified
-// (needs saving).
+// ResolvedEnvFiles holds the resolved absolute paths of the two env-var
+// files an app deploy may pull from. Either path may be empty when the
+// config has no `id` yet (first deploy of a new app), in which case the
+// CLI deploy proceeds with no env vars from that source.
+type ResolvedEnvFiles struct {
+	Secret string
+	Plain  string
+}
+
+// ResolveEnvFiles determines both env-file paths based on config state.
 //
-// The cluster-scoped legacy form (.runos.{CID}.env, no app id) used to be
-// a third fallback, but it's app-agnostic: two apps in the same cluster
-// sharing one directory would silently pick up each other's env vars.
-// Removed when multi-yaml support landed. WarnLegacyEnv surfaces the
-// rename hint for any user still on that layout.
-func ResolveEnvPath(configDir string, config *DeployConfig, cid string) (string, bool) {
-	// Explicit env path in config, use as-is
-	if config.Env != "" {
-		return filepath.Join(configDir, config.Env), false
-	}
+// Priority for each side:
+//  1. Explicit `secretEnv` / `env` field in runos.yaml, used as-is.
+//  2. Default filenames keyed off `cid` + `id`:
+//     - secret: `.runos.{cid}.{id}.env` (gitignored by default)
+//     - plain:  `runos.{cid}.{id}.config.env` (committed to VCS)
+//
+// Returns the resolved absolute paths and whether the config was modified
+// (needs saving). The config is mutated to record the auto-derived
+// filenames so subsequent deploys round-trip cleanly.
+//
+// The cluster-scoped legacy form (.runos.{cid}.env, no app id) used to be
+// a third fallback for the secret side, but it's app-agnostic: two apps
+// in the same cluster sharing one directory would silently pick up each
+// other's env vars. Removed when multi-yaml support landed.
+// WarnLegacyEnv surfaces the rename hint for any user still on that
+// layout.
+func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (ResolvedEnvFiles, bool) {
+	var paths ResolvedEnvFiles
+	modified := false
 
-	// Default: .runos.{CID}.{ID}.env (only if ID is known)
-	if config.ID != "" {
+	// Secret side (sensitive, gitignored).
+	if config.SecretEnv != "" {
+		paths.Secret = filepath.Join(configDir, config.SecretEnv)
+	} else if config.ID != "" {
 		filename := fmt.Sprintf(".runos.%s.%s.env", cid, config.ID)
-		config.Env = filename
-		return filepath.Join(configDir, filename), true
+		config.SecretEnv = filename
+		paths.Secret = filepath.Join(configDir, filename)
+		modified = true
 	}
 
-	return "", false
+	// Plain side (committed, no leading dot).
+	if config.Env != "" {
+		paths.Plain = filepath.Join(configDir, config.Env)
+	} else if config.ID != "" {
+		filename := fmt.Sprintf("runos.%s.%s.config.env", cid, config.ID)
+		config.Env = filename
+		paths.Plain = filepath.Join(configDir, filename)
+		modified = true
+	}
+
+	return paths, modified
 }
 
 // LegacyEnvFilename returns the cluster-scoped, app-agnostic env filename
@@ -301,10 +350,10 @@ func ResolveArchiveRoot(configDir, sourceDir string) (string, error) {
 
 // WarnLegacyEnv prints a one-line stderr hint when configDir contains a
 // pre-multi-yaml env file (.runos.{CID}.env, no app id) and the loaded
-// yaml doesn't pin an explicit env path. Non-blocking: deploy proceeds
-// either way. The check is best-effort, stat errors are swallowed.
+// yaml doesn't pin an explicit secret-env path. Non-blocking: deploy
+// proceeds either way. The check is best-effort, stat errors are swallowed.
 func WarnLegacyEnv(configDir string, config *DeployConfig, cid string) {
-	if config.Env != "" {
+	if config.SecretEnv != "" {
 		return
 	}
 	legacy := filepath.Join(configDir, LegacyEnvFilename(cid))
@@ -317,14 +366,21 @@ func WarnLegacyEnv(configDir string, config *DeployConfig, cid string) {
 	}
 	fmt.Fprintf(os.Stderr,
 		"Warning: %s is the pre-multi-yaml env layout and is no longer auto-loaded. "+
-			"Rename it to %s, or set 'env: <path>' in runos.yaml.\n",
+			"Rename it to %s, or set 'secretEnv: <path>' in runos.yaml.\n",
 		LegacyEnvFilename(cid), target,
 	)
 }
 
-// DefaultEnvFilename returns the default env filename for a given cluster and app ID.
-func DefaultEnvFilename(cid, appID string) string {
+// DefaultSecretEnvFilename returns the default sensitive env filename for a
+// given cluster and app ID. Leading dot keeps it gitignored by default.
+func DefaultSecretEnvFilename(cid, appID string) string {
 	return fmt.Sprintf(".runos.%s.%s.env", cid, appID)
+}
+
+// DefaultEnvFilename returns the default plain env filename for a given
+// cluster and app ID. No leading dot — this file IS committed to VCS.
+func DefaultEnvFilename(cid, appID string) string {
+	return fmt.Sprintf("runos.%s.%s.config.env", cid, appID)
 }
 
 // HasLegacyFields reports whether the loaded config uses any of the
