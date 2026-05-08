@@ -2,15 +2,19 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/runos-official/cli/internal/apps"
+	"github.com/runos-official/cli/internal/jobs"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var appsSyncCmd = &cobra.Command{
@@ -63,6 +67,30 @@ func init() {
 	appsSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	appsSyncCmd.Flags().Bool("allow-empty-secret-env", false, "allow apps_sync to wipe ALL server-side secret env vars when the local secret-env file is empty or missing (otherwise refused as a footgun)")
 	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace env values in the plan output with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
+	appsSyncCmd.Flags().Bool("no-follow", false, "fire-and-forget mode: don't wait for each emitted job to reach a terminal status before printing 'ok' (default off; sync waits per step so silent cluster-side failures don't masquerade as successes)")
+}
+
+// effectiveSyncFollow decides apps_sync's wait shape from the user's
+// --no-follow choice and the stdout-TTY state.
+//
+//   - follow:         block on each emitted job until terminal (true unless --no-follow)
+//   - streamProgress: emit per-work-item progress lines while waiting (true only on TTY)
+//
+// Mirrors cmd/deploy.go:effectiveFollow's pattern. CI (non-TTY) blocks
+// silently and prints only the final "ok"/"failed" line per step; TTY
+// streams the per-work-item progress so users see what's happening.
+//
+// V12 fix (VCS_DEPLOY_TEST_NOTES.md): pre-fix, every "X: replace ok (job
+// <id>)" line printed immediately after the API accepted the request,
+// before the cluster job ran. Failures (e.g. configmap NotFound on
+// never-deployed apps) silently completed the CLI with exit 0 while the
+// underlying state-mutation never landed. The new dispatch waits for
+// terminal status before declaring success and exits non-zero on failure.
+func effectiveSyncFollow(noFollow, isTTY bool) (follow, streamProgress bool) {
+	if noFollow {
+		return false, false
+	}
+	return true, isTTY
 }
 
 func runAppsSync(cmd *cobra.Command, args []string) error {
@@ -74,6 +102,8 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
+	noFollow, _ := cmd.Flags().GetBool("no-follow")
+	follow, streamProgress := effectiveSyncFollow(noFollow, term.IsTerminal(int(os.Stdout.Fd())))
 
 	yamlPath, err := resolveYamlArg(args, "sync")
 	if err != nil {
@@ -265,7 +295,7 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	// issued here would race the Firestore write. The local yaml stays
 	// the source of truth; the user runs apps_pull when they want the
 	// server-applied normalisation on disk.
-	return applySyncPlan(svc, plan, yamlDir)
+	return applySyncPlan(svc, plan, yamlDir, follow, streamProgress)
 }
 
 // printSyncPlan renders the plan in the same visual style as diff: section
@@ -410,15 +440,34 @@ func printOverrideOps(ops []apps.OverrideOp) {
 // change (atomic /secrets endpoint), otherwise the dedicated endpoints.
 // Overrides last, one CRUD call each. Per-step failures abort the rest.
 //
-// Each step that triggers an async orchestration appends its jobID to
-// queuedJobIDs. After "Sync complete." (which means "all API calls
-// succeeded"), the function prints the follow command(s) so the user can
-// verify the actual K8s rollout the same way `runos deploy --follow`
-// streams progress. Without this, "Sync complete." reads as "your app
-// is ready" when in fact the rollout is still in flight on the cluster.
-func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error {
+// V12 fix (VCS_DEPLOY_TEST_NOTES.md): each step that emits a jobID is now
+// awaited (or streamed, on TTY) before declaring "ok". Pre-fix, the
+// conductor-accepted-the-request signal was reported verbatim as success
+// even when the cluster-side orchestration silently failed (e.g. kubectl
+// patch on a missing configmap). The follow argument is `true` by default
+// (--no-follow opts out); streamProgress is true on TTY so users see
+// per-work-item lines while the wait is in flight.
+func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follow, streamProgress bool) error {
 	fmt.Println()
 	fmt.Println("Applying...")
+
+	// Build a jobs.Service once (it loads config + auth) so per-step waits
+	// share the same client. Constructed lazily because some plans don't
+	// produce any jobIDs at all (e.g. all-overrides-CRUD-no-side-effects)
+	// and we don't want to fail apply on an auth blip when there's no
+	// follow work to do.
+	var jobsSvc *jobs.Service
+	getJobsSvc := func() (*jobs.Service, error) {
+		if jobsSvc != nil {
+			return jobsSvc, nil
+		}
+		s, err := jobs.NewService()
+		if err != nil {
+			return nil, err
+		}
+		jobsSvc = s
+		return jobsSvc, nil
+	}
 
 	var queuedJobIDs []string
 	track := func(jobID string) {
@@ -427,13 +476,47 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 		}
 	}
 
+	// finishStep prints the per-step closing line. When follow is on AND
+	// the step emitted a jobID, blocks on the job (or streams progress)
+	// before printing "ok"; surfaces the conductor's job error verbatim
+	// on terminal failure. When follow is off, falls back to the legacy
+	// fire-and-forget shape: print "ok (job <id>)" and continue.
+	finishStep := func(label, jobID string) error {
+		if !follow || jobID == "" {
+			fmt.Printf("  %s ok%s\n", label, jobIDSuffix(jobID))
+			return nil
+		}
+		fmt.Printf("  %s queued (job %s)...\n", label, jobID)
+		js, err := getJobsSvc()
+		if err != nil {
+			fmt.Printf("  %s FAILED to attach to job-progress stream: %v\n", label, err)
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		var waitErr error
+		if streamProgress {
+			waitErr = jobs.FollowJobWithService(ctx, js, jobID)
+		} else {
+			waitErr = jobs.WaitForJob(ctx, js, jobID)
+		}
+		if waitErr != nil {
+			fmt.Printf("  %s FAILED: %v\n", label, waitErr)
+			return waitErr
+		}
+		fmt.Printf("  %s ok\n", label)
+		return nil
+	}
+
 	if len(plan.YAMLPatch) > 0 {
 		jobID, err := svc.UpdateApp(plan.AppID, plan.YAMLPatch)
 		if err != nil {
 			return fmt.Errorf("yaml patch: %w", err)
 		}
 		track(jobID)
-		fmt.Printf("  yaml: PATCH ok%s\n", jobIDSuffix(jobID))
+		if err := finishStep("yaml: PATCH", jobID); err != nil {
+			return fmt.Errorf("yaml patch: %w", err)
+		}
 	}
 
 	secretEnvChange := plan.SecretEnv != nil && plan.SecretEnv.HasChanges()
@@ -464,21 +547,27 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 			return fmt.Errorf("secret env + env + secret files: %w", err)
 		}
 		track(jobID)
-		fmt.Printf("  secretEnv/env/secretFiles: atomic update ok%s\n", jobIDSuffix(jobID))
+		if err := finishStep("secretEnv/env/secretFiles: atomic update", jobID); err != nil {
+			return fmt.Errorf("secret env + env + secret files: %w", err)
+		}
 	case secretEnvChange:
 		jobID, err := svc.ReplaceSecretEnvVars(plan.AppID, plan.SecretEnv.Final)
 		if err != nil {
 			return fmt.Errorf("secret env: %w", err)
 		}
 		track(jobID)
-		fmt.Printf("  secretEnv: replace ok%s\n", jobIDSuffix(jobID))
+		if err := finishStep("secretEnv: replace", jobID); err != nil {
+			return fmt.Errorf("secret env: %w", err)
+		}
 	case envChange:
 		jobID, err := svc.ReplaceEnvVars(plan.AppID, plan.Env.Final)
 		if err != nil {
 			return fmt.Errorf("env: %w", err)
 		}
 		track(jobID)
-		fmt.Printf("  env: replace ok%s\n", jobIDSuffix(jobID))
+		if err := finishStep("env: replace", jobID); err != nil {
+			return fmt.Errorf("env: %w", err)
+		}
 	case secChange:
 		add := plan.SecretFiles.AllAddPayloads()
 		jobID, err := svc.UpdateSecretFiles(plan.AppID, add, plan.SecretFiles.Remove)
@@ -486,7 +575,9 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 			return fmt.Errorf("secret files: %w", err)
 		}
 		track(jobID)
-		fmt.Printf("  secretFiles: update ok%s\n", jobIDSuffix(jobID))
+		if err := finishStep("secretFiles: update", jobID); err != nil {
+			return fmt.Errorf("secret files: %w", err)
+		}
 	}
 
 	for _, o := range plan.Overrides {
@@ -497,7 +588,9 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 				return fmt.Errorf("override %q add: %w", o.Name, err)
 			}
 			track(jobID)
-			fmt.Printf("  override %q: created (id %s)%s\n", o.Name, id, jobIDSuffix(jobID))
+			if err := finishStep(fmt.Sprintf("override %q: created (id %s)", o.Name, id), jobID); err != nil {
+				return fmt.Errorf("override %q add: %w", o.Name, err)
+			}
 		case "update":
 			name := o.Name
 			enabled := o.Enabled
@@ -506,7 +599,9 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 				return fmt.Errorf("override %q update: %w", o.Name, err)
 			}
 			track(jobID)
-			fmt.Printf("  override %q: updated%s\n", o.Name, jobIDSuffix(jobID))
+			if err := finishStep(fmt.Sprintf("override %q: updated", o.Name), jobID); err != nil {
+				return fmt.Errorf("override %q update: %w", o.Name, err)
+			}
 		case "delete":
 			jobID, err := svc.DeleteOverride(plan.AppID, o.ID)
 			if err != nil {
@@ -523,7 +618,9 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 					fmt.Fprintf(os.Stderr, "  warning: removed override %q server-side but couldn't unlink %s: %v\n", o.Name, localPath, err)
 				}
 			}
-			fmt.Printf("  override %q: deleted%s\n", o.Name, jobIDSuffix(jobID))
+			if err := finishStep(fmt.Sprintf("override %q: deleted", o.Name), jobID); err != nil {
+				return fmt.Errorf("override %q delete: %w", o.Name, err)
+			}
 		}
 	}
 
@@ -531,18 +628,19 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error
 
 	// Rollout-confidence hint. The API calls succeeded, but the actual
 	// K8s rollout (rolling restart, image patch, replica re-readiness) is
-	// async on the cluster. Point the user at the follow verb so they get
-	// the same "Watching rollout… ready" signal `runos deploy --follow`
-	// produces. Plural form when multiple jobs queued (yaml patch + env
-	// replace + override CRUD can each fire their own).
-	if len(queuedJobIDs) == 1 {
-		fmt.Println()
-		fmt.Printf("Follow rollout: runos follow %s\n", queuedJobIDs[0])
-	} else if len(queuedJobIDs) > 1 {
-		fmt.Println()
-		fmt.Println("Follow rollout (each job is a separate orchestration):")
-		for _, id := range queuedJobIDs {
-			fmt.Printf("  runos follow %s\n", id)
+	// async on the cluster. Suppressed when follow is on (each job already
+	// reached terminal status and was reported above) -- the hint is
+	// redundant and just adds noise. Shown on --no-follow as before.
+	if !follow {
+		if len(queuedJobIDs) == 1 {
+			fmt.Println()
+			fmt.Printf("Follow rollout: runos follow %s\n", queuedJobIDs[0])
+		} else if len(queuedJobIDs) > 1 {
+			fmt.Println()
+			fmt.Println("Follow rollout (each job is a separate orchestration):")
+			for _, id := range queuedJobIDs {
+				fmt.Printf("  runos follow %s\n", id)
+			}
 		}
 	}
 	return nil

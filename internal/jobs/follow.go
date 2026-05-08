@@ -27,6 +27,47 @@ func FollowJob(jobID string) error {
 	return FollowJobWithService(ctx, svc, jobID)
 }
 
+// WaitForJob polls a job using the provided Service until it reaches a
+// terminal state, WITHOUT emitting any per-step progress to stdout. The
+// silent counterpart to FollowJobWithService, intended for non-TTY callers
+// that still need to block on the job's outcome.
+//
+// Returns nil on terminal "completed", a non-nil error on terminal
+// "failed" carrying the conductor's job.Error string. Propagates context
+// cancellation / deadline as a wrapped error.
+//
+// V12 fix (VCS_DEPLOY_TEST_NOTES.md): pre-fix, apps_sync printed
+// `env: replace ok (job <id>)` the moment the conductor accepted the
+// API call and exited 0 even when the underlying cluster job failed
+// (e.g. `kubectl patch` against a missing configmap). The CLI must
+// observe the job's terminal status before declaring success; this
+// helper is what apps_sync dispatches into in non-TTY (CI) mode. TTY
+// callers go through FollowJobWithService instead so users see streamed
+// progress lines.
+func WaitForJob(ctx context.Context, svc *Service, jobID string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("job follow cancelled: %w", ctx.Err())
+		default:
+		}
+
+		job, err := svc.GetStatus(jobID)
+		if err != nil {
+			return err
+		}
+
+		if job.IsTerminal() {
+			if job.Status == "failed" {
+				return fmt.Errorf("job failed: %s", job.Error)
+			}
+			return nil
+		}
+
+		time.Sleep(pollInterval)
+	}
+}
+
 // FollowJobWithService polls a job using the provided Service until it
 // reaches a terminal state, emitting deltas via EmitFollowDeltas. The
 // context allows callers to cancel or set timeouts on the polling loop.
