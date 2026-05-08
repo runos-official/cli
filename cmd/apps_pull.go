@@ -86,6 +86,7 @@ func init() {
 	appsPullCmd.Flags().String("code-version", "", "pull a specific archive instead of the latest (cliUploadID; implies --code)")
 	appsPullCmd.Flags().Bool("no-services", false, "skip pulling runos.service.<cid>.<sid>.yaml files for services referenced in requires:")
 	appsPullCmd.Flags().Bool("keep-env", false, "preserve local env files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env); pull won't overwrite them with server values")
+	appsPullCmd.Flags().Bool("no-configpath-update", false, "skip auto-PATCHing the server-side configPath when a VCS app's local yaml lands at a different repo path; falls back to the existing stderr warning")
 }
 
 // pullSummary is the top-level JSON shape emitted by `apps pull --json`.
@@ -142,6 +143,21 @@ type pulledAppEntry struct {
 	// (InSync=true). Omitted when EnsureDockerignore was not called for
 	// this entry.
 	Dockerignore *apps.WriteResult `json:"dockerignore,omitempty"`
+	// ConfigPathUpdated records an auto-PATCH of the server-side configPath
+	// during pull (V14 / V2 long-term fix). Populated only when pull issued
+	// the PATCH and the server accepted it. Nil when nothing happened
+	// (paths matched, non-VCS app, --no-configpath-update set, or PATCH
+	// failed and we fell back to a stderr warning). MCP wrappers carry
+	// this through unchanged so LLM-driven flows can detect the action
+	// even though the warning never surfaces in their context.
+	ConfigPathUpdated *configPathUpdate `json:"configPathUpdated,omitempty"`
+}
+
+// configPathUpdate is the structured shape of the auto-update event
+// emitted on `pulledAppEntry`. Both fields are repo-relative paths.
+type configPathUpdate struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // pulledCodeEntry summarises what the --code path did for one app.
@@ -197,6 +213,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	noServices, _ := cmd.Flags().GetBool("no-services")
 	keepEnv, _ := cmd.Flags().GetBool("keep-env")
+	noConfigPathUpdate, _ := cmd.Flags().GetBool("no-configpath-update")
 
 	// --all and --app-id paths have no local yaml to source cid from, so
 	// the user must have provided one explicitly. Yaml-positional and
@@ -264,7 +281,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		appDir := plan.appDirFor(ctx.cid, t.ID)
-		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, plan.defaultSourceDir())
+		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, noConfigPathUpdate, plan.defaultSourceDir())
 		if err != nil {
 			summary.Skipped = append(summary.Skipped, pullSkipEntry{
 				ID:     t.ID,
@@ -565,7 +582,7 @@ func pickSourceDir(yamlPath, defaultSourceDir string) string {
 // defaultSourceDir is the sourceDir to stamp on the saved yaml when no
 // existing local yaml pins one (typically ".." for subdir-mode pulls,
 // empty otherwise; see pullPlan.defaultSourceDir).
-func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
+func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv, noConfigPathUpdate bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
 	raw, err := svc.GetApp(target.ID)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("fetch app: %w", err)
@@ -709,21 +726,6 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		return nil, skips, false, fmt.Errorf("save yaml: %w", err)
 	}
 
-	// V2: warn when a VCS app's server-stored configPath differs from
-	// where we just wrote the local yaml. Without this nudge, the next
-	// VCS deploy would fail at the cluster-agent fetch step because the
-	// committed tree no longer has the yaml at the path the AppDocument
-	// remembers. Best-effort: only fires when we can compute a repo-
-	// relative localPath via git, otherwise stays silent (the helper's
-	// empty-input contract handles that).
-	if serverState.DeployType == "vcs" {
-		serverConfigPath, _ := raw["configPath"].(string)
-		localRepoRelPath := vcsRepoRelPath(yamlRes.Path)
-		if msg := apps.ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, "vcs"); msg != "" && !jsonOutput {
-			fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
-		}
-	}
-
 	// Filter platform-injected secret env vars (values claimed by
 	// `requires.<alias>.env` mappings such as DATABASE_URL, CACHE_URL)
 	// out of the user-facing count. Pre-fix this summed plain + secret
@@ -745,6 +747,47 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		SecretEnvVars:    userSecretCount,
 		SecretFilesTotal: len(serverState.SecretFiles),
 		OverridesTotal:   len(serverState.Overrides),
+	}
+
+	// V14 / long-term V2: auto-update server-side configPath when a VCS
+	// app's local yaml lands at a different repo-relative path than the
+	// AppDocument remembers. Without this, the next VCS deploy would fail
+	// at the cluster-agent fetch step because the committed tree no
+	// longer has the yaml at the stored path. The decision is a pure
+	// helper (apps.DecideConfigPathAction); the dispatch is a thin switch
+	// on its return.
+	serverConfigPath, _ := raw["configPath"].(string)
+	localRepoRelPath := vcsRepoRelPath(yamlRes.Path)
+	switch apps.DecideConfigPathAction(serverConfigPath, localRepoRelPath, serverState.DeployType, noConfigPathUpdate) {
+	case apps.ConfigPathActionSkip:
+		// Nothing to do (non-VCS, paths match, or caller couldn't compute).
+	case apps.ConfigPathActionUpdate:
+		// PATCH the server's configPath to match the new local path.
+		// On success, stamp the structured event onto the entry so the
+		// JSON consumer (and the MCP wrapper that inherits the field
+		// for free) sees the action even when stderr is silenced. On
+		// failure, fall through to the Warn shape so the user still
+		// gets the corrective hint and pull doesn't abort.
+		if _, patchErr := svc.UpdateApp(target.ID, map[string]any{"configPath": localRepoRelPath}); patchErr != nil {
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr, "Warning: auto-update of server configPath failed (%v); %s\n",
+					patchErr, apps.ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, "vcs"))
+			}
+		} else {
+			entry.ConfigPathUpdated = &configPathUpdate{From: serverConfigPath, To: localRepoRelPath}
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr, "configPath: updated server-side from %q to %q so the next VCS deploy reads the right yaml.\n",
+					serverConfigPath, localRepoRelPath)
+			}
+		}
+	case apps.ConfigPathActionWarn:
+		// Explicit opt-out (--no-configpath-update). Print the existing
+		// V2-shape warning so the user knows what's drifting and how to
+		// fix it manually.
+		if !jsonOutput {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n",
+				apps.ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, "vcs"))
+		}
 	}
 
 	// --keep-env: skip writing both env files so user-edited local content

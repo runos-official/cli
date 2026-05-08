@@ -1836,3 +1836,72 @@ func TestConfigPathMismatchWarning(t *testing.T) {
 		})
 	}
 }
+
+// Regression test for V14 / long-term V2 closure: apps_pull's reaction to
+// a server-vs-local configPath divergence should be a tri-state decision
+// (Skip, Update via PATCH, fall back to a Warn) rather than the older
+// always-Warn shape. This pure helper isolates the decision so the
+// pullOne dispatch stays a thin switch over its return.
+func TestDecideConfigPathAction(t *testing.T) {
+	cases := []struct {
+		name             string
+		serverConfigPath string
+		localRepoRelPath string
+		deployType       string
+		noUpdate         bool
+		want             ConfigPathAction
+	}{
+		{
+			name:             "non-VCS app skips",
+			serverConfigPath: "anything",
+			localRepoRelPath: "different",
+			deployType:       "cli",
+			want:             ConfigPathActionSkip,
+		},
+		{
+			name:             "VCS, paths match, skips",
+			serverConfigPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			want:             ConfigPathActionSkip,
+		},
+		{
+			name:             "VCS, empty server configPath, skips (server has no value yet)",
+			serverConfigPath: "",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			want:             ConfigPathActionSkip,
+		},
+		{
+			name:             "VCS, empty local repo-relative path, skips (caller can't compare)",
+			serverConfigPath: "infra/runos/apps/old.yaml",
+			localRepoRelPath: "",
+			deployType:       "vcs",
+			want:             ConfigPathActionSkip,
+		},
+		{
+			name:             "VCS, paths diverge, default -> auto-update",
+			serverConfigPath: "infra/runos/apps/aliens-dev.mycluster2.appid9.yaml",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			want:             ConfigPathActionUpdate,
+		},
+		{
+			name:             "VCS, paths diverge, --no-configpath-update -> warn",
+			serverConfigPath: "infra/runos/apps/aliens-dev.mycluster2.appid9.yaml",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			noUpdate:         true,
+			want:             ConfigPathActionWarn,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DecideConfigPathAction(tc.serverConfigPath, tc.localRepoRelPath, tc.deployType, tc.noUpdate)
+			if got != tc.want {
+				t.Errorf("DecideConfigPathAction(%q, %q, %q, noUpdate=%v) = %v, want %v",
+					tc.serverConfigPath, tc.localRepoRelPath, tc.deployType, tc.noUpdate, got, tc.want)
+			}
+		})
+	}
+}

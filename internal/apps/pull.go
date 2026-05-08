@@ -533,6 +533,55 @@ func EnvFilename(cid, appID string) string {
 	return strings.ToLower(fmt.Sprintf("runos.%s.%s.config.env", cid, appID))
 }
 
+// ConfigPathAction is the apps_pull dispatch decision when the server's
+// stored `configPath` is compared against the path the local yaml was
+// just written to. Three outcomes:
+//
+//   - ConfigPathActionSkip: do nothing (non-VCS app, paths match, server
+//     has no value yet, or caller couldn't compute a repo-relative path).
+//   - ConfigPathActionUpdate: PATCH the server's configPath to the local
+//     path so the next VCS deploy reads the right yaml. The default
+//     for a VCS app with diverging paths.
+//   - ConfigPathActionWarn: emit the existing stderr warning instead of
+//     mutating server state. Used when --no-configpath-update is set,
+//     or as the fallback when the PATCH itself errors.
+type ConfigPathAction int
+
+// ConfigPathAction values.
+const (
+	ConfigPathActionSkip ConfigPathAction = iota
+	ConfigPathActionUpdate
+	ConfigPathActionWarn
+)
+
+// DecideConfigPathAction maps the (serverConfigPath, localRepoRelPath,
+// deployType, noUpdate) tuple to one of the three ConfigPathAction
+// outcomes. Pure function so the dispatch contract is testable without
+// HTTP mocks; the caller (cmd/apps_pull.go:pullOne) does the network
+// call only when this returns Update.
+//
+// V14 / long-term V2 closure: the iteration-2 fix shipped a stderr-only
+// warning when paths diverged. The MCP wrapper dropped the warning, and
+// even direct-CLI users had to copy-paste the corrective `apps update
+// --configPath` command. The auto-update path moves that work into pull
+// itself; the Warn outcome stays as the fallback (PATCH failure or
+// explicit opt-out).
+func DecideConfigPathAction(serverConfigPath, localRepoRelPath, deployType string, noUpdate bool) ConfigPathAction {
+	if deployType != "vcs" {
+		return ConfigPathActionSkip
+	}
+	if serverConfigPath == "" || localRepoRelPath == "" {
+		return ConfigPathActionSkip
+	}
+	if serverConfigPath == localRepoRelPath {
+		return ConfigPathActionSkip
+	}
+	if noUpdate {
+		return ConfigPathActionWarn
+	}
+	return ConfigPathActionUpdate
+}
+
 // ConfigPathMismatchWarning returns a non-empty warning when a VCS-deploy
 // app's server-stored `configPath` differs from where apps_pull is about
 // to write the local yaml. Empty otherwise.
