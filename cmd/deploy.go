@@ -13,6 +13,7 @@ import (
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
+	"github.com/runos-official/cli/internal/git"
 	"github.com/runos-official/cli/internal/jobs"
 	"github.com/runos-official/cli/internal/services"
 
@@ -561,11 +562,17 @@ func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, pre
 		return fmt.Errorf("write service yamls: %w", err)
 	}
 	exec := dynacmd.NewExecutor(cfg.GetAPIURL())
+	// V4 parity with apps_pull's cascade: prefer a workspace scan from
+	// the git repo root so canonical service yamls living in a sibling
+	// directory (e.g. infra/runos/services/) suppress an idempotent
+	// re-write next to the deploy yaml. Falls back to a single-dir
+	// check on configDir when not in a git checkout.
+	repoRoot, _ := git.RepoRoot()
 	var errs []string
 	for _, s := range fresh {
 		// Header-based lookup: a service yaml the user pulled and
 		// renamed under any name still counts as "already on disk".
-		if existing, ferr := services.FindByID(configDir, cid, s.ID); ferr == nil && existing != "" {
+		if existing := services.ExistingServiceYamlPath(repoRoot, configDir, cid, s.ID); existing != "" {
 			continue
 		}
 		pulled, err := services.Pull(exec, m, s.Type, cid, cfg.AccountID, s.ID)

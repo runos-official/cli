@@ -200,6 +200,41 @@ var skippedScanDirs = map[string]bool{
 	".runos":       true,
 }
 
+// ExistingServiceYamlPath returns the path of an existing yaml whose
+// header matches (cid, sid), checked in this order:
+//
+//  1. Workspace scan from repoRoot (FindByIDInTree). Only attempted
+//     when repoRoot is non-empty, i.e. the caller resolved a git repo
+//     root via internal/git.RepoRoot().
+//  2. Single-dir check in fallbackDir (FindByID). Only attempted when
+//     repoRoot was empty (caller wasn't in a git checkout); a repoRoot
+//     scan that finds nothing is conclusive because fallbackDir is
+//     virtually always inside the same tree.
+//
+// Returns "" when no match is found in any reachable location.
+//
+// V4 + parity-audit fix (VCS_DEPLOY_TEST_NOTES.md): the apps_pull
+// cascade and deploy's class-shorthand provisioning both share this
+// helper to skip duplicate writes when the canonical service yaml
+// already lives somewhere reachable. Without it, repos that organise
+// services in a sibling dir (e.g. `infra/runos/services/`) silently
+// accumulate byte-identical yamls next to every app yaml that links
+// the service.
+func ExistingServiceYamlPath(repoRoot, fallbackDir, cid, sid string) string {
+	if repoRoot != "" {
+		if found, err := FindByIDInTree(repoRoot, cid, sid); err == nil && found != "" {
+			return found
+		}
+		return ""
+	}
+	if fallbackDir != "" {
+		if found, err := FindByID(fallbackDir, cid, sid); err == nil && found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
 // FindByIDInTree walks rootDir recursively and returns the path of the
 // first yaml whose header matches (cid, sid). The recursive counterpart
 // to FindByID. Used by apps_pull's services cascade to detect canonical

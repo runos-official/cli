@@ -236,6 +236,65 @@ func TestFindByIDInTree_FindsServiceInSiblingDir(t *testing.T) {
 	}
 }
 
+// Regression test for the V4-parity audit (apps_pull cascade vs deploy's
+// class-shorthand provisioning): both call sites now share a single
+// lookup helper that prefers the workspace scan when a repoRoot is
+// supplied and falls back to a single-directory check otherwise.
+func TestExistingServiceYamlPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	servicesDir := filepath.Join(root, "infra", "runos", "services")
+	appsDir := filepath.Join(root, "infra", "runos", "apps")
+	for _, d := range []string{servicesDir, appsDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Canonical service yaml in services/ — the tree scan should find it.
+	if err := Save(filepath.Join(servicesDir, "aliens-mysql.mycluster2.mysql.f8jlf.yaml"), &ServiceYAML{
+		Type: "mysql", ID: "f8jlf", CID: "mycluster2", AID: "acct1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Different yaml living only in apps/ — only the fallbackDir check
+	// reaches it (when no repoRoot is supplied).
+	appsOnlyDir := t.TempDir()
+	if err := Save(filepath.Join(appsOnlyDir, DefaultFilename("mycluster2", "valkey", "rut5k")), &ServiceYAML{
+		Type: "valkey", ID: "rut5k", CID: "mycluster2", AID: "acct1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		repoRoot    string
+		fallbackDir string
+		cid, sid    string
+		wantSubstr  string // empty means "expect empty result"
+	}{
+		{name: "repo scan finds match in sibling dir", repoRoot: root, fallbackDir: appsDir, cid: "mycluster2", sid: "f8jlf", wantSubstr: "aliens-mysql.mycluster2.mysql.f8jlf.yaml"},
+		{name: "repo scan empty + repoRoot set returns empty (no fallback double-check)", repoRoot: root, fallbackDir: appsDir, cid: "mycluster2", sid: "missing"},
+		{name: "no repoRoot falls back to fallbackDir", repoRoot: "", fallbackDir: appsOnlyDir, cid: "mycluster2", sid: "rut5k", wantSubstr: DefaultFilename("mycluster2", "valkey", "rut5k")},
+		{name: "no repoRoot, no match in fallbackDir returns empty", repoRoot: "", fallbackDir: appsOnlyDir, cid: "mycluster2", sid: "missing"},
+		{name: "both empty returns empty", repoRoot: "", fallbackDir: "", cid: "mycluster2", sid: "f8jlf"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ExistingServiceYamlPath(c.repoRoot, c.fallbackDir, c.cid, c.sid)
+			if c.wantSubstr == "" {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, c.wantSubstr) {
+				t.Errorf("expected path containing %q, got %q", c.wantSubstr, got)
+			}
+		})
+	}
+}
+
 // Companion test: heavy / vendored / hidden directories must be skipped
 // so a workspace scan doesn't slow to a crawl on real-world repos.
 // node_modules / vendor / .git are the canonical offenders.

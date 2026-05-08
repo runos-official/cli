@@ -1335,17 +1335,14 @@ func cascadePulledServices(exec *dynacmd.Executor, m *manifest.Manifest, appDir,
 	if err != nil {
 		return []pullSkipEntry{{ID: appID, Reason: fmt.Sprintf("services cascade: read yaml: %v", err)}}
 	}
-	// V4: when running inside a git checkout, scan the whole repo for an
-	// existing service yaml matching this requires entry. Projects that
-	// organise infra as `infra/runos/apps/` + `infra/runos/services/`
-	// (apps and services in sibling dirs) had the cascade re-create
-	// duplicates next to the app yaml on every pull because the old
-	// FindByID(appDir) check only looked in the app's own directory.
-	// The scan is bounded to repo root, skips heavy dirs (node_modules,
-	// vendor, .git, .runos), and returns the first matching yaml's
-	// path. Outside a git checkout the scan falls back to the appDir-
-	// only FindByID, preserving the single-app-at-root cascade.
-	repoRoot, repoErr := git.RepoRoot()
+	// V4: prefer a workspace scan from the git repo root over an
+	// appDir-only check so projects that organise services in a sibling
+	// directory (e.g. `infra/runos/apps/` + `infra/runos/services/`)
+	// don't accumulate duplicate yamls next to the app yaml on every
+	// pull. The fallback to appDir-only handles the no-git-checkout
+	// case so the single-app-at-root cascade still works as before.
+	// Both branches share services.ExistingServiceYamlPath.
+	repoRoot, _ := git.RepoRoot()
 	for alias, r := range localApp.Requires {
 		if r.ID == "" {
 			continue
@@ -1354,11 +1351,7 @@ func cascadePulledServices(exec *dynacmd.Executor, m *manifest.Manifest, appDir,
 		// as already-pulled, regardless of filename. If found anywhere
 		// reachable, leave alone (the user's `runos services pull
 		// <yaml>` is the way to refresh).
-		if repoErr == nil {
-			if existing, ferr := services.FindByIDInTree(repoRoot, cid, r.ID); ferr == nil && existing != "" {
-				continue
-			}
-		} else if existing, ferr := services.FindByID(appDir, cid, r.ID); ferr == nil && existing != "" {
+		if existing := services.ExistingServiceYamlPath(repoRoot, appDir, cid, r.ID); existing != "" {
 			continue
 		}
 		pulled, err := services.Pull(exec, m, r.Type, cid, aid, r.ID)
