@@ -29,7 +29,7 @@ func NewService() (*Service, error) {
 
 	token, err := getAuthToken(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("authentication required: run 'runos login' first")
+		return nil, fmt.Errorf("authentication required: run 'runos login' or set RUNOS_API_KEY (%w)", err)
 	}
 
 	return &Service{
@@ -41,11 +41,19 @@ func NewService() (*Service, error) {
 	}, nil
 }
 
+// getAuthToken returns the bearer token for job-status calls. Delegates
+// to auth.ResolveToken so the contract matches every other API-touching
+// surface in the CLI: RUNOS_API_KEY wins when set (CI/headless), Firebase
+// refresh-token exchange otherwise (interactive `runos login`).
+//
+// V11 fix (VCS_DEPLOY_TEST_NOTES.md): pre-fix, this function hard-
+// required cfg.Firebase, so `runos deploy --follow` and `runos follow`
+// failed in CI with "authentication required: run 'runos login'" even
+// though RUNOS_API_KEY was set and the deploy POST itself succeeded.
+// Conductor already accepts API keys on the job-progress endpoints; the
+// breakage was entirely client-side.
 func getAuthToken(cfg *config.Config) (string, error) {
-	if cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return auth.GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	return auth.ResolveToken(cfg)
 }
 
 // GetStatus fetches the current status of a job by its ID.

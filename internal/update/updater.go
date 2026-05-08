@@ -68,11 +68,13 @@ func NewUpdater() (*Updater, error) {
 	}, nil
 }
 
+// getAuthToken returns the bearer token for the update endpoints. Mirrors
+// jobs.getAuthToken and every other API-touching surface in the CLI by
+// delegating to auth.ResolveToken so RUNOS_API_KEY-based CI runs work.
+// Pre-fix this hard-required cfg.Firebase, breaking `runos update` (and
+// the cached self-update probe) under PAT auth.
 func getAuthToken(cfg *config.Config) (string, error) {
-	if cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return auth.GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	return auth.ResolveToken(cfg)
 }
 
 // FetchLatestVersion queries the API for the latest available CLI version string.
