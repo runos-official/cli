@@ -633,6 +633,18 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 		driftFields["metricsPath"] = localApp.MetricsPath
 	}
 
+	// Build-metadata round-trip (V13). sourceDir and dockerfile are partial-
+	// update fields like clusterDomainId: an omitted local value means
+	// "preserve" (the wire body builder skips empty), so drift only surfaces
+	// when the local yaml has a non-empty value that disagrees with the
+	// server's. Mirrors the configPath round-trip story.
+	if localApp.SourceDir != "" && localApp.SourceDir != stringOr(server, "sourceDir") {
+		driftFields["sourceDir"] = localApp.SourceDir
+	}
+	if localApp.Dockerfile != "" && localApp.Dockerfile != stringOr(server, "dockerfile") {
+		driftFields["dockerfile"] = localApp.Dockerfile
+	}
+
 	// VCS / integration: not patchable. Surface user changes as refused so
 	// they know to use the console.
 	//
@@ -729,6 +741,16 @@ func buildFullYAMLBody(localApp *PulledApp) map[string]any {
 	}
 	if localApp.MetricsPath != "" {
 		body["metricsPath"] = localApp.MetricsPath
+	}
+	// Build-metadata round-trip (V13). Partial-update fields: empty means
+	// "preserve current server value", non-empty means "set". Sync the
+	// PATCH gates these so a configPath/sourceDir/dockerfile-only edit
+	// hits the conductor's sync fast-path (no redeploy).
+	if localApp.SourceDir != "" {
+		body["sourceDir"] = localApp.SourceDir
+	}
+	if localApp.Dockerfile != "" {
+		body["dockerfile"] = localApp.Dockerfile
 	}
 	// Requires uses full-replacement semantics on the wire: aliases
 	// absent from the body are removed server-side. Always include the

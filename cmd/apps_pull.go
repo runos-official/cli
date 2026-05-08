@@ -545,18 +545,28 @@ func resolvePullTargets(svc *apps.Service, appID string) ([]apps.AppSummary, err
 }
 
 // pickSourceDir returns the sourceDir the next save should stamp onto
-// the yaml. Preserves the existing local yaml's sourceDir over the
-// caller's default, so re-pulls don't clobber a value the user (or a
-// previous pull) wrote. Returns the default when:
-//   - no local yaml exists yet (fresh pull),
-//   - the local yaml is unparseable (treat as fresh, write the default),
-//   - the local yaml has SourceDir empty (default fills the slot).
-func pickSourceDir(yamlPath, defaultSourceDir string) string {
-	existing, err := apps.LoadLocalApp(yamlPath)
-	if err == nil && existing.SourceDir != "" {
+// the yaml. Priority: local yaml (re-pulls don't clobber user edits) >
+// server (V13: AppDocument round-trips sourceDir so fresh checkouts get
+// a complete yaml) > caller's default.
+func pickSourceDir(yamlPath, serverSourceDir, defaultSourceDir string) string {
+	if existing, err := apps.LoadLocalApp(yamlPath); err == nil && existing.SourceDir != "" {
 		return existing.SourceDir
 	}
+	if serverSourceDir != "" {
+		return serverSourceDir
+	}
 	return defaultSourceDir
+}
+
+// pickDockerfile returns the dockerfile the next save should stamp onto
+// the yaml. Same priority rules as pickSourceDir; default is "" (yaml
+// omits the field via omitempty when both local and server are empty,
+// keeping single-app-at-root layouts clean).
+func pickDockerfile(yamlPath, serverDockerfile string) string {
+	if existing, err := apps.LoadLocalApp(yamlPath); err == nil && existing.Dockerfile != "" {
+		return existing.Dockerfile
+	}
+	return serverDockerfile
 }
 
 // pullOne fetches everything the server holds for target, compares it
@@ -713,13 +723,14 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// directly into appDir (no extra subdir wrapping).
 	var skips []pullSkipEntry
 
-	// SourceDir is a CLI-side concept (server doesn't return it), so we
-	// have to stamp it onto serverState before marshaling. Order:
-	//   1. If an existing local yaml pins a sourceDir, preserve it
-	//      (re-pulls don't clobber user edits).
-	//   2. Otherwise use the caller's default (".." for subdir-mode
-	//      pulls, "" for flat-mode pulls).
-	serverState.SourceDir = pickSourceDir(yamlPath, defaultSourceDir)
+	// Build-metadata round-trip (V13). Priority: local yaml > server >
+	// caller's default. BuildPulledApp already populated serverState
+	// with whatever the AppDocument carries; here we let any existing
+	// local yaml win (re-pulls don't clobber user edits) and fall back
+	// to the caller-specified default (".." for subdir modes, "" for
+	// flat modes) only when both local and server are empty.
+	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, defaultSourceDir)
+	serverState.Dockerfile = pickDockerfile(yamlPath, serverState.Dockerfile)
 
 	yamlRes, err := apps.SaveYAML(appDir, "", serverState)
 	if err != nil {

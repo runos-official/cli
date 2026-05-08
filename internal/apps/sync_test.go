@@ -571,6 +571,100 @@ func TestComputeYAMLPatch_VCSChangeBecomesRefused(t *testing.T) {
 	}
 }
 
+// V13: sourceDir / dockerfile drift detection. Both are partial-update
+// fields like clusterDomainId (omit = preserve), so only a non-empty
+// local that disagrees with the server qualifies as drift. Bug this
+// guards: pre-V13, neither field round-tripped via the AppDocument, so
+// monorepo apps lost sourceDir on every fresh-checkout pull and the
+// next build failed at "failed to read dockerfile."
+func TestComputeYAMLPatch_SourceDirDriftIsDetected(t *testing.T) {
+	local := &PulledApp{App: "web", Replicas: 1, SourceDir: "../../../apps/backend"}
+	server := map[string]any{
+		"name":     "web",
+		"replicas": float64(1),
+		// server has no sourceDir → drift
+	}
+	patch, _, _ := computeYAMLPatch(local, server, nil)
+	if patch == nil {
+		t.Fatal("expected non-nil patch when local sourceDir is set and server has none")
+	}
+	if patch["sourceDir"] != "../../../apps/backend" {
+		t.Errorf("patch must carry local sourceDir; got %+v", patch["sourceDir"])
+	}
+}
+
+func TestComputeYAMLPatch_DockerfileDriftIsDetected(t *testing.T) {
+	local := &PulledApp{App: "web", Replicas: 1, Dockerfile: "docker/prod.Dockerfile"}
+	server := map[string]any{
+		"name":       "web",
+		"replicas":   float64(1),
+		"dockerfile": "Dockerfile", // server has different value
+	}
+	patch, _, _ := computeYAMLPatch(local, server, nil)
+	if patch == nil {
+		t.Fatal("expected non-nil patch when local dockerfile differs from server")
+	}
+	if patch["dockerfile"] != "docker/prod.Dockerfile" {
+		t.Errorf("patch must carry local dockerfile; got %+v", patch["dockerfile"])
+	}
+}
+
+func TestComputeYAMLPatch_OmittedSourceDirIsNotDrift(t *testing.T) {
+	// Local yaml doesn't set sourceDir; server does. Empty-on-local means
+	// "preserve server value", so the diff engine must NOT report drift
+	// (otherwise every existing yaml that doesn't set the field would
+	// noisily replan on every sync).
+	local := &PulledApp{App: "web", Replicas: 1}
+	server := map[string]any{
+		"name":      "web",
+		"replicas":  float64(1),
+		"sourceDir": "../../../apps/backend",
+	}
+	patch, _, _ := computeYAMLPatch(local, server, nil)
+	if patch != nil {
+		t.Errorf("expected nil patch when local omits sourceDir (preserve); got %+v", patch)
+	}
+}
+
+func TestBuildPulledApp_ExtractsBuildMetadata(t *testing.T) {
+	// V13: BuildPulledApp must lift sourceDir and dockerfile from the
+	// raw apps/:id response so apps_pull writes them back into a fresh
+	// checkout. Pre-V13 these fields didn't round-trip; the regression
+	// is silent yaml truncation followed by a build failure.
+	raw := map[string]any{
+		"id":         "qu5db",
+		"name":       "aliens-frontend-dev",
+		"replicas":   float64(1),
+		"sourceDir":  "../../../apps/frontend",
+		"dockerfile": "Dockerfile",
+	}
+	got := BuildPulledApp(raw, "mycluster2", "myacct")
+	if got.SourceDir != "../../../apps/frontend" {
+		t.Errorf("SourceDir: got %q, want ../../../apps/frontend", got.SourceDir)
+	}
+	if got.Dockerfile != "Dockerfile" {
+		t.Errorf("Dockerfile: got %q, want Dockerfile", got.Dockerfile)
+	}
+}
+
+func TestBuildPulledApp_OmitsBuildMetadataWhenServerHasNone(t *testing.T) {
+	// Single-app-at-root projects shouldn't get noisy yamls. When the
+	// server doesn't carry these fields, the PulledApp leaves them
+	// empty so omitempty drops them from the marshaled yaml.
+	raw := map[string]any{
+		"id":       "appid9",
+		"name":     "aliens-backend-dev",
+		"replicas": float64(1),
+	}
+	got := BuildPulledApp(raw, "mycluster2", "myacct")
+	if got.SourceDir != "" {
+		t.Errorf("SourceDir should be empty when server omits it; got %q", got.SourceDir)
+	}
+	if got.Dockerfile != "" {
+		t.Errorf("Dockerfile should be empty when server omits it; got %q", got.Dockerfile)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LoadLocalEnv / LoadLocalSecretFiles
 // ---------------------------------------------------------------------------

@@ -28,13 +28,19 @@ type PulledApp struct {
 	// vars committed to VCS. Default `runos.{cid}.{id}.config.env`.
 	Env        string `yaml:"env,omitempty"`
 	// SourceDir is the path (relative to the yaml's directory) to the
-	// build context tarballed by `runos deploy`. Empty defaults to "."
-	// (the yaml's own directory). Set to ".." when the yaml lives in a
-	// per-app subdirectory and the actual source code lives at the
-	// parent (project root). Inert for VCS-deployed apps because CI
-	// owns the build context.
+	// build context. Empty defaults to "." (the yaml's own directory).
+	// May start with ".." when the yaml lives deeper than the source
+	// tree (monorepo apps). Used by both deploy types: CLI's tarball
+	// walker reads it at deploy time; the cluster agent reads it from
+	// the committed yaml at the SHA on VCS deploys. Round-trips through
+	// the AppDocument for `apps_pull` so fresh checkouts get a complete
+	// yaml.
 	SourceDir string `yaml:"sourceDir,omitempty"`
-	Replicas  int    `yaml:"replicas"`
+	// Dockerfile is the path (relative to SourceDir) to the Dockerfile.
+	// Empty defaults to "Dockerfile". Same round-trip semantics as
+	// SourceDir.
+	Dockerfile string `yaml:"dockerfile,omitempty"`
+	Replicas   int    `yaml:"replicas"`
 
 	ClusterDomainID string `yaml:"clusterDomainId,omitempty"`
 
@@ -247,6 +253,13 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 			p.Integration = intg
 		}
 	}
+
+	// Build-metadata round-trip fields (V13). The server stores these only
+	// when explicitly set via apps_add / apps_update; missing means the
+	// user is on the defaults (".", "Dockerfile") and the local yaml stays
+	// uncluttered via omitempty.
+	p.SourceDir = stringOr(raw, "sourceDir")
+	p.Dockerfile = stringOr(raw, "dockerfile")
 
 	// Resources: preset wins when it's a real class, otherwise emit all
 	// four custom fields (including zeros, so the user knows they must set them).

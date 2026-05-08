@@ -16,69 +16,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// stripSourceDirLines
-// ---------------------------------------------------------------------------
-
-// Round 1 Test 2: every apps_diff against a CLI-deploy app reported drift
-// on `sourceDir: ../..` because that field is local-only (CLI uses it for
-// build-context resolution; conductor doesn't store it). The fix strips
-// the line from local bytes before diffing. These cases lock in that
-// (a) only top-level `sourceDir:` is removed, (b) other top-level keys
-// are preserved, and (c) the no-match fast path doesn't mangle bytes.
-func TestStripSourceDirLines(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "drops a top-level sourceDir line",
-			in:   "name: foo\nsourceDir: ../..\nport: 3000\n",
-			want: "name: foo\nport: 3000\n",
-		},
-		{
-			name: "drops the line when sourceDir is the only key",
-			// bytes.Split on "sourceDir: ../..\n" yields
-			// ["sourceDir: ../..", ""]; we drop the first and join "" → "".
-			// (Empty result is fine in practice — no real CLI yaml is *just*
-			// sourceDir, but we don't want this case to go unnoticed.)
-			in:   "sourceDir: ../..\n",
-			want: "",
-		},
-		{
-			name: "no-op when sourceDir is absent (fast path)",
-			in:   "name: foo\nport: 3000\n",
-			want: "name: foo\nport: 3000\n",
-		},
-		{
-			name: "preserves other top-level keys verbatim",
-			in: "name: foo\nsourceDir: .\ndomains:\n  - fqdn: x.example.com\n" +
-				"replicas: 2\n",
-			want: "name: foo\ndomains:\n  - fqdn: x.example.com\nreplicas: 2\n",
-		},
-		{
-			name: "leaves an indented `sourceDir:` field alone (nested key)",
-			// Nested keys called sourceDir aren't part of the spec, but if
-			// they existed they shouldn't be stripped — the fix targets the
-			// top-level CLI-only field, not anything that happens to share
-			// the name. Indented prefix has whitespace, so HasPrefix("sourceDir:")
-			// is false and the line stays.
-			in:   "name: foo\nbuild:\n  sourceDir: nested\nport: 3000\n",
-			want: "name: foo\nbuild:\n  sourceDir: nested\nport: 3000\n",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := stripSourceDirLines([]byte(tc.in))
-			if string(got) != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ComputeYAMLDiff
 // ---------------------------------------------------------------------------
 

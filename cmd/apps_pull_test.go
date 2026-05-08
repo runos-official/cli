@@ -372,29 +372,30 @@ func TestPullPlan_DefaultSourceDir(t *testing.T) {
 	}
 }
 
-// TestPickSourceDir covers preservation vs default-fill. Re-pulls must
-// not clobber a manually-set sourceDir; fresh pulls take the caller's
-// default.
+// TestPickSourceDir covers the priority chain local > server > default.
+// Re-pulls must not clobber a manually-set sourceDir; fresh checkouts on
+// V13-aware servers pick up the AppDocument's stored sourceDir; missing
+// both falls through to the caller's default.
 func TestPickSourceDir(t *testing.T) {
-	t.Run("no local yaml falls through to default", func(t *testing.T) {
+	t.Run("no local yaml + no server falls through to default", func(t *testing.T) {
 		dir := t.TempDir()
-		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "..")
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "..")
 		if got != ".." {
 			t.Errorf("got %q, want %q", got, "..")
 		}
 	})
 
-	t.Run("default empty stays empty when no local yaml", func(t *testing.T) {
+	t.Run("default empty stays empty when no local + no server", func(t *testing.T) {
 		dir := t.TempDir()
-		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "")
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "")
 		if got != "" {
 			t.Errorf("got %q, want \"\"", got)
 		}
 	})
 
-	t.Run("existing local sourceDir wins over default", func(t *testing.T) {
+	t.Run("existing local sourceDir wins over server and default", func(t *testing.T) {
 		// User pulled, manually edited sourceDir to ../shared, then
-		// re-pulls. The edit must survive.
+		// re-pulls. The edit must survive even when the server has its own value.
 		dir := t.TempDir()
 		body := `app: web
 deployType: cli
@@ -407,13 +408,23 @@ sourceDir: ../shared
 		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		got := pickSourceDir(yamlPath, "..")
+		got := pickSourceDir(yamlPath, "../from-server", "..")
 		if got != "../shared" {
 			t.Errorf("re-pull must preserve existing sourceDir; got %q, want %q", got, "../shared")
 		}
 	})
 
-	t.Run("empty existing sourceDir falls through to default", func(t *testing.T) {
+	t.Run("empty local + non-empty server uses server (V13 round-trip)", func(t *testing.T) {
+		// Fresh checkout: no local yaml on disk, but the AppDocument
+		// stores sourceDir, so the pull writes it back.
+		dir := t.TempDir()
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "../../../apps/backend", "..")
+		if got != "../../../apps/backend" {
+			t.Errorf("server value should win over default on fresh checkout; got %q, want %q", got, "../../../apps/backend")
+		}
+	})
+
+	t.Run("empty existing sourceDir + empty server falls through to default", func(t *testing.T) {
 		// Local yaml exists but doesn't pin sourceDir. Default fills it.
 		dir := t.TempDir()
 		body := `app: web
@@ -426,9 +437,48 @@ aid: myacct
 		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		got := pickSourceDir(yamlPath, "..")
+		got := pickSourceDir(yamlPath, "", "..")
 		if got != ".." {
-			t.Errorf("got %q, want %q (empty existing should accept default)", got, "..")
+			t.Errorf("got %q, want %q (empty existing + no server should accept default)", got, "..")
+		}
+	})
+}
+
+// TestPickDockerfile mirrors TestPickSourceDir: local > server, no caller
+// default (the omitempty yaml tag drops the field when both are empty).
+func TestPickDockerfile(t *testing.T) {
+	t.Run("no local + no server returns empty", func(t *testing.T) {
+		dir := t.TempDir()
+		got := pickDockerfile(filepath.Join(dir, "runos.yaml"), "")
+		if got != "" {
+			t.Errorf("got %q, want \"\"", got)
+		}
+	})
+
+	t.Run("existing local dockerfile wins over server", func(t *testing.T) {
+		dir := t.TempDir()
+		body := `app: web
+deployType: cli
+id: appid4
+cid: mycluster3
+aid: myacct
+dockerfile: docker/prod.Dockerfile
+`
+		yamlPath := filepath.Join(dir, "runos.yaml")
+		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		got := pickDockerfile(yamlPath, "Dockerfile")
+		if got != "docker/prod.Dockerfile" {
+			t.Errorf("re-pull must preserve existing dockerfile; got %q, want %q", got, "docker/prod.Dockerfile")
+		}
+	})
+
+	t.Run("empty local + non-empty server uses server (V13 round-trip)", func(t *testing.T) {
+		dir := t.TempDir()
+		got := pickDockerfile(filepath.Join(dir, "runos.yaml"), "Dockerfile")
+		if got != "Dockerfile" {
+			t.Errorf("server value should win on fresh checkout; got %q, want %q", got, "Dockerfile")
 		}
 	})
 }

@@ -215,11 +215,9 @@ func (r *DiffReport) NeedsForceToDeploy() bool {
 // server-only field paths so the deploy gate can warn about destructive
 // --force pushes.
 //
-// `sourceDir` is stripped from the local bytes before comparison: it's a
-// CLI-only field (build-context resolution for `runos deploy`) that never
-// flows to the conductor and never appears in server-rendered yaml. Without
-// the strip, every pulled yaml that included sourceDir would report drift
-// forever and pollute the diff's noise floor.
+// V13: `sourceDir` and `dockerfile` round-trip through the AppDocument,
+// so server-rendered bytes carry them when set. The byte comparison is
+// directly meaningful; no field-level strip is needed.
 func ComputeYAMLDiff(localPath string, serverState *PulledApp) (SectionDiff, error) {
 	serverBytes, err := yaml.Marshal(serverState)
 	if err != nil {
@@ -233,7 +231,6 @@ func ComputeYAMLDiff(localPath string, serverState *PulledApp) (SectionDiff, err
 		}
 		return SectionDiff{}, err
 	}
-	localBytes = stripSourceDirLines(localBytes)
 
 	if bytes.Equal(localBytes, serverBytes) {
 		return SectionDiff{Status: StatusInSync, Path: localPath}, nil
@@ -252,30 +249,6 @@ func ComputeYAMLDiff(localPath string, serverState *PulledApp) (SectionDiff, err
 	// even when the user is also adding new fields locally.
 	diff.ServerOnlyFields = listServerOnlyFields(localBytes, serverBytes)
 	return diff, nil
-}
-
-// stripSourceDirLines removes top-level `sourceDir:` lines from a yaml
-// byte slice, preserving everything else (including ordering, comments,
-// and indentation) so the unified diff against server-rendered bytes
-// stays meaningful. Documented as top-level only — `sourceDir` doesn't
-// nest under any of the canonical app spec fields, so a no-leading-
-// whitespace prefix match is sufficient. Multi-line/folded scalar form
-// (`sourceDir: |`) isn't supported by the field but isn't excluded
-// here either; if we ever need to handle it we'd switch to a proper
-// yaml-AST round trip and accept the line-reorder cost.
-func stripSourceDirLines(localBytes []byte) []byte {
-	if !bytes.Contains(localBytes, []byte("sourceDir:")) {
-		return localBytes
-	}
-	lines := bytes.Split(localBytes, []byte("\n"))
-	out := make([][]byte, 0, len(lines))
-	for _, line := range lines {
-		if bytes.HasPrefix(line, []byte("sourceDir:")) {
-			continue
-		}
-		out = append(out, line)
-	}
-	return bytes.Join(out, []byte("\n"))
 }
 
 // listServerOnlyFields walks the parsed local + server yamls and returns
