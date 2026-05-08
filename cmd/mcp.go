@@ -79,17 +79,6 @@ managing clusters, services, and applications when working in this project.`,
 	RunE: runMCPConfigureClaude,
 }
 
-var mcpConfigureRooCmd = &cobra.Command{
-	Use:   "roo",
-	Short: "Configure the RunOS MCP server for Roo Code (project-level)",
-	Long: `Add the RunOS MCP server to the current project's .roo/mcp.json configuration.
-
-This creates or updates .roo/mcp.json in the current directory, scoping the RunOS
-tools to this project only. Roo Code will have access to RunOS tools for
-managing clusters, services, and applications when working in this project.`,
-	RunE: runMCPConfigureRoo,
-}
-
 var mcpConfigureOpencodeCmd = &cobra.Command{
 	Use:   "opencode",
 	Short: "Configure the RunOS MCP server for OpenCode (project-level)",
@@ -130,7 +119,6 @@ func init() {
 	mcpServeCmd.AddCommand(mcpServeSensitiveWriteCmd)
 	mcpCmd.AddCommand(mcpConfigureCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureClaudeCmd)
-	mcpConfigureCmd.AddCommand(mcpConfigureRooCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureOpencodeCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureGeminiCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureCodexCmd)
@@ -140,7 +128,6 @@ func init() {
 func runMCPConfigure(cmd *cobra.Command, args []string) {
 	fmt.Println("Available targets:")
 	fmt.Println("  claude    Configure for Claude Code CLI (project-level)")
-	fmt.Println("  roo       Configure for Roo Code (project-level)")
 	fmt.Println("  opencode  Configure for OpenCode (project-level)")
 	fmt.Println("  gemini    Configure for Gemini CLI (project-level)")
 	fmt.Println("  codex     Configure for OpenAI Codex (project-level)")
@@ -216,66 +203,6 @@ func runMCPConfigureClaude(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runMCPConfigureRoo(cmd *cobra.Command, args []string) error {
-	// Skip if already configured
-	if content, err := os.ReadFile(".roo/mcp.json"); err == nil {
-		var data map[string]any
-		if json.Unmarshal(content, &data) == nil {
-			if servers, ok := data["mcpServers"].(map[string]any); ok {
-				if _, ok := servers["runos"]; ok {
-					fmt.Println("RunOS MCP already configured in .roo/mcp.json, skipping.")
-					return nil
-				}
-			}
-		}
-	}
-
-	// Find the runos binary path
-	runosPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to find runos executable: %w", err)
-	}
-
-	// Resolve any symlinks to get the actual path
-	runosPath, err = filepath.EvalSymlinks(runosPath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve runos path: %w", err)
-	}
-
-	// Load config and manifest to get read tool names
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
-	}
-	configDir := filepath.Join(home, ".runos")
-
-	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
-	m, err := loader.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load manifest: %w", err)
-	}
-
-	// Get all read tool names from manifest
-	readToolNames := getReadToolNames(m)
-
-	fmt.Println("Configuring RunOS MCP server for Roo Code (project-level)...")
-
-	// Add MCP servers to project's .roo/mcp.json
-	if err := addMCPServersToRooProjectConfig(runosPath, readToolNames); err != nil {
-		return fmt.Errorf("failed to configure MCP server: %w", err)
-	}
-
-	fmt.Println("\nRunOS MCP servers configured successfully!")
-	fmt.Println("Roo Code now has access to RunOS tools in this project.")
-
-	return nil
-}
-
 func getReadToolNames(m *manifest.Manifest) []string {
 	var toolNames []string
 
@@ -300,80 +227,6 @@ func getReadToolNames(m *manifest.Manifest) []string {
 	}
 
 	return toolNames
-}
-
-func addMCPServersToRooProjectConfig(runosPath string, readToolNames []string) error {
-	// Create .roo directory if it doesn't exist
-	rooDir := ".roo"
-	if err := os.MkdirAll(rooDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .roo directory: %w", err)
-	}
-
-	mcpJSON := filepath.Join(rooDir, "mcp.json")
-
-	// Read existing config or create empty one
-	var configData map[string]any
-	content, err := os.ReadFile(mcpJSON)
-	if err != nil {
-		if os.IsNotExist(err) {
-			configData = make(map[string]any)
-		} else {
-			return err
-		}
-	} else {
-		if err := json.Unmarshal(content, &configData); err != nil {
-			return fmt.Errorf("failed to parse %s: %w", mcpJSON, err)
-		}
-	}
-
-	// Get or create mcpServers section
-	mcpServers, ok := configData["mcpServers"].(map[string]any)
-	if !ok {
-		mcpServers = make(map[string]any)
-	}
-
-	// Add all 4 RunOS MCP servers with Roo-specific format
-	mcpServers["runos"] = map[string]any{
-		"command":     runosPath,
-		"args":        []string{"mcp", "serve", "read"},
-		"env":         map[string]any{},
-		"type":        "stdio",
-		"alwaysAllow": readToolNames,
-	}
-	mcpServers["runos-sensitive-read"] = map[string]any{
-		"command": runosPath,
-		"args":    []string{"mcp", "serve", "sensitive-read"},
-		"env":     map[string]any{},
-		"type":    "stdio",
-	}
-	mcpServers["runos-write"] = map[string]any{
-		"command": runosPath,
-		"args":    []string{"mcp", "serve", "write"},
-		"env":     map[string]any{},
-		"type":    "stdio",
-	}
-	mcpServers["runos-sensitive-write"] = map[string]any{
-		"command": runosPath,
-		"args":    []string{"mcp", "serve", "sensitive-write"},
-		"env":     map[string]any{},
-		"type":    "stdio",
-	}
-
-	configData["mcpServers"] = mcpServers
-
-	// Write back with tabs for indentation
-	newContent, err := json.MarshalIndent(configData, "", "\t")
-	if err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(mcpJSON, newContent, 0644); err != nil {
-		return err
-	}
-
-	cwd, _ := os.Getwd()
-	fmt.Printf("Updated %s\n", filepath.Join(cwd, mcpJSON))
-	return nil
 }
 
 func addMCPServersToProjectConfig(runosPath string) error {

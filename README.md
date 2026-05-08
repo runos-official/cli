@@ -11,11 +11,13 @@ This CLI communicates with the same REST API used by the RunOS web console, givi
 ## Features
 
 - **Cluster management** -- create, list, and manage Kubernetes clusters
-- **Service provisioning** -- deploy managed services (PostgreSQL, Valkey, MinIO, etc.)
-- **Application deployment** -- deploy apps from local source with `runos deploy`
-- **Job tracking** -- follow long-running operations with real-time progress
-- **MCP integration** -- Model Context Protocol server for AI coding assistants (Claude Code, Roo Code, Gemini CLI, OpenCode)
-- **Dynamic commands** -- CLI commands auto-update from the API manifest, so new features appear without upgrading
+- **Service provisioning** -- managed services (PostgreSQL, Valkey, MySQL, etc.)
+- **Application deployment** -- deploy from local source (`runos deploy`) or from a linked GitHub/GitLab integration at a specific commit (VCS deploys)
+- **Apps + services as IaC** -- `apps pull` / `apps diff` / `apps sync` and the matching `services` triplet round-trip cluster state to/from yaml on disk for git-versioned config
+- **Job tracking** -- follow long-running operations with real-time progress and per-step build logs
+- **Headless auth** -- personal access tokens for CI/CD via `RUNOS_API_KEY` (no interactive login required)
+- **MCP integration** -- Model Context Protocol server for AI coding assistants (Claude Code, Gemini CLI, OpenCode, OpenAI Codex)
+- **Dynamic commands** -- most CLI commands auto-update from the API manifest, so new server-side features appear without a CLI upgrade
 
 ## Installation
 
@@ -46,18 +48,42 @@ Requires Go 1.25+. The binary is installed to `~/.local/bin/runos`.
 ## Quick Start
 
 ```bash
-# Set the environment
-runos config env beta
-
-# Log in via browser
+# Log in via browser (also picks up the default environment on first run)
 runos login
 
 # List your clusters
 runos clusters list
 
-# Deploy an app
+# Deploy an app from the current directory
 runos deploy
 ```
+
+The first run auto-fetches the default environment from the RunOS CDN, so there's no manual environment-switch step. Use `runos config env <name>` only when you want to point the CLI at a different environment.
+
+## Authentication
+
+Two paths, depending on whether the CLI runs interactively or headless:
+
+### Interactive (laptop)
+
+```bash
+runos login
+```
+
+Opens a browser to complete sign-in (Google, GitHub, or email/password, with optional 2FA). Tokens are stored under `~/.runos/` with `0600` permissions.
+
+### Headless (CI / scripts)
+
+Generate a personal access token in the console under Account → API Keys, or via `runos account api-keys add`. Then export the token plus your account ID:
+
+```bash
+export RUNOS_API_KEY=...
+export RUNOS_ACCOUNT_ID=...
+# Optional: pin a non-default environment
+export RUNOS_API_URL=https://api.your-env.runos.com
+```
+
+When `RUNOS_API_KEY` is set, the CLI bypasses Firebase auth entirely. No `~/.runos/config.json` is required, and no interactive `runos login` is needed.
 
 ## Configuration
 
@@ -67,13 +93,15 @@ Configuration is stored in `~/.runos/config.json`.
 
 | Variable | Description |
 |---|---|
+| `RUNOS_API_KEY` | Personal access token for headless auth |
+| `RUNOS_ACCOUNT_ID` | Account ID (required alongside `RUNOS_API_KEY`) |
 | `RUNOS_API_URL` | Override the API endpoint |
 | `CONSOLE_URL` | Override the web console URL |
-| `RUNOS_CLUSTER_ID` | Set the default cluster ID |
+| `RUNOS_CLUSTER_ID` | Default cluster ID for cluster-scoped commands |
 
 ### Custom URLs
 
-For local development or custom API endpoints:
+For local development or custom endpoints:
 
 ```bash
 runos config set api-url http://localhost:3025
@@ -82,7 +110,12 @@ runos config set console-url http://localhost:5177
 
 ## Deployment
 
-The `runos deploy` command deploys applications from a `runos.yaml` configuration file in your project root:
+`runos deploy` dispatches on the app's deploy type:
+
+- **CLI deploy** (`deployType: cli`): the CLI tarballs your local source (respecting `.dockerignore`), uploads it, and tracks the build/deploy job to completion.
+- **VCS deploy** (`deployType: vcs`): the CLI sends `{sha, configPath}` only; the cluster pulls source from your linked GitHub/GitLab integration at the SHA, builds in-cluster, and rolls out. SHA defaults to `git rev-parse HEAD`; pass `--sha` to pin and `--allow-dirty` to waive the dirty-tree refusal. Use `--app <id> --sha <sha>` for CI mode (no local yaml on disk).
+
+A minimal `runos.yaml`:
 
 ```yaml
 app: my-app
@@ -98,16 +131,36 @@ requires:
             url: DATABASE_URL
 ```
 
-The CLI creates a tarball of your source code (respecting `.dockerignore`), uploads it to your cluster, and tracks the build/deploy job to completion.
+### Environment variables
 
-Environment variables come from two parallel files:
+Two parallel files, both flow into the running pod via `envFrom`:
 
 | File | Purpose | Permissions | VCS |
 |------|---------|-------------|-----|
 | `.runos.<cid>.<id>.env` | Sensitive credentials (Secret-backed) | 0600 | gitignored |
 | `runos.<cid>.<id>.config.env` | Plain config (ConfigMap-backed; log level, feature flags, public URLs) | 0644 | committed |
 
-Both flow into the running pod via `envFrom` so app code reads them identically as `process.env.X`. A key may not appear in both files at once; the conductor refuses the deploy if it does.
+App code reads them identically as `process.env.X`. A key may not appear in both files at once; the API refuses the deploy if it does.
+
+## Apps and services as IaC
+
+The CLI round-trips an app's full configuration (yaml, env vars, secret files, manifest overrides) and any service the app depends on between cluster and disk, so cluster state can live in version control.
+
+```bash
+# Pull cluster state to disk (writes runos.<cid>.<id>.yaml + env files + linked services)
+runos apps pull <yaml>           # one app
+runos apps pull --all            # every app in the cluster
+
+# Show drift between local files and cluster
+runos apps diff <yaml>           # exit 0 = in sync, exit 2 = drift, anything else = real failure
+
+# Push local files to the cluster
+runos apps sync <yaml>           # interactive; --dry-run to plan, --yes to skip prompt
+```
+
+The `runos services` triplet (`pull` / `diff` / `sync`) follows the same shape for managed services. The yaml is the source of truth for cluster id, so once committed, CI loops over yamls don't need a default cluster set or `--cid` per call.
+
+For CI workflows, see `runos apps sync --dry-run` (drift detection) and `runos apps diff --redact-secrets` (secret-safe diff output).
 
 ## MCP Integration
 
@@ -130,14 +183,14 @@ Four permission levels control what operations are available:
 # Claude Code
 runos mcp configure claude
 
-# Roo Code
-runos mcp configure roo
-
 # Gemini CLI
 runos mcp configure gemini
 
 # OpenCode
 runos mcp configure opencode
+
+# OpenAI Codex
+runos mcp configure codex
 ```
 
 ### How tools are exposed
@@ -177,15 +230,18 @@ cli/
 ├── cmd/                    # Cobra command definitions
 ├── internal/
 │   ├── api/                # HTTP client for the RunOS API
-│   ├── auth/               # Firebase authentication
+│   ├── apps/               # apps pull / diff / sync (apps as IaC)
+│   ├── auth/               # Firebase + PAT authentication
 │   ├── cache/              # File-based TTL cache
 │   ├── config/             # Configuration management
 │   ├── deploy/             # Deployment pipeline (archive, upload)
 │   ├── dynacmd/            # Dynamic command builder from API manifest
+│   ├── git/                # Thin git wrapper for VCS-deploy SHA resolution
 │   ├── jobs/               # Job polling and progress display
 │   ├── manifest/           # CLI manifest loading and parsing
 │   ├── mcp/                # MCP server implementation
 │   ├── output/             # Response formatting (text, JSON)
+│   ├── services/           # services pull / diff / sync (services as IaC)
 │   └── update/             # CLI self-update mechanism
 └── version/                # Version variable (set via ldflags)
 ```
