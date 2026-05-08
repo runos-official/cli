@@ -122,12 +122,15 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 
 	// Load both env-var sources independently. Each maps to its own K8s
 	// resource (Secret vs ConfigMap) on the cluster so syncs are diffed
-	// and applied per-side.
-	localSecretEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.SecretEnv)
+	// and applied per-side. When the yaml omits the ref, fall back to the
+	// documented default path (V3 fix): apps_pull writes there by default,
+	// so sync MUST also read there or a fresh checkout silently skips
+	// pushing the file's contents.
+	localSecretEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.SecretEnv, apps.SecretEnvFilename(localApp.CID, localApp.ID))
 	if err != nil {
 		return fmt.Errorf("read local secret env file: %w", err)
 	}
-	localEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.Env)
+	localEnv, _, err := apps.LoadLocalEnv(yamlDir, localApp.Env, apps.EnvFilename(localApp.CID, localApp.ID))
 	if err != nil {
 		return fmt.Errorf("read local env file: %w", err)
 	}

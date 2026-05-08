@@ -879,16 +879,29 @@ func LoadLocalApp(yamlPath string) (*PulledApp, error) {
 	return &app, nil
 }
 
-// LoadLocalEnv reads the env file referenced by the app yaml's `env:`
-// field. The path is resolved relative to yamlDir when not absolute.
-// Returns (empty map, false, nil) when the yaml omits an env reference,
-// the caller should interpret that as "don't sync env at all", matching
-// the absent-means-hands-off rule baked into pull.
-func LoadLocalEnv(yamlDir, envRef string) (map[string]string, bool, error) {
-	if envRef == "" {
+// LoadLocalEnv reads the env file referenced by the app yaml's `env:` (or
+// `secretEnv:`) field. The path is resolved relative to yamlDir when not
+// absolute.
+//
+// When envRef is empty, falls back to defaultRef (the documented per-app
+// default like `runos.<cid>.<id>.config.env`). The caller computes that
+// default via EnvFilename / SecretEnvFilename and passes it in. The fallback
+// fixes V3 (apps_sync silently skipping a file at the default path because
+// the yaml didn't carry an explicit ref), and matches what apps_pull writes
+// when it materialises env values from server.
+//
+// Returns (empty map, false, nil) when neither envRef nor defaultRef is set,
+// or when the resolved file doesn't exist on disk. The caller treats
+// exists==false as "no local content for this side" — sync skips the push.
+func LoadLocalEnv(yamlDir, envRef, defaultRef string) (map[string]string, bool, error) {
+	ref := envRef
+	if ref == "" {
+		ref = defaultRef
+	}
+	if ref == "" {
 		return map[string]string{}, false, nil
 	}
-	path := envRef
+	path := ref
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(yamlDir, path)
 	}

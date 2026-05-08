@@ -506,6 +506,18 @@ func RedactEnvUnifiedDiff(diff string) string {
 	return b.String()
 }
 
+// fileExists reports whether `path` exists and is readable. Returns false
+// for any os.Stat error (not-exists, permission denied, etc.) — the env
+// diff treats unreadable files as "no local content" rather than failing
+// the whole diff.
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func compareBytes(localPath string, serverBytes []byte) (SectionDiff, error) {
 	localBytes, err := os.ReadFile(localPath)
 	if err != nil {
@@ -786,16 +798,23 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 		return nil, fmt.Errorf("yaml diff: %w", err)
 	}
 
+	// V3 fix: compute the env diff sections whenever EITHER side has
+	// content. The pre-fix gate (`len(serverVars) > 0`) ignored a local
+	// file at the documented default path when the server had zero vars,
+	// reporting `in_sync` while the file's contents were silently absent
+	// from the cluster. Now: server has content OR local file exists at
+	// the resolved path → compute and surface drift; both empty → leave
+	// the default `in_sync`.
 	secretEnvDiff := SectionDiff{Status: StatusInSync}
-	if len(secretEnvVars) > 0 {
-		secretField := localApp.SecretEnv
-		if secretField == "" {
-			secretField = SecretEnvFilename(localApp.CID, localApp.ID)
-		}
-		secretPath := secretField
-		if !filepath.IsAbs(secretPath) {
-			secretPath = filepath.Join(yamlDir, secretPath)
-		}
+	secretField := localApp.SecretEnv
+	if secretField == "" {
+		secretField = SecretEnvFilename(localApp.CID, localApp.ID)
+	}
+	secretPath := secretField
+	if !filepath.IsAbs(secretPath) {
+		secretPath = filepath.Join(yamlDir, secretPath)
+	}
+	if len(secretEnvVars) > 0 || fileExists(secretPath) {
 		secretEnvDiff, err = ComputeEnvDiff(secretPath, secretEnvVars)
 		if err != nil {
 			return nil, fmt.Errorf("secret env diff: %w", err)
@@ -803,15 +822,15 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 	}
 
 	envDiff := SectionDiff{Status: StatusInSync}
-	if len(envVars) > 0 {
-		envField := localApp.Env
-		if envField == "" {
-			envField = EnvFilename(localApp.CID, localApp.ID)
-		}
-		envPath := envField
-		if !filepath.IsAbs(envPath) {
-			envPath = filepath.Join(yamlDir, envPath)
-		}
+	envField := localApp.Env
+	if envField == "" {
+		envField = EnvFilename(localApp.CID, localApp.ID)
+	}
+	envPath := envField
+	if !filepath.IsAbs(envPath) {
+		envPath = filepath.Join(yamlDir, envPath)
+	}
+	if len(envVars) > 0 || fileExists(envPath) {
 		envDiff, err = ComputeEnvDiff(envPath, envVars)
 		if err != nil {
 			return nil, fmt.Errorf("env diff: %w", err)

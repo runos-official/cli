@@ -581,7 +581,7 @@ func TestLoadLocalEnv_ParsesKeyValueLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte("A=1\nB=two=parts\n"), 0600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, exists, err := LoadLocalEnv(dir, "my.env")
+	got, exists, err := LoadLocalEnv(dir, "my.env", "")
 	if err != nil {
 		t.Fatalf("LoadLocalEnv: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestLoadLocalEnv_ReadsRefFromYAML(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte("FOO=bar\n"), 0600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, exists, err := LoadLocalEnv(dir, "custom-env-name")
+	got, exists, err := LoadLocalEnv(dir, "custom-env-name", "")
 	if err != nil {
 		t.Fatalf("LoadLocalEnv: %v", err)
 	}
@@ -643,16 +643,61 @@ func TestLoadLocalEnv_ReadsRefFromYAML(t *testing.T) {
 	}
 }
 
-func TestLoadLocalEnv_NoRefMeansNoEnv(t *testing.T) {
-	got, exists, err := LoadLocalEnv(t.TempDir(), "")
+func TestLoadLocalEnv_NoRefAndNoDefaultMeansNoEnv(t *testing.T) {
+	got, exists, err := LoadLocalEnv(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatalf("LoadLocalEnv: %v", err)
 	}
 	if exists {
-		t.Error("exists should be false when no env ref in yaml")
+		t.Error("exists should be false when no env ref in yaml and no default path provided")
 	}
 	if len(got) != 0 {
 		t.Errorf("got %+v, want empty", got)
+	}
+}
+
+// Regression test for V3 (VCS_DEPLOY_TEST_NOTES.md): when the yaml omits
+// the env ref but a file exists at the documented default path, LoadLocalEnv
+// must fall back to that default. Pre-fix: ref="" silently returned empty
+// without checking the default path, causing apps_sync to skip pushing
+// the file's content (silent data loss in the fresh-checkout flow).
+func TestLoadLocalEnv_FallsBackToDefaultPathWhenRefEmpty(t *testing.T) {
+	dir := t.TempDir()
+	defaultLeaf := EnvFilename("k1", "ab12c") // canonical default
+	if err := os.WriteFile(filepath.Join(dir, defaultLeaf), []byte("APP_NAME=aliens\nLOG_LEVEL=debug\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, exists, err := LoadLocalEnv(dir, "", defaultLeaf)
+	if err != nil {
+		t.Fatalf("LoadLocalEnv: %v", err)
+	}
+	if !exists {
+		t.Error("exists should be true when default-path file is present")
+	}
+	if got["APP_NAME"] != "aliens" || got["LOG_LEVEL"] != "debug" {
+		t.Errorf("content wrong: %+v", got)
+	}
+}
+
+// Companion test: yaml ref takes precedence over the default fallback so
+// users who explicitly set a custom path are never overridden.
+func TestLoadLocalEnv_RefSetWinsOverDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ref.env"), []byte("FROM=ref\n"), 0600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "default.env"), []byte("FROM=default\n"), 0600); err != nil {
+		t.Fatalf("write default: %v", err)
+	}
+	got, exists, err := LoadLocalEnv(dir, "ref.env", "default.env")
+	if err != nil {
+		t.Fatalf("LoadLocalEnv: %v", err)
+	}
+	if !exists {
+		t.Error("exists should be true when ref file is present")
+	}
+	if got["FROM"] != "ref" {
+		t.Errorf("ref must win over default; got FROM=%q", got["FROM"])
 	}
 }
 

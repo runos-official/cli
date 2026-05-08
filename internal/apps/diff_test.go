@@ -1128,6 +1128,99 @@ func TestBuildDiffReport_SecretEnvDriftWhenServerHasExtra(t *testing.T) {
 	}
 }
 
+// Regression test for V3 (VCS_DEPLOY_TEST_NOTES.md): when the local yaml
+// omits the `env:` field, BuildDiffReport must still honour the documented
+// default path (`runos.<cid>.<id>.config.env`). Pre-fix: the env section
+// was gated on `len(envVars) > 0`, so a server with zero env vars + a
+// local file at the default path with content was silently reported
+// `in_sync`, hiding the drift.
+func TestBuildDiffReport_LocalEnvAtDefaultPath_NoYamlField_ReportsDrift(t *testing.T) {
+	dir := t.TempDir()
+	raw := map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(1),
+	}
+
+	// Local yaml has NO `env:` field. The server-state-shaped yaml has
+	// nothing under env either (server returns 0 plain env vars).
+	serverState := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
+	yamlBytes, _ := yaml.Marshal(serverState)
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	// Local file at the documented default path with two vars.
+	defaultEnvPath := filepath.Join(dir, EnvFilename("k1", "ab12c"))
+	if err := os.WriteFile(defaultEnvPath, RenderEnvBytes(map[string]string{"APP_NAME": "aliens", "LOG_LEVEL": "debug"}), 0644); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	// fakeConductorForDiff returns {} on /env-vars, which is exactly what
+	// V3's "server has nothing" scenario looks like.
+	srv := fakeConductorForDiff(t, raw, nil, nil, nil)
+	defer srv.Close()
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+
+	localApp := &PulledApp{ID: "ab12c", CID: "k1", AID: "acc-1", App: "web"} // Env intentionally empty
+	report, err := BuildDiffReport(svc, localApp, yamlPath, "acc-1", "k1")
+	if err != nil {
+		t.Fatalf("BuildDiffReport: %v", err)
+	}
+	if report.Env.Status != StatusDrift {
+		t.Errorf("env status = %q, want %q (V3: local file at default path must surface as drift, not in_sync)", report.Env.Status, StatusDrift)
+	}
+	if report.Env.Path == "" {
+		t.Error("env.Path empty: V3 fix must populate the resolved default path on the report so users see which file was compared")
+	} else if filepath.Base(report.Env.Path) != EnvFilename("k1", "ab12c") {
+		t.Errorf("env.Path = %q, want leaf %q", report.Env.Path, EnvFilename("k1", "ab12c"))
+	}
+}
+
+// Regression test for V3, secret-env side. Same shape as the plain-env
+// test above: yaml omits `secretEnv:`, file exists at default path, server
+// returns zero secret env vars; expect drift surfaced with a populated path.
+func TestBuildDiffReport_LocalSecretEnvAtDefaultPath_NoYamlField_ReportsDrift(t *testing.T) {
+	dir := t.TempDir()
+	raw := map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(1),
+	}
+
+	serverState := BuildServerStateForDiff(raw, "k1", "acc-1", nil, nil, nil, nil, nil)
+	yamlBytes, _ := yaml.Marshal(serverState)
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, yamlBytes, 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	defaultSecretPath := filepath.Join(dir, SecretEnvFilename("k1", "ab12c"))
+	if err := os.WriteFile(defaultSecretPath, RenderEnvBytes(map[string]string{"API_TOKEN": "shh"}), 0600); err != nil {
+		t.Fatalf("write secret env: %v", err)
+	}
+
+	// Pass nil for env -> /secret-env-vars also returns nil, so the server
+	// side is empty. The V3-fixed code must still spot the local file at
+	// the default secret path.
+	srv := fakeConductorForDiff(t, raw, nil, nil, nil)
+	defer srv.Close()
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+
+	localApp := &PulledApp{ID: "ab12c", CID: "k1", AID: "acc-1", App: "web"} // SecretEnv intentionally empty
+	report, err := BuildDiffReport(svc, localApp, yamlPath, "acc-1", "k1")
+	if err != nil {
+		t.Fatalf("BuildDiffReport: %v", err)
+	}
+	if report.SecretEnv.Status != StatusDrift {
+		t.Errorf("secretEnv status = %q, want %q (V3: local file at default path must surface as drift)", report.SecretEnv.Status, StatusDrift)
+	}
+	if report.SecretEnv.Path == "" {
+		t.Error("secretEnv.Path empty: V3 fix must populate the resolved default path")
+	} else if filepath.Base(report.SecretEnv.Path) != SecretEnvFilename("k1", "ab12c") {
+		t.Errorf("secretEnv.Path = %q, want leaf %q", report.SecretEnv.Path, SecretEnvFilename("k1", "ab12c"))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // BuildDiffReport + Code section
 // ---------------------------------------------------------------------------
