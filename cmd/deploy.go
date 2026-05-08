@@ -52,7 +52,7 @@ and updates the local config file. Use this to:
 func init() {
 	deployCmd.Flags().StringP("config", "c", "runos.yaml", "path to config file")
 	deployCmd.Flags().StringP("cid", "", "", "cluster ID (overrides default)")
-	deployCmd.Flags().BoolP("follow", "f", false, "follow job progress until completion (auto-enabled when stdin is not a terminal, e.g. CI; pass --follow=false to opt out)")
+	deployCmd.Flags().BoolP("follow", "f", false, "follow job progress until completion; without it, deploy prints the job ID and exits 0 the moment the conductor accepts the request")
 	deployCmd.Flags().BoolP("json", "j", false, "output response as JSON")
 	deployCmd.Flags().Bool("force", false, "deploy even when local diverges from the server (skips the pre-deploy drift gate)")
 	deployCmd.Flags().BoolP("yes", "y", false, "skip the deploy confirmation prompt (auto-skipped when stdin is not a terminal, e.g. CI)")
@@ -117,15 +117,8 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	flagApp, _ := cmd.Flags().GetString("app")
 	flagSha, _ := cmd.Flags().GetString("sha")
 	flagAllowDirty, _ := cmd.Flags().GetBool("allow-dirty")
-	flagFollowRaw, _ := cmd.Flags().GetBool("follow")
-	flagFollowSet := cmd.Flags().Changed("follow")
+	flagFollow, _ := cmd.Flags().GetBool("follow")
 	flagYes, _ := cmd.Flags().GetBool("yes")
-	// V10: auto-follow when stdin is not a TTY (CI / piped) and the user
-	// didn't explicitly pass the flag. Mirrors the --yes auto-skip pattern.
-	// `cmd.Flags().Changed("follow")` is true only when --follow was passed
-	// explicitly (either =true or =false), so the auto-follow only fires
-	// in the absent-flag default case.
-	flagFollow := effectiveFollow(flagFollowRaw, flagFollowSet, term.IsTerminal(int(os.Stdin.Fd())))
 
 	if flagApp != "" {
 		// CI mode: --app pins the target, no yaml is consulted, so cid must
@@ -414,8 +407,10 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  App ID: %s\n", prepResp.AppID)
 	}
 
-	// Follow job if requested. flagFollow is the effective value computed
-	// at the top of runDeploy with V10's non-TTY auto-follow applied.
+	// Follow job if --follow was passed. Default is fire-and-forget so the
+	// user has predictable, opt-in control: the CLI never blocks unless
+	// asked. CI workflows that want exit codes to gate downstream steps
+	// add --follow explicitly.
 	if flagFollow {
 		fmt.Println("\nFollowing job progress...")
 		if err := jobs.FollowJob(prepResp.JobID); err != nil {
@@ -1133,22 +1128,6 @@ func warnLocalDeletions(path string, missing []string, requiresFiltered map[stri
 	fmt.Fprintf(os.Stderr, "\n`runos deploy` is additive: it pulls server env vars down into local but never pushes deletions up.\n")
 	fmt.Fprintf(os.Stderr, "If you intended to remove these from the server, run `runos apps sync` (NOT another deploy);\n")
 	fmt.Fprintf(os.Stderr, "the replace-all env-vars push is the only way the CLI deletes server-side env vars.\n")
-}
-
-// effectiveFollow decides whether `runos deploy` should block on the job's
-// outcome. If the user passed `--follow` explicitly (true or false), that
-// value wins. Otherwise: TTY -> false (interactive users default to fire-
-// and-forget; they can pass --follow to opt in), non-TTY -> true (CI users
-// almost always want the build/rollout outcome to gate the next workflow
-// step; auto-follow mirrors the --yes non-TTY auto-skip pattern).
-//
-// V10 fix: pre-fix, deploys in CI exited green the moment the job was
-// queued because nobody passed --follow, masking failed builds.
-func effectiveFollow(userValue, flagSet, isTTY bool) bool {
-	if flagSet {
-		return userValue
-	}
-	return !isTTY
 }
 
 // confirmDeploy prints summary on stderr and prompts the user to confirm.

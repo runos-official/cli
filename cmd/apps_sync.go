@@ -14,7 +14,6 @@ import (
 	"github.com/runos-official/cli/internal/jobs"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 var appsSyncCmd = &cobra.Command{
@@ -67,30 +66,7 @@ func init() {
 	appsSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	appsSyncCmd.Flags().Bool("allow-empty-secret-env", false, "allow apps_sync to wipe ALL server-side secret env vars when the local secret-env file is empty or missing (otherwise refused as a footgun)")
 	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace env values in the plan output with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
-	appsSyncCmd.Flags().Bool("no-follow", false, "fire-and-forget mode: don't wait for each emitted job to reach a terminal status before printing 'ok' (default off; sync waits per step so silent cluster-side failures don't masquerade as successes)")
-}
-
-// effectiveSyncFollow decides apps_sync's wait shape from the user's
-// --no-follow choice and the stdout-TTY state.
-//
-//   - follow:         block on each emitted job until terminal (true unless --no-follow)
-//   - streamProgress: emit per-work-item progress lines while waiting (true only on TTY)
-//
-// Mirrors cmd/deploy.go:effectiveFollow's pattern. CI (non-TTY) blocks
-// silently and prints only the final "ok"/"failed" line per step; TTY
-// streams the per-work-item progress so users see what's happening.
-//
-// V12 fix (VCS_DEPLOY_TEST_NOTES.md): pre-fix, every "X: replace ok (job
-// <id>)" line printed immediately after the API accepted the request,
-// before the cluster job ran. Failures (e.g. configmap NotFound on
-// never-deployed apps) silently completed the CLI with exit 0 while the
-// underlying state-mutation never landed. The new dispatch waits for
-// terminal status before declaring success and exits non-zero on failure.
-func effectiveSyncFollow(noFollow, isTTY bool) (follow, streamProgress bool) {
-	if noFollow {
-		return false, false
-	}
-	return true, isTTY
+	appsSyncCmd.Flags().BoolP("follow", "f", false, "wait for each emitted job to reach a terminal status before printing 'ok'; without it, prints the job ID and continues (failures land silently on the cluster)")
 }
 
 func runAppsSync(cmd *cobra.Command, args []string) error {
@@ -102,8 +78,7 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
-	noFollow, _ := cmd.Flags().GetBool("no-follow")
-	follow, streamProgress := effectiveSyncFollow(noFollow, term.IsTerminal(int(os.Stdout.Fd())))
+	follow, _ := cmd.Flags().GetBool("follow")
 
 	yamlPath, err := resolveYamlArg(args, "sync")
 	if err != nil {
@@ -295,7 +270,7 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	// issued here would race the Firestore write. The local yaml stays
 	// the source of truth; the user runs apps_pull when they want the
 	// server-applied normalisation on disk.
-	return applySyncPlan(svc, plan, yamlDir, follow, streamProgress)
+	return applySyncPlan(svc, plan, yamlDir, follow)
 }
 
 // printSyncPlan renders the plan in the same visual style as diff: section
@@ -440,14 +415,21 @@ func printOverrideOps(ops []apps.OverrideOp) {
 // change (atomic /secrets endpoint), otherwise the dedicated endpoints.
 // Overrides last, one CRUD call each. Per-step failures abort the rest.
 //
-// V12 fix (VCS_DEPLOY_TEST_NOTES.md): each step that emits a jobID is now
-// awaited (or streamed, on TTY) before declaring "ok". Pre-fix, the
-// conductor-accepted-the-request signal was reported verbatim as success
-// even when the cluster-side orchestration silently failed (e.g. kubectl
-// patch on a missing configmap). The follow argument is `true` by default
-// (--no-follow opts out); streamProgress is true on TTY so users see
-// per-work-item lines while the wait is in flight.
-func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follow, streamProgress bool) error {
+// follow controls per-step blocking on the conductor-emitted jobID. Off by
+// default (the project-wide convention; see CLAUDE.md "Job-following
+// convention"): apps_sync prints `X: ok (job <id>)` per step and exits 0
+// the moment the API accepts the request. With `--follow`, each step
+// streams progress via jobs.FollowJobWithService and the dispatch aborts
+// the rest of the plan on terminal `failed`, surfacing the conductor's
+// `job.Error` verbatim and exiting non-zero.
+//
+// The opt-in shape matches `runos deploy --follow` exactly. Both verbs
+// always stream when follow is on (no TTY split): CI users get the per-
+// work-item lines for free, which is useful for debugging silent cluster-
+// side failures. Pre-V12, every "ok" line printed regardless of the
+// underlying job's outcome — the follow flag now lets users opt into
+// observing the actual outcome.
+func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follow bool) error {
 	fmt.Println()
 	fmt.Println("Applying...")
 
@@ -476,11 +458,11 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 		}
 	}
 
-	// finishStep prints the per-step closing line. When follow is on AND
-	// the step emitted a jobID, blocks on the job (or streams progress)
-	// before printing "ok"; surfaces the conductor's job error verbatim
-	// on terminal failure. When follow is off, falls back to the legacy
-	// fire-and-forget shape: print "ok (job <id>)" and continue.
+	// finishStep prints the per-step closing line. When follow is off (the
+	// default), prints `X: ok (job <id>)` and continues. When follow is on
+	// AND the step emitted a jobID, streams progress to stdout via the
+	// shared FollowJobWithService and surfaces the conductor's job error
+	// verbatim on terminal `failed`.
 	finishStep := func(label, jobID string) error {
 		if !follow || jobID == "" {
 			fmt.Printf("  %s ok%s\n", label, jobIDSuffix(jobID))
@@ -494,13 +476,7 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		var waitErr error
-		if streamProgress {
-			waitErr = jobs.FollowJobWithService(ctx, js, jobID)
-		} else {
-			waitErr = jobs.WaitForJob(ctx, js, jobID)
-		}
-		if waitErr != nil {
+		if waitErr := jobs.FollowJobWithService(ctx, js, jobID); waitErr != nil {
 			fmt.Printf("  %s FAILED: %v\n", label, waitErr)
 			return waitErr
 		}

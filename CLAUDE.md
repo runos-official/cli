@@ -187,6 +187,25 @@ When extending: prefer adding to the manifest if the field maps cleanly to an HT
 - Use progress bars when polling job status
 - Handle API errors gracefully with clear messages
 
+## Job-following convention
+
+Every command that produces a server-side job follows the same shape:
+
+- **Default = fire-and-forget.** The command issues the API call, prints the returned `jobId` (or a `Follow rollout: runos follow <id>` hint), and exits 0 the moment the conductor accepts the request. No waiting, no streaming, no auto-detection of TTY/CI.
+- **Opt-in via `--follow` (`-f` where the short flag is free).** When set, the command blocks until the job reaches a terminal status, streams progress to stdout via `jobs.FollowJobWithService`, and exits non-zero if the job's terminal status is `failed` (carrying the conductor's `job.Error` verbatim).
+- **No auto-follow based on TTY, CI env vars, or any other implicit signal.** The user passes `--follow` when they want to wait. Period. Mixing implicit and explicit follow caused real footguns (V12 silent-success, V10 surprise-blocking) and the inconsistency between deploy / apps_sync / services_sync / dynacmd flag defaults made the surface harder to reason about.
+- **Multi-step commands** (e.g. `apps_sync` issues yaml-patch + env + secret-files + overrides as separate jobs): when `--follow` is set, wait per step. A failure aborts the rest of the plan and exits non-zero. Without `--follow`, all steps still run; the trailing `runos follow <id>` hint covers each emitted job so the user can manually wait.
+
+Commands that emit jobs and so MUST have `--follow`:
+- `runos deploy` (CLI + VCS deploy paths)
+- `runos apps sync`
+- `runos services sync`
+- Manifest-driven dynacmd commands whose response shape declares `jobId` (auto-wired in `internal/dynacmd/builder.go`; default already opt-in)
+
+The reusable primitive is `internal/jobs/follow.go:FollowJobWithService(ctx, svc, jobID) error`. Don't add a silent variant: if a caller wants to wait without streaming, they want `--follow=false` plus a manual `runos follow` afterward.
+
+`runos follow <jobId>` is the always-block verb for users who prefer to dispatch then watch.
+
 ## Authentication Flow
 
 Firebase Auth supports multiple sign-in methods:

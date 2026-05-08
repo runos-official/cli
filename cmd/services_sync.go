@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
+	"github.com/runos-official/cli/internal/jobs"
 	"github.com/runos-official/cli/internal/services"
 
 	"github.com/spf13/cobra"
@@ -42,6 +45,7 @@ func init() {
 	servicesSyncCmd.Flags().Bool("dry-run", false, "compute the plan but don't apply anything")
 	servicesSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	servicesSyncCmd.Flags().Bool("redact-secrets", false, "redact field values in the plan output (used by the MCP wrapper)")
+	servicesSyncCmd.Flags().BoolP("follow", "f", false, "wait for the emitted job to reach a terminal status; without it, prints the job ID and exits 0 the moment the conductor accepts the request")
 }
 
 func runServicesSync(cmd *cobra.Command, args []string) error {
@@ -52,6 +56,7 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	redact, _ := cmd.Flags().GetBool("redact-secrets")
+	follow, _ := cmd.Flags().GetBool("follow")
 
 	if len(args) != 1 {
 		return fmt.Errorf("pass the path to a runos.service.<cid>.<sid>.yaml file")
@@ -135,8 +140,30 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("\nSync complete.")
-	if res.JobID != "" {
+	if res.JobID == "" {
+		return nil
+	}
+	if !follow {
 		fmt.Printf("  job: %s\n", res.JobID)
+		fmt.Printf("Follow rollout: runos follow %s\n", res.JobID)
+		return nil
+	}
+	// --follow: stream progress until terminal. Surfaces the conductor's
+	// job error verbatim on `failed` and exits non-zero. Keeps the
+	// project-wide convention (CLAUDE.md "Job-following convention"):
+	// follow is opt-in; without it, services_sync stays fire-and-forget.
+	jobsSvc, err := jobs.NewService()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to attach to job-progress stream: %v\n", err)
+		fmt.Printf("  job: %s\n", res.JobID)
+		fmt.Printf("Follow rollout: runos follow %s\n", res.JobID)
+		return err
+	}
+	fmt.Printf("Following job %s...\n", res.JobID)
+	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	if err := jobs.FollowJobWithService(jobCtx, jobsSvc, res.JobID); err != nil {
+		return fmt.Errorf("job failed: %w", err)
 	}
 	return nil
 }

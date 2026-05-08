@@ -1,9 +1,7 @@
 package jobs
 
 import (
-	"net/http"
 	"testing"
-	"time"
 
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -43,17 +41,5 @@ func TestGetAuthToken_NoCredsErrorsClearly(t *testing.T) {
 	_, err := getAuthToken(&config.Config{})
 	if err == nil {
 		t.Fatal("expected error when neither RUNOS_API_KEY nor Firebase config is set")
-	}
-}
-
-// newServiceForTest constructs a Service pointing at the given httptest
-// server URL. Same-package test helper so external test code doesn't
-// have to expose Service's unexported fields. token is fixed because
-// the auth path is already covered by the V11 tests above.
-func newServiceForTest(baseURL string) *Service {
-	return &Service{
-		baseURL: baseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		token: "test-token",
 	}
 }
