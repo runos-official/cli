@@ -15,6 +15,38 @@ import (
 	"golang.org/x/term"
 )
 
+// manifestFileName is the on-disk filename for the cached CLI manifest
+// inside ~/.runos/. Mirrors the constant used inside internal/manifest;
+// duplicated here so root.go can probe its existence without exporting
+// an extra helper from the package.
+const manifestFileName = "manifest.json"
+
+// shouldBootstrapManifest reports whether PersistentPreRunE should
+// attempt to fetch the manifest on this command invocation. Returns
+// true when the local cache is missing AND the command is one that
+// might use the manifest (i.e. not version/help/config/update/manifest
+// itself). Pure function so the skip-list contract is testable.
+//
+// V6 fix: pre-fix, no first-run bootstrap existed, so manifest-driven
+// commands like `runos services sync` hard-failed on a fresh CI install
+// while `runos deploy` (statically defined) only soft-warned. Bootstrap
+// here unifies both paths.
+func shouldBootstrapManifest(cmdName, parentName string, manifestPresent bool) bool {
+	if manifestPresent {
+		return false
+	}
+	switch cmdName {
+	case "config", "env", "version", "help", "update":
+		return false
+	}
+	// `runos manifest update` does its own fetch. Skip the bootstrap to
+	// avoid double-fetching.
+	if parentName == "manifest" {
+		return false
+	}
+	return true
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "runos",
 	Short: "CLI for interacting with RunOS clusters",
@@ -33,6 +65,30 @@ var rootCmd = &cobra.Command{
 		if !config.Exists() {
 			if _, err := config.InitFromRemote(); err != nil {
 				return fmt.Errorf("failed to initialize config: %w\nRun 'runos config env <environment>' to set up manually", err)
+			}
+		}
+
+		// V6: bootstrap the manifest on first run when the cache file is
+		// missing, parallel to the config bootstrap above. Soft-warn on
+		// failure so a transient network blip doesn't block the run; the
+		// dependent command (apps_pull, services_*) will surface its own
+		// "(run 'runos manifest update'?)" hint with the wrapped error.
+		if home, err := os.UserHomeDir(); err == nil {
+			configDir := filepath.Join(home, ".runos")
+			manifestPath := filepath.Join(configDir, manifestFileName)
+			_, statErr := os.Stat(manifestPath)
+			parentName := ""
+			if cmd.Parent() != nil {
+				parentName = cmd.Parent().Name()
+			}
+			if shouldBootstrapManifest(cmd.Name(), parentName, statErr == nil) {
+				cfg, cfgErr := config.Load()
+				if cfgErr == nil {
+					loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
+					if _, err := loader.Load(); err != nil && term.IsTerminal(int(os.Stderr.Fd())) {
+						fmt.Fprintf(os.Stderr, "Note: failed to fetch CLI manifest on first run (%v). Run 'runos manifest update' to retry.\n", err)
+					}
+				}
 			}
 		}
 
