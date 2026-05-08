@@ -21,6 +21,7 @@ Consolidated release candidate on top of v0.3.9. Supersedes the rc.1 through rc.
 - **`apps pull --keep-env`**: opt-out from env file rewrites. Useful when the user has dev-only env edits they want to keep while still refreshing yaml, secret-files, and overrides. Stdout shows the kept paths so the user can run `apps diff` to see the divergence. Exposed on the MCP `apps_pull` tool as `keep_env`.
 - **Pre-deploy drift gates**: `runos deploy` refuses when the local yaml has diverged from the running app on the server, and separately when newer CLI archives exist (someone deployed via console or CI between this directory's last pull/deploy and now). Both are fail-closed: an API failure refuses the deploy. Pass `--force` to override; the diff is shown either way.
 - **TESTING.md**: testing philosophy and conventions. Pure-function regression tests on extracted helpers are the dominant pattern; the project explicitly does NOT write cobra-level subprocess tests or end-to-end tests against a live conductor.
+- **`runos deploy` confirmation prompt**: a pre-deploy summary + `[y/N]` gate fires on both CLI and VCS deploy paths so a mistyped `runos deploy` (wrong directory, wrong cluster, wrong sha) doesn't silently kick off a build. Auto-skipped when stdin is not a terminal (CI, piped input). The `--yes` / `-y` flag is the explicit opt-out for TTY users who want the old behaviour. Summary lists app + cluster + account, plus the resolved build-context path (CLI) or short SHA + configPath (VCS).
 
 ### Improvements
 
@@ -36,7 +37,8 @@ Consolidated release candidate on top of v0.3.9. Supersedes the rc.1 through rc.
 - **CDN config schema**: `RemoteDomains` reads the canonical `api` field, falling back to the legacy `conductor` field for older payloads. Driven by an `APIURL()` resolver used everywhere the CDN environment is consumed.
 - **Pre-deploy drift gate validates IDs as defence-in-depth**: app ID and cluster ID from the local yaml are charset-validated via `apps.ValidateIdentifier` before being joined into URLs, so a tampered yaml can't smuggle path components into API requests.
 - **Build stamp on local builds**: `make local` stamps `dev-<utc-timestamp>` into the version string, so dev binaries are version-distinguishable in the wild. Stable releases continue to stamp the git tag.
-- **Documentation**: README and CLAUDE.md gain a deploy-verb section covering the deployType dispatch, the three cluster-id sources (flag → config → yaml), the SHA / dirty-tree gate, and the env-var Secret/ConfigMap split. CLAUDE.md links to TESTING.md from the testing section.
+- **Documentation**: README and CLAUDE.md gain a deploy-verb section covering the deployType dispatch, the three cluster-id sources (flag, config, yaml), the SHA / dirty-tree gate, and the env-var Secret/ConfigMap split. CLAUDE.md links to TESTING.md from the testing section. README modernized: simplified quickstart (the default environment is auto-fetched on first run, no manual `runos config env` step), added Authentication and IaC sections, environment-variable table updated with `RUNOS_API_KEY` / `RUNOS_ACCOUNT_ID` for headless CI auth.
+- **MCP integration: Roo Code target removed**. `runos mcp configure roo` no longer exists; supported targets are now Claude Code, Gemini CLI, OpenCode, and OpenAI Codex. The Roo-specific `.roo/mcp.json` writer and its handler are gone.
 
 ### Bug fixes
 
