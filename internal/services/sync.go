@@ -77,15 +77,48 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd 
 
 	// Update path: drift first, only PATCH when something actually changed.
 	if !servicesEqual(local, server) {
-		plan.PatchBody = filterToInputFields(local.Fields, UpdateInputFieldNames(updateCmd))
 		var serverFields map[string]any
 		if server != nil {
 			serverFields = server.Fields
 		}
+		plan.PatchBody = computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
 		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
 		plan.Diff = renderFieldDiff(local, server)
 	}
 	return plan
+}
+
+// computeDriftPatch returns the local-vs-server drift restricted to fields
+// the update command accepts. Fields whose local value matches server are
+// omitted so the conductor's per-service omit=preserve handlers don't
+// mis-synthesize overrides.
+//
+// Concrete bug this prevents: pulling a service materializes the active
+// class's cpu/memory baseline into the local yaml. Editing only the class
+// line and syncing without this gate sends the OLD baseline cpu/memory in
+// the wire body. resolveRRC interprets those as overrides against the NEW
+// class baseline, flips class to "custom", and the new class baseline
+// never reaches the running pod.
+func computeDriftPatch(local, server map[string]any, allowed map[string]bool) map[string]any {
+	if len(local) == 0 {
+		return nil
+	}
+	out := make(map[string]any)
+	for k, lv := range local {
+		if !allowed[k] {
+			continue
+		}
+		if server != nil {
+			if sv, present := server[k]; present && jsonEqual(lv, sv) {
+				continue
+			}
+		}
+		out[k] = lv
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // servicesEqual reports whether the two service yamls would marshal

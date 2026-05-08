@@ -75,6 +75,68 @@ func (e *EnvChange) HasChanges() bool {
 	return len(e.Add) > 0 || len(e.Update) > 0 || len(e.Remove) > 0
 }
 
+// CheckEmptySecretEnvWipe returns a non-nil error when the plan would
+// replace-all server-side secret env vars with an effectively-empty
+// user-set — a silent wipe most often caused by a missing or empty
+// local secret-env file (e.g. fresh checkout where the gitignored file
+// isn't on disk yet).
+//
+// Detection signal: every key in SecretEnv.Final is platform-injected
+// (claimed by `requires.<alias>.env` on the local yaml) AND
+// SecretEnv.Remove is non-empty. The conjunction means "the user side
+// of the push is empty and the server has user-set keys that will be
+// deleted."
+//
+// Why we filter Final by platform-injected names rather than just
+// checking byte-empty: a local file containing ONLY DATABASE_URL=... is
+// effectively empty from the user's perspective — DATABASE_URL gets
+// re-injected on every push by the requires-merge, so its presence in
+// the wire body doesn't represent user intent. Without the filter the
+// gate misses this scenario and the user silently loses APP_KEY etc.
+//
+// localPlatformInjected is the set of keys in the LOCAL secret env file
+// that are claimed by the LOCAL yaml's `requires.<alias>.env` mappings.
+// Compute via FindServerInjectedEnvCollisions(localSecretEnv,
+// localApp.Requires). nil/empty is fine — the gate degrades to the
+// byte-empty check.
+//
+// allowEmpty is the explicit opt-in (the user passed
+// `--allow-empty-secret-env`). The `--yes` confirm-skip flag does NOT
+// waive this gate — `--yes` is "skip the prompt for the safe case",
+// not "I'm OK with destructive ops."
+func CheckEmptySecretEnvWipe(
+	plan *SyncPlan,
+	allowEmpty bool,
+	localPlatformInjected map[string]bool,
+) error {
+	if plan == nil || plan.SecretEnv == nil {
+		return nil
+	}
+	// Count keys in Final that aren't platform-injected. If at least one
+	// user-authored key remains, this is a normal push, not a wipe.
+	for k := range plan.SecretEnv.Final {
+		if !localPlatformInjected[k] {
+			return nil
+		}
+	}
+	if len(plan.SecretEnv.Remove) == 0 {
+		return nil
+	}
+	if allowEmpty {
+		return nil
+	}
+	keys := append([]string(nil), plan.SecretEnv.Remove...)
+	sort.Strings(keys)
+	return fmt.Errorf(
+		"refusing to wipe %d server-side secret env key(s): %s.\n"+
+			"the local secret-env file is empty, missing, or carries only platform-injected names.\n"+
+			"if this is intentional (e.g. clearing all secrets), re-run with --allow-empty-secret-env.\n"+
+			"if not, run `runos apps pull --force` to bring the server values into local first.",
+		len(keys),
+		strings.Join(keys, ", "),
+	)
+}
+
 // SecretFilesChange holds add+remove deltas plus the full content for the
 // add side (we read local files at plan time so apply doesn't have to).
 type SecretFilesChange struct {
@@ -106,6 +168,13 @@ func (s *SecretFilesChange) AllAddPayloads() []SecretFilePayload {
 // "update", "delete". Content is the raw bytes of the override body when
 // applicable. UnifiedDiff is populated for "update" ops so the plan can
 // show exactly which lines change.
+//
+// LocalLeaf is the leaf filename inside the appDir/overrides/ folder
+// that pull would have written for this override. Populated only for
+// "delete" ops so the apply step can clean up the local file alongside
+// the server delete. Best-effort — derived from OverrideFilenames over
+// the full server list at plan time, so collision-disambiguated names
+// (`<name>-<shortID>.yaml`) match what pull wrote.
 type OverrideOp struct {
 	Op          string `json:"op"`
 	ID          string `json:"id,omitempty"` // server id; empty for add
@@ -114,6 +183,7 @@ type OverrideOp struct {
 	Content     []byte `json:"-"` // not serialized; carried only in-process
 	Reason      string `json:"reason,omitempty"`
 	UnifiedDiff string `json:"unifiedDiff,omitempty"`
+	LocalLeaf   string `json:"-"` // not serialized; only used by apply
 }
 
 // HasChanges reports whether the plan touches anything at all.
@@ -392,6 +462,16 @@ func computeOverrideOps(local []LocalOverride, server []OverrideSummary) []Overr
 		serverByID[o.ID] = o
 	}
 
+	// Pre-compute the on-disk filename for every server override. Pull
+	// uses OverrideFilenames over the full set so collision
+	// disambiguation (`<name>-<shortID>.yaml`) is consistent — derive
+	// the same map here so a delete op can find and unlink its file.
+	serverFilenames := OverrideFilenames(server)
+	leafByID := make(map[string]string, len(server))
+	for i, srv := range server {
+		leafByID[srv.ID] = serverFilenames[i]
+	}
+
 	for _, l := range local {
 		if l.ID == "" {
 			ops = append(ops, OverrideOp{
@@ -431,10 +511,11 @@ func computeOverrideOps(local []LocalOverride, server []OverrideSummary) []Overr
 	for _, srv := range server {
 		if !seen[srv.ID] {
 			ops = append(ops, OverrideOp{
-				Op:     "delete",
-				ID:     srv.ID,
-				Name:   srv.Name,
-				Reason: "server has it, local doesn't",
+				Op:        "delete",
+				ID:        srv.ID,
+				Name:      srv.Name,
+				LocalLeaf: leafByID[srv.ID],
+				Reason:    "server has it, local doesn't",
 			})
 		}
 	}
@@ -483,20 +564,26 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	if localApp.App != "" && localApp.App != stringOr(server, "name") {
 		driftFields["name"] = localApp.App
 	}
-	if localApp.ClusterDomainID != stringOr(server, "clusterDomainId") {
+	// clusterDomainId, resourceRequirementClassId, replicas are partial-update
+	// fields on the conductor's PATCH endpoint: an omitted local value means
+	// "preserve the current server value", NOT "clear / set to zero". The wire
+	// body builder (buildFullYAMLBody) correctly omits these when local is
+	// zero/empty, so the sync push is harmless either way. Without these gates
+	// the dry-run plan would render alarming `replicas: 1 -> replicas: 0` lines
+	// for every yaml that omitted them, scaring users into either refusing the
+	// (harmless) sync or pulling-and-re-syncing as a workaround. Gate drift
+	// reporting on local being non-empty to mirror the wire body's omit logic.
+	if localApp.ClusterDomainID != "" && localApp.ClusterDomainID != stringOr(server, "clusterDomainId") {
 		driftFields["clusterDomainId"] = localApp.ClusterDomainID
 	}
-	if localApp.ResourceRequirementClassID != stringOr(server, "resourceRequirementClassId") {
+	if localApp.ResourceRequirementClassID != "" &&
+		localApp.ResourceRequirementClassID != stringOr(server, "resourceRequirementClassId") {
 		driftFields["resourceRequirementClassId"] = localApp.ResourceRequirementClassID
 	}
-	// Replicas drift only when the two sides actually disagree. Server
-	// missing the field + local zero is "neither side cares", not drift.
-	if serverReplicas, ok := asInt(server["replicas"]); ok {
-		if serverReplicas != localApp.Replicas {
+	if localApp.Replicas != 0 {
+		if serverReplicas, ok := asInt(server["replicas"]); !ok || serverReplicas != localApp.Replicas {
 			driftFields["replicas"] = localApp.Replicas
 		}
-	} else if localApp.Replicas != 0 {
-		driftFields["replicas"] = localApp.Replicas
 	}
 	intDrift := func(field string, local *int) {
 		if local == nil {

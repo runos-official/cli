@@ -250,10 +250,22 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 
 	// Resources: preset wins when it's a real class, otherwise emit all
 	// four custom fields (including zeros, so the user knows they must set them).
+	//
+	// "custom" is the server-synthesised label for "user supplied a class
+	// AND overrode at least one of cpu/memory/replicas with a value that
+	// disagrees with the class defaults" (see conductor's resolveRRC).
+	// We preserve the literal "custom" string in the pulled yaml so
+	// apps_show and apps_pull return symmetric views (apps_show already
+	// surfaces resourceRequirementClassId="custom"). Materialised
+	// cpu/memory fields are still emitted alongside, since "custom" by
+	// itself carries no values.
 	rrc := stringOr(raw, "resourceRequirementClassId")
 	if rrc != "" && rrc != "custom" {
 		p.ResourceRequirementClassID = rrc
 	} else {
+		if rrc == "custom" {
+			p.ResourceRequirementClassID = "custom"
+		}
 		cpuReq := 0
 		if v, ok := asInt(raw["cpuRequestMc"]); ok {
 			cpuReq = v

@@ -230,6 +230,9 @@ Store auth tokens securely in `~/.runos/`. Consider implementing API key fallbac
 - Don't panic; return errors up the call stack
 
 ### Testing
+- See [TESTING.md](TESTING.md) for the testing philosophy, conventions, and the running list of regression tests by fix.
+- We test pure functions and extracted helpers. We do **not** write cobra-level subprocess tests. No e2e against a live conductor. Extract a pure helper and test that instead.
+- When you fix a bug, add a regression test for the pure logic that prevents it. Append the entry to TESTING.md's "regression tests by fix" table.
 - Use `t.Helper()` in test helpers so failures point at the calling test
 - Use `t.Cleanup(fn)` over `defer fn()`; helpers can register their own cleanup
 - Use `t.TempDir()` for filesystem fixtures, `t.Chdir(dir)` (Go 1.24+) for cwd changes (avoid `defer os.Chdir(prev)`)

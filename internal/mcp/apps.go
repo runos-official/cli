@@ -87,6 +87,11 @@ all and yaml_file/app_id are mutually exclusive.`,
 						Type:        "string",
 						Description: "Pull a specific archive by cliUploadID (rollback flow). Implies code=true. Use apps_list_previous_uploads to discover IDs.",
 					},
+					"keep_env": {
+						Type:        "boolean",
+						Description: "Preserve local env files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env). Pull won't overwrite them with server values. Use when you have local-only env edits you want to keep — typically dev overrides — while still refreshing yaml, secret-files, and overrides.",
+						Default:     false,
+					},
 				},
 			},
 		})
@@ -150,7 +155,9 @@ What sync can push:
   - overrides (add/update/delete)
 
 What sync cannot push:
-  - VCS / integration fields (deployType, repo, branch). Use the console.`,
+  - VCS / integration fields (deployType, repo, branch). Use the console.
+
+EMPTY SECRET-ENV WIPE GATE: by default, sync REFUSES to push an empty (or platform-injected-only) local secret-env file when the server has user-set secret keys — this catches the fresh-checkout footgun where a gitignored env file isn't on disk and the LLM/CI silently wipes prod secrets. To intentionally clear all server secrets, pass allow_empty_secret_env=true. Without it, the gate returns a refusal naming the keys that would be deleted.`,
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -165,6 +172,11 @@ What sync cannot push:
 					"dry_run": {
 						Type:        "boolean",
 						Description: "Compute the sync plan but don't apply it.",
+						Default:     false,
+					},
+					"allow_empty_secret_env": {
+						Type:        "boolean",
+						Description: "Waive the empty-secret-env-wipe gate. Required when the local secret-env file is empty (or carries only platform-injected names like DATABASE_URL) AND the server has user-set secret keys — sync would otherwise refuse to silently delete them. Use only when the wipe is intentional.",
 						Default:     false,
 					},
 				},
@@ -224,14 +236,45 @@ func (s *Server) handleAppsCommand(toolName string, args map[string]any) (string
 		output += stderr.String()
 	}
 
-	if runErr != nil {
-		if output == "" {
-			return "", fmt.Errorf("%s failed: %w", toolName, runErr)
-		}
-		return "", fmt.Errorf("%s failed: %s", toolName, output)
+	exitCode := 0
+	hasExitError := false
+	if exitErr, ok := runErr.(*exec.ExitError); ok {
+		hasExitError = true
+		exitCode = exitErr.ExitCode()
 	}
+	return interpretAppsCommandResult(runErr, exitCode, hasExitError, output, toolName)
+}
 
-	return output, nil
+// interpretAppsCommandResult shapes the (output, error) the MCP caller
+// sees after the runos subprocess exits. Extracted from handleAppsCommand
+// so the drift-as-success translation is testable without spawning real
+// subprocesses.
+//
+// Contract (mirrored on the producer side in cmd/apps_diff.go):
+//   - exit 0       → output, nil           (clean run)
+//   - exit 2 + apps_diff → output, nil    (drift detected, surface as success
+//                                          so MCP caller gets the structured
+//                                          drift report instead of a red
+//                                          error block; CI still sees the
+//                                          non-zero exit at the CLI layer)
+//   - any other error → "", error          (real failure)
+func interpretAppsCommandResult(
+	runErr error,
+	exitCode int,
+	hasExitError bool,
+	output string,
+	toolName string,
+) (string, error) {
+	if runErr == nil {
+		return output, nil
+	}
+	if hasExitError && exitCode == 2 && toolName == "apps_diff" {
+		return output, nil
+	}
+	if output == "" {
+		return "", fmt.Errorf("%s failed: %w", toolName, runErr)
+	}
+	return "", fmt.Errorf("%s failed: %s", toolName, output)
 }
 
 // buildAppsCommandArgs translates an MCP tool call into a runos argv.
@@ -276,6 +319,9 @@ func buildAppsPullArgs(args map[string]any) []string {
 	} else if boolArg(args, "code") {
 		out = append(out, "--code")
 	}
+	if boolArg(args, "keep_env") {
+		out = append(out, "--keep-env")
+	}
 	// Positional last, after the `--` end-of-flags marker so a yaml
 	// path that happens to start with `-` (or any flag-shaped value
 	// the LLM might pass) can't be reinterpreted as a flag.
@@ -319,6 +365,9 @@ func buildAppsSyncArgs(args map[string]any) ([]string, error) {
 	}
 	if boolArg(args, "dry_run") {
 		out = append(out, "--dry-run")
+	}
+	if boolArg(args, "allow_empty_secret_env") {
+		out = append(out, "--allow-empty-secret-env")
 	}
 	// `--` and the yaml positional must come last: anything appended
 	// after `--` is treated as a positional by Cobra, not a flag.

@@ -61,6 +61,7 @@ func init() {
 	appsSyncCmd.Flags().String("cid", "", "cluster ID (optional; defaults to the yaml's cid: field, cross-checked against the yaml when set)")
 	appsSyncCmd.Flags().Bool("dry-run", false, "compute the plan but don't apply anything")
 	appsSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
+	appsSyncCmd.Flags().Bool("allow-empty-secret-env", false, "allow apps_sync to wipe ALL server-side secret env vars when the local secret-env file is empty or missing (otherwise refused as a footgun)")
 	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace env values in the plan output with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
 }
 
@@ -72,6 +73,7 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
+	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
 
 	yamlPath, err := resolveYamlArg(args, "sync")
 	if err != nil {
@@ -140,18 +142,15 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 		)
 	}
 
-	// Soft-warn about local secret-env keys claimed by requires.<alias>.env.
-	// Conductor drops these from customSecretEnvVars at sync time, so the
-	// push is harmless and we don't refuse it. The cleanup is purely
-	// cosmetic: the local file stays in sync with the file's apparent truth.
-	// Only applies to the secret side because requires-derived vars only
-	// land in the Secret.
-	syncRequiresEnvCollisions := apps.FindServerInjectedEnvCollisions(localSecretEnv, localApp.Requires)
-	if len(syncRequiresEnvCollisions) > 0 {
-		fmt.Fprint(os.Stderr, "Note: ")
-		fmt.Fprint(os.Stderr, apps.FormatServerInjectedEnvCollisions(syncRequiresEnvCollisions, localApp.SecretEnv))
-		fmt.Fprintln(os.Stderr)
-	}
+	// (No platform-claimed-keys note here — those keys are by design
+	// always present in the local secret env file, written there by
+	// apps_pull and re-merged on every deploy. The previous "remove these,
+	// they're dead config" advice was wrong-headed: removing them makes
+	// local LESS accurate, not more, since the next pull writes them back.
+	// The plain-side equivalent — platform-claimed credentials in the
+	// VCS-committed config.env — is a real footgun but is hard-refused
+	// server-side via the secret/plain conflict gate, so we don't need a
+	// client-side check for it either.)
 
 	localSecrets, err := apps.LoadLocalSecretFiles(yamlDir, localApp.SecretFiles)
 	if err != nil {
@@ -213,6 +212,40 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 		fmt.Println("\nDry run, no changes applied.")
 		return nil
 	}
+
+	// Refuse to silently wipe server-side secret env vars when the
+	// effective USER push is empty. "Effective" means: filter out any
+	// key in Final that's claimed by the local yaml's requires.<alias>.env
+	// mappings (those round-trip on every push and don't represent user
+	// intent). Catches both byte-empty local files AND files that
+	// contain only platform-injected names like DATABASE_URL.
+	//
+	// The destructive case must be opt-in via --allow-empty-secret-env.
+	// `--yes` is for the confirmation prompt only; widening it to also
+	// waive destructive ops would defeat the gate's purpose (a CI runner
+	// with --yes shouldn't accidentally clear production secrets).
+	platformInjectedLocal := map[string]bool{}
+	for _, c := range apps.FindServerInjectedEnvCollisions(localSecretEnv, localApp.Requires) {
+		platformInjectedLocal[c.EnvVar] = true
+	}
+	if err := apps.CheckEmptySecretEnvWipe(plan, allowEmptySecretEnv, platformInjectedLocal); err != nil {
+		return err
+	}
+	if allowEmptySecretEnv && plan.SecretEnv != nil && len(plan.SecretEnv.Remove) > 0 {
+		// Re-check the user-final-empty signal so we only warn when the
+		// gate would have fired without the flag.
+		userFinalEmpty := true
+		for k := range plan.SecretEnv.Final {
+			if !platformInjectedLocal[k] {
+				userFinalEmpty = false
+				break
+			}
+		}
+		if userFinalEmpty {
+			fmt.Fprintf(os.Stderr, "Warning: replacing %d server-side secret env key(s) with an effectively-empty local set (--allow-empty-secret-env).\n", len(plan.SecretEnv.Remove))
+		}
+	}
+
 	if !skipPrompt {
 		ok, err := confirm(fmt.Sprintf("\nApply changes to %s (%s) on cluster %s? [y/N] ", plan.AppName, plan.AppID, plan.CID))
 		if err != nil {
@@ -229,7 +262,7 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	// issued here would race the Firestore write. The local yaml stays
 	// the source of truth; the user runs apps_pull when they want the
 	// server-applied normalisation on disk.
-	return applySyncPlan(svc, plan)
+	return applySyncPlan(svc, plan, yamlDir)
 }
 
 // printSyncPlan renders the plan in the same visual style as diff: section
@@ -373,15 +406,30 @@ func printOverrideOps(ops []apps.OverrideOp) {
 // redeploys see the right config). env + secret-files together when both
 // change (atomic /secrets endpoint), otherwise the dedicated endpoints.
 // Overrides last, one CRUD call each. Per-step failures abort the rest.
-func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
+//
+// Each step that triggers an async orchestration appends its jobID to
+// queuedJobIDs. After "Sync complete." (which means "all API calls
+// succeeded"), the function prints the follow command(s) so the user can
+// verify the actual K8s rollout the same way `runos deploy --follow`
+// streams progress. Without this, "Sync complete." reads as "your app
+// is ready" when in fact the rollout is still in flight on the cluster.
+func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string) error {
 	fmt.Println()
 	fmt.Println("Applying...")
+
+	var queuedJobIDs []string
+	track := func(jobID string) {
+		if jobID != "" {
+			queuedJobIDs = append(queuedJobIDs, jobID)
+		}
+	}
 
 	if len(plan.YAMLPatch) > 0 {
 		jobID, err := svc.UpdateApp(plan.AppID, plan.YAMLPatch)
 		if err != nil {
 			return fmt.Errorf("yaml patch: %w", err)
 		}
+		track(jobID)
 		fmt.Printf("  yaml: PATCH ok%s\n", jobIDSuffix(jobID))
 	}
 
@@ -412,18 +460,21 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
 		if err != nil {
 			return fmt.Errorf("secret env + env + secret files: %w", err)
 		}
+		track(jobID)
 		fmt.Printf("  secretEnv/env/secretFiles: atomic update ok%s\n", jobIDSuffix(jobID))
 	case secretEnvChange:
 		jobID, err := svc.ReplaceSecretEnvVars(plan.AppID, plan.SecretEnv.Final)
 		if err != nil {
 			return fmt.Errorf("secret env: %w", err)
 		}
+		track(jobID)
 		fmt.Printf("  secretEnv: replace ok%s\n", jobIDSuffix(jobID))
 	case envChange:
 		jobID, err := svc.ReplaceEnvVars(plan.AppID, plan.Env.Final)
 		if err != nil {
 			return fmt.Errorf("env: %w", err)
 		}
+		track(jobID)
 		fmt.Printf("  env: replace ok%s\n", jobIDSuffix(jobID))
 	case secChange:
 		add := plan.SecretFiles.AllAddPayloads()
@@ -431,6 +482,7 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
 		if err != nil {
 			return fmt.Errorf("secret files: %w", err)
 		}
+		track(jobID)
 		fmt.Printf("  secretFiles: update ok%s\n", jobIDSuffix(jobID))
 	}
 
@@ -441,6 +493,7 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
 			if err != nil {
 				return fmt.Errorf("override %q add: %w", o.Name, err)
 			}
+			track(jobID)
 			fmt.Printf("  override %q: created (id %s)%s\n", o.Name, id, jobIDSuffix(jobID))
 		case "update":
 			name := o.Name
@@ -449,17 +502,46 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan) error {
 			if err != nil {
 				return fmt.Errorf("override %q update: %w", o.Name, err)
 			}
+			track(jobID)
 			fmt.Printf("  override %q: updated%s\n", o.Name, jobIDSuffix(jobID))
 		case "delete":
 			jobID, err := svc.DeleteOverride(plan.AppID, o.ID)
 			if err != nil {
 				return fmt.Errorf("override %q delete: %w", o.Name, err)
 			}
+			track(jobID)
+			// Best-effort cleanup of the local override file. Server-side
+			// delete is the source of truth; a missing local file is
+			// fine (manual prior delete), and an unlink failure shouldn't
+			// fail the sync — leaves the orphan, same shape as before.
+			if o.LocalLeaf != "" && yamlDir != "" {
+				localPath := filepath.Join(yamlDir, apps.OverridesDirname(), o.LocalLeaf)
+				if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "  warning: removed override %q server-side but couldn't unlink %s: %v\n", o.Name, localPath, err)
+				}
+			}
 			fmt.Printf("  override %q: deleted%s\n", o.Name, jobIDSuffix(jobID))
 		}
 	}
 
 	fmt.Println("\nSync complete.")
+
+	// Rollout-confidence hint. The API calls succeeded, but the actual
+	// K8s rollout (rolling restart, image patch, replica re-readiness) is
+	// async on the cluster. Point the user at the follow verb so they get
+	// the same "Watching rollout… ready" signal `runos deploy --follow`
+	// produces. Plural form when multiple jobs queued (yaml patch + env
+	// replace + override CRUD can each fire their own).
+	if len(queuedJobIDs) == 1 {
+		fmt.Println()
+		fmt.Printf("Follow rollout: runos follow %s\n", queuedJobIDs[0])
+	} else if len(queuedJobIDs) > 1 {
+		fmt.Println()
+		fmt.Println("Follow rollout (each job is a separate orchestration):")
+		for _, id := range queuedJobIDs {
+			fmt.Printf("  runos follow %s\n", id)
+		}
+	}
 	return nil
 }
 

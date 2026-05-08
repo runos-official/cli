@@ -195,6 +195,69 @@ func TestComputeOverrideOps_AddUpdateDeleteAndUntouched(t *testing.T) {
 	}
 }
 
+// Round 4 T3 #1: an override removed from the yaml triggers a server-
+// side delete via apps_sync, but the local file at <appDir>/overrides/
+// <name>.yaml was left on disk. The fix populates LocalLeaf on delete
+// ops so the apply path can unlink the local file alongside the server
+// delete. LocalLeaf must match what `apps_pull` (via OverrideFilenames)
+// would have written — collision-disambiguated names (`<name>-<shortID>`)
+// included.
+func TestComputeOverrideOps_DeletePopulatesLocalLeaf(t *testing.T) {
+	local := []LocalOverride{} // user removed the override from yaml
+	server := []OverrideSummary{
+		{ID: "kept", Name: "stays", Enabled: true},
+		{ID: "remove1", Name: "old-feature", Enabled: true},
+		{ID: "remove2", Name: "another", Enabled: true},
+	}
+	// Local references "kept" so it doesn't get deleted.
+	local = append(local, LocalOverride{ID: "kept", Name: "stays", Enabled: true,
+		Content: []byte("body")})
+	// Server "kept" matches local content.
+	server[0].Data = base64.StdEncoding.EncodeToString([]byte("body"))
+
+	ops := computeOverrideOps(local, server)
+	deletes := []OverrideOp{}
+	for _, o := range ops {
+		if o.Op == "delete" {
+			deletes = append(deletes, o)
+		}
+	}
+	if len(deletes) != 2 {
+		t.Fatalf("expected 2 delete ops, got %d: %+v", len(deletes), deletes)
+	}
+	for _, d := range deletes {
+		if d.LocalLeaf == "" {
+			t.Errorf("delete op for %q must populate LocalLeaf for cleanup, got %+v", d.Name, d)
+		}
+		if !strings.HasSuffix(d.LocalLeaf, ".yaml") {
+			t.Errorf("LocalLeaf %q for %q should end in .yaml", d.LocalLeaf, d.Name)
+		}
+	}
+}
+
+// Defensive: when the server side has duplicate override names that
+// would collide on the same filename, OverrideFilenames disambiguates
+// with a `-<shortID>` suffix. The delete op's LocalLeaf must reflect
+// that, otherwise a delete on the second-of-two-same-named overrides
+// would target the wrong file (or no file).
+func TestComputeOverrideOps_DeleteLocalLeafDisambiguatesCollisions(t *testing.T) {
+	server := []OverrideSummary{
+		{ID: "id-A", Name: "duplicate", Enabled: true},
+		{ID: "id-B", Name: "duplicate", Enabled: true},
+	}
+	ops := computeOverrideOps(nil, server)
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 delete ops, got %d", len(ops))
+	}
+	leaves := map[string]bool{}
+	for _, o := range ops {
+		if leaves[o.LocalLeaf] {
+			t.Errorf("two delete ops share the same LocalLeaf %q (collision not disambiguated)", o.LocalLeaf)
+		}
+		leaves[o.LocalLeaf] = true
+	}
+}
+
 func TestComputeOverrideOps_OrphanLocalIDBecomesAdd(t *testing.T) {
 	// Local references an id that the server no longer knows about. The
 	// planner should re-create it (add) rather than trying to update an
@@ -279,6 +342,79 @@ func TestComputeYAMLPatch_NoDriftReturnsNilPatch(t *testing.T) {
 	}
 	if len(refused) != 0 {
 		t.Errorf("no refused fields expected, got %v", refused)
+	}
+}
+
+// Partial-update fields (replicas, resourceRequirementClassId,
+// clusterDomainId) follow omit=preserve on the conductor's PATCH endpoint:
+// an omitted local value means "preserve server", not "clear / set to
+// zero". The drift detector must mirror the wire body's omit logic so the
+// dry-run plan doesn't render alarming `replicas: 1 -> replicas: 0` lines
+// for a yaml that simply doesn't carry those fields.
+func TestComputeYAMLPatch_OmittedReplicasIsNotDrift(t *testing.T) {
+	local := &PulledApp{App: "my-app"} // Replicas omitted (zero value).
+	server := map[string]any{
+		"name":     "my-app",
+		"replicas": float64(2),
+	}
+	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	if patch != nil {
+		t.Errorf("expected nil patch when only diff is server-replicas-vs-local-zero (preserve), got %+v", patch)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff, got %q", diff)
+	}
+}
+
+func TestComputeYAMLPatch_OmittedResourceRequirementClassIDIsNotDrift(t *testing.T) {
+	local := &PulledApp{App: "my-app", Replicas: 1}
+	server := map[string]any{
+		"name":                       "my-app",
+		"replicas":                   float64(1),
+		"resourceRequirementClassId": "app.sl1.beff",
+	}
+	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	if patch != nil {
+		t.Errorf("expected nil patch when local omits resourceRequirementClassId (preserve), got %+v", patch)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff, got %q", diff)
+	}
+}
+
+func TestComputeYAMLPatch_OmittedClusterDomainIDIsNotDrift(t *testing.T) {
+	local := &PulledApp{App: "my-app", Replicas: 1}
+	server := map[string]any{
+		"name":            "my-app",
+		"replicas":        float64(1),
+		"clusterDomainId": "cd-abc12",
+	}
+	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	if patch != nil {
+		t.Errorf("expected nil patch when local omits clusterDomainId (preserve), got %+v", patch)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff, got %q", diff)
+	}
+}
+
+// Sanity: when local does have a non-zero value that disagrees with the
+// server, drift IS reported (the gate doesn't over-suppress).
+func TestComputeYAMLPatch_ExplicitReplicasMismatchIsDrift(t *testing.T) {
+	local := &PulledApp{App: "my-app", Replicas: 3}
+	server := map[string]any{
+		"name":     "my-app",
+		"replicas": float64(1),
+	}
+	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	if patch == nil {
+		t.Fatal("expected non-nil patch when local replicas differ from server")
+	}
+	if patch["replicas"] != 3 {
+		t.Errorf("patch should set replicas to local value 3, got %+v", patch["replicas"])
+	}
+	if diff == "" {
+		t.Error("expected non-empty diff so the user sees the replica change")
 	}
 }
 
@@ -945,3 +1081,160 @@ func TestComputeSyncPlan_RequiresPatched(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// CheckEmptySecretEnvWipe
+// ---------------------------------------------------------------------------
+
+// Round 5 T1: an `apps_sync` against an app where the local secret-env
+// file was missing or empty silently sent `{ envVars: {} }` to the
+// replace-all endpoint, wiping every server secret. This footgun bites
+// hardest on fresh checkouts (gitignored env files don't come down with
+// the repo). The gate refuses the destructive case unless the user
+// explicitly opts in via --allow-empty-secret-env.
+
+func TestCheckEmptySecretEnvWipe_RefusesEmptyReplaceWithServerKeys(t *testing.T) {
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final:  map[string]string{},
+			Remove: []string{"DATABASE_PASS", "STRIPE_KEY", "JWT_SECRET"},
+		},
+	}
+	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ false, nil)
+	if err == nil {
+		t.Fatal("expected refusal when local is empty and server has keys")
+	}
+	msg := err.Error()
+	// Error must name the count and the keys, otherwise the user can't
+	// tell what they're about to lose.
+	if !strings.Contains(msg, "3") {
+		t.Errorf("error should name the key count, got: %s", msg)
+	}
+	for _, k := range []string{"DATABASE_PASS", "STRIPE_KEY", "JWT_SECRET"} {
+		if !strings.Contains(msg, k) {
+			t.Errorf("error should name key %q, got: %s", k, msg)
+		}
+	}
+	// And point at the recovery flag.
+	if !strings.Contains(msg, "--allow-empty-secret-env") {
+		t.Errorf("error should mention --allow-empty-secret-env, got: %s", msg)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_AllowsWhenOptedIn(t *testing.T) {
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final:  map[string]string{},
+			Remove: []string{"A", "B"},
+		},
+	}
+	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ true, nil)
+	if err != nil {
+		t.Errorf("expected pass with allowEmpty=true, got: %v", err)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_PassesWhenLocalIsNonEmpty(t *testing.T) {
+	// Local file has content; we're updating, not wiping. No gate.
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final:  map[string]string{"DATABASE_PASS": "new"},
+			Update: map[string]string{"DATABASE_PASS": "new"},
+		},
+	}
+	if err := CheckEmptySecretEnvWipe(plan, false, nil); err != nil {
+		t.Errorf("expected pass with non-empty Final, got: %v", err)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_PassesWhenServerHasNoKeys(t *testing.T) {
+	// Local is empty AND server is empty — nothing to wipe, nothing to gate.
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final:  map[string]string{},
+			Remove: nil,
+		},
+	}
+	if err := CheckEmptySecretEnvWipe(plan, false, nil); err != nil {
+		t.Errorf("expected pass when nothing to remove, got: %v", err)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_PassesWhenSecretEnvSectionAbsent(t *testing.T) {
+	// Plan has yaml/env/overrides changes but no secret-env section.
+	plan := &SyncPlan{SecretEnv: nil}
+	if err := CheckEmptySecretEnvWipe(plan, false, nil); err != nil {
+		t.Errorf("expected pass when SecretEnv is nil, got: %v", err)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_PreservedByPlatformDoesNotTriggerGate(t *testing.T) {
+	// Local file is empty, server has only platform-injected keys (e.g.
+	// DATABASE_URL from a requires alias). PreservedByPlatform is set,
+	// Remove is empty → no wipe, no gate. Those keys will be re-injected
+	// on next push regardless.
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final:               map[string]string{},
+			Remove:              nil,
+			PreservedByPlatform: []string{"DATABASE_URL", "CACHE_URL"},
+		},
+	}
+	if err := CheckEmptySecretEnvWipe(plan, false, nil); err != nil {
+		t.Errorf("expected pass when only PreservedByPlatform keys are present, got: %v", err)
+	}
+}
+
+// Round 6 follow-up to R5 T1: the byte-empty check let the silent wipe
+// through when the local file contained ONLY platform-injected names
+// (e.g. just `DATABASE_URL=...`). The wire-body Final isn't empty in
+// that case, but the EFFECTIVE user push is — DATABASE_URL gets
+// re-injected on every push, so its presence isn't user intent. Without
+// the platform-filter, APP_KEY (a real user key on the server) would
+// silently disappear.
+func TestCheckEmptySecretEnvWipe_RefusesWhenFinalHasOnlyPlatformInjected(t *testing.T) {
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			// Final carries DATABASE_URL because it's in the local file,
+			// but DATABASE_URL is platform-claimed and re-injected on
+			// every push — it doesn't represent a user-authored key.
+			Final:  map[string]string{"DATABASE_URL": "postgresql://hand-authored"},
+			Remove: []string{"APP_KEY", "STRIPE_SECRET"},
+		},
+	}
+	platformInjected := map[string]bool{"DATABASE_URL": true}
+	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ false, platformInjected)
+	if err == nil {
+		t.Fatal("expected refusal when Final contains only platform-injected keys and server has user keys to remove")
+	}
+	msg := err.Error()
+	for _, k := range []string{"APP_KEY", "STRIPE_SECRET"} {
+		if !strings.Contains(msg, k) {
+			t.Errorf("error should name key %q, got: %s", k, msg)
+		}
+	}
+	// And the message should now mention the broader trigger.
+	if !strings.Contains(msg, "platform-injected") {
+		t.Errorf("error should mention platform-injected names, got: %s", msg)
+	}
+}
+
+func TestCheckEmptySecretEnvWipe_PassesWhenFinalMixesUserAndPlatform(t *testing.T) {
+	// Mixed local file: APP_KEY (user) + DATABASE_URL (platform-injected).
+	// The user-side push isn't empty (APP_KEY is real intent), so this
+	// is a normal sync. No gate.
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Final: map[string]string{
+				"DATABASE_URL": "postgresql://x",
+				"APP_KEY":      "user-value",
+			},
+			Update: map[string]string{"APP_KEY": "user-value"},
+		},
+	}
+	platformInjected := map[string]bool{"DATABASE_URL": true}
+	if err := CheckEmptySecretEnvWipe(plan, false, platformInjected); err != nil {
+		t.Errorf("expected pass when Final contains at least one user-set key, got: %v", err)
+	}
+}
+

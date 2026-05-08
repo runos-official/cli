@@ -137,6 +137,11 @@ func fakeManifest(t *testing.T) *manifest.Manifest {
 					{Name: "name", Type: "string"},
 					{Name: "replicas", Type: "integer"},
 					{Name: "version", Type: "string"},
+					{Name: "resourceRequirementClassId", Type: "string"},
+					{Name: "cpuLimitMc", Type: "integer"},
+					{Name: "cpuRequestMc", Type: "integer"},
+					{Name: "memoryLimitMb", Type: "integer"},
+					{Name: "memoryRequestMb", Type: "integer"},
 				}},
 			},
 			// harbor: only has show, ListSupportedTypes should filter it out.

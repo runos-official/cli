@@ -63,12 +63,66 @@ func TestComputeSyncPlan_PatchDrift(t *testing.T) {
 	if plan.PatchBody == nil {
 		t.Fatal("expected patch body")
 	}
+	// PATCH body is drift-only: name matches server, only replicas drifts.
 	want := map[string]any{
-		"name":     "poll-app-db",
 		"replicas": 3,
 	}
 	if !reflect.DeepEqual(plan.PatchBody, want) {
 		t.Errorf("patch body: got %v, want %v", plan.PatchBody, want)
+	}
+}
+
+// Regression test for the services_sync class-only swap bug. Pulling a
+// service materializes the active class's cpu/memory baseline into the
+// local yaml. If the user then edits only the class line and syncs, the
+// PATCH body must contain ONLY the class change, not the OLD class's
+// cpu/memory values, because resolveRRC interprets those as overrides
+// against the new baseline and flips class to "custom".
+func TestComputeSyncPlan_ClassOnlySwap_OmitsUnchangedResources(t *testing.T) {
+	t.Parallel()
+	m := fakeManifest(t)
+	addCmd, _ := AddCommand(m, "postgresql")
+	updateCmd, _ := UpdateCommand(m, "postgresql")
+
+	local := &ServiceYAML{
+		Type: "postgresql", ID: "ecqtl", CID: "mycluster2", AID: "acct1",
+		Fields: map[string]any{
+			"name":                       "shared-db",
+			"resourceRequirementClassId": "postgresql.c0.small",
+			"replicas":                   1,
+			"cpuLimitMc":                 1000,
+			"memoryLimitMb":              2048,
+		},
+	}
+	server := &ServiceYAML{
+		Type: "postgresql", ID: "ecqtl", CID: "mycluster2", AID: "acct1",
+		Fields: map[string]any{
+			"name":                       "shared-db",
+			"resourceRequirementClassId": "postgresql.c0.beff",
+			"replicas":                   1,
+			"cpuLimitMc":                 1000,
+			"memoryLimitMb":              2048,
+		},
+	}
+	plan := ComputeSyncPlan(local, server, addCmd, updateCmd)
+	if !plan.HasChanges() {
+		t.Fatal("expected class drift to produce a plan")
+	}
+	if plan.PatchBody == nil {
+		t.Fatal("expected patch body")
+	}
+	// Only the class change should be in the wire body.
+	if _, ok := plan.PatchBody["cpuLimitMc"]; ok {
+		t.Errorf("patch body should not include unchanged cpuLimitMc, got %v", plan.PatchBody)
+	}
+	if _, ok := plan.PatchBody["memoryLimitMb"]; ok {
+		t.Errorf("patch body should not include unchanged memoryLimitMb, got %v", plan.PatchBody)
+	}
+	if _, ok := plan.PatchBody["replicas"]; ok {
+		t.Errorf("patch body should not include unchanged replicas, got %v", plan.PatchBody)
+	}
+	if got := plan.PatchBody["resourceRequirementClassId"]; got != "postgresql.c0.small" {
+		t.Errorf("patch body resourceRequirementClassId: got %v, want postgresql.c0.small", got)
 	}
 }
 

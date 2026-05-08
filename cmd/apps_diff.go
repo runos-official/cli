@@ -120,11 +120,15 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	if report.HasDrift() {
-		// Non-zero exit for CI use. Cobra renders error messages, so use
-		// SilenceUsage + SilenceErrors to keep the output clean.
-		cmd.SilenceUsage = true
-		cmd.SilenceErrors = true
-		return fmt.Errorf("drift detected")
+		// Distinct exit code for "drift detected" vs "tool errored". CI
+		// gates pass for any non-zero exit so the gating contract is
+		// preserved; the MCP wrapper specifically detects exit code 2 and
+		// returns the (already-printed) JSON output as a successful tool
+		// result instead of a red error block. Going through os.Exit
+		// directly bypasses Cobra's RunE-error → exit-1 path, which is
+		// the simplest way to reach the apiserver-friendly code without
+		// teaching main() about a sentinel error type.
+		os.Exit(2)
 	}
 	return nil
 }

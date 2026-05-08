@@ -441,6 +441,11 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		// Static services subcommands (pull, diff, sync) follow the same
 		// pattern: yaml-file driven, manifest-aware, run via subprocess.
 		result, err = s.handleServicesCommand(params.Name, params.Arguments)
+	} else if isStaticJobsTool(params.Name) {
+		// jobs_follow blocks the subprocess until the job terminates;
+		// MCP caller gets the full streamed log + final state in one
+		// text payload. Cheaper than polling jobs_show in a loop.
+		result, err = s.handleJobsCommand(params.Name, params.Arguments)
 	} else {
 		// Auto-inject CLI version and OS for version check tool
 		if params.Name == "cli_version-check" {
@@ -668,7 +673,16 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 				// []string we currently expose works under that schema, and
 				// LLM libraries that strict-validate the schema (e.g. some
 				// versions of the Anthropic SDK's tool wrapper) accept it.
-				if prop.Type == "object" {
+				//
+				// providerOptions (domains_create / domains_update) is the
+				// known exception: it carries booleans (e.g. `proxy: true`)
+				// and the string-typed map forced LLMs to send "true" /
+				// "false" strings. The conductor's normalizeProviderOptions
+				// coerces those back, but the schema mismatch was visibly
+				// confusing — domains_list returns booleans, the LLM had to
+				// send strings. Drop the additionalProperties constraint
+				// here so booleans round-trip natively.
+				if prop.Type == "object" && field.Name != "providerOptions" {
 					prop.AdditionalProperties = &Property{Type: "string"}
 				}
 				if prop.Type == "array" {
@@ -699,6 +713,9 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 	// Append static services_* tools (pull/diff/sync). Same rationale:
 	// orchestrating local yaml files, not pure API operations.
 	tools = append(tools, staticServicesTools(s.category)...)
+	// Append jobs_follow — long-poll streaming until terminal state,
+	// shape the manifest dispatcher doesn't model.
+	tools = append(tools, staticJobsTools(s.category)...)
 
 	return tools
 }

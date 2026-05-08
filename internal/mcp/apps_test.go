@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -364,6 +365,109 @@ func TestBuildAppsCommandArgs_UnknownTool(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown") {
 		t.Errorf("error should mention unknown; got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// interpretAppsCommandResult
+// ---------------------------------------------------------------------------
+
+// Round 1 follow-up (Test 2 UX): apps_diff exits with code 2 to signal
+// "drift detected" so CI gates fail and the MCP wrapper can translate it
+// into a successful tool result with the structured drift report. The
+// translation must be tight — only `apps_diff` and only on the
+// dedicated exit code, never on a generic non-zero exit or a different
+// tool. Otherwise an MCP caller could see false "success" for real
+// failures.
+func TestInterpretAppsCommandResult_DriftSignalIsSuccess(t *testing.T) {
+	t.Parallel()
+	out, err := interpretAppsCommandResult(
+		errors.New("exit status 2"),
+		2,    // exitCode
+		true, // hasExitError
+		`{"status":"drift"}`,
+		"apps_diff",
+	)
+	if err != nil {
+		t.Errorf("expected drift signal to translate to success, got err: %v", err)
+	}
+	if out != `{"status":"drift"}` {
+		t.Errorf("expected drift output preserved, got %q", out)
+	}
+}
+
+func TestInterpretAppsCommandResult_OtherToolsKeepExitCode2AsError(t *testing.T) {
+	t.Parallel()
+	// Translation is apps_diff-specific. apps_sync / apps_pull / etc.
+	// returning exit code 2 is treated as a real failure — there's no
+	// drift contract for them.
+	for _, tool := range []string{"apps_sync", "apps_pull", "apps_show"} {
+		t.Run(tool, func(t *testing.T) {
+			_, err := interpretAppsCommandResult(
+				errors.New("exit status 2"),
+				2,
+				true,
+				"some output",
+				tool,
+			)
+			if err == nil {
+				t.Errorf("expected non-apps_diff tool to surface exit code 2 as error, got nil")
+			}
+		})
+	}
+}
+
+func TestInterpretAppsCommandResult_RealErrorsStaySurfaced(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		runErr       error
+		exitCode     int
+		hasExitError bool
+		output       string
+	}{
+		{
+			name:         "exit code 1 with output (typical CLI failure)",
+			runErr:       errors.New("exit status 1"),
+			exitCode:     1,
+			hasExitError: true,
+			output:       "API error: Bad Request",
+		},
+		{
+			name:         "exit code 1 without output",
+			runErr:       errors.New("exit status 1"),
+			exitCode:     1,
+			hasExitError: true,
+			output:       "",
+		},
+		{
+			name:         "non-ExitError (e.g. runtime exec failure)",
+			runErr:       errors.New("fork/exec: no such file"),
+			exitCode:     0,
+			hasExitError: false,
+			output:       "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := interpretAppsCommandResult(
+				tc.runErr, tc.exitCode, tc.hasExitError, tc.output, "apps_diff",
+			)
+			if err == nil {
+				t.Errorf("expected real error to surface, got nil")
+			}
+		})
+	}
+}
+
+func TestInterpretAppsCommandResult_CleanRunIsPassthrough(t *testing.T) {
+	t.Parallel()
+	out, err := interpretAppsCommandResult(nil, 0, false, "clean output", "apps_pull")
+	if err != nil {
+		t.Errorf("expected nil error on clean run, got %v", err)
+	}
+	if out != "clean output" {
+		t.Errorf("expected output passthrough, got %q", out)
 	}
 }
 

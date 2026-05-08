@@ -237,11 +237,24 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Pre-deploy sync: catch any console-side changes before deploying.
-	// Capture the result so we can warn at end-of-deploy about any
-	// keys the user removed from local .env that got silently merged
-	// back in from server (deploy's env handling is additive only;
-	// `runos apps sync` is the replace-all verb that actually deletes).
+	// Pre-deploy sync: pulls server-side env vars DOWN into the local files
+	// so the deploy body the CLI POSTs reflects whatever the console (or a
+	// teammate) set since the last local refresh. Local-wins merge:
+	//
+	//   - Server-only keys: added to the local file. Captured in
+	//     preDeploySync.{secret,env}LocalMissingServerHas so warnLocalDeletions
+	//     can flag the case-E surprise at end of deploy: the user *deleted*
+	//     a key locally and this pull silently re-added it, so the deploy
+	//     also re-pushed it (deploy never deletes server keys; `runos apps
+	//     sync` is the replace-all verb that does).
+	//   - Same key, different value: local kept verbatim. The deploy that
+	//     follows then pushes the local value, replacing the server's. This
+	//     is the dominant path (every version bump) and is correctly
+	//     silent — the user edited a value, deploy pushed it, no surprise
+	//     to surface.
+	//
+	// Error return here is reserved for actual I/O failures (file write
+	// errors); divergence between local and server is no longer an error.
 	preDeploySync, err := syncAppState(svc, deployConfig, configPath, cid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: pre-deploy sync failed: %v\n", err)
@@ -291,15 +304,18 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		)
 	}
 
-	// Detect collisions between the secret env file and the names the
-	// platform will inject at runtime via requires.<alias>.env. We do
-	// the detection here (where the env path and parsed map are in
-	// scope) but defer printing until AFTER the deploy summary, so the
-	// warning is the last thing the user/MCP-driven LLM reads about
-	// this deploy and is much harder to gloss over than a banner that
-	// scrolls off above the upload + summary output.
+	// Detect names in the local secret env file that the platform claims
+	// via requires.<alias>.env (DATABASE_URL, REDIS_HOST, etc.). These
+	// are NOT a problem on the secret side: apps_pull legitimately writes
+	// them so the local file matches the K8s Secret, and they self-sync
+	// across deploys. We track them here only to filter the post-deploy
+	// "got merged back" warning below — for platform-claimed keys, the
+	// re-merge is the design, not a deletion that didn't take effect.
+	// (The plain-side equivalent — committing platform-claimed credentials
+	// to VCS — is a real footgun, but conductor's secret/plain conflict
+	// gate hard-refuses that on push so we don't need a CLI-side warning
+	// for it.)
 	requiresEnvCollisions := deployRequiresEnvCollisions(deployConfig, customSecretEnvVars)
-	requiresEnvCollisionsFile := envPaths.Secret
 
 	fmt.Printf("Deploying %s...\n", deployConfig.App)
 
@@ -424,11 +440,11 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// Generic safety net: keys the user removed from a local env file that
 	// the pre-deploy syncAppState merge silently re-introduced from server.
 	// Deploy's env handling is additive only, so the deletion silently
-	// doesn't take effect. Filter out keys already covered by the
-	// requires-env warning (which has a more specific actionable message
-	// about the runtime shadowing effect). Reported per-side because the
-	// two files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env)
-	// are independent.
+	// doesn't take effect. Filter out platform-claimed keys (managed by
+	// requires.<alias>.env) — those re-appear by design, not by mistake,
+	// so warning the user about them is just noise. Reported per-side
+	// because the two files (.runos.{cid}.{id}.env and
+	// runos.{cid}.{id}.config.env) are independent.
 	requiresEnvNames := make(map[string]bool, len(requiresEnvCollisions))
 	for _, c := range requiresEnvCollisions {
 		requiresEnvNames[c.EnvVar] = true
@@ -436,18 +452,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	if preDeploySync != nil {
 		warnLocalDeletions(envPaths.Secret, preDeploySync.secretLocalMissingServerHas, requiresEnvNames)
 		warnLocalDeletions(envPaths.Plain, preDeploySync.envLocalMissingServerHas, nil)
-	}
-
-	// Heads-up about local env keys claimed by requires.<alias>.env.
-	// Conductor filters these out of customEnvVars on every deploy and
-	// the platform-injected value wins at runtime, so the deploy is
-	// correct regardless. Tone is informational, not a warning, so
-	// LLMs don't gloss over an unrelated banner the way they did when
-	// `--force` reflexes were trained on noisier output.
-	if len(requiresEnvCollisions) > 0 {
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprint(os.Stderr, "Note: ")
-		fmt.Fprint(os.Stderr, apps.FormatServerInjectedEnvCollisions(requiresEnvCollisions, requiresEnvCollisionsFile))
 	}
 
 	return nil
@@ -995,15 +999,31 @@ func deployRequiresEnvCollisions(cfg *deploy.DeployConfig, localEnv map[string]s
 }
 
 // mergeServerEnvIntoLocalFile reconciles one server-side env-var map with
-// its corresponding local file. Returns the sorted list of keys the server
-// has that the local file lacked (reported by the caller as "got merged
-// back" warnings), and any error that should abort the deploy. Intentionally
-// per-side because the secret/plain split runs the same logic against
-// different files.
+// its corresponding local file. The merge is local-wins: server-only keys
+// are pulled DOWN into the local file (so a teammate's console-set env
+// shows up locally on the next deploy), but any key the local file already
+// has — whether the value matches the server or not — is left untouched.
+// The deploy that follows then pushes the local file up, which replaces
+// the server-side env in full and resolves any divergence in the user's
+// favour without us having to gate or warn.
+//
+// Returns the sorted list of keys the server has that the local file lacked
+// at read time. Used by the caller's post-deploy `warnLocalDeletions` for
+// the case-E hint: the user *deleted* a key locally, this pull silently
+// re-added it, and the deploy then re-pushed it. Re-introducing a deleted
+// key is the only genuinely surprising direction; deploy-time edits to
+// existing keys (the dominant path — bumping a version, flipping a flag)
+// are not surfaced because they're exactly what the user expected.
+//
+// Intentionally per-side because the secret/plain split runs the same
+// logic against different files.
+//
+// Error return is reserved for I/O failures (file write errors). Mismatched
+// local/server values are not errors and never abort the caller.
 func mergeServerEnvIntoLocalFile(
 	path string,
 	serverVars map[string]string,
-	relPathForErrors string,
+	_ string, // relPathForErrors: kept for caller signature stability; merge never errors on conflict now
 	label string,
 ) ([]string, error) {
 	localVars, err := deploy.LoadEnvFile(path)
@@ -1025,30 +1045,34 @@ func mergeServerEnvIntoLocalFile(
 		sort.Strings(missing)
 	}
 
-	// Conflict check: same key, different value. Same shape on both sides.
-	var conflicts []string
-	for key, localVal := range localVars {
-		if remoteVal, exists := serverVars[key]; exists && localVal != remoteVal {
-			conflicts = append(conflicts, key)
-		}
-	}
-	if len(conflicts) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%s conflicts detected (local value differs from remote):\n", label)
-		for _, key := range conflicts {
-			fmt.Fprintf(os.Stderr, "  %s\n    local:  %s\n    remote: %s\n", key, localVars[key], serverVars[key])
-		}
-		return missing, fmt.Errorf("resolve %s conflicts in %s before syncing", label, relPathForErrors)
-	}
-
-	// Merge: start with remote vars, add any local-only vars.
+	// Local-wins merge: copy local first so its values can never be
+	// clobbered, then add only the server-only keys. This makes the
+	// "same-key-different-value" case (the dominant path on every version
+	// bump) a non-event: the local file is preserved verbatim and the
+	// deploy that follows pushes those values up.
 	merged := make(map[string]string, len(serverVars)+len(localVars))
-	for k, v := range serverVars {
+	for k, v := range localVars {
 		merged[k] = v
 	}
-	for k, v := range localVars {
+	hasServerOnlyKeys := false
+	for k, v := range serverVars {
 		if _, exists := merged[k]; !exists {
 			merged[k] = v
+			hasServerOnlyKeys = true
 		}
+	}
+
+	// Skip the file write only when local already has every server key,
+	// i.e. the merge would be a strict no-op. We can't reuse `len(missing)`
+	// here because that's intentionally empty when the local file doesn't
+	// exist (defensive: first-time materialisation isn't a "user deleted
+	// these"). Skipping in that case would leave the local file absent on
+	// fresh-checkout deploys, the subsequent LoadEnvFile would return nil,
+	// and customEnvVars would be omitted from the deploy body — which
+	// conductor would interpret as "user wants empty ConfigMap" and wipe
+	// the server's env on every deploy from a fresh clone.
+	if !hasServerOnlyKeys {
+		return missing, nil
 	}
 
 	if err := deploy.SaveEnvFile(path, merged); err != nil {

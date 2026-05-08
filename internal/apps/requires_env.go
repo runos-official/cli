@@ -1,9 +1,7 @@
 package apps
 
 import (
-	"fmt"
 	"sort"
-	"strings"
 )
 
 // ServerInjectedEnvCollision is a single env var name that appears both
@@ -22,12 +20,18 @@ type ServerInjectedEnvCollision struct {
 // FindServerInjectedEnvCollisions returns every entry in localEnv whose
 // key matches an env var name claimed by some requires.<alias>.env value.
 // Order is deterministic (sorted by env var name, then alias) so the
-// output is stable for tests and stable in CI logs.
+// output is stable for tests.
 //
-// Use case: gate apps_sync (refuse) and runos deploy (warn) against AI-
-// or human-authored env files that hand-wrote DATABASE_URL / REDIS_URL /
-// etc., not realising the platform provides those at runtime from the
-// linked service's credentials.
+// Use case: filtering. A platform-claimed key (DATABASE_URL, REDIS_HOST,
+// etc.) legitimately appears in the local secret env file — apps_pull
+// writes it there so local matches the K8s Secret, and the pre-deploy
+// merge re-introduces it on every deploy. The previous CLI surfaced a
+// "remove these, they're dead config" note on every deploy/sync, which
+// was wrong-headed (removing them makes local less accurate, not more,
+// since the next pull writes them back). Now the only consumer is
+// runos deploy's warnLocalDeletions filter: the "got merged back"
+// warning skips platform-claimed keys because for those, re-merging is
+// the design, not a deletion that didn't take effect.
 func FindServerInjectedEnvCollisions(localEnv map[string]string, requires map[string]ServiceRequirement) []ServerInjectedEnvCollision {
 	if len(localEnv) == 0 || len(requires) == 0 {
 		return nil
@@ -56,41 +60,3 @@ func FindServerInjectedEnvCollisions(localEnv map[string]string, requires map[st
 	return out
 }
 
-// FormatServerInjectedEnvCollisions renders a heads-up message naming
-// each entry in the local env file whose key is also claimed by a
-// requires.<alias>.env mapping. envFile is the path the message points
-// the user at; pass an empty string to print just "your env file".
-//
-// Conductor drops these names from customEnvVars at deploy/sync time
-// and the platform-injected value wins at runtime, so the collision
-// is no longer a runtime correctness problem; the local .env line is
-// just dead config. The message is informational and points the user
-// at the cosmetic cleanup. Used by both apps_sync and runos deploy.
-func FormatServerInjectedEnvCollisions(cs []ServerInjectedEnvCollision, envFile string) string {
-	if len(cs) == 0 {
-		return ""
-	}
-	target := "your env file"
-	if envFile != "" {
-		target = envFile
-	}
-	var sb strings.Builder
-	noun := "env keys are"
-	if len(cs) == 1 {
-		noun = "env key is"
-	}
-	fmt.Fprintf(&sb, "%d local %s claimed by requires.<alias>.env (the platform injects these at runtime):\n", len(cs), noun)
-	maxName := 0
-	for _, c := range cs {
-		if len(c.EnvVar) > maxName {
-			maxName = len(c.EnvVar)
-		}
-	}
-	for _, c := range cs {
-		fmt.Fprintf(&sb, "  %-*s   (claimed by requires.%s.env.%s)\n", maxName, c.EnvVar, c.Alias, c.Field)
-	}
-	fmt.Fprintf(&sb, "\nConductor drops these from customEnvVars on deploy/sync, so the runtime env reflects the linked\n")
-	fmt.Fprintf(&sb, "service's credentials regardless of what's in %s. The local line is harmless dead config; remove\n", target)
-	fmt.Fprintf(&sb, "it to keep the file accurate.\n")
-	return sb.String()
-}

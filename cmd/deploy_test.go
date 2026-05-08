@@ -843,3 +843,129 @@ func TestSyncConfigFromPrepareResponse_StripsLeftoverClassOnReDeploy(t *testing.
 // boolPtr returns a pointer to b for the StandardHttps field which
 // uses a *bool to disambiguate "false set explicitly" from "not set".
 func boolPtr(b bool) *bool { return &b }
+
+// ---------------------------------------------------------------------------
+// mergeServerEnvIntoLocalFile — pre-deploy pull semantics
+// ---------------------------------------------------------------------------
+//
+// The merge is local-wins (so a user's deploy-time edit isn't clobbered) and
+// additive on missing server keys (so a teammate's console-set env shows up
+// locally). These tests lock in each scenario the deploy flow walks through.
+
+// readEnvForMergeTest parses the merged env file back into a map for assertion.
+func readEnvForMergeTest(t *testing.T, path string) map[string]string {
+	t.Helper()
+	got, err := deploy.LoadEnvFile(path)
+	if err != nil {
+		t.Fatalf("LoadEnvFile: %v", err)
+	}
+	if got == nil {
+		got = map[string]string{}
+	}
+	return got
+}
+
+// User edited APP_VERSION locally (the dominant deploy path). Local must be
+// preserved verbatim so the deploy that follows pushes the new value up.
+// Pre-fix, this case errored out as a "conflict" and printed a misleading
+// "pre-deploy sync failed" warning.
+func TestMergeServerEnvIntoLocalFile_LocalWinsOnDivergentValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("APP_VERSION=0.1.3\n"), 0600); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+
+	missing, err := mergeServerEnvIntoLocalFile(path, map[string]string{"APP_VERSION": "0.1.2"}, ".env", "env vars")
+	if err != nil {
+		t.Fatalf("merge errored on a value mismatch (should be a no-op now): %v", err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("missing should be empty (no server-only keys), got %v", missing)
+	}
+	got := readEnvForMergeTest(t, path)
+	if got["APP_VERSION"] != "0.1.3" {
+		t.Errorf("local edit was clobbered: got APP_VERSION=%q, want 0.1.3", got["APP_VERSION"])
+	}
+}
+
+// Server-only keys (teammate added LOG_LEVEL via console) get pulled DOWN
+// into the local file so the next deploy ships them. `missing` reports the
+// pulled keys so the post-deploy `warnLocalDeletions` can flag the
+// genuinely-surprising case-E (user *deleted* a key, deploy re-added it).
+func TestMergeServerEnvIntoLocalFile_AdditiveOnServerOnlyKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("APP_VERSION=0.1.2\n"), 0600); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+
+	server := map[string]string{"APP_VERSION": "0.1.2", "LOG_LEVEL": "debug"}
+	missing, err := mergeServerEnvIntoLocalFile(path, server, ".env", "env vars")
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != "LOG_LEVEL" {
+		t.Errorf("missing should be [LOG_LEVEL], got %v", missing)
+	}
+	got := readEnvForMergeTest(t, path)
+	if got["LOG_LEVEL"] != "debug" {
+		t.Errorf("LOG_LEVEL should be merged into local, got %q", got["LOG_LEVEL"])
+	}
+	if got["APP_VERSION"] != "0.1.2" {
+		t.Errorf("APP_VERSION preserved, got %q", got["APP_VERSION"])
+	}
+}
+
+// Local file matches server exactly — the merge is a no-op and we should NOT
+// touch the file (mtime preservation, no spurious git diff on every deploy).
+func TestMergeServerEnvIntoLocalFile_NoOpWhenLocalMatchesServer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("APP_VERSION=0.1.2\n"), 0600); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+	statBefore, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	mtimeBefore := statBefore.ModTime()
+
+	if _, err := mergeServerEnvIntoLocalFile(path, map[string]string{"APP_VERSION": "0.1.2"}, ".env", "env vars"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	statAfter, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !statAfter.ModTime().Equal(mtimeBefore) {
+		t.Errorf("file mtime changed despite no-op merge (would create spurious git diffs)")
+	}
+}
+
+// Fresh checkout: local env file doesn't exist yet, server has env vars.
+// Pull must materialise the file with server's values so the deploy body
+// has customEnvVars populated. Without this, conductor would interpret a
+// missing customEnvVars in the deploy body as "user wants empty ConfigMap"
+// and wipe the server's env on every deploy from a fresh clone.
+func TestMergeServerEnvIntoLocalFile_MaterializesFileOnFreshCheckout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	// Note: file deliberately does NOT exist on disk.
+
+	server := map[string]string{"APP_VERSION": "0.1.2", "LOG_LEVEL": "info"}
+	missing, err := mergeServerEnvIntoLocalFile(path, server, ".env", "env vars")
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	// Fresh-checkout case: missing is empty by design (defensive — can't
+	// retroactively claim "user deleted these" when the file never existed).
+	if len(missing) != 0 {
+		t.Errorf("missing should be empty on first materialisation, got %v", missing)
+	}
+	got := readEnvForMergeTest(t, path)
+	if got["APP_VERSION"] != "0.1.2" || got["LOG_LEVEL"] != "info" {
+		t.Errorf("file should be materialised with server values, got %v", got)
+	}
+}

@@ -472,12 +472,19 @@ func TestBuildPulledApp_VcsIntegration_PassesThroughIntegrationType(t *testing.T
 
 func TestBuildPulledApp_CustomResources_EmitsAllFourFieldsEvenWhenZero(t *testing.T) {
 	tests := []struct {
-		name string
-		rrc  any
+		name           string
+		rrc            any
+		wantClassLabel string // expected ResourceRequirementClassID after pull
 	}{
-		{"rrc missing", nil},
-		{"rrc empty string", ""},
-		{"rrc literal 'custom'", "custom"},
+		// rrc missing / "": pulled yaml carries no class label, just the
+		// materialised cpu/memory fields. (Server-side this maps to a
+		// "custom" record either way; the wire just omitted the field.)
+		{"rrc missing", nil, ""},
+		{"rrc empty string", "", ""},
+		// rrc "custom": pulled yaml preserves the literal "custom" label
+		// so apps_show and apps_pull return symmetric views. Materialised
+		// cpu/memory fields are still emitted alongside.
+		{"rrc literal 'custom'", "custom", "custom"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -494,8 +501,8 @@ func TestBuildPulledApp_CustomResources_EmitsAllFourFieldsEvenWhenZero(t *testin
 
 			p := BuildPulledApp(raw, "k1", "acc-1")
 
-			if p.ResourceRequirementClassID != "" {
-				t.Errorf("ResourceRequirementClassID should be empty for custom, got %q", p.ResourceRequirementClassID)
+			if p.ResourceRequirementClassID != tt.wantClassLabel {
+				t.Errorf("ResourceRequirementClassID = %q, want %q", p.ResourceRequirementClassID, tt.wantClassLabel)
 			}
 			if p.CPURequestMc == nil || *p.CPURequestMc != 0 {
 				t.Errorf("CPURequestMc = %v, want *0", p.CPURequestMc)

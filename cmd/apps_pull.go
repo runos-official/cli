@@ -84,6 +84,7 @@ func init() {
 	appsPullCmd.Flags().Bool("code", false, "also pull the source archive from the most recent CLI deploy (single-app only)")
 	appsPullCmd.Flags().String("code-version", "", "pull a specific archive instead of the latest (cliUploadID; implies --code)")
 	appsPullCmd.Flags().Bool("no-services", false, "skip pulling runos.service.<cid>.<sid>.yaml files for services referenced in requires:")
+	appsPullCmd.Flags().Bool("keep-env", false, "preserve local env files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env); pull won't overwrite them with server values")
 }
 
 // pullSummary is the top-level JSON shape emitted by `apps pull --json`.
@@ -115,7 +116,15 @@ type pulledAppEntry struct {
 	YAML               apps.WriteResult  `json:"yaml"`
 	SecretEnv          *apps.WriteResult `json:"secretEnv,omitempty"`
 	Env                *apps.WriteResult `json:"env,omitempty"`
+	// EnvVars is the count of plain user-set env vars — matches what
+	// `apps_env-vars` returns. SecretEnvVars is the count of user-set
+	// secret env vars (platform-injected keys from `requires:` aliases
+	// are filtered out, since they're re-derived on every push).
+	// Pre-fix this was a single `EnvVars` field summing both, which
+	// double-counted requires-injected keys and disagreed with
+	// `apps_env-vars` ground truth.
 	EnvVars            int               `json:"envVarCount"`
+	SecretEnvVars      int               `json:"secretEnvVarCount"`
 	SecretFilesTotal   int               `json:"secretFilesTotal,omitempty"`
 	SecretFilesWritten int               `json:"secretFilesWritten,omitempty"`
 	OverridesTotal     int               `json:"overridesTotal,omitempty"`
@@ -186,6 +195,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 	}
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	noServices, _ := cmd.Flags().GetBool("no-services")
+	keepEnv, _ := cmd.Flags().GetBool("keep-env")
 
 	// --all and --app-id paths have no local yaml to source cid from, so
 	// the user must have provided one explicitly. Yaml-positional and
@@ -253,7 +263,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		appDir := plan.appDirFor(ctx.cid, t.ID)
-		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, plan.defaultSourceDir())
+		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, plan.defaultSourceDir())
 		if err != nil {
 			summary.Skipped = append(summary.Skipped, pullSkipEntry{
 				ID:     t.ID,
@@ -554,7 +564,7 @@ func pickSourceDir(yamlPath, defaultSourceDir string) string {
 // defaultSourceDir is the sourceDir to stamp on the saved yaml when no
 // existing local yaml pins one (typically ".." for subdir-mode pulls,
 // empty otherwise; see pullPlan.defaultSourceDir).
-func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
+func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
 	raw, err := svc.GetApp(target.ID)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("fetch app: %w", err)
@@ -698,28 +708,61 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		return nil, skips, false, fmt.Errorf("save yaml: %w", err)
 	}
 
+	// Filter platform-injected secret env vars (values claimed by
+	// `requires.<alias>.env` mappings such as DATABASE_URL, CACHE_URL)
+	// out of the user-facing count. Pre-fix this summed plain + secret
+	// without filtering, so the count was inflated AND disagreed with
+	// what `apps_env-vars` returned. Now `envVarCount` matches
+	// `apps_env-vars` keys exactly, and `secretEnvVarCount` reflects
+	// user-set secret keys only.
+	injected := apps.FindServerInjectedEnvCollisions(secretEnvVars, serverState.Requires)
+	userSecretCount := len(secretEnvVars) - len(injected)
+	if userSecretCount < 0 {
+		userSecretCount = 0
+	}
+
 	entry := &pulledAppEntry{
 		ID:               serverState.ID,
 		Name:             serverState.App,
 		YAML:             yamlRes,
-		EnvVars:          len(secretEnvVars) + len(envVars),
+		EnvVars:          len(envVars),
+		SecretEnvVars:    userSecretCount,
 		SecretFilesTotal: len(serverState.SecretFiles),
 		OverridesTotal:   len(serverState.Overrides),
 	}
 
-	if len(secretEnvVars) > 0 {
-		secretEnvRes, err := apps.SaveSecretEnv(appDir, "", cid, target.ID, secretEnvVars)
-		if err != nil {
-			return entry, skips, false, fmt.Errorf("save secret env: %w", err)
+	// --keep-env: skip writing both env files so user-edited local content
+	// (typically dev-only overrides on a working app) isn't silently
+	// clobbered by server values. The --force gate already lets a pull
+	// proceed past drift; --keep-env is the surgical opt-out for the env
+	// side specifically. Stdout shows the kept paths so the user knows
+	// nothing was rewritten and can run apps_diff to see the divergence.
+	if keepEnv {
+		if !jsonOutput {
+			if len(secretEnvVars) > 0 {
+				fmt.Printf("  secret env vars: kept local %s (--keep-env, server has %d key(s))\n",
+					apps.SecretEnvFilename(cid, target.ID), len(secretEnvVars))
+			}
+			if len(envVars) > 0 {
+				fmt.Printf("  plain env vars:  kept local %s (--keep-env, server has %d key(s))\n",
+					apps.EnvFilename(cid, target.ID), len(envVars))
+			}
 		}
-		entry.SecretEnv = &secretEnvRes
-	}
-	if len(envVars) > 0 {
-		envRes, err := apps.SaveEnv(appDir, "", cid, target.ID, envVars)
-		if err != nil {
-			return entry, skips, false, fmt.Errorf("save env: %w", err)
+	} else {
+		if len(secretEnvVars) > 0 {
+			secretEnvRes, err := apps.SaveSecretEnv(appDir, "", cid, target.ID, secretEnvVars)
+			if err != nil {
+				return entry, skips, false, fmt.Errorf("save secret env: %w", err)
+			}
+			entry.SecretEnv = &secretEnvRes
 		}
-		entry.Env = &envRes
+		if len(envVars) > 0 {
+			envRes, err := apps.SaveEnv(appDir, "", cid, target.ID, envVars)
+			if err != nil {
+				return entry, skips, false, fmt.Errorf("save env: %w", err)
+			}
+			entry.Env = &envRes
+		}
 	}
 
 	secretsWritten, secretSkips := writeSecretFilesNeedingUpdate(svc, appDir, target.ID, serverState, secretFilesDiff)
@@ -1008,7 +1051,10 @@ func printUpdatedApp(a pulledAppEntry) {
 	fmt.Printf("  %s (%s)\n", a.Name, a.ID)
 	fmt.Printf("    yaml: %s (%s)\n", a.YAML.Path, writeStateLabel(a.YAML))
 	if a.Env != nil {
-		fmt.Printf("    env:  %s (%s, %d vars)\n", a.Env.Path, writeStateLabel(*a.Env), a.EnvVars)
+		fmt.Printf("    env:        %s (%s, %d vars)\n", a.Env.Path, writeStateLabel(*a.Env), a.EnvVars)
+	}
+	if a.SecretEnv != nil {
+		fmt.Printf("    secret env: %s (%s, %d vars)\n", a.SecretEnv.Path, writeStateLabel(*a.SecretEnv), a.SecretEnvVars)
 	}
 	if a.SecretFilesTotal > 0 {
 		fmt.Printf("    secretFiles: %s\n", writtenInSyncLabel(a.SecretFilesWritten, a.SecretFilesTotal-a.SecretFilesWritten))
@@ -1085,6 +1131,9 @@ func inSyncDetail(a pulledAppEntry) string {
 	var parts []string
 	if a.EnvVars > 0 {
 		parts = append(parts, plural(a.EnvVars, "env var", "env vars"))
+	}
+	if a.SecretEnvVars > 0 {
+		parts = append(parts, plural(a.SecretEnvVars, "secret env var", "secret env vars"))
 	}
 	if a.SecretFilesTotal > 0 {
 		parts = append(parts, plural(a.SecretFilesTotal, "secret file", "secret files"))
