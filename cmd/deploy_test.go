@@ -969,3 +969,41 @@ func TestMergeServerEnvIntoLocalFile_MaterializesFileOnFreshCheckout(t *testing.
 		t.Errorf("file should be materialised with server values, got %v", got)
 	}
 }
+
+// Regression test for V10 (VCS_DEPLOY_TEST_NOTES.md): when stdin is not a
+// terminal (CI / piped input) and the user did not explicitly pass --follow,
+// the deploy should auto-follow so the workflow waits for the build/rollout
+// outcome instead of exiting green the moment the job is queued. Mirrors
+// the --yes non-TTY auto-skip pattern.
+//
+// Truth table:
+//   flagSet | isTTY | userValue | effective
+//   ------- | ----- | --------- | ---------
+//   false   | true  | false     | false      (interactive default: don't follow)
+//   false   | false | false     | true       (CI auto-follow — V10 fix)
+//   true    | true  | true      | true       (user explicitly asked to follow)
+//   true    | false | false     | false      (user explicitly opted out, even in CI)
+func TestEffectiveFollow(t *testing.T) {
+	cases := []struct {
+		name      string
+		userValue bool
+		flagSet   bool
+		isTTY     bool
+		want      bool
+	}{
+		{name: "default, interactive, no follow", userValue: false, flagSet: false, isTTY: true, want: false},
+		{name: "default, non-TTY, auto-follow (V10)", userValue: false, flagSet: false, isTTY: false, want: true},
+		{name: "explicit --follow, interactive", userValue: true, flagSet: true, isTTY: true, want: true},
+		{name: "explicit --follow=false, non-TTY (user opted out)", userValue: false, flagSet: true, isTTY: false, want: false},
+		{name: "explicit --follow=true, non-TTY", userValue: true, flagSet: true, isTTY: false, want: true},
+		{name: "default, interactive (no auto-follow)", userValue: false, flagSet: false, isTTY: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveFollow(tc.userValue, tc.flagSet, tc.isTTY)
+			if got != tc.want {
+				t.Errorf("effectiveFollow(userValue=%v, flagSet=%v, isTTY=%v) = %v, want %v", tc.userValue, tc.flagSet, tc.isTTY, got, tc.want)
+			}
+		})
+	}
+}
