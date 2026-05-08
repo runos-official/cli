@@ -190,3 +190,75 @@ func TestFindByID_DirMissing(t *testing.T) {
 		t.Errorf("expected empty path, got %q", got)
 	}
 }
+
+// Regression test for V4 (VCS_DEPLOY_TEST_NOTES.md): FindByIDInTree must
+// recurse into subdirectories so projects that organise infra as
+// `infra/runos/apps/` + `infra/runos/services/` (services committed
+// outside the app dir) are recognised. Pre-fix, apps_pull's cascade only
+// checked the appDir and so re-wrote duplicate service yamls into
+// `apps/` on every pull.
+func TestFindByIDInTree_FindsServiceInSiblingDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	servicesDir := filepath.Join(root, "infra", "runos", "services")
+	if err := os.MkdirAll(servicesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appsDir := filepath.Join(root, "infra", "runos", "apps")
+	if err := os.MkdirAll(appsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// User-renamed canonical service yaml in services/, header authoritative.
+	if err := Save(filepath.Join(servicesDir, "aliens-mysql.mycluster2.mysql.f8jlf.yaml"), &ServiceYAML{
+		Type: "mysql", ID: "f8jlf", CID: "mycluster2", AID: "acct1",
+		Fields: map[string]any{"name": "aliens-mysql"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Searching from any ancestor finds the file in its nested location.
+	got, err := FindByIDInTree(root, "mycluster2", "f8jlf")
+	if err != nil {
+		t.Fatalf("FindByIDInTree: %v", err)
+	}
+	if !strings.Contains(got, "aliens-mysql.mycluster2.mysql.f8jlf.yaml") {
+		t.Errorf("expected path containing the canonical leaf, got %q", got)
+	}
+
+	// No match still returns empty.
+	got, err = FindByIDInTree(root, "mycluster2", "missing")
+	if err != nil {
+		t.Fatalf("FindByIDInTree (no-match): %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty for no match, got %q", got)
+	}
+}
+
+// Companion test: heavy / vendored / hidden directories must be skipped
+// so a workspace scan doesn't slow to a crawl on real-world repos.
+// node_modules / vendor / .git are the canonical offenders.
+func TestFindByIDInTree_SkipsHeavyDirs(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, sub := range []string{"node_modules", "vendor", ".git"} {
+		nested := filepath.Join(root, sub, "deep")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Plant a yaml with the matching cid+id; the scan must not see it.
+		if err := Save(filepath.Join(nested, DefaultFilename("mycluster2", "mysql", "f8jlf")), &ServiceYAML{
+			Type: "mysql", ID: "f8jlf", CID: "mycluster2", AID: "acct1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := FindByIDInTree(root, "mycluster2", "f8jlf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("FindByIDInTree must skip node_modules/vendor/.git; matched anyway at %q", got)
+	}
+}

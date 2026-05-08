@@ -1335,15 +1335,30 @@ func cascadePulledServices(exec *dynacmd.Executor, m *manifest.Manifest, appDir,
 	if err != nil {
 		return []pullSkipEntry{{ID: appID, Reason: fmt.Sprintf("services cascade: read yaml: %v", err)}}
 	}
+	// V4: when running inside a git checkout, scan the whole repo for an
+	// existing service yaml matching this requires entry. Projects that
+	// organise infra as `infra/runos/apps/` + `infra/runos/services/`
+	// (apps and services in sibling dirs) had the cascade re-create
+	// duplicates next to the app yaml on every pull because the old
+	// FindByID(appDir) check only looked in the app's own directory.
+	// The scan is bounded to repo root, skips heavy dirs (node_modules,
+	// vendor, .git, .runos), and returns the first matching yaml's
+	// path. Outside a git checkout the scan falls back to the appDir-
+	// only FindByID, preserving the single-app-at-root cascade.
+	repoRoot, repoErr := git.RepoRoot()
 	for alias, r := range localApp.Requires {
 		if r.ID == "" {
 			continue
 		}
 		// Header-based lookup so a renamed service yaml is recognised
-		// as already-pulled, regardless of filename. If found, leave
-		// alone (the user's `runos services pull <yaml>` is the way to
-		// refresh).
-		if existing, ferr := services.FindByID(appDir, cid, r.ID); ferr == nil && existing != "" {
+		// as already-pulled, regardless of filename. If found anywhere
+		// reachable, leave alone (the user's `runos services pull
+		// <yaml>` is the way to refresh).
+		if repoErr == nil {
+			if existing, ferr := services.FindByIDInTree(repoRoot, cid, r.ID); ferr == nil && existing != "" {
+				continue
+			}
+		} else if existing, ferr := services.FindByID(appDir, cid, r.ID); ferr == nil && existing != "" {
 			continue
 		}
 		pulled, err := services.Pull(exec, m, r.Type, cid, aid, r.ID)

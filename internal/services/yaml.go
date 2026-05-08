@@ -187,3 +187,71 @@ func hasYAMLExtension(name string) bool {
 	return len(name) >= 5 && name[len(name)-5:] == ".yaml" ||
 		len(name) >= 4 && name[len(name)-4:] == ".yml"
 }
+
+// skippedScanDirs are directories that FindByIDInTree refuses to descend
+// into. node_modules / vendor / .git can each carry tens of thousands of
+// files; descending into them turns a sub-millisecond scan into a multi-
+// second one for no win (a service yaml under any of these would not be
+// the user's canonical copy). .runos is the CLI's own metadata dir.
+var skippedScanDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+	".runos":       true,
+}
+
+// FindByIDInTree walks rootDir recursively and returns the path of the
+// first yaml whose header matches (cid, sid). The recursive counterpart
+// to FindByID. Used by apps_pull's services cascade to detect canonical
+// service yamls committed outside the app's own directory (e.g. the
+// `infra/runos/apps/` + `infra/runos/services/` layout this repo's V4
+// finding documents). Pre-existing service yamls anywhere reachable
+// from rootDir suppress the cascade write that would otherwise create
+// a duplicate next to the app yaml.
+//
+// Heavy / vendored / hidden directories (.git, node_modules, vendor,
+// .runos) are skipped to keep the scan cheap on real-world repos. Files
+// that fail to parse as a service yaml are silently skipped, same as
+// FindByID. Returns ("", nil) on no match. ENOENT on rootDir itself
+// becomes ("", nil) so a not-yet-pulled repo isn't a fatal condition.
+//
+// First match wins; multiple service yamls with the same (cid, sid)
+// would be a project-authoring error and the caller treats them
+// equivalently anyway (skip the cascade write).
+func FindByIDInTree(rootDir, cid, sid string) (string, error) {
+	var match string
+	walkErr := filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == rootDir {
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skippedScanDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if len(name) > 0 && name[0] == '.' {
+			return nil
+		}
+		if !hasYAMLExtension(name) {
+			return nil
+		}
+		s, err := Load(path)
+		if err != nil {
+			return nil
+		}
+		if s.CID == cid && s.ID == sid {
+			match = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		return "", walkErr
+	}
+	return match, nil
+}
