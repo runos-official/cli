@@ -13,6 +13,7 @@ import (
 
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/dynacmd"
+	"github.com/runos-official/cli/internal/git"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/services"
 
@@ -708,6 +709,21 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		return nil, skips, false, fmt.Errorf("save yaml: %w", err)
 	}
 
+	// V2: warn when a VCS app's server-stored configPath differs from
+	// where we just wrote the local yaml. Without this nudge, the next
+	// VCS deploy would fail at the cluster-agent fetch step because the
+	// committed tree no longer has the yaml at the path the AppDocument
+	// remembers. Best-effort: only fires when we can compute a repo-
+	// relative localPath via git, otherwise stays silent (the helper's
+	// empty-input contract handles that).
+	if serverState.DeployType == "vcs" {
+		serverConfigPath, _ := raw["configPath"].(string)
+		localRepoRelPath := vcsRepoRelPath(yamlRes.Path)
+		if msg := apps.ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, "vcs"); msg != "" && !jsonOutput {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+		}
+	}
+
 	// Filter platform-injected secret env vars (values claimed by
 	// `requires.<alias>.env` mappings such as DATABASE_URL, CACHE_URL)
 	// out of the user-facing count. Pre-fix this summed plain + secret
@@ -1171,6 +1187,28 @@ func emitJSON(v any) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// vcsRepoRelPath returns the repo-relative form of an absolute filesystem
+// path, suitable for comparison against a server-stored `configPath`.
+// Returns "" when we're not inside a git checkout, or when the path lives
+// outside the repo root (Rel produces a `..` prefix in that case). Mirrors
+// the shape of cmd/deploy_vcs.go:resolveVcsConfigPath, kept here as a
+// small free function so apps_pull doesn't have to drag the deploy config
+// loader along just to compute one path.
+func vcsRepoRelPath(absPath string) string {
+	if !git.IsRepo() {
+		return ""
+	}
+	repoRoot, err := git.RepoRoot()
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(repoRoot, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // loadLocalManifest reads the manifest cache at ~/.runos/manifest.json.

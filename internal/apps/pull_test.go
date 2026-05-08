@@ -1756,3 +1756,83 @@ func TestSaveEnv_OverwritesWithoutBackup(t *testing.T) {
 	}
 }
 
+// Regression test for V2 (VCS_DEPLOY_TEST_NOTES.md): when apps_pull writes
+// a VCS app's local yaml to a path that differs from the server-stored
+// `configPath`, the next VCS deploy will fail because the cluster agent
+// fetches the yaml from the OLD path on the committed tree. The warning
+// nudges the user to call `apps_update --configPath <new>` after committing
+// the new layout.
+//
+// The helper is pure (string compare); the caller pre-computes the
+// repo-relative local path so the helper doesn't need to spawn git.
+func TestConfigPathMismatchWarning(t *testing.T) {
+	cases := []struct {
+		name             string
+		serverConfigPath string
+		localRepoRelPath string
+		deployType       string
+		wantEmpty        bool
+		wantContains     []string
+	}{
+		{
+			name:             "matching paths produce no warning",
+			serverConfigPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			wantEmpty:        true,
+		},
+		{
+			name:             "CLI deploys never warn (configPath is VCS-only)",
+			serverConfigPath: "anything",
+			localRepoRelPath: "different",
+			deployType:       "cli",
+			wantEmpty:        true,
+		},
+		{
+			name:             "empty server configPath means no value yet, no warning",
+			serverConfigPath: "",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			wantEmpty:        true,
+		},
+		{
+			name:             "empty local path means caller couldn't compute it, no warning",
+			serverConfigPath: "infra/runos/apps/something.yaml",
+			localRepoRelPath: "",
+			deployType:       "vcs",
+			wantEmpty:        true,
+		},
+		{
+			name:             "VCS app with mismatched paths warns",
+			serverConfigPath: "infra/runos/apps/aliens-dev.mycluster2.appid9.yaml",
+			localRepoRelPath: "infra/runos/apps/runos.mycluster2.appid9.yaml",
+			deployType:       "vcs",
+			wantEmpty:        false,
+			wantContains: []string{
+				"infra/runos/apps/aliens-dev.mycluster2.appid9.yaml",
+				"infra/runos/apps/runos.mycluster2.appid9.yaml",
+				"apps_update",
+				"configPath",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ConfigPathMismatchWarning(tc.serverConfigPath, tc.localRepoRelPath, tc.deployType)
+			if tc.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty warning, got %q", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("expected non-empty warning")
+			}
+			for _, s := range tc.wantContains {
+				if !strings.Contains(got, s) {
+					t.Errorf("warning missing %q; got: %s", s, got)
+				}
+			}
+		})
+	}
+}

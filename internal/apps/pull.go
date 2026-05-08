@@ -533,6 +533,40 @@ func EnvFilename(cid, appID string) string {
 	return strings.ToLower(fmt.Sprintf("runos.%s.%s.config.env", cid, appID))
 }
 
+// ConfigPathMismatchWarning returns a non-empty warning when a VCS-deploy
+// app's server-stored `configPath` differs from where apps_pull is about
+// to write the local yaml. Empty otherwise.
+//
+// V2 fix: previously, apps_pull would write the local yaml to its own
+// canonical naming (`runos.<cid>.<id>.yaml`) without any awareness of the
+// server-side configPath. After the next VCS deploy, the cluster agent
+// would fetch the yaml from the OLD configPath on the committed tree and
+// fail with "yaml not found" because the user committed it at the new
+// path. This warning nudges users to run `apps_update --configPath <new>`
+// after committing.
+//
+// Pure helper: the caller computes the repo-relative local path (typically
+// via `git rev-parse --show-toplevel` + filepath.Rel) and passes it in.
+// Empty input on either side suppresses the warning, the caller doesn't
+// have enough information to assert mismatch.
+func ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, deployType string) string {
+	if deployType != "vcs" {
+		return ""
+	}
+	if serverConfigPath == "" || localRepoRelPath == "" {
+		return ""
+	}
+	if serverConfigPath == localRepoRelPath {
+		return ""
+	}
+	return fmt.Sprintf(
+		"server stores configPath=%q but the local yaml will be written to %q. "+
+			"After committing the new layout, run `runos apps_update --configPath %s` "+
+			"to keep the next VCS deploy from reading the yaml at the OLD path.",
+		serverConfigPath, localRepoRelPath, localRepoRelPath,
+	)
+}
+
 // SecretFilesDirname returns the secret-files directory leaf name inside
 // a per-app directory.
 func SecretFilesDirname() string {
