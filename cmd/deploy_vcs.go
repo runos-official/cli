@@ -67,7 +67,7 @@ func resolveVcsConfigPath(cfg *deploy.DeployConfig, configFileAbs string) string
 // Sibling to the CLI-deploy code in deploy.go: the two share the verb name
 // but no downstream logic. runDeployVCS is dispatched from runDeploy when
 // the resolved app's deployType is 'vcs'.
-func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow bool) error {
+func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt bool) error {
 	// Resolve the SHA. Explicit --sha wins; otherwise default to HEAD when
 	// we're inside a git repo. CI checkouts always produce a repo so this
 	// works without special-casing CI vs laptop.
@@ -95,6 +95,13 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	}
 
 	inGitHubActions := os.Getenv("GITHUB_ACTIONS") == "true"
+
+	// Confirmation gate: same shape as the CLI-deploy branch. Auto-skipped
+	// in CI (non-TTY stdin) so workflows that pass --app + --sha don't need
+	// any new flag; --yes is the explicit opt-out for TTY users.
+	if err := confirmDeploy(buildVCSDeploySummary(appID, svc.CID(), svc.AID(), sha, configPath), skipPrompt); err != nil {
+		return err
+	}
 
 	fmt.Printf("Deploying app %s @ %s...\n", appID, shortSHA(sha))
 

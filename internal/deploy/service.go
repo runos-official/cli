@@ -61,6 +61,12 @@ func NewService(baseURL, token, cid, aid string) *Service {
 	}
 }
 
+// CID returns the cluster ID this Service is bound to.
+func (s *Service) CID() string { return s.cid }
+
+// AID returns the account ID this Service is bound to.
+func (s *Service) AID() string { return s.aid }
+
 // PrepareDeployment calls the prepare-cli-deployment endpoint to get an upload token
 func (s *Service) PrepareDeployment(config *DeployConfig) (*PrepareResponse, error) {
 	// Endpoint: /:aid/:cid/prepare-cli-deployment (camelCase alias still works)

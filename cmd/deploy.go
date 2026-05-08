@@ -17,6 +17,7 @@ import (
 	"github.com/runos-official/cli/internal/services"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var deployCmd = &cobra.Command{
@@ -54,6 +55,7 @@ func init() {
 	deployCmd.Flags().BoolP("follow", "f", false, "follow job progress until completion")
 	deployCmd.Flags().BoolP("json", "j", false, "output response as JSON")
 	deployCmd.Flags().Bool("force", false, "deploy even when local diverges from the server (skips the pre-deploy drift gate)")
+	deployCmd.Flags().BoolP("yes", "y", false, "skip the deploy confirmation prompt (auto-skipped when stdin is not a terminal, e.g. CI)")
 	// VCS-only flags. --app targets a VCS app without needing runos.yaml on
 	// disk (CI mode); --sha pins the commit to deploy (defaults to HEAD when
 	// run from inside a git repo); --allow-dirty waives the dirty-tree refusal.
@@ -116,6 +118,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	flagSha, _ := cmd.Flags().GetString("sha")
 	flagAllowDirty, _ := cmd.Flags().GetBool("allow-dirty")
 	flagFollow, _ := cmd.Flags().GetBool("follow")
+	flagYes, _ := cmd.Flags().GetBool("yes")
 
 	if flagApp != "" {
 		// CI mode: --app pins the target, no yaml is consulted, so cid must
@@ -140,7 +143,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
 		// Conductor falls back to whatever the AppDocument has stored
 		// (typically set by an earlier laptop deploy that DID send it).
-		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow)
+		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow, flagYes)
 	}
 
 	// Load deploy config
@@ -187,7 +190,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	if deployType == "vcs" {
 		cmd.SilenceUsage = true
 		configPathForServer := resolveVcsConfigPath(deployConfig, configPath)
-		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow)
+		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow, flagYes)
 	}
 
 	// CLI-deploy guard: the VCS-only flags must not silently no-op here.
@@ -317,6 +320,27 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// for it.)
 	requiresEnvCollisions := deployRequiresEnvCollisions(deployConfig, customSecretEnvVars)
 
+	// Resolve the build context now (cheap, just filepath.Join + os.Stat) so
+	// we can show it in the confirm prompt. Defaults to the yaml's own
+	// directory (configDir); when the yaml lives in a per-app subdirectory
+	// and the source code is at the project root, the user sets
+	// sourceDir: ".." so the tarball walks the right tree.
+	archiveRoot, err := deploy.ResolveArchiveRoot(configDir, deployConfig.SourceDir)
+	if err != nil {
+		return fmt.Errorf("invalid sourceDir: %w", err)
+	}
+
+	// Confirmation gate: shows the user what's about to be deployed and
+	// requires explicit y/yes before any work begins. Auto-skipped when
+	// stdin is not a terminal (CI / piped input) or when --yes is set.
+	// Last chance to catch "ran in the wrong tab" / "wrong cluster" before
+	// we kick off prepare-deployment + tarball + upload.
+	if err := confirmDeploy(buildCLIDeploySummary(deployConfig.App, cid, cfg.AccountID, archiveRoot), flagYes); err != nil {
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		return err
+	}
+
 	fmt.Printf("Deploying %s...\n", deployConfig.App)
 
 	// Prepare deployment
@@ -340,15 +364,6 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// provisioned the service.
 	if err := writeProvisionedServiceYAMLs(cfg, configDir, cid, prepResp); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-	}
-
-	// Resolve the build context. Defaults to the yaml's own directory
-	// (configDir); when the yaml lives in a per-app subdirectory and
-	// the source code is at the project root, the user sets
-	// sourceDir: ".." so the tarball walks the right tree.
-	archiveRoot, err := deploy.ResolveArchiveRoot(configDir, deployConfig.SourceDir)
-	if err != nil {
-		return fmt.Errorf("invalid sourceDir: %w", err)
 	}
 
 	// Create tarball
@@ -1111,6 +1126,65 @@ func warnLocalDeletions(path string, missing []string, requiresFiltered map[stri
 	fmt.Fprintf(os.Stderr, "\n`runos deploy` is additive: it pulls server env vars down into local but never pushes deletions up.\n")
 	fmt.Fprintf(os.Stderr, "If you intended to remove these from the server, run `runos apps sync` (NOT another deploy);\n")
 	fmt.Fprintf(os.Stderr, "the replace-all env-vars push is the only way the CLI deletes server-side env vars.\n")
+}
+
+// confirmDeploy prints summary on stderr and prompts the user to confirm.
+// Auto-skips when stdin is not a terminal (CI, piped input) or when
+// skipPrompt is true (--yes). Returns a non-nil error to abort the deploy
+// when the user answers anything other than y/yes.
+//
+// The non-TTY auto-skip is intentional: CI runners almost always run with
+// stdin closed or redirected to /dev/null, and refusing those runs would
+// make the prompt useless in the only place it can't catch a typo (because
+// there's no human watching). --yes remains the explicit opt-out for TTY
+// users who want to bypass the prompt.
+func confirmDeploy(summary string, skipPrompt bool) error {
+	if skipPrompt {
+		return nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+	fmt.Fprint(os.Stderr, summary)
+	ok, err := confirm("\nProceed with deploy? [y/N] ")
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("deploy cancelled")
+	}
+	return nil
+}
+
+// buildCLIDeploySummary returns the summary block shown before a CLI
+// deploy. Lists the app, cluster, account, and resolved build context
+// path so the user can spot wrong-directory / wrong-cluster mistakes
+// before any tarball or upload work begins.
+func buildCLIDeploySummary(appName, cid, aid, archiveRoot string) string {
+	return fmt.Sprintf(`Deploy plan (CLI deploy):
+  App:      %s
+  Cluster:  %s
+  Account:  %s
+  Source:   %s
+`, appName, cid, aid, archiveRoot)
+}
+
+// buildVCSDeploySummary returns the summary block shown before a VCS
+// deploy. configPath may be empty when the CLI couldn't auto-derive it
+// (CI mode without a checkout, or yaml outside the repo); the message
+// notes that the server falls back to whatever the AppDocument has stored.
+func buildVCSDeploySummary(appID, cid, aid, sha, configPath string) string {
+	cp := configPath
+	if cp == "" {
+		cp = "<server default>"
+	}
+	return fmt.Sprintf(`Deploy plan (VCS deploy):
+  App:        %s
+  Cluster:    %s
+  Account:    %s
+  SHA:        %s
+  configPath: %s
+`, appID, cid, aid, shortSHA(sha), cp)
 }
 
 // envKeyConflicts returns the sorted intersection of two env-var maps.
