@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -1903,5 +1904,82 @@ func TestDecideConfigPathAction(t *testing.T) {
 					tc.serverConfigPath, tc.localRepoRelPath, tc.deployType, tc.noUpdate, got, tc.want)
 			}
 		})
+	}
+}
+
+// Regression test for V1 (VCS_DEPLOY_TEST_NOTES.md): SaveYAMLSuffixed must
+// always write to the per-app suffixed leaf, regardless of what's already
+// in the directory. Used by the parallel-pull mode (id-flat in
+// cmd/apps_pull.go) where multiple concurrent apps_pull invocations
+// against a shared --out dir would otherwise race for the canonical
+// runos.yaml slot. With this function, every concurrent caller writes
+// its own deterministically-named file and there's no race to lose.
+func TestSaveYAMLSuffixed_AlwaysWritesSuffixed(t *testing.T) {
+	dir := t.TempDir()
+	app := &PulledApp{
+		App:                 "first",
+		ID:                  "ab12c",
+		CID:                 "k1",
+		AID:                 "acc-1",
+		Replicas:            1,
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+	}
+	res, err := SaveYAMLSuffixed(dir, "", app)
+	if err != nil {
+		t.Fatalf("SaveYAMLSuffixed: %v", err)
+	}
+	wantLeaf := SuffixedYAMLFilename(app.CID, app.ID)
+	if filepath.Base(res.Path) != wantLeaf {
+		t.Errorf("res.Path leaf = %q, want %q", filepath.Base(res.Path), wantLeaf)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runos.yaml")); !os.IsNotExist(err) {
+		t.Errorf("runos.yaml should NOT exist; SaveYAMLSuffixed must never use the canonical slot")
+	}
+}
+
+// V1 race repro: N goroutines call SaveYAMLSuffixed for N different
+// (cid, appID) pairs into the same target dir. Pre-fix (when SaveYAML
+// is used in this scenario via cmd/apps_pull's id-flat mode), one of
+// them would non-deterministically land at runos.yaml; the rest would
+// fall back to the suffixed name when YAMLFilename saw the
+// just-written runos.yaml. Post-fix, every call writes its own
+// suffixed file and there is no canonical-name race.
+func TestSaveYAMLSuffixed_ConcurrentWritesDoNotRace(t *testing.T) {
+	dir := t.TempDir()
+	apps := []*PulledApp{
+		{App: "a", ID: "aaaaa", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "b", ID: "bbbbb", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "c", ID: "ccccc", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "d", ID: "ddddd", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "e", ID: "eeeee", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "f", ID: "fffff", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+	}
+
+	errs := make([]error, len(apps))
+	var wg sync.WaitGroup
+	wg.Add(len(apps))
+	for i, app := range apps {
+		go func(i int, app *PulledApp) {
+			defer wg.Done()
+			_, errs[i] = SaveYAMLSuffixed(dir, "", app)
+		}(i, app)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: SaveYAMLSuffixed: %v", i, err)
+		}
+	}
+
+	// Every app should land at its own suffixed name; no canonical slot.
+	for _, app := range apps {
+		wantPath := filepath.Join(dir, SuffixedYAMLFilename(app.CID, app.ID))
+		if _, err := os.Stat(wantPath); err != nil {
+			t.Errorf("expected file %s to exist after concurrent write: %v", wantPath, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runos.yaml")); !os.IsNotExist(err) {
+		t.Errorf("runos.yaml MUST NOT appear from concurrent SaveYAMLSuffixed calls; the V1 race fix breaks if any caller lands on the canonical slot")
 	}
 }

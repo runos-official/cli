@@ -281,7 +281,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		appDir := plan.appDirFor(ctx.cid, t.ID)
-		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, noConfigPathUpdate, plan.defaultSourceDir())
+		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, noConfigPathUpdate, plan.forceSuffixedYaml(), plan.defaultSourceDir())
 		if err != nil {
 			summary.Skipped = append(summary.Skipped, pullSkipEntry{
 				ID:     t.ID,
@@ -396,6 +396,19 @@ func (p pullPlan) defaultSourceDir() string {
 	default:
 		return ""
 	}
+}
+
+// forceSuffixedYaml reports whether pullOne should bypass YAMLFilename's
+// canonical-on-empty-dir resolution and write straight to the per-app
+// suffixed leaf. True for `id-flat` mode (--app-id + --out, the
+// LLM/CI fan-out shape) where multiple concurrent pulls share the target
+// directory. Without this hint, the V1 race lets the first writer claim
+// the canonical runos.yaml slot non-deterministically. Other modes
+// (yaml-positional, bulk, id-subdir) either have a single yaml in the
+// target dir or get their own per-app subdir, so the race can't occur
+// and the canonical name is preserved for re-pulls.
+func (p pullPlan) forceSuffixedYaml() bool {
+	return p.mode == "id-flat"
 }
 
 // resolvePullPlan turns command-line args + flags into a pullPlan. It
@@ -592,7 +605,7 @@ func pickDockerfile(yamlPath, serverDockerfile string) string {
 // defaultSourceDir is the sourceDir to stamp on the saved yaml when no
 // existing local yaml pins one (typically ".." for subdir-mode pulls,
 // empty otherwise; see pullPlan.defaultSourceDir).
-func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv, noConfigPathUpdate bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
+func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv, noConfigPathUpdate, forceSuffixedYaml bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
 	raw, err := svc.GetApp(target.ID)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("fetch app: %w", err)
@@ -637,9 +650,18 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// gate the write on it and reuse the on-drift render. The leaf name
 	// matches whichever runos*.yaml the upcoming SaveYAML will write,
 	// so the drift check reads the same file the write will overwrite.
-	yamlLeaf, err := apps.YAMLFilename(appDir, cid, target.ID)
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("resolve yaml filename: %w", err)
+	// V1: in id-flat mode (parallel-pull-prone --app-id + --out shape)
+	// the upcoming write goes through SaveYAMLSuffixed which always
+	// targets the per-app suffixed leaf; mirror that here so the diff
+	// reads the same file the write will land in.
+	var yamlLeaf string
+	if forceSuffixedYaml {
+		yamlLeaf = apps.SuffixedYAMLFilename(cid, target.ID)
+	} else {
+		yamlLeaf, err = apps.YAMLFilename(appDir, cid, target.ID)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("resolve yaml filename: %w", err)
+		}
 	}
 	yamlPath := filepath.Join(appDir, yamlLeaf)
 
@@ -732,7 +754,16 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, defaultSourceDir)
 	serverState.Dockerfile = pickDockerfile(yamlPath, serverState.Dockerfile)
 
-	yamlRes, err := apps.SaveYAML(appDir, "", serverState)
+	// V1: id-flat mode goes through SaveYAMLSuffixed so concurrent pulls
+	// into a shared --out dir don't race for the canonical runos.yaml
+	// slot. Other modes keep SaveYAML's resolve-on-write logic, which
+	// preserves the canonical name on single-app re-pulls.
+	var yamlRes apps.WriteResult
+	if forceSuffixedYaml {
+		yamlRes, err = apps.SaveYAMLSuffixed(appDir, "", serverState)
+	} else {
+		yamlRes, err = apps.SaveYAML(appDir, "", serverState)
+	}
 	if err != nil {
 		return nil, skips, false, fmt.Errorf("save yaml: %w", err)
 	}

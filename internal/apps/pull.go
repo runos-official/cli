@@ -869,6 +869,11 @@ func ensureAppDir(parentDir, base string) (string, error) {
 // app's manifest. Overwrites the resolved file silently; the caller is
 // expected to have reconciled any drift (via `pull --force` or a prior
 // `diff`).
+//
+// Single-app target dirs only. Callers that share a target dir across
+// concurrent pulls (cmd/apps_pull.go's `id-flat` mode) must use
+// SaveYAMLSuffixed instead to avoid the V1 race for the canonical
+// runos.yaml slot.
 func SaveYAML(parentDir, base string, app *PulledApp) (WriteResult, error) {
 	appDir, err := ensureAppDir(parentDir, base)
 	if err != nil {
@@ -878,6 +883,31 @@ func SaveYAML(parentDir, base string, app *PulledApp) (WriteResult, error) {
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("resolve yaml filename: %w", err)
 	}
+	data, err := yaml.Marshal(app)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("failed to marshal config: %w", err)
+	}
+	return writeIfNeeded(filepath.Join(appDir, leaf), data, 0644)
+}
+
+// SaveYAMLSuffixed marshals a PulledApp and writes it to the per-app
+// suffixed leaf (`runos.<cid>.<appID>.yaml`) inside <parentDir>/<base>/,
+// unconditionally. The deterministic-name shape eliminates the V1 race
+// where multiple concurrent apps_pull invocations into a shared target
+// directory all see the dir empty during YAMLFilename's resolve step,
+// pick the canonical "runos.yaml" leaf, and clobber each other on the
+// subsequent writes.
+//
+// Used by cmd/apps_pull.go's `id-flat` mode (--app-id + --out, the
+// LLM/CI fan-out shape). Single-app modes (yaml-positional, id-subdir,
+// bulk) keep using SaveYAML so the canonical "runos.yaml" name is
+// preserved when there's no race possible.
+func SaveYAMLSuffixed(parentDir, base string, app *PulledApp) (WriteResult, error) {
+	appDir, err := ensureAppDir(parentDir, base)
+	if err != nil {
+		return WriteResult{}, err
+	}
+	leaf := SuffixedYAMLFilename(app.CID, app.ID)
 	data, err := yaml.Marshal(app)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("failed to marshal config: %w", err)
