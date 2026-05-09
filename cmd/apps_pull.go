@@ -147,10 +147,20 @@ type pulledAppEntry struct {
 	// during pull (V14 / V2 long-term fix). Populated only when pull issued
 	// the PATCH and the server accepted it. Nil when nothing happened
 	// (paths matched, non-VCS app, --no-configpath-update set, or PATCH
-	// failed and we fell back to a stderr warning). MCP wrappers carry
-	// this through unchanged so LLM-driven flows can detect the action
-	// even though the warning never surfaces in their context.
+	// failed; the failure case populates ConfigPathUpdateError instead).
+	// MCP wrappers carry this through unchanged so LLM-driven flows can
+	// detect the action even though the stderr warning never surfaces in
+	// their context.
 	ConfigPathUpdated *configPathUpdate `json:"configPathUpdated,omitempty"`
+	// ConfigPathUpdateError records a failed auto-update attempt (V18).
+	// Populated only when DecideConfigPathAction returned Update AND the
+	// PATCH itself errored (canonical case: conductor's V13/V16 lexical
+	// validator rejects the new configPath because the stored sourceDir
+	// would escape the repo root once configPath moves to a shallower dir;
+	// also fires on transport / auth / 5xx errors). Mutually exclusive
+	// with ConfigPathUpdated. MCP wrappers pass this through so LLM flows
+	// can distinguish a failed PATCH from a successful no-op pull.
+	ConfigPathUpdateError *configPathUpdateError `json:"configPathUpdateError,omitempty"`
 }
 
 // configPathUpdate is the structured shape of the auto-update event
@@ -158,6 +168,25 @@ type pulledAppEntry struct {
 type configPathUpdate struct {
 	From string `json:"from"`
 	To   string `json:"to"`
+}
+
+// configPathUpdateError records that the V14 auto-update PATCH was
+// attempted and rejected. Mutually exclusive with configPathUpdate on
+// a per-pull basis (one PATCH attempt, one outcome). Error carries the
+// conductor's response verbatim (or the transport error string for
+// network / auth / 5xx cases) so MCP-driven LLMs see the same actionable
+// message that direct-CLI users get on stderr.
+//
+// V18: pre-V18 the failure path was stderr-only, so MCP-driven flows
+// couldn't distinguish a failed PATCH from a successful no-op pull. The
+// conductor's V13/V16 lexical validator is the canonical trigger (a
+// stored sourceDir that escapes the repo root once configPath moves to
+// a shallower dir produces a 400), but the same field surfaces any
+// other svc.UpdateApp error too.
+type configPathUpdateError struct {
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Error string `json:"error"`
 }
 
 // pulledCodeEntry summarises what the --code path did for one app.
@@ -767,6 +796,28 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// directly into appDir (no extra subdir wrapping).
 	var skips []pullSkipEntry
 
+	// V19: when the V14/V17 auto-update hook is about to relocate the
+	// app's configPath to a dir where the stored sourceDir's `..`
+	// traversal would escape the repo root (the V18 trigger), pre-
+	// compute a sourceDir relative to the new dir that preserves the
+	// absolute repo target. Apply it to serverState BEFORE pickSourceDir
+	// so the local yaml write AND the subsequent PATCH both carry the
+	// same coherent value. Without this, pickSourceDir would pick the
+	// untouched server value and the local yaml would land with a
+	// sourceDir that fails the V13/V16 containment validator from the
+	// new dir. RelocateSourceDir is a pure helper; it returns "" when
+	// no recompute is needed (no relocation, default sourceDir, naive
+	// merge stays in repo) so the V13 priority order below stays
+	// untouched in the common case.
+	serverConfigPath, _ := raw["configPath"].(string)
+	if predictedRepoRelPath := vcsRepoRelPath(yamlPath); predictedRepoRelPath != "" {
+		if storedSourceDir, _ := raw["sourceDir"].(string); storedSourceDir != "" {
+			if relocated := apps.RelocateSourceDir(serverConfigPath, predictedRepoRelPath, storedSourceDir); relocated != "" {
+				serverState.SourceDir = relocated
+			}
+		}
+	}
+
 	// Build-metadata round-trip (V13). Priority: local yaml > server >
 	// caller's default. BuildPulledApp already populated serverState
 	// with whatever the AppDocument carries; here we let any existing
@@ -819,20 +870,43 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// at the cluster-agent fetch step because the committed tree no
 	// longer has the yaml at the stored path. The decision is a pure
 	// helper (apps.DecideConfigPathAction); the dispatch is a thin switch
-	// on its return.
-	serverConfigPath, _ := raw["configPath"].(string)
+	// on its return. (serverConfigPath is declared earlier as part of the
+	// V19 pre-Save relocation; reuse the same value here.)
 	localRepoRelPath := vcsRepoRelPath(yamlRes.Path)
 	switch apps.DecideConfigPathAction(serverConfigPath, localRepoRelPath, serverState.DeployType, noConfigPathUpdate) {
 	case apps.ConfigPathActionSkip:
 		// Nothing to do (non-VCS, paths match, or caller couldn't compute).
 	case apps.ConfigPathActionUpdate:
 		// PATCH the server's configPath to match the new local path.
+		// V19: also send a recomputed sourceDir whenever the relocation
+		// would otherwise invalidate the stored sourceDir against the
+		// V13/V16 containment validator. This is the same recompute
+		// that fed serverState before SaveYAML, so the on-disk yaml and
+		// the server end up consistent at the new layout. When no
+		// recompute is needed, the PATCH carries configPath alone and
+		// server keeps its existing sourceDir.
 		// On success, stamp the structured event onto the entry so the
 		// JSON consumer (and the MCP wrapper that inherits the field
 		// for free) sees the action even when stderr is silenced. On
-		// failure, fall through to the Warn shape so the user still
-		// gets the corrective hint and pull doesn't abort.
-		if _, patchErr := svc.UpdateApp(target.ID, map[string]any{"configPath": localRepoRelPath}); patchErr != nil {
+		// failure, populate ConfigPathUpdateError (V18) and fall back
+		// to the existing stderr warning.
+		patch := map[string]any{"configPath": localRepoRelPath}
+		if storedSourceDir, _ := raw["sourceDir"].(string); storedSourceDir != "" {
+			if relocated := apps.RelocateSourceDir(serverConfigPath, localRepoRelPath, storedSourceDir); relocated != "" {
+				patch["sourceDir"] = relocated
+			}
+		}
+		if _, patchErr := svc.UpdateApp(target.ID, patch); patchErr != nil {
+			// V18: surface the failure on the JSON / MCP side so callers
+			// without stderr access can detect "auto-update was attempted
+			// and rejected" and act on the conductor's verbatim error
+			// (which already names the resolved path and configPath dir
+			// per V16's improved wording).
+			entry.ConfigPathUpdateError = &configPathUpdateError{
+				From:  serverConfigPath,
+				To:    localRepoRelPath,
+				Error: patchErr.Error(),
+			}
 			if !jsonOutput {
 				fmt.Fprintf(os.Stderr, "Warning: auto-update of server configPath failed (%v); %s\n",
 					patchErr, apps.ConfigPathMismatchWarning(serverConfigPath, localRepoRelPath, "vcs"))

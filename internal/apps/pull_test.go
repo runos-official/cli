@@ -1908,6 +1908,107 @@ func TestRepoRelPath(t *testing.T) {
 	}
 }
 
+// Regression test for V19 (VCS_DEPLOY_TEST_NOTES.md): the V14/V17
+// auto-update hook used to PATCH `{configPath}` alone, which conductor's
+// V13/V16 containment validator rejected when the new configPath dir
+// would invalidate the stored sourceDir's `..`-traversal. RelocateSourceDir
+// pre-computes a sourceDir relative to the new dir that preserves the
+// absolute repo target, so a single PATCH carries a coherent trio.
+//
+// Pure-function table test exercises the full surface: trigger case,
+// no-op cases (same-dir, default sourceDir, in-repo merge), legacy bad
+// state (existing pair already escapes), and edge inputs.
+func TestRelocateSourceDir(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		oldConfigPath   string
+		newConfigPath   string
+		storedSourceDir string
+		want            string
+	}{
+		{
+			name:            "V18 trigger: deep-to-shallow relocation with traversing sourceDir",
+			oldConfigPath:   "infra/runos/apps/runos.mycluster2.qu5db.yaml",
+			newConfigPath:   "tmp_v18_test/runos.mycluster2.qu5db.yaml",
+			storedSourceDir: "../../../apps/frontend",
+			want:            "../apps/frontend",
+		},
+		{
+			name:            "shallow move where sourceDir traversal exactly hits root",
+			oldConfigPath:   "a/b/c/runos.yaml",
+			newConfigPath:   "x/runos.yaml",
+			storedSourceDir: "../../../target",
+			want:            "../target",
+		},
+		{
+			name:            "same configPath dir (rename only) skips recompute",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "infra/runos/apps/runos.mycluster2.qu5db.yaml",
+			storedSourceDir: "../../../apps/frontend",
+			want:            "",
+		},
+		{
+			name:            "same-depth move keeps merge inside repo, skips recompute",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "infra/runos/apps_alt/runos.yaml",
+			storedSourceDir: "../../../apps/frontend",
+			want:            "",
+		},
+		{
+			name:            "sourceDir is . (default) skips recompute",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "tmp/runos.yaml",
+			storedSourceDir: ".",
+			want:            "",
+		},
+		{
+			name:            "empty stored sourceDir returns empty",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "tmp/runos.yaml",
+			storedSourceDir: "",
+			want:            "",
+		},
+		{
+			name:            "in-repo subdir sourceDir without traversal stays put",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "tmp/runos.yaml",
+			storedSourceDir: "frontend",
+			want:            "",
+		},
+		{
+			name:            "legacy bad state (existing pair already escapes) returns empty so caller falls back",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "tmp/runos.yaml",
+			storedSourceDir: "../../../../etc",
+			want:            "",
+		},
+		{
+			name:            "empty oldConfigPath returns empty",
+			oldConfigPath:   "",
+			newConfigPath:   "tmp/runos.yaml",
+			storedSourceDir: "../foo",
+			want:            "",
+		},
+		{
+			name:            "empty newConfigPath returns empty",
+			oldConfigPath:   "infra/runos/apps/runos.yaml",
+			newConfigPath:   "",
+			storedSourceDir: "../foo",
+			want:            "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RelocateSourceDir(tc.oldConfigPath, tc.newConfigPath, tc.storedSourceDir)
+			if got != tc.want {
+				t.Errorf("RelocateSourceDir(%q, %q, %q) = %q, want %q",
+					tc.oldConfigPath, tc.newConfigPath, tc.storedSourceDir, got, tc.want)
+			}
+		})
+	}
+}
+
 // Regression test for V14 / long-term V2 closure: apps_pull's reaction to
 // a server-vs-local configPath divergence should be a tri-state decision
 // (Skip, Update via PATCH, fall back to a Warn) rather than the older

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -560,6 +561,91 @@ func TestPulledAppEntry_AllInSync(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.in.allInSync(); got != tt.want {
 				t.Errorf("allInSync() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Regression test for V18 (VCS_DEPLOY_TEST_NOTES.md): the
+// configPathUpdateError field must (1) marshal with the right JSON
+// keys, (2) be omitted when nil, (3) be mutually exclusive with
+// configPathUpdated in practice. The dispatch in pullOne sets one or
+// the other, never both; this test exercises each case independently.
+//
+// Pre-V18 there was no structured field for failure; MCP-driven LLMs
+// had no way to tell a failed PATCH (e.g. conductor's V13/V16 lexical
+// validator rejecting the new configPath because the stored sourceDir
+// would escape the repo root) from a successful no-op pull. The
+// JSON-shape test catches accidental tag renames or omitempty drops on
+// future refactors.
+func TestPulledAppEntry_ConfigPathUpdateErrorJSON(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             pulledAppEntry
+		mustContain    []string
+		mustNotContain []string
+	}{
+		{
+			name: "no auto-update fields when nothing happened",
+			in:   pulledAppEntry{ID: "x", Name: "X"},
+			mustNotContain: []string{
+				`"configPathUpdated"`,
+				`"configPathUpdateError"`,
+			},
+		},
+		{
+			name: "success populates configPathUpdated only",
+			in: pulledAppEntry{
+				ID:                "x",
+				Name:              "X",
+				ConfigPathUpdated: &configPathUpdate{From: "old/path.yaml", To: "new/path.yaml"},
+			},
+			mustContain: []string{
+				`"configPathUpdated":{"from":"old/path.yaml","to":"new/path.yaml"}`,
+			},
+			mustNotContain: []string{
+				`"configPathUpdateError"`,
+			},
+		},
+		{
+			name: "failure populates configPathUpdateError only",
+			in: pulledAppEntry{
+				ID:   "x",
+				Name: "X",
+				ConfigPathUpdateError: &configPathUpdateError{
+					From:  "old/path.yaml",
+					To:    "new/path.yaml",
+					Error: `API error (400): sourceDir "../../../apps/frontend" resolves to "../../apps/frontend" which escapes the repo root (configPath dir "tmp_v18_test")`,
+				},
+			},
+			mustContain: []string{
+				`"configPathUpdateError":{`,
+				`"from":"old/path.yaml"`,
+				`"to":"new/path.yaml"`,
+				`"error":"API error (400):`,
+				`escapes the repo root`,
+			},
+			mustNotContain: []string{
+				`"configPathUpdated":`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.in)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			for _, s := range tt.mustContain {
+				if !strings.Contains(got, s) {
+					t.Errorf("expected JSON to contain %q\ngot: %s", s, got)
+				}
+			}
+			for _, s := range tt.mustNotContain {
+				if strings.Contains(got, s) {
+					t.Errorf("expected JSON NOT to contain %q\ngot: %s", s, got)
+				}
 			}
 		})
 	}

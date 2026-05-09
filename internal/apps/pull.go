@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -584,6 +585,63 @@ func RepoRelPath(repoRoot, absPath string) string {
 		return ""
 	}
 	return filepath.ToSlash(rel)
+}
+
+// RelocateSourceDir computes a sourceDir value that, paired with
+// newConfigPath, preserves the absolute repo target the existing
+// (oldConfigPath, storedSourceDir) pair resolved to. Returns "" when
+// no recompute is needed (no relocation, sourceDir is empty or ".",
+// the naive merge of storedSourceDir against newConfigPath stays
+// inside the repo) or when recovery is impossible (existing pair
+// already escapes the repo).
+//
+// V19: pre-fix, the V14/V17 auto-update hook PATCHed configPath alone;
+// conductor's V13/V16 lexical containment validator merged with stored
+// sourceDir and rejected when the merge escaped repo root (canonical
+// case: relocation from infra/runos/apps/ to a shallower dir like tmp/,
+// where sourceDir's `..` traversal counted from too few levels deep).
+// The CLI now recomputes sourceDir client-side and PATCHes both fields
+// in a single call. Same recompute also feeds serverState before the
+// local yaml write, so the on-disk yaml and the server stay in sync at
+// the new layout.
+//
+// All inputs and outputs are repo-relative slash-form paths. Pure: no
+// I/O, no git resolution, no filesystem access.
+func RelocateSourceDir(oldConfigPath, newConfigPath, storedSourceDir string) string {
+	if oldConfigPath == "" || newConfigPath == "" {
+		return ""
+	}
+	if storedSourceDir == "" || storedSourceDir == "." {
+		// Empty / default sourceDir means "build context = configPath
+		// dir"; that semantic moves with configPath naturally and the
+		// V13/V16 validator never rejects it.
+		return ""
+	}
+	oldDir := path.Dir(oldConfigPath)
+	newDir := path.Dir(newConfigPath)
+	if oldDir == newDir {
+		return ""
+	}
+	// Naive merge: would conductor's containment validator accept the
+	// existing storedSourceDir against the new configPath dir? If yes,
+	// no recompute needed; the validator passes the partial PATCH.
+	naive := path.Clean(path.Join(newDir, storedSourceDir))
+	if naive != ".." && !strings.HasPrefix(naive, "../") {
+		return ""
+	}
+	// Pin the absolute repo target the existing pair points at, then
+	// re-express it relative to newDir.
+	absTarget := path.Clean(path.Join(oldDir, storedSourceDir))
+	if absTarget == ".." || strings.HasPrefix(absTarget, "../") {
+		// Existing pair already escapes — legacy bad state. The caller
+		// falls back to V18's surface-the-error path.
+		return ""
+	}
+	newSourceDir, err := filepath.Rel(newDir, absTarget)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(newSourceDir)
 }
 
 // DecideConfigPathAction maps the (serverConfigPath, localRepoRelPath,
