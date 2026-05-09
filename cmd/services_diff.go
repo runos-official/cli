@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/runos-official/cli/internal/services"
@@ -78,16 +79,29 @@ func runServicesDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	if jsonOut {
-		return emitJSON(diff)
+		if err := emitJSON(diff); err != nil {
+			return err
+		}
+	} else {
+		switch diff.Status {
+		case services.StatusInSync:
+			fmt.Printf("%s/%s on cluster %s: in sync\n", local.Type, local.ID, ctx.cid)
+		case services.StatusDrift:
+			fmt.Printf("%s/%s on cluster %s: drift\n\n", local.Type, local.ID, ctx.cid)
+			fmt.Println(diff.UnifiedDiff)
+		case services.StatusLocalMissing:
+			fmt.Printf("%s/%s on cluster %s: local file missing (%s)\n", local.Type, local.ID, ctx.cid, diff.Path)
+		}
 	}
-	switch diff.Status {
-	case services.StatusInSync:
-		fmt.Printf("%s/%s on cluster %s: in sync\n", local.Type, local.ID, ctx.cid)
-	case services.StatusDrift:
-		fmt.Printf("%s/%s on cluster %s: drift\n\n", local.Type, local.ID, ctx.cid)
-		fmt.Println(diff.UnifiedDiff)
-	case services.StatusLocalMissing:
-		fmt.Printf("%s/%s on cluster %s: local file missing (%s)\n", local.Type, local.ID, ctx.cid, diff.Path)
+	// Mirror apps_diff's exit-2-on-drift contract so CI gates work the same
+	// way for services as they do for apps. The exit-code branch must run
+	// for BOTH human and --json output: pre-fix this was after an early
+	// `return emitJSON(diff)`, so `services_diff --json` always exited 0
+	// even on drift. The MCP wrapper detects exit 2 specifically and
+	// surfaces the drift report as a successful result instead of a
+	// red-error block, so this matches apps_diff's contract verbatim.
+	if diff.Status == services.StatusDrift || diff.Status == services.StatusLocalMissing {
+		os.Exit(2)
 	}
 	return nil
 }

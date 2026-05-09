@@ -368,6 +368,36 @@ func TestService_ListOverrides(t *testing.T) {
 	}
 }
 
+// TestService_ListOverrides_AcceptsPostNormalisationIDField guards the
+// 11c/11d regression: the conductor's `/apps/:id/overrides` route was
+// updated to emit `id` (instead of the Firestore-internal `__docId`),
+// and the CLI must accept both shapes so a CLI binary built against
+// either generation works against either conductor.
+func TestService_ListOverrides_AcceptsPostNormalisationIDField(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, 200, []map[string]any{
+			{
+				"id":      "exampledocid00000000",
+				"name":    "grace-period",
+				"enabled": true,
+				"data":    "c3BlYzoK",
+			},
+		})
+	})
+
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	got, err := svc.ListOverrides("ab12c")
+	if err != nil {
+		t.Fatalf("ListOverrides: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 override, got %d", len(got))
+	}
+	if got[0].ID != "exampledocid00000000" {
+		t.Errorf("ID = %q, want post-normalisation `id` mapped to ID", got[0].ID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error paths
 // ---------------------------------------------------------------------------

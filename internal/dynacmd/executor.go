@@ -300,7 +300,16 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 
 	// 3. Override with flags
 	for _, field := range cmdDef.Input.Fields {
+		// Positional fields are also exposed as `--<name>` flags so
+		// `runos apps status --id y2w1y` works alongside the positional
+		// form. Pull the flag value into the body map when set; the
+		// endpoint builder still prefers a positional arg when both are
+		// present, so the positional path is unchanged.
 		if field.Positional {
+			if field.Type == "string" && cmd.Flags().Changed(field.Name) {
+				val, _ := cmd.Flags().GetString(field.Name)
+				result[field.Name] = val
+			}
 			continue
 		}
 

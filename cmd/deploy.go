@@ -390,6 +390,18 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	}
 
+	// Post-deploy IaC artifacts: write the same `.dockerignore` template
+	// that `apps_pull` writes (skipped if one exists) and create the
+	// `runos.<cid>.<id>.config.env` placeholder so the yaml's `env:` ref
+	// points at a real file. Pre-fix, a user who only ran `runos deploy`
+	// (the documented happy path) ended up with a yaml that referenced a
+	// non-existent file and had no `.dockerignore` to protect external
+	// `docker build` invocations from leaking RunOS-managed config into
+	// images. Errors are warnings; the deploy itself doesn't roll back.
+	if appID := chooseDeployAppID(deployConfig, prepResp); appID != "" {
+		writeDeployIaCArtifacts(configDir, cid, appID)
+	}
+
 	// Create tarball
 	fmt.Println("Creating archive...")
 	tarball, err := deploy.CreateTarball(archiveRoot)
@@ -411,8 +423,18 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// detect upstream drift relative to this deploy. Sidecar is per-app
 	// (.runos.<cid>.<id>.source-version) so two apps in one directory
 	// don't share an anchor.
-	if sv := sourceVersionFromPrepare(prepResp); sv != "" {
-		if err := apps.WriteSourceVersion(configDir, cid, deployConfig.ID, sv); err != nil {
+	//
+	// Capture the prior recorded version first: when --follow is passed
+	// and the deploy job fails (e.g. build failure), we restore the
+	// prior value so the recorded source-version still reflects the
+	// last successfully-deployed code rather than a UUID whose image
+	// was never produced. Fire-and-forget deploys can't observe
+	// success/failure here, so they keep the new value (still useful:
+	// `apps pull --code <uuid>` works because the archive uploaded).
+	priorSourceVersion, _ := apps.ReadSourceVersion(configDir, cid, deployConfig.ID)
+	newSourceVersion := sourceVersionFromPrepare(prepResp)
+	if newSourceVersion != "" {
+		if err := apps.WriteSourceVersion(configDir, cid, deployConfig.ID, newSourceVersion); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to record source version: %v\n", err)
 		}
 	}
@@ -452,6 +474,25 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	if flagFollow {
 		fmt.Println("\nFollowing job progress...")
 		if err := jobs.FollowJob(prepResp.JobID); err != nil {
+			// Roll back the source-version sidecar so the recorded id
+			// keeps pointing at the last successfully-deployed code.
+			// Without this, a failed build leaves the sidecar pointing
+			// at a UUID whose image was never produced, and the next
+			// `runos deploy` (or drift gate) would treat the failure
+			// as the new baseline. Restore the prior value (or remove
+			// the file when there was no prior baseline). Best-effort:
+			// any I/O failure is logged as a warning, not propagated.
+			if newSourceVersion != "" && newSourceVersion != priorSourceVersion {
+				if priorSourceVersion != "" {
+					if rerr := apps.WriteSourceVersion(configDir, cid, deployConfig.ID, priorSourceVersion); rerr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to restore source version after build failure: %v\n", rerr)
+					}
+				} else {
+					if rerr := os.Remove(apps.SourceVersionPath(configDir, cid, deployConfig.ID)); rerr != nil && !os.IsNotExist(rerr) {
+						fmt.Fprintf(os.Stderr, "Warning: failed to clear source version after build failure: %v\n", rerr)
+					}
+				}
+			}
 			return fmt.Errorf("deployment failed: %w", err)
 		}
 		fmt.Println("\nDeployment completed successfully!")
@@ -564,6 +605,57 @@ func syncConfigFromPrepareResponse(deployConfig *deploy.DeployConfig, configPath
 	}
 
 	return deploy.SaveConfig(configPath, deployConfig)
+}
+
+// chooseDeployAppID returns the app id to use for post-deploy artifact
+// writes. Prefers the deploy config's existing id (set on the second
+// deploy onward); falls back to the prepare response's app id (first
+// deploy). Returns "" when neither is available so the caller can skip
+// artifact writes silently.
+func chooseDeployAppID(deployConfig *deploy.DeployConfig, prepResp *deploy.PrepareResponse) string {
+	if deployConfig != nil && deployConfig.ID != "" {
+		return deployConfig.ID
+	}
+	if prepResp != nil {
+		if prepResp.AppID != "" {
+			return prepResp.AppID
+		}
+		if prepResp.OSID != "" {
+			return strings.TrimPrefix(prepResp.OSID, "app-")
+		}
+	}
+	return ""
+}
+
+// writeDeployIaCArtifacts writes the post-deploy IaC artifacts the user
+// would otherwise get only after running `apps_pull --force` once: the
+// `.dockerignore` template (covers external `docker build` invocations)
+// and a placeholder `runos.<cid>.<id>.config.env` (so the yaml's `env:`
+// reference points at a real file rather than dangling). Both writes are
+// idempotent: existing files are left untouched. Errors print as
+// warnings; the deploy doesn't roll back since the conductor side has
+// already accepted the request.
+func writeDeployIaCArtifacts(configDir, cid, appID string) {
+	if dr, err := apps.EnsureDockerignore(configDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write .dockerignore: %v\n", err)
+	} else if !dr.InSync {
+		fmt.Printf("Wrote .dockerignore: %s\n", dr.Path)
+	}
+	envPath := filepath.Join(configDir, apps.EnvFilename(cid, appID))
+	if _, err := os.Stat(envPath); err == nil {
+		return
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: failed to stat %s: %v\n", envPath, err)
+		return
+	}
+	header := "# Plain ConfigMap-backed env vars for this app on cluster " + cid + ".\n" +
+		"# Committed to VCS, never put credentials here (use the .runos.<cid>.<id>.env\n" +
+		"# secret file instead, which is gitignored). Lines are KEY=value, # comments allowed.\n"
+	if err := os.WriteFile(envPath, []byte(header), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write %s: %v\n", envPath, err)
+		return
+	}
+	fmt.Printf("Wrote env file: %s\n", envPath)
 }
 
 // writeProvisionedServiceYAMLs walks the prepare response's freshly

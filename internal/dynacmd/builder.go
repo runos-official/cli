@@ -143,6 +143,13 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	cmd := &cobra.Command{
 		Use:   b.buildUseLine(name, cmdDef),
 		Short: cmdDef.Description,
+		// SilenceUsage on runtime errors: the user got far enough to dispatch,
+		// so the long usage block is noise. Without this, every API error
+		// (404, 409 dependents refusal, etc.) printed the full --help text
+		// after the actual error, drowning the diagnostic. The error itself
+		// is still printed by cobra (not silenced) and propagated to the
+		// process exit code by main.Execute.
+		SilenceUsage: true,
 		RunE: func(c *cobra.Command, args []string) error {
 			// Check if required positional args are missing.
 			// `cid` is special: even when declared positional+required, it
@@ -150,6 +157,14 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 			// config. Skip the positional-missing check for cid; the
 			// executor resolves it from positional/flag/config default and
 			// produces a single clear error if all three are empty.
+			//
+			// Other required positional fields (e.g. `id` on `apps
+			// status`) now ALSO accept a `--<name>` flag form (see
+			// addFieldFlags). The missing-arg check honours either
+			// shape: only fail when neither the positional slot nor the
+			// flag carry a value. This closes the 5d gap where
+			// `runos apps status --id y2w1y` was rejected as
+			// `unknown flag` because the flag wasn't registered.
 			if cmdDef.Input != nil {
 				argIndex := 0
 				for _, field := range cmdDef.Input.Fields {
@@ -159,11 +174,15 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 								argIndex++
 								continue
 							}
+							if c.Flags().Changed(field.Name) {
+								argIndex++
+								continue
+							}
 							// Missing required positional arg - show available options if enum exists
 							if len(field.Enum) > 0 {
 								return showEnumOptions(c, field)
 							}
-							return fmt.Errorf("missing required argument: %s", field.Name)
+							return fmt.Errorf("missing required argument: %s (or pass --%s)", field.Name, field.Name)
 						}
 						argIndex++
 					}
@@ -226,8 +245,27 @@ func (b *Builder) buildUseLine(name string, cmdDef manifest.Command) string {
 
 func addFieldFlags(cmd *cobra.Command, fields []manifest.Field) {
 	for _, field := range fields {
+		// Positional fields are also exposed as flags so users can write
+		// `runos apps status --id y2w1y` interchangeably with the
+		// positional form. The endpoint builder already prefers the
+		// positional arg when both are present and falls back to the
+		// flag value otherwise. Skip enum/required gating for the flag
+		// variant: required-ness is still enforced by the per-leaf
+		// missing-arg check (which now also consults the flag), and
+		// MarkFlagRequired would force the flag form even when the
+		// positional was supplied.
+		//
+		// `cid` is special: every command whose endpoint contains
+		// `:cid` already gets a dedicated `--cid` flag registered
+		// below in buildLeafCommand. Don't double-register.
 		if field.Positional {
-			continue // Positional args are handled separately
+			if field.Name == "cid" {
+				continue
+			}
+			if field.Type == "string" {
+				cmd.Flags().String(field.Name, "", field.Description)
+			}
+			continue
 		}
 
 		switch field.Type {

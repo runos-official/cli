@@ -169,11 +169,45 @@ func (s *Service) GetSecretFile(appID, filename string) (*SecretFileContent, err
 // OverrideSummary is a single manifest override record. The list endpoint
 // returns all fields including the base64 `data` payload, so we never need
 // a separate show call per override.
+//
+// The conductor's `/apps/:id/overrides` route used to expose the
+// Firestore subcollection convention `__docId` and now exposes a plain
+// `id` (the 11b normalisation). UnmarshalJSON below accepts both shapes
+// and populates ID from whichever is present, so a CLI binary built
+// against one generation works against either conductor. Without the
+// dual-name read, post-normalisation responses left ID empty, which made
+// `apps_diff` render `id: ""` in its overrides projection and
+// `apps_sync` issue `DELETE .../overrides/` (trailing-empty path), the
+// 11c/11d regression introduced alongside the 11b fix.
 type OverrideSummary struct {
-	ID      string `json:"__docId"`
+	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	Data    string `json:"data"` // base64-encoded
+}
+
+// UnmarshalJSON accepts either `id` (post-normalisation) or `__docId`
+// (legacy / Firestore-subdoc-shape) for the override identifier. Other
+// fields decode by struct tag as usual.
+func (o *OverrideSummary) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID      string `json:"id"`
+		DocID   string `json:"__docId"`
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+		Data    string `json:"data"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	o.ID = raw.ID
+	if o.ID == "" {
+		o.ID = raw.DocID
+	}
+	o.Name = raw.Name
+	o.Enabled = raw.Enabled
+	o.Data = raw.Data
+	return nil
 }
 
 // ListOverrides returns every manifest override configured for an app.

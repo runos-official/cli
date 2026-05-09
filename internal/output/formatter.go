@@ -71,6 +71,18 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 		return nil
 	}
 
+	// Log-shape stream: pod logs come back as []PodLogEntry with the
+	// shape {timestamp, podName, containerName, message}. A wide table
+	// renders the message column at thousands of chars and breaks the
+	// terminal. Recognise the shape and stream one entry per line as
+	// `<timestamp> [<pod>] <message>` (mirroring kubectl's --timestamps
+	// --prefix output). Drops to the table renderer for everything
+	// else, and `--json` opt-in still gives the full structured form.
+	if isLogShape(items) {
+		streamLogEntries(items)
+		return nil
+	}
+
 	// Determine which fields to show
 	if len(fields) == 0 {
 		// Use all keys from first item
@@ -91,7 +103,7 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	}
 	for _, item := range items {
 		for i, field := range fields {
-			val := formatValue(getNestedValue(item, field))
+			val := formatCellValue(getNestedValue(item, field))
 			if len(val) > widths[i] {
 				widths[i] = len(val)
 			}
@@ -110,7 +122,7 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	for _, item := range items {
 		row := ""
 		for i, field := range fields {
-			val := formatValue(getNestedValue(item, field))
+			val := formatCellValue(getNestedValue(item, field))
 			row += fmt.Sprintf("%-*s  ", widths[i], val)
 		}
 		fmt.Println(row)
@@ -155,6 +167,68 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 }
 
 func formatValue(v any) string {
+	return formatValueWithIndent(v, 0)
+}
+
+// isLogShape reports whether items look like pod log entries (each
+// item carries a timestamp + a message-ish field). All items must
+// match for the stream to fire; partial matches keep the regular
+// table rendering, since a single off-shape row would lose data.
+func isLogShape(items []map[string]any) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		_, hasTs := it["timestamp"]
+		_, hasMsg := it["message"]
+		if !hasTs || !hasMsg {
+			return false
+		}
+	}
+	return true
+}
+
+// streamLogEntries prints each log entry on its own line as
+// `<timestamp> [<pod>] <message>`. Container name is dropped from the
+// default render to keep lines short; `--json` exposes the full
+// structure for tooling that needs it.
+func streamLogEntries(items []map[string]any) {
+	for _, it := range items {
+		ts := formatValue(it["timestamp"])
+		pod := formatValue(it["podName"])
+		msg := formatValue(it["message"])
+		if pod != "" {
+			fmt.Printf("%s [%s] %s\n", ts, pod, msg)
+		} else {
+			fmt.Printf("%s %s\n", ts, msg)
+		}
+	}
+}
+
+// formatCellValue is the table-cell variant of formatValue. It
+// summarises arrays-of-objects (e.g. the `logs` column of `runos apps
+// builds`) as `[N entries]` rather than concatenating every nested
+// object inline. The pre-fix behaviour produced ~1000-char cells with
+// `key=value, key=value; key=value, ...` runs that broke the table
+// layout and dwarfed the columns the user actually wanted to read.
+// Full structured detail is still available via `--json`.
+func formatCellValue(v any) string {
+	if items, ok := v.([]any); ok && len(items) > 0 {
+		allObjects := true
+		for _, it := range items {
+			if _, isObj := it.(map[string]any); !isObj {
+				allObjects = false
+				break
+			}
+		}
+		if allObjects {
+			label := "entries"
+			if len(items) == 1 {
+				label = "entry"
+			}
+			return fmt.Sprintf("[%d %s]", len(items), label)
+		}
+	}
 	return formatValueWithIndent(v, 0)
 }
 

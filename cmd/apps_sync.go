@@ -65,8 +65,9 @@ func init() {
 	appsSyncCmd.Flags().Bool("dry-run", false, "compute the plan but don't apply anything")
 	appsSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	appsSyncCmd.Flags().Bool("allow-empty-secret-env", false, "allow apps_sync to wipe ALL server-side secret env vars when the local secret-env file is empty or missing (otherwise refused as a footgun)")
-	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace env values in the plan output with <redacted> markers (used by the MCP wrapper to keep secrets out of LLM context)")
+	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace ALL env values (secret AND plain) in the plan output with <redacted> markers (used by the MCP wrapper to keep values out of LLM context, even if a non-secret config.env mistakenly carries an API key)")
 	appsSyncCmd.Flags().BoolP("follow", "f", false, "wait for each emitted job to reach a terminal status before printing 'ok'; without it, prints the job ID and continues (failures land silently on the cluster)")
+	appsSyncCmd.Flags().BoolP("json", "j", false, "emit the plan as JSON instead of formatted text (only valid with --dry-run)")
 }
 
 func runAppsSync(cmd *cobra.Command, args []string) error {
@@ -79,6 +80,14 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
 	follow, _ := cmd.Flags().GetBool("follow")
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	// --json is plan-only: it doesn't make sense alongside an apply step
+	// (the plan is structured + the post-apply jobIDs aren't), so refuse
+	// the combination up-front rather than print JSON and silently skip
+	// the apply phase.
+	if jsonOut && !dryRun {
+		return fmt.Errorf("--json is only valid with --dry-run")
+	}
 
 	yamlPath, err := resolveYamlArg(args, "sync")
 	if err != nil {
@@ -248,6 +257,19 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	})
 
 	redactSecrets, _ := cmd.Flags().GetBool("redact-secrets")
+
+	// JSON dry-run: emit the full plan as a single JSON object so CI
+	// pipelines can gate on yaml/env/secretFile/override changes without
+	// parsing the formatted plan output. The plan struct already has
+	// json tags for every section. emitJSON writes to stdout and the
+	// caller's `if dryRun { return }` exits cleanly.
+	if jsonOut {
+		if err := emitJSON(plan); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	printSyncPlan(plan, redactSecrets)
 
 	if !plan.HasChanges() {
@@ -345,9 +367,14 @@ func printSyncPlan(plan *apps.SyncPlan, redactEnv bool) {
 	if plan.Env != nil && plan.Env.HasChanges() {
 		fmt.Println()
 		fmt.Println(sectionRule("env", "replace-all"))
-		// Plain env values are non-sensitive by definition (they're committed
-		// to VCS); show them verbatim regardless of the redact flag.
-		printEnvChange(plan.Env, false)
+		// Plain env values are committed to VCS in the normal case, but
+		// the flag's stated contract is "keep secrets out of LLM context"
+		// and a third-party API key in the plain config.env (technically
+		// disallowed but easy to do by mistake) would still leak through
+		// without a redacted render. Honour the flag here too: the cost
+		// is a slightly less informative plan; the benefit is the LLM
+		// driving the sync never sees a value it doesn't strictly need.
+		printEnvChange(plan.Env, redactEnv)
 	} else {
 		unchanged = append(unchanged, "env")
 	}
