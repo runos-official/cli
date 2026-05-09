@@ -31,7 +31,9 @@ creates a tarball of the project files, and deploys it to the specified cluster.
 
 The runos.yaml file should contain at minimum:
   app: "My App Name"
-  port: 8080
+  servicePortMappings:
+    - port: 8080
+      standardHttps: true
 
 Optional fields include dockerfile, resource limits, and service dependencies.`,
 	RunE: runDeploy,
@@ -308,6 +310,27 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		)
 	}
 
+	// Plain-side platform-claimed names: hard refusal. A `DATABASE_URL=...`
+	// committed to VCS while the platform also injects one is silently
+	// ignored at runtime (the requires-merge wins) and is the kind of
+	// "looks right, totally wrong" trap that quietly persists in Git
+	// history. The secret-side equivalent is harmless (apps_pull writes
+	// it there and the merge re-runs on every deploy).
+	if collisions := deployRequiresEnvCollisions(deployConfig, customEnvVars); len(collisions) > 0 {
+		names := make([]string, 0, len(collisions))
+		for _, c := range collisions {
+			names = append(names, fmt.Sprintf("%s (claimed by requires.%s.env.%s)", c.EnvVar, c.Alias, c.Field))
+		}
+		return fmt.Errorf(
+			"plain env file %s contains platform-claimed names: %s. "+
+				"These are injected by the platform from the linked service's credentials, "+
+				"so a hand-authored value would be ignored at runtime and committed to VCS by mistake. "+
+				"Remove them from %s (the platform-injected values land in the secret file %s automatically).",
+			filepath.Base(envPaths.Plain), strings.Join(names, ", "),
+			filepath.Base(envPaths.Plain), filepath.Base(envPaths.Secret),
+		)
+	}
+
 	// Detect names in the local secret env file that the platform claims
 	// via requires.<alias>.env (DATABASE_URL, REDIS_HOST, etc.). These
 	// are NOT a problem on the secret side: apps_pull legitimately writes
@@ -406,6 +429,20 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nDeployment initiated:\n")
 		fmt.Printf("  Job ID: %s\n", prepResp.JobID)
 		fmt.Printf("  App ID: %s\n", prepResp.AppID)
+		// Console URL: gives the user a direct link to inspect the app
+		// (logs, builds, env, requires) in the web console without
+		// stitching the URL together by hand. Mirrors the documented
+		// post-deploy contract.
+		appID := prepResp.AppID
+		if appID == "" {
+			appID = prepResp.OSID
+		}
+		if appID != "" && cfg != nil {
+			if consoleURL := strings.TrimRight(cfg.GetConsoleURL(), "/"); consoleURL != "" {
+				fmt.Printf("  Console:    %s/%s/%s/applications/manage/%s\n",
+					consoleURL, cfg.GetAccountID(), cid, appID)
+			}
+		}
 	}
 
 	// Follow job if --follow was passed. Default is fire-and-forget so the
@@ -749,8 +786,22 @@ func preDeployCodeDriftCheck(cfg *config.Config, token, cid, configPath string, 
 		return nil
 	}
 	if !status.RecordedFound {
-		fmt.Fprintf(os.Stderr, "Note: recorded source version %s isn't in the server's archive list; skipping code drift check.\n", status.Recorded)
-		return nil
+		// The recorded source version isn't in the server's archive
+		// list. This is the easiest way to bypass the drift gate (hand
+		// edit `.source-version` to garbage and the gate goes silent),
+		// so refuse the deploy and require explicit `--force` consent.
+		// Pre-fix: silently skipped, which made the gate trivially
+		// circumventable.
+		if force {
+			fmt.Fprintf(os.Stderr, "Warning: recorded source version %s isn't in the server's archive list; --force passed, deploying anyway.\n", status.Recorded)
+			return nil
+		}
+		fmt.Printf("\n%s: recorded source version %s isn't in the server's archive list (purged or never persisted).\n", localApp.App, status.Recorded)
+		fmt.Println("This usually means the local .source-version file was hand-edited or the archive was deleted server-side.")
+		fmt.Printf("Inspect:       runos apps list-previous-uploads %s\n", configPath)
+		fmt.Printf("Reconcile:     runos apps pull %s --code --force\n", configPath)
+		fmt.Printf("Deploy anyway: runos deploy --force\n")
+		return fmt.Errorf("recorded source version not on server; pass --force to deploy local source as a new archive")
 	}
 	if !status.IsStale() {
 		return nil

@@ -97,6 +97,26 @@ func (b *Builder) buildCommandTree(cmdDef manifest.Command, parents map[string]*
 			continue
 		}
 
+		// Skip when the parent already has a child of this name. Avoids
+		// `runos config get` (static CLI config) being shadowed by a
+		// duplicate dynamic `config get` (system-config from manifest):
+		// without this, two leaf commands of the same name attach to the
+		// merged parent and cobra picks one nondeterministically.
+		if parent != nil {
+			alreadyExists := false
+			for _, existingChild := range parent.Commands() {
+				if existingChild.Name() == part {
+					alreadyExists = true
+					parents[currentPath] = existingChild
+					parent = existingChild
+					break
+				}
+			}
+			if alreadyExists {
+				continue
+			}
+		}
+
 		var cmd *cobra.Command
 		if isLeaf {
 			// Leaf command - has the actual execution logic
@@ -124,12 +144,21 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 		Use:   b.buildUseLine(name, cmdDef),
 		Short: cmdDef.Description,
 		RunE: func(c *cobra.Command, args []string) error {
-			// Check if required positional args are missing
+			// Check if required positional args are missing.
+			// `cid` is special: even when declared positional+required, it
+			// can also be supplied via --cid or the default cluster in
+			// config. Skip the positional-missing check for cid; the
+			// executor resolves it from positional/flag/config default and
+			// produces a single clear error if all three are empty.
 			if cmdDef.Input != nil {
 				argIndex := 0
 				for _, field := range cmdDef.Input.Fields {
 					if field.Positional {
 						if argIndex >= len(args) && field.Required {
+							if field.Name == "cid" {
+								argIndex++
+								continue
+							}
 							// Missing required positional arg - show available options if enum exists
 							if len(field.Enum) > 0 {
 								return showEnumOptions(c, field)
@@ -178,10 +207,13 @@ func (b *Builder) buildUseLine(name string, cmdDef manifest.Command) string {
 		return useLine
 	}
 
-	// Add positional args to use line
+	// Add positional args to use line. `cid` is rendered with the
+	// optional bracket form because `--cid` and the default-cluster
+	// config both satisfy the same slot, so using `<cid>` here was
+	// misleading users into thinking the positional was the only path.
 	for _, field := range cmdDef.Input.Fields {
 		if field.Positional {
-			if field.Required {
+			if field.Required && field.Name != "cid" {
 				useLine += " <" + field.Name + ">"
 			} else {
 				useLine += " [" + field.Name + "]"

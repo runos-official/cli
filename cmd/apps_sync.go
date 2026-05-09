@@ -142,11 +142,45 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 
 	// Pre-flight conflict check: a key in both files is a deterministic
 	// failure on the conductor side, refuse the sync up-front.
+	//
+	// Use whatever path the yaml's env:/secretEnv: ref points at, falling
+	// back to the documented default when the field is omitted (which is
+	// the common case for a fresh checkout: apps_pull writes the secret
+	// file at the default path but doesn't add the ref to the yaml).
+	// Without the fallback the error rendered with an empty filename.
+	secretEnvName := localApp.SecretEnv
+	if secretEnvName == "" {
+		secretEnvName = apps.SecretEnvFilename(localApp.CID, localApp.ID)
+	}
+	envName := localApp.Env
+	if envName == "" {
+		envName = apps.EnvFilename(localApp.CID, localApp.ID)
+	}
 	if conflicts := envKeyConflicts(localSecretEnv, localEnv); len(conflicts) > 0 {
 		return fmt.Errorf(
 			"env-var keys appear in both %s and %s: %s. "+
 				"Move each key to exactly one file before syncing.",
-			localApp.SecretEnv, localApp.Env, strings.Join(conflicts, ", "),
+			secretEnvName, envName, strings.Join(conflicts, ", "),
+		)
+	}
+
+	// Plain-side platform-claimed names: a hard refusal. Committing a
+	// clear-text DATABASE_URL to VCS while the platform also injects one
+	// is the kind of "looks right, totally wrong" trap that quietly ends
+	// up in a Git history. The secret-side equivalent is harmless (the
+	// pre-deploy merge always wins on conflict), so we only refuse here
+	// for the plain side.
+	if collisions := apps.FindServerInjectedEnvCollisions(localEnv, localApp.Requires); len(collisions) > 0 {
+		names := make([]string, 0, len(collisions))
+		for _, c := range collisions {
+			names = append(names, fmt.Sprintf("%s (claimed by requires.%s.env.%s)", c.EnvVar, c.Alias, c.Field))
+		}
+		return fmt.Errorf(
+			"plain env file %s contains platform-claimed names: %s. "+
+				"These are injected by the platform from the linked service's credentials, "+
+				"so a hand-authored value would be ignored at runtime and committed to VCS by mistake. "+
+				"Remove them from %s (the platform-injected values land in the secret file %s automatically).",
+			envName, strings.Join(names, ", "), envName, secretEnvName,
 		)
 	}
 
@@ -160,6 +194,10 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	// server-side via the secret/plain conflict gate, so we don't need a
 	// client-side check for it either.)
 
+	// Fill missing filename entries from basename(local) before reading
+	// content. Keeps the manifest projection and the content map keyed
+	// consistently so the plan output renders the file name (not blank).
+	apps.NormalizeSecretFiles(localApp.SecretFiles)
 	localSecrets, err := apps.LoadLocalSecretFiles(yamlDir, localApp.SecretFiles)
 	if err != nil {
 		return fmt.Errorf("read local secret files: %w", err)

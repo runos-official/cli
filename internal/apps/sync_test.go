@@ -105,7 +105,7 @@ func TestComputeSecretFilesChange_AddUpdateRemove(t *testing.T) {
 		{Filename: "server-only.pem", MountPath: "/etc/server-only.pem", MD5: "abc"},
 	}
 
-	got := computeSecretFilesChange(local, server)
+	got := computeSecretFilesChange(nil, local, server)
 	if got == nil {
 		t.Fatal("expected change, got nil")
 	}
@@ -145,6 +145,7 @@ func TestComputeSecretFilesChange_AddUpdateRemove(t *testing.T) {
 func TestComputeSecretFilesChange_NoOpWhenAllMatch(t *testing.T) {
 	content := []byte("hello\n")
 	got := computeSecretFilesChange(
+		nil,
 		map[string][]byte{"a.txt": content},
 		[]SecretFileSummary{{Filename: "a.txt", MountPath: "/a.txt", MD5: md5Hex(content)}},
 	)

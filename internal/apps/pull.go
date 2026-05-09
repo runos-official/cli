@@ -341,14 +341,18 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 		}
 	}
 
-	// Health check: copy flat fields verbatim. The preset string is the
-	// gate, everything else is omitted via omitempty when zero.
+	// Health check: copy flat fields independently. Each is omitted via
+	// omitempty when zero. The preset (`healthCheck`), port, and path are
+	// independent omit-equals-clear desired-state fields server-side, so
+	// any subset can be set; pulling must reflect whatever the server has.
 	if preset := stringOr(raw, "healthCheck"); preset != "" {
 		p.HealthCheck = preset
-		if n, ok := asInt(raw["healthCheckPort"]); ok && n > 0 {
-			p.HealthCheckPort = &n
-		}
-		p.HealthCheckPath = stringOr(raw, "healthCheckPath")
+	}
+	if n, ok := asInt(raw["healthCheckPort"]); ok && n > 0 {
+		p.HealthCheckPort = &n
+	}
+	if path := stringOr(raw, "healthCheckPath"); path != "" {
+		p.HealthCheckPath = path
 	}
 
 	// Metrics: emitted only when a scrape port is set.
@@ -765,6 +769,15 @@ func FindPulledYAMLs(dir string) (YAMLScan, error) {
 		if !strings.HasSuffix(lower, ".yaml") && !strings.HasSuffix(lower, ".yml") {
 			continue
 		}
+		// Service yamls (`runos.service.<cid>.<type>.<sid>.yaml`) live
+		// next to the app yaml when class-shorthand provisioning runs.
+		// They are not app manifests and would otherwise be flagged as
+		// candidates here, leading apps_diff/sync auto-detect to refuse
+		// with `multiple yaml candidates`. Service yamls go through the
+		// dedicated `runos services diff/sync/pull` verbs.
+		if strings.HasPrefix(lower, "runos.service.") {
+			continue
+		}
 		path := filepath.Join(dir, name)
 		app, err := loadPulledAppLite(path)
 		if err != nil {
@@ -1045,12 +1058,49 @@ const defaultDockerignore = `# RunOS-managed files. Excluded from the build cont
 # expose the source archive, but external Docker builders (docker build,
 # kaniko, buildkit) need it to honour the same exclusions.
 runos.yaml
+runos.yaml.bak
+runos.yaml.backup
 runos.*.yaml
+runos.*.yaml.bak
+runos.*.yaml.backup
 runos.*.yml
+runos.*.yml.bak
+runos.*.yml.backup
+# Plain ConfigMap-backed env file. Non-sensitive but per-cluster, no
+# reason to bake into the image when the platform injects it via the
+# ConfigMap volume mount.
+runos.*.config.env
 .runos.*.env
 .runos*.source-version
 .secret-files/
 overrides/
+
+# Dotfile env (every Node/Python project has these).
+.env
+.env.*
+
+# VCS metadata.
+.git/
+.gitignore
+
+# Editor backups.
+*.bak
+*.backup
+*~
+.*.swp
+
+# Defensive: directories that conventionally contain credentials.
+secrets/
+**/secrets/
+**/.aws/
+**/.ssh/
+
+# Common language ignores. Helpful for Dockerfile-from-scratch builds
+# where nothing else excludes them.
+node_modules/
+__pycache__/
+.pytest_cache/
+target/
 `
 
 // EnsureDockerignore writes the canonical .dockerignore (defaultDockerignore)

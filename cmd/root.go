@@ -10,6 +10,7 @@ import (
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/update"
+	"github.com/runos-official/cli/version"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -48,9 +49,10 @@ func shouldBootstrapManifest(cmdName, parentName string, manifestPresent bool) b
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "runos",
-	Short: "CLI for interacting with RunOS clusters",
-	Long:  `RunOS CLI allows you to manage your RunOS clusters, provision services, and interact with your self-hosted cloud infrastructure.`,
+	Use:     "runos",
+	Short:   "CLI for interacting with RunOS clusters",
+	Long:    `RunOS CLI allows you to manage your RunOS clusters, provision services, and interact with your self-hosted cloud infrastructure.`,
+	Version: version.Version,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config check for these commands
 		cmdName := cmd.Name()
@@ -159,10 +161,13 @@ func registerDynamicCommands() error {
 	}
 
 	// Build and register commands
-	// Pass existing commands that have static subcommands so dynamic commands merge with them
+	// Pass existing commands that have static subcommands so dynamic commands merge with them.
+	// Static `config` and `deploy` commands also need to be registered as existing so the
+	// dynamic builder merges any manifest-side definitions instead of producing duplicate
+	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, configCmd, deployCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)

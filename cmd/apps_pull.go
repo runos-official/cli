@@ -97,6 +97,10 @@ type pullSummary struct {
 	CID     string            `json:"cid"`
 	Apps    []pulledAppEntry  `json:"apps"`
 	Drifted []driftedAppEntry `json:"drifted,omitempty"`
+	// Hint is populated when Drifted is non-empty so the LLM/MCP caller
+	// gets the resolution path inline instead of having to read the
+	// human-readable error stream. Empty when no drift refusal occurred.
+	Hint    string            `json:"hint,omitempty"`
 	Skipped []pullSkipEntry   `json:"skipped,omitempty"`
 }
 
@@ -367,6 +371,13 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if driftAbortSeen {
+		summary.Hint = "Local files diverged from server. Re-run with --force to overwrite local with server. " +
+			"After a successful runos deploy, this drift is the expected post-deploy state " +
+			"(server-applied defaults like replicas / resourceRequirementClassId), not user " +
+			"work that would be lost."
+	}
+
 	if jsonOutput {
 		if err := emitJSON(summary); err != nil {
 			return err
@@ -383,7 +394,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 	if driftAbortSeen {
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
-		return fmt.Errorf("one or more apps had local drift; re-run with --force to overwrite")
+		return fmt.Errorf("one or more apps had local drift; re-run with --force to overwrite (after a successful deploy this drift is expected and just brings server-applied defaults into the local yaml)")
 	}
 	return nil
 }

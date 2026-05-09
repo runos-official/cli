@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/runos-official/cli/internal/jobs"
@@ -173,7 +174,14 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 // values for "<redacted>" markers when the plan output flows into LLM
 // context via the MCP wrapper.
 func printServicesSyncPlan(plan *services.SyncPlan, redact bool) {
-	fmt.Printf("Sync plan for %s/%s on cluster %s\n", plan.Type, plan.ID, plan.CID)
+	// Title shape: include the id when known. CREATE plans don't have one
+	// yet, so render "<new>" as a placeholder rather than leaving the slot
+	// blank ("Sync plan for minio/ on cluster mycluster2" was confusing).
+	idSlot := plan.ID
+	if idSlot == "" {
+		idSlot = "<new>"
+	}
+	fmt.Printf("Sync plan for %s/%s on cluster %s\n", plan.Type, idSlot, plan.CID)
 
 	if plan.CreateBody != nil {
 		fmt.Println()
@@ -201,6 +209,14 @@ func printServicesSyncPlan(plan *services.SyncPlan, redact bool) {
 
 // printBody renders a body map as indented `key: value` lines. Stable
 // output order matters for diff parity against the unified diff form.
+//
+// redact is scoped to keys that look sensitive (password, token, secret,
+// apiKey, credentials, ...). Service config fields like `name`,
+// `resourceRequirementClassId`, `storageMb`, `replicas` are non-secret
+// by design and stay legible so the user can confirm a CREATE plan.
+// Pre-fix, redact wiped every value indiscriminately, leaving the user
+// confirming a `name: <redacted>` create with no idea what they were
+// about to provision.
 func printBody(body map[string]any, redact bool, indent string) {
 	keys := make([]string, 0, len(body))
 	for k := range body {
@@ -209,9 +225,23 @@ func printBody(body map[string]any, redact bool, indent string) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		val := fmt.Sprintf("%v", body[k])
-		if redact {
+		if redact && isSensitiveKey(k) {
 			val = "<redacted>"
 		}
 		fmt.Printf("%s%s: %s\n", indent, k, val)
 	}
+}
+
+// isSensitiveKey reports whether a service-config field name conventionally
+// holds sensitive data. Used by the redact gate so non-secret config
+// (display name, resource class enum, capacity, replicas) stays visible
+// in plan output.
+func isSensitiveKey(k string) bool {
+	lower := strings.ToLower(k)
+	for _, marker := range []string{"password", "secret", "token", "apikey", "api_key", "credential", "privatekey", "private_key"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

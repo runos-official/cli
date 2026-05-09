@@ -237,6 +237,21 @@ var alwaysExcludePatterns = []string{
 	"runos.yaml",
 	"runos.*.yaml",
 	"runos.*.yml",
+	// Common editor backup suffixes on the RunOS manifest. Without
+	// these a `runos.yaml.bak` (created by the user during a manual
+	// edit) leaks the full app config into every image build.
+	"runos.yaml.bak",
+	"runos.yaml.backup",
+	"runos.*.yaml.bak",
+	"runos.*.yaml.backup",
+	"runos.*.yml.bak",
+	"runos.*.yml.backup",
+	// Plain ConfigMap-backed env file. Non-sensitive but per-cluster;
+	// the platform injects it via the ConfigMap volume mount, so
+	// shipping it inside the image just bakes per-cluster config into
+	// the artifact. Not covered by the .dockerignore pattern alone for
+	// users who run external Docker tooling without one.
+	"runos.*.config.env",
 }
 
 // alwaysExcludeDirPatterns lists directory basename globs the walker

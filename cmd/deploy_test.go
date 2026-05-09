@@ -626,7 +626,12 @@ func TestPreDeployCodeDriftCheck_ForceBypasses(t *testing.T) {
 	}
 }
 
-func TestPreDeployCodeDriftCheck_RecordedIdNotInListWarnsAndProceeds(t *testing.T) {
+func TestPreDeployCodeDriftCheck_RecordedIdNotInListRefusesWithoutForce(t *testing.T) {
+	// Pre-fix the gate silently skipped when the recorded source version
+	// wasn't in the archive list, which made it trivially bypassable
+	// (hand-edit `.source-version` to garbage and the gate goes silent).
+	// The fix refuses without --force; --force is the explicit consent
+	// path to deploy local source as a fresh archive.
 	dir := t.TempDir()
 	yamlPath := writePulledYaml(t, dir, map[string]any{
 		"id":       "ab12c",
@@ -644,9 +649,32 @@ func TestPreDeployCodeDriftCheck_RecordedIdNotInListWarnsAndProceeds(t *testing.
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	// Without a way to anchor the comparison, the gate falls open.
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false); err != nil {
-		t.Errorf("expected nil when recorded id isn't in archive list; got: %v", err)
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false); err == nil {
+		t.Errorf("expected refusal when recorded id isn't in archive list (without --force)")
+	} else if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("refusal should mention --force, got: %v", err)
+	}
+}
+
+func TestPreDeployCodeDriftCheck_RecordedIdNotInListProceedsWithForce(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writePulledYaml(t, dir, map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(1),
+	}, "k1", "acc-1")
+	if err := apps.WriteSourceVersion(dir, "k1", "ab12c", "purged-id"); err != nil {
+		t.Fatalf("seed sidecar: %v", err)
+	}
+
+	srv := fakeArchivesEndpoint(t, []apps.CliArchive{
+		{CliUploadID: "v2", PushTime: "2026-04-27T11:00:00Z"},
+	})
+	t.Setenv("RUNOS_API_URL", srv.URL)
+
+	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true); err != nil {
+		t.Errorf("expected --force to bypass the recorded-id-missing gate; got: %v", err)
 	}
 }
 

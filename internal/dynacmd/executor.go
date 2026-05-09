@@ -79,6 +79,20 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return fmt.Errorf("failed to collect input: %w", err)
 	}
 
+	// Auto-inject CLI version + OS for `cli/version-check`. The MCP wrapper
+	// already does this so the answer is correct under MCP; the bare CLI
+	// path used to send empty version, which produced a misleading
+	// `updateAvailable: true` and an alarming `releaseNotes` sentinel.
+	// Injection mirrors the MCP wrapper's behaviour at internal/mcp/server.go.
+	if cmdDef.Command == "cli/version-check" {
+		if _, ok := body["version"]; !ok || isEmptyString(body["version"]) {
+			body["version"] = cliRuntimeVersion()
+		}
+		if _, ok := body["os"]; !ok || isEmptyString(body["os"]) {
+			body["os"] = cliRuntimeOS()
+		}
+	}
+
 	respBody, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
 	if err != nil {
 		// Conductor's services delete returns 409 with a structured
@@ -550,4 +564,12 @@ func markDefaultCluster(data []byte, defaultCID string) []byte {
 		return data
 	}
 	return result
+}
+
+// isEmptyString reports whether v is a string-typed empty value. Used by
+// the cli/version-check auto-injection so a manifest default of "" or a
+// flag-default empty string still triggers the runtime fallback.
+func isEmptyString(v any) bool {
+	s, ok := v.(string)
+	return ok && s == ""
 }

@@ -71,7 +71,7 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd 
 
 	if local.ID == "" {
 		plan.CreateBody = filterToInputFields(local.Fields, AddInputFieldNames(addCmd))
-		plan.Refused = refusedDrift(local.Fields, nil, AddInputFieldNames(addCmd))
+		plan.Refused = refusedDrift(local.Fields, nil, AddInputFieldNames(addCmd), true)
 		return plan
 	}
 
@@ -82,7 +82,7 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd 
 			serverFields = server.Fields
 		}
 		plan.PatchBody = computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
-		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
+		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd), false)
 		plan.Diff = renderFieldDiff(local, server)
 	}
 	return plan
@@ -176,7 +176,7 @@ func filterToInputFields(fields map[string]any, allowed map[string]bool) map[str
 // value should compare equal here, since they round-trip through the
 // same conductor wire format. Without this, every numeric field on a
 // freshly-pulled yaml would falsely show up as refused.
-func refusedDrift(local, server map[string]any, allowed map[string]bool) []string {
+func refusedDrift(local, server map[string]any, allowed map[string]bool, isCreate bool) []string {
 	var refused []string
 	for k, lv := range local {
 		if allowed[k] {
@@ -188,7 +188,16 @@ func refusedDrift(local, server map[string]any, allowed map[string]bool) []strin
 				continue
 			}
 		}
-		refused = append(refused, fmt.Sprintf("%s: not patchable on this service type (read-only or immutable after create); change requires service recreation", k))
+		// Distinct wording for CREATE vs PATCH: "not patchable" was
+		// misleading on the CREATE path (no service exists yet to
+		// patch), where the refusal really means "the add endpoint
+		// doesn't accept this field, drop it from the yaml or set
+		// it via a service-specific writer post-create".
+		if isCreate {
+			refused = append(refused, fmt.Sprintf("%s: not accepted by this service type's add endpoint; remove from yaml before creating, set via the service's dedicated writer post-create if needed", k))
+		} else {
+			refused = append(refused, fmt.Sprintf("%s: not patchable on this service type (read-only or immutable after create); change requires service recreation", k))
+		}
 	}
 	sort.Strings(refused)
 	return refused
@@ -249,7 +258,21 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 		_ = json.Unmarshal(respBody, &resp)
 		newID := resp.ID
 		if newID == "" {
-			newID = resp.OSID
+			// Conductor returns `osid` on the create response (e.g.
+			// "minio-v2k5k") and not always `id`. The service yaml's
+			// `id:` field uses the bare 5-char id, so strip the
+			// `<type>-` prefix when falling back. Without this strip
+			// the yaml gets the OSID written into `id:` and every
+			// subsequent diff/pull/sync 404s ("Service not found")
+			// until the user fixes it by hand.
+			if osid := resp.OSID; osid != "" {
+				prefix := plan.Type + "-"
+				if len(osid) > len(prefix) && osid[:len(prefix)] == prefix {
+					newID = osid[len(prefix):]
+				} else {
+					newID = osid
+				}
+			}
 		}
 		return &ApplyResult{JobID: resp.JobID, NewID: newID}, nil
 	}

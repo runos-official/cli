@@ -125,7 +125,11 @@ func UpdateInputFieldNames(cmd *manifest.Command) map[string]bool {
 
 // AddInputFieldNames returns the set of field names accepted by
 // services/<type>/add. Used by services_sync when the local yaml has no
-// id (creation flow).
+// id (creation flow). Flags (boolean opt-ins like `exposeS3On443`) are
+// included alongside the fields list because the conductor's add
+// endpoints accept both shapes; the dynacmd executor splits them on the
+// wire. Without this, valid create-time options were spuriously surfaced
+// as "not patchable" refusals on the CREATE path.
 func AddInputFieldNames(cmd *manifest.Command) map[string]bool {
 	out := map[string]bool{}
 	if cmd == nil || cmd.Input == nil {
@@ -135,6 +139,9 @@ func AddInputFieldNames(cmd *manifest.Command) map[string]bool {
 		if f.Positional {
 			continue
 		}
+		out[f.Name] = true
+	}
+	for _, f := range cmd.Input.Flags {
 		out[f.Name] = true
 	}
 	return out

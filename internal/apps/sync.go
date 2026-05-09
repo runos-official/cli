@@ -256,7 +256,7 @@ func ComputeSyncPlan(in SyncInputs) *SyncPlan {
 	platformInjected := requiresOwnedEnvNames(in.LocalApp)
 	plan.SecretEnv = computeEnvChange(in.LocalSecretEnvVars, in.ServerSecretEnvVars, platformInjected)
 	plan.Env = computeEnvChange(in.LocalEnvVars, in.ServerEnvVars, nil)
-	plan.SecretFiles = computeSecretFilesChange(in.LocalSecretFiles, in.ServerSecretFiles)
+	plan.SecretFiles = computeSecretFilesChange(in.LocalApp.SecretFiles, in.LocalSecretFiles, in.ServerSecretFiles)
 	plan.Overrides = computeOverrideOps(in.LocalOverrides, in.ServerOverrides)
 
 	return plan
@@ -411,17 +411,37 @@ func requiresOwnedEnvNames(app *PulledApp) map[string]bool {
 // internally) against the server-reported md5s. Updates are anything where
 // both sides have the file but bytes differ. Adds are local-only files.
 // Removes are server-only files.
-func computeSecretFilesChange(localContent map[string][]byte, server []SecretFileSummary) *SecretFilesChange {
+//
+// localManifest is the yaml's `secretFiles:` list, used to honor a
+// user-specified `mountPath:`. When the manifest entry omits mountPath
+// the default is `/<filename>`. For UPDATEs, the server's existing mount
+// path always wins (an in-place mountPath rotation would require deleting
+// and re-adding the file); the diff renders this as "mount preserved".
+func computeSecretFilesChange(localManifest []SecretFile, localContent map[string][]byte, server []SecretFileSummary) *SecretFilesChange {
 	change := &SecretFilesChange{}
 	serverByName := map[string]SecretFileSummary{}
 	for _, sf := range server {
 		serverByName[sf.Filename] = sf
 	}
 
+	// Index manifest entries by filename so we can look up the user's
+	// mountPath for each local file. Falls back to "/<filename>" when
+	// the entry is absent or doesn't specify mountPath.
+	manifestByName := map[string]SecretFile{}
+	for _, sf := range localManifest {
+		manifestByName[sf.Filename] = sf
+	}
+	defaultMountPath := func(filename string) string {
+		if entry, ok := manifestByName[filename]; ok && entry.MountPath != "" {
+			return entry.MountPath
+		}
+		return "/" + filename
+	}
+
 	for name, content := range localContent {
 		sum := md5.Sum(content)
 		localMd5 := hex.EncodeToString(sum[:])
-		mountPath := "/" + name
+		mountPath := defaultMountPath(name)
 		payload := SecretFilePayload{
 			Filename:  name,
 			MountPath: mountPath,
@@ -677,7 +697,120 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	// Drift exists. Build the full wire body from the local yaml.
 	patch = buildFullYAMLBody(localApp)
 	diff = renderYAMLPatchAsDiff(driftFields, server)
+	if requiresDrift {
+		diff = appendRequiresDiff(diff, localApp, serverRequires)
+	}
 	return patch, diff, refused
+}
+
+// appendRequiresDiff renders per-alias drift between the local yaml's
+// requires block and the server's /requires response. Each alias gets a
+// nested view of changed fields (id, type, config, env). The output is
+// appended to the standard YAML diff so the user sees both the top-level
+// and the requires-level drift in one section, matching the wire body
+// (sync sends the whole body in a single PATCH). Without this, the plan
+// silently omitted requires changes even though they were on the wire.
+func appendRequiresDiff(existing string, local *PulledApp, server map[string]ServiceRequirement) string {
+	lines := []string{}
+	if local != nil {
+		// Walk aliases in stable order: union of local + server keys.
+		seen := map[string]bool{}
+		aliases := []string{}
+		for a := range local.Requires {
+			if !seen[a] {
+				aliases = append(aliases, a)
+				seen[a] = true
+			}
+		}
+		for a := range server {
+			if !seen[a] {
+				aliases = append(aliases, a)
+				seen[a] = true
+			}
+		}
+		sort.Strings(aliases)
+		for _, alias := range aliases {
+			loc, hasLoc := local.Requires[alias]
+			srv, hasSrv := server[alias]
+			if !hasLoc {
+				lines = append(lines, fmt.Sprintf("- requires.%s: %s/%s", alias, srv.Type, srv.ID))
+				continue
+			}
+			if !hasSrv {
+				lines = append(lines, fmt.Sprintf("+ requires.%s: %s/%s", alias, loc.Type, loc.ID))
+				continue
+			}
+			if loc.Type != srv.Type {
+				lines = append(lines, fmt.Sprintf("- requires.%s.type: %s", alias, srv.Type))
+				lines = append(lines, fmt.Sprintf("+ requires.%s.type: %s", alias, loc.Type))
+			}
+			if loc.ID != srv.ID {
+				lines = append(lines, fmt.Sprintf("- requires.%s.id: %s", alias, srv.ID))
+				lines = append(lines, fmt.Sprintf("+ requires.%s.id: %s", alias, loc.ID))
+			}
+			if !mapsEqualNormalised(loc.Config, srv.Config) {
+				cfgKeys := map[string]bool{}
+				for k := range loc.Config {
+					cfgKeys[k] = true
+				}
+				for k := range srv.Config {
+					cfgKeys[k] = true
+				}
+				keys := make([]string, 0, len(cfgKeys))
+				for k := range cfgKeys {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					lv, lok := loc.Config[k]
+					sv, sok := srv.Config[k]
+					if lok && sok && reflect.DeepEqual(lv, sv) {
+						continue
+					}
+					if sok {
+						lines = append(lines, fmt.Sprintf("- requires.%s.config.%s: %v", alias, k, sv))
+					}
+					if lok {
+						lines = append(lines, fmt.Sprintf("+ requires.%s.config.%s: %v", alias, k, lv))
+					}
+				}
+			}
+			if !envEqualNormalised(loc.Env, srv.Env) {
+				envKeys := map[string]bool{}
+				for k := range loc.Env {
+					envKeys[k] = true
+				}
+				for k := range srv.Env {
+					envKeys[k] = true
+				}
+				keys := make([]string, 0, len(envKeys))
+				for k := range envKeys {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					lv, lok := loc.Env[k]
+					sv, sok := srv.Env[k]
+					if lok && sok && lv == sv {
+						continue
+					}
+					if sok {
+						lines = append(lines, fmt.Sprintf("- requires.%s.env.%s: %s", alias, k, sv))
+					}
+					if lok {
+						lines = append(lines, fmt.Sprintf("+ requires.%s.env.%s: %s", alias, k, lv))
+					}
+				}
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return existing
+	}
+	if existing == "" {
+		return strings.Join(lines, "\n")
+	}
+	return existing + "\n" + strings.Join(lines, "\n")
 }
 
 // buildFullYAMLBody projects a local PulledApp into the JSON body shape
@@ -955,9 +1088,32 @@ func LoadLocalSecretFiles(yamlDir string, files []SecretFile) (map[string][]byte
 		if err != nil {
 			return nil, fmt.Errorf("read secret file %q (%s): %w", sf.Filename, path, err)
 		}
-		out[sf.Filename] = data
+		// Infer filename from basename(local) when the yaml entry omits
+		// it. Keying on an empty string would silently collapse multiple
+		// entries into one slot; the basename matches what the API
+		// expects on the wire and round-trips through pull.
+		key := sf.Filename
+		if key == "" {
+			key = filepath.Base(sf.Local)
+		}
+		out[key] = data
 	}
 	return out, nil
+}
+
+// NormalizeSecretFiles fills in defaults for the yaml's secretFiles
+// entries: when `filename:` is omitted, it's derived from
+// `basename(local)`. Mutates the slice in place. Used by sync so that
+// both the manifest projection and the loaded content map agree on the
+// filename key. Without this, dry-run plans render `+ (mount /)`
+// (empty filename, root mount) for an entry that's perfectly usable
+// once filename is inferred.
+func NormalizeSecretFiles(files []SecretFile) {
+	for i := range files {
+		if files[i].Filename == "" && files[i].Local != "" {
+			files[i].Filename = filepath.Base(files[i].Local)
+		}
+	}
 }
 
 // LoadLocalOverrides reads each override's body referenced by overrides[i].Local.
