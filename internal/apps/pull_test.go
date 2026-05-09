@@ -1838,6 +1838,76 @@ func TestConfigPathMismatchWarning(t *testing.T) {
 	}
 }
 
+// Regression test for V17 (VCS_DEPLOY_TEST_NOTES.md): vcsRepoRelPath
+// silently returned "" via MCP when the CLI subprocess CWD was outside
+// the pull target's repo, because git resolution was anchored at CWD
+// instead of the yaml's directory. The fix moved git resolution to
+// `git -C <yamlDir>` and split the path math into this pure helper so
+// it can be table-tested without a git fixture. The git-resolution half
+// is exercised manually per VCS_DEPLOY_TEST_NOTES.md verification step 6.
+func TestRepoRelPath(t *testing.T) {
+	t.Parallel()
+	sep := string(filepath.Separator)
+	cases := []struct {
+		name     string
+		repoRoot string
+		absPath  string
+		want     string
+	}{
+		{
+			name:     "child path inside repo",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  filepath.Join(sep, "repo", "apps", "runos.mycluster2.qu5db.yaml"),
+			want:     "apps/runos.mycluster2.qu5db.yaml",
+		},
+		{
+			name:     "yaml at repo root",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  filepath.Join(sep, "repo", "runos.yaml"),
+			want:     "runos.yaml",
+		},
+		{
+			name:     "path escapes repo root",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  filepath.Join(sep, "elsewhere", "runos.yaml"),
+			want:     "",
+		},
+		{
+			name:     "exact repo root rejected (no meaningful file path)",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  filepath.Join(sep, "repo"),
+			want:     "",
+		},
+		{
+			name:     "empty repoRoot returns empty",
+			repoRoot: "",
+			absPath:  filepath.Join(sep, "repo", "foo"),
+			want:     "",
+		},
+		{
+			name:     "empty absPath returns empty",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  "",
+			want:     "",
+		},
+		{
+			name:     "sibling directory with shared prefix is rejected (escapes via parent)",
+			repoRoot: filepath.Join(sep, "repo"),
+			absPath:  filepath.Join(sep, "repository", "foo"),
+			want:     "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RepoRelPath(tc.repoRoot, tc.absPath)
+			if got != tc.want {
+				t.Errorf("RepoRelPath(%q, %q) = %q, want %q",
+					tc.repoRoot, tc.absPath, got, tc.want)
+			}
+		})
+	}
+}
+
 // Regression test for V14 / long-term V2 closure: apps_pull's reaction to
 // a server-vs-local configPath divergence should be a tri-state decision
 // (Skip, Update via PATCH, fall back to a Warn) rather than the older

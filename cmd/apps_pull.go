@@ -435,13 +435,19 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		return pullPlan{}, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	// --all: bulk mode. parent = --out or cwd; per-app subdirs added in the loop.
+	// --all: bulk mode. parent = --out or cwd; per-app subdirs added in the
+	// loop. V17: absolutize so downstream filepath.Dir(yamlRes.Path) is
+	// unambiguous regardless of the CLI subprocess's CWD.
 	if all {
 		parent := outFlag
 		if parent == "" {
 			parent = cwd
 		}
-		return pullPlan{mode: "bulk", bulkParent: parent}, nil
+		absParent, err := filepath.Abs(parent)
+		if err != nil {
+			return pullPlan{}, fmt.Errorf("resolve --out %q: %w", parent, err)
+		}
+		return pullPlan{mode: "bulk", bulkParent: absParent}, nil
 	}
 
 	// Positional yaml takes precedence over --app-id auto-detect.
@@ -512,7 +518,15 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		if fixed == "" {
 			fixed = filepath.Dir(yamlPath)
 		}
-		return pullPlan{mode: "yaml", appID: localApp.ID, fixedDir: fixed, yamlCID: localApp.CID}, nil
+		// V17: absolutize so downstream git resolution from the yaml's
+		// directory works regardless of CLI cwd. yamlPath was Abs'd above
+		// so the empty-outFlag branch is already absolute; the explicit
+		// --out branch needs the same treatment.
+		absFixed, err := filepath.Abs(fixed)
+		if err != nil {
+			return pullPlan{}, fmt.Errorf("resolve --out %q: %w", fixed, err)
+		}
+		return pullPlan{mode: "yaml", appID: localApp.ID, fixedDir: absFixed, yamlCID: localApp.CID}, nil
 	}
 
 	// --app-id without yaml. With --out: flat into that dir. Without --out:
@@ -521,7 +535,15 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		return pullPlan{}, err
 	}
 	if outFlag != "" {
-		return pullPlan{mode: "id-flat", appID: appIDFlag, fixedDir: outFlag}, nil
+		// V17: absolutize so vcsRepoRelPath can derive git context from
+		// the resulting yaml's directory. Pre-fix, a relative --out left
+		// fixedDir relative; the V14 hook then silently no-op'd because
+		// filepath.Rel(absRepoRoot, relativeYamlPath) errored.
+		absOut, err := filepath.Abs(outFlag)
+		if err != nil {
+			return pullPlan{}, fmt.Errorf("resolve --out %q: %w", outFlag, err)
+		}
+		return pullPlan{mode: "id-flat", appID: appIDFlag, fixedDir: absOut}, nil
 	}
 	return pullPlan{mode: "id-subdir", appID: appIDFlag, fixedDir: filepath.Join(cwd, apps.DefaultBaseName(expectedCID, appIDFlag))}, nil
 }
@@ -1274,26 +1296,32 @@ func emitJSON(v any) error {
 	return nil
 }
 
-// vcsRepoRelPath returns the repo-relative form of an absolute filesystem
-// path, suitable for comparison against a server-stored `configPath`.
-// Returns "" when we're not inside a git checkout, or when the path lives
-// outside the repo root (Rel produces a `..` prefix in that case). Mirrors
-// the shape of cmd/deploy_vcs.go:resolveVcsConfigPath, kept here as a
-// small free function so apps_pull doesn't have to drag the deploy config
-// loader along just to compute one path.
-func vcsRepoRelPath(absPath string) string {
-	if !git.IsRepo() {
-		return ""
-	}
-	repoRoot, err := git.RepoRoot()
+// vcsRepoRelPath returns the repo-relative form of a filesystem path,
+// suitable for comparison against a server-stored `configPath`. Returns
+// "" when the path's directory isn't inside a git checkout, or when the
+// path escapes the repo root. Mirrors the shape of
+// cmd/deploy_vcs.go:resolveVcsConfigPath.
+//
+// V17: anchors git resolution at the path's directory (`git -C <dir>`)
+// rather than the CLI's process CWD. Pre-fix, MCP-launched pulls
+// inherited the MCP host's CWD (typically the user's editor project,
+// not the pull target), so `git rev-parse --show-toplevel` returned the
+// wrong root and the V14 configPath auto-update silently no-op'd. Path
+// math is delegated to apps.RepoRelPath so it's testable in isolation.
+func vcsRepoRelPath(path string) string {
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		return ""
 	}
-	rel, err := filepath.Rel(repoRoot, absPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	dir := filepath.Dir(abs)
+	if !git.IsRepoAt(dir) {
 		return ""
 	}
-	return filepath.ToSlash(rel)
+	repoRoot, err := git.RepoRootAt(dir)
+	if err != nil {
+		return ""
+	}
+	return apps.RepoRelPath(repoRoot, abs)
 }
 
 // loadLocalManifest reads the manifest cache at ~/.runos/manifest.json.

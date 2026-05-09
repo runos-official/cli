@@ -567,6 +567,25 @@ const (
 	ConfigPathActionWarn
 )
 
+// RepoRelPath returns the slash-form of absPath relative to repoRoot, or
+// "" if absPath escapes the root, equals the root, or either input is
+// empty. Pure: no git, no filesystem. Extracted from cmd/apps_pull.go's
+// vcsRepoRelPath (V17) so the path math is testable without spinning up
+// a git fixture.
+func RepoRelPath(repoRoot, absPath string) string {
+	if repoRoot == "" || absPath == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(repoRoot, absPath)
+	if err != nil {
+		return ""
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
 // DecideConfigPathAction maps the (serverConfigPath, localRepoRelPath,
 // deployType, noUpdate) tuple to one of the three ConfigPathAction
 // outcomes. Pure function so the dispatch contract is testable without
