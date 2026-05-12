@@ -19,7 +19,7 @@ Modes (precedence order):
 
   1. <yaml-file> positional:    re-pull the named yaml in place. Type/cid/id
                                 are read from the file.
-  2. --type + --service-id:     first-time pull. Writes
+  2. --type + --id:             first-time pull. Writes
                                 runos.service.<cid>.<sid>.yaml in --out (or cwd).
 
 The yaml schema is derived at runtime from the conductor manifest, so
@@ -28,16 +28,16 @@ without a CLI change. Run 'runos manifest update' if you've recently
 upgraded conductor.
 
 Examples:
-  runos services pull --type postgresql --service-id mjn1d --cid mycluster3
+  runos services pull --type postgresql --id mjn1d --cid mycluster3
   runos services pull runos.service.mycluster3.mjn1d.yaml`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runServicesPull,
 }
 
 func init() {
-	servicesPullCmd.Flags().String("cid", "", "cluster ID (required for --type+--service-id mode; sourced from the yaml's cid: field when re-pulling a yaml positional)")
+	servicesPullCmd.Flags().String("cid", "", "cluster ID (required for --type+--id mode; sourced from the yaml's cid: field when re-pulling a yaml positional)")
 	servicesPullCmd.Flags().String("type", "", "service type (e.g. postgresql, valkey, mysql)")
-	servicesPullCmd.Flags().String("service-id", "", "service id (5-char identifier)")
+	servicesPullCmd.Flags().String("id", "", "service id (5-char identifier)")
 	servicesPullCmd.Flags().StringP("out", "o", "", "output directory (defaults to cwd; ignored when re-pulling a yaml-file positional)")
 	servicesPullCmd.Flags().BoolP("force", "f", false, "overwrite local file even when it has diverged from the server")
 	servicesPullCmd.Flags().BoolP("json", "j", false, "output pull summary as JSON")
@@ -64,7 +64,7 @@ func runServicesPull(cmd *cobra.Command, args []string) error {
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	outFlag, _ := cmd.Flags().GetString("out")
 	typeFlag, _ := cmd.Flags().GetString("type")
-	sidFlag, _ := cmd.Flags().GetString("service-id")
+	sidFlag, _ := cmd.Flags().GetString("id")
 
 	// Resolve target: yaml positional re-pull, or --type+--service-id first-time.
 	var (
@@ -113,7 +113,7 @@ func runServicesPull(cmd *cobra.Command, args []string) error {
 			destPath = services.FilenameFor(dir, ctx.cid, serviceType, sid)
 		}
 	default:
-		return fmt.Errorf("pass a yaml file, or provide --type and --service-id for a first-time pull")
+		return fmt.Errorf("pass a yaml file, or provide --type and --id for a first-time pull")
 	}
 
 	pulled, err := services.Pull(ctx.exec, ctx.manifest, serviceType, ctx.cid, ctx.cfg.AccountID, sid)

@@ -3,6 +3,7 @@ package auth
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -123,4 +124,36 @@ func GetIDToken(refreshToken, apiKey string) (string, error) {
 	}
 
 	return resp.IDToken, nil
+}
+
+// ExtractFirebaseUID decodes the Firebase ID token's JWT payload and
+// returns the `user_id` claim (Firebase's stable per-account uid). No
+// signature verification — the token was minted by Google's token
+// endpoint via our own refresh flow, so trust is established at the
+// transport layer; reading our own uid out of it doesn't need crypto.
+// Used to default the positional argument on commands keyed on the
+// caller's own uid (e.g. `user permissions`) so an LLM/MCP user doesn't
+// have to remember and paste their own uid. Returns "" when the token
+// is malformed or doesn't carry a `user_id` claim (falls back to the
+// caller's existing missing-arg path). Regression target: I12-D.
+func ExtractFirebaseUID(idToken string) string {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		UserID string `json:"user_id"`
+		Sub    string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	if claims.UserID != "" {
+		return claims.UserID
+	}
+	return claims.Sub
 }

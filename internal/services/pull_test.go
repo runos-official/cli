@@ -40,15 +40,19 @@ func TestBuildPulledService_StripsServerOnlyFields(t *testing.T) {
 			t.Errorf("field %q must be filtered out, got %v", banned, got.Fields[banned])
 		}
 	}
-	// Note: replicas is in the update endpoint's Input.Fields (so it's
-	// a settable field), but the stored class is a real class
-	// (postgresql.c0.beff != "custom"), so the preset-wins gate strips
-	// it from the projection. See the dedicated preset-wins test below
-	// for the full class-coupled field set.
+	// I9-F: `replicas` is no longer in the preset-wins strip set
+	// (cpuRequestMc / cpuLimitMc / memoryRequestMb / memoryLimitMb
+	// still are, but those are filtered above by the audit-fields gate
+	// when they happen to live alongside a class - here cpuLimitMc and
+	// memoryLimitMb were declared audit by the synthetic case).
+	// Replicas IS in the update endpoint's Input.Fields, so it stays
+	// in the projection regardless of stored class. See the dedicated
+	// preset-wins test below for the remaining class-coupled set.
 	want := map[string]any{
 		"name":                       "poll-app-db",
 		"resourceRequirementClassId": "postgresql.c0.beff",
 		"version":                    "17.6",
+		"replicas":                   1,
 	}
 	if !reflect.DeepEqual(got.Fields, want) {
 		t.Errorf("Fields mismatch:\n got %v\nwant %v", got.Fields, want)
@@ -88,7 +92,13 @@ func TestBuildPulledService_PresetWinsStripsClassCoupledFields(t *testing.T) {
 		"memoryLimitMb":              256,
 	}
 	got := BuildPulledService(rawWithRealClass, "traefik", "mycluster3", "acct1", "ek6is", addCmd, updateCmd)
-	for _, banned := range []string{"replicas", "cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb"} {
+	// I9-F: replicas is no longer stripped on a real class (it stays
+	// so the diff projection has a server-side value to compare against
+	// and the user can read their current scale from the yaml).
+	if got.Fields["replicas"] != 1 {
+		t.Errorf("real class: replicas should be kept post-I9-F, got %v", got.Fields["replicas"])
+	}
+	for _, banned := range []string{"cpuRequestMc", "cpuLimitMc", "memoryRequestMb", "memoryLimitMb"} {
 		if _, ok := got.Fields[banned]; ok {
 			t.Errorf("real class: field %q must be stripped (class encapsulates it), got %v", banned, got.Fields[banned])
 		}

@@ -320,6 +320,84 @@ replicas: 1
 	}
 }
 
+// I5-G regression: `runos apps pull --app-id <id>` from inside a
+// directory that already holds a pulled yaml for the same
+// (cid, id) must refresh that yaml in place, not create a nested
+// `runos.<cid>.<id>/runos.<cid>.<id>/` duplicate. Pre-fix the
+// id-subdir branch unconditionally appended the per-app subdir
+// name to cwd, leaving the outer yaml stale on subsequent edits.
+func TestResolvePullPlan_AppIDRefreshesInPlaceWhenCwdMatches(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`app: bookmarks
+deployType: cli
+id: appid1
+cid: mycluster2
+aid: myacct
+replicas: 1
+`), 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	t.Chdir(dir)
+	resolvedCwd, _ := os.Getwd()
+
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	if err != nil {
+		t.Fatalf("resolvePullPlan with matching cwd yaml: %v", err)
+	}
+	if plan.mode != "id-subdir" {
+		t.Errorf("mode = %q, want id-subdir", plan.mode)
+	}
+	if plan.fixedDir != resolvedCwd {
+		t.Errorf("fixedDir = %q, want cwd %q (in-place refresh, not nested subdir)", plan.fixedDir, resolvedCwd)
+	}
+}
+
+// I5-G partner: when cwd has a yaml for a DIFFERENT app, no
+// in-place refresh — the fresh subdir gets created as before so
+// the user can pull multiple apps into the same parent.
+func TestResolvePullPlan_AppIDCreatesSubdirWhenCwdHasDifferentApp(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`app: other-app
+deployType: cli
+id: zzzzz
+cid: mycluster2
+aid: myacct
+replicas: 1
+`), 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	t.Chdir(dir)
+	resolvedCwd, _ := os.Getwd()
+
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	if err != nil {
+		t.Fatalf("resolvePullPlan: %v", err)
+	}
+	wantDir := filepath.Join(resolvedCwd, "runos.mycluster2.appid1")
+	if plan.fixedDir != wantDir {
+		t.Errorf("fixedDir = %q, want %q (fresh subdir, cwd holds a different app)", plan.fixedDir, wantDir)
+	}
+}
+
+// I5-G partner: empty cwd → fresh subdir. The in-place detection
+// has to gracefully fall back when there's nothing to refresh.
+func TestResolvePullPlan_AppIDCreatesSubdirWhenCwdEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	resolvedCwd, _ := os.Getwd()
+
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	if err != nil {
+		t.Fatalf("resolvePullPlan: %v", err)
+	}
+	wantDir := filepath.Join(resolvedCwd, "runos.mycluster2.appid1")
+	if plan.fixedDir != wantDir {
+		t.Errorf("fixedDir = %q, want %q (empty cwd → fresh subdir)", plan.fixedDir, wantDir)
+	}
+}
+
 func TestResolvePullPlan_AutoDetectNoCandidates(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

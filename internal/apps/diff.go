@@ -191,6 +191,19 @@ func (r *DiffReport) NeedsForceToOverwrite() bool {
 //     (overwrite). Both are captured by `!LocalIsSuperset`. Pure
 //     local additions (user wrote new fields, server doesn't have
 //     them) are NOT blocking: that's the normal deploy path.
+//
+//     I3-E retest follow-up: server-only fields whose semantics are
+//     preserve-on-omit AND whose value summaries are zero defaults
+//     (cpuRequestMc=0, memoryRequestMb=0, etc.) are also waved
+//     through. Omitting them on push leaves server state unchanged,
+//     so refusing to deploy on their account was forcing an `apps
+//     pull --force` for purely cosmetic drift. The
+//     `AdditiveOnly && !AnyServerOnlyIsBlocking(...)` branch encodes
+//     "every shared field agrees, and the server-only delta is just
+//     documented platform defaults" — safe to deploy. clearOnOmit
+//     fields (`domain`, `healthCheck*`, `metrics*`) and non-zero
+//     preserve-on-omit values still trip the gate.
+//
 //   - env: additive drift gets merged in by the pre-deploy syncAppState
 //     step before the actual upload, so it isn't a deploy concern.
 //     Divergent env values would be a real conflict, but syncAppState
@@ -201,6 +214,9 @@ func (r *DiffReport) NeedsForceToOverwrite() bool {
 //     archives than the recorded baseline) is always blocking.
 func (r *DiffReport) NeedsForceToDeploy() bool {
 	if r.YAML.Status == StatusDrift && !r.YAML.LocalIsSuperset {
+		if r.YAML.AdditiveOnly && !AnyServerOnlyIsBlocking(r.YAML.ServerOnlyFields) {
+			return false
+		}
 		return true
 	}
 	return r.Code.IsStale()
@@ -353,8 +369,228 @@ func summarizeValue(v any) string {
 	}
 }
 
+// RoundTripOnlyYAMLFields lists top-level yaml fields that are
+// local-tooling state and never push or clear server-side. The
+// conductor's `apps_update` manifest doc tags `sourceDir`/`dockerfile`
+// as "round-trip only" build-metadata; the cluster agent reads them
+// from the local yaml on deploy but the AppDocument PATCH path
+// ignores them. Surfacing them in the diff body (or counting them
+// toward the exit code) creates the I5-F asymmetry: pure waiver-class
+// drift exits 2 even when `runos deploy` would push exactly zero
+// changes.
+var RoundTripOnlyYAMLFields = []string{"sourceDir", "dockerfile"}
+
+// IsRoundTripOnlyYAMLField reports whether a top-level yaml field
+// name is in the round-trip-only set. Matches by exact top-level
+// segment, not by suffix — `sourceDirOther` does not match.
+func IsRoundTripOnlyYAMLField(name string) bool {
+	for _, f := range RoundTripOnlyYAMLFields {
+		if name == f {
+			return true
+		}
+	}
+	return false
+}
+
+// filterRoundTripUnifiedDiff drops every +/- line in a unified-diff
+// string whose body starts with a round-trip-only top-level field
+// (`sourceDir:`, `dockerfile:`). Header lines (`---`, `+++`) and
+// every context / non-+/- line passes through verbatim. Used by the
+// yaml SectionDiff post-processor so pure round-trip-only drift
+// disappears from the rendered body.
+func filterRoundTripUnifiedDiff(diff string) string {
+	if diff == "" {
+		return ""
+	}
+	lines := strings.Split(diff, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) > 0 && (line[0] == '+' || line[0] == '-') {
+			body := line[1:]
+			// File headers (`--- local`, `+++ server`) start with
+			// another `-` or `+` — leave them alone.
+			if !(strings.HasPrefix(body, "-") || strings.HasPrefix(body, "+")) {
+				trimmed := strings.TrimLeft(body, " \t")
+				if matchesRoundTripFieldLine(trimmed) {
+					continue
+				}
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// matchesRoundTripFieldLine reports whether a yaml line opens with a
+// round-trip-only top-level field. Matches the `<field>:` shape
+// produced by yaml.Marshal of a PulledApp.
+func matchesRoundTripFieldLine(line string) bool {
+	for _, f := range RoundTripOnlyYAMLFields {
+		if strings.HasPrefix(line, f+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// unifiedDiffHasActionableChange reports whether a unified-diff
+// string contains at least one +/- line that isn't a file header.
+// Used to decide whether a SectionDiff folds back to InSync after
+// round-trip filtering removed every actionable line.
+func unifiedDiffHasActionableChange(diff string) bool {
+	if diff == "" {
+		return false
+	}
+	for _, line := range strings.Split(diff, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] != '+' && line[0] != '-' {
+			continue
+		}
+		body := line[1:]
+		if strings.HasPrefix(body, "-") || strings.HasPrefix(body, "+") {
+			continue // header
+		}
+		return true
+	}
+	return false
+}
+
+// FilterRoundTripFromYAMLDiff post-processes a yaml SectionDiff so
+// round-trip-only fields (sourceDir, dockerfile) don't surface as
+// actionable drift. Drops matching entries from ServerOnlyFields,
+// filters the unified-diff body, and folds Status back to InSync
+// when no actionable line remains. The deploy and sync push paths
+// already ignore these fields; the diff path must match so a
+// `runos apps diff && runos deploy` CI gate doesn't exit 2 at the
+// diff step when the deploy step would push zero changes (I5-F).
+func FilterRoundTripFromYAMLDiff(sd SectionDiff) SectionDiff {
+	if sd.Status == StatusInSync {
+		return sd
+	}
+	// Filter the server-only-fields summary so the deploy gate's
+	// "Preserved server-side / WILL be cleared" partition doesn't
+	// see sourceDir / dockerfile.
+	if len(sd.ServerOnlyFields) > 0 {
+		kept := make([]string, 0, len(sd.ServerOnlyFields))
+		for _, f := range sd.ServerOnlyFields {
+			topLevel := f
+			if i := strings.IndexAny(f, ". ["); i >= 0 {
+				topLevel = f[:i]
+			}
+			if IsRoundTripOnlyYAMLField(topLevel) {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		sd.ServerOnlyFields = kept
+	}
+	// Filter the unified-diff body.
+	if sd.UnifiedDiff != "" {
+		sd.UnifiedDiff = filterRoundTripUnifiedDiff(sd.UnifiedDiff)
+		if !unifiedDiffHasActionableChange(sd.UnifiedDiff) && len(sd.ServerOnlyFields) == 0 {
+			// Pure round-trip-only drift after filtering; fold to
+			// InSync so HasDrift() and the exit-code computation
+			// stay consistent with the push path's silent-ignore.
+			sd.Status = StatusInSync
+			sd.UnifiedDiff = ""
+			sd.AdditiveOnly = false
+			sd.LocalIsSuperset = false
+		}
+	}
+	return sd
+}
+
+// ComputeEnvDiffFiltered diffs the local env file against server vars
+// with a name set excluded from BOTH sides before comparison. Used
+// by the secret-env diff path to drop platform-injected (requires-
+// owned) names: those reach the K8s Secret on every deploy via the
+// requires-merge regardless of what the local file contains, so a
+// local file that has them while the post-strip server view doesn't
+// (or vice versa) isn't actionable drift (I5-F).
+//
+// When platformInjected is empty, behaves identically to ComputeEnvDiff.
+// Reuses the comment-only-suppression and AdditiveOnly classification
+// the existing helper produces.
+func ComputeEnvDiffFiltered(localPath string, serverVars map[string]string, platformInjected map[string]bool) (SectionDiff, error) {
+	if len(platformInjected) == 0 {
+		return ComputeEnvDiff(localPath, serverVars)
+	}
+	filteredServer := stripEnvKeys(serverVars, platformInjected)
+	// Inline the local read + parse so we can strip before comparison.
+	localBytes, err := os.ReadFile(localPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return SectionDiff{Status: StatusLocalMissing, Path: localPath}, nil
+		}
+		return SectionDiff{}, err
+	}
+	localVars := parseEnvBytes(localBytes)
+	filteredLocal := stripEnvKeys(localVars, platformInjected)
+	if envMapsEqual(filteredLocal, filteredServer) {
+		return SectionDiff{Status: StatusInSync, Path: localPath}, nil
+	}
+	filteredServerBytes := RenderEnvBytes(filteredServer)
+	filteredLocalBytes := RenderEnvBytes(filteredLocal)
+	return SectionDiff{
+		Status:          StatusDrift,
+		Path:            localPath,
+		UnifiedDiff:     unifiedDiff(filteredLocalBytes, filteredServerBytes, "local", "server"),
+		AdditiveOnly:    envIsSubset(filteredLocal, filteredServer),
+		LocalIsSuperset: envIsSubset(filteredServer, filteredLocal),
+	}, nil
+}
+
+// stripEnvKeys returns a copy of vars with every key removed that
+// appears in remove. Nil-safe and never mutates the input.
+func stripEnvKeys(vars map[string]string, remove map[string]bool) map[string]string {
+	if len(vars) == 0 {
+		return vars
+	}
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if remove[k] {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// requiresOwnedNames extracts the set of env var names claimed by
+// every requires.<alias>.env mapping on the given PulledApp. The
+// values of `env` map to runtime-injected names (e.g. DATABASE_URL,
+// REDIS_HOST); the keys are credential field names on the linked
+// service. Used by BuildDiffReport to build the platformInjected
+// argument for ComputeEnvDiffFiltered (I5-F).
+//
+// Nil-safe; returns nil when the input has no requires or every
+// requires entry has an empty env mapping.
+func requiresOwnedNames(p *PulledApp) map[string]bool {
+	if p == nil || len(p.Requires) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, req := range p.Requires {
+		for _, envName := range req.Env {
+			if envName != "" {
+				out[envName] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // ComputeEnvDiff diffs the local env file bytes against the canonical
-// rendering of serverVars (same ordering SaveEnv produces).
+// rendering of serverVars (same ordering SaveEnv produces). Comments and
+// blank lines are not semantic env state, so a local file that differs
+// from the server only in comment/whitespace shape (e.g. the auto-written
+// header on a freshly-pulled config.env with zero vars) is treated as
+// in_sync. Drift requires an actual key-value delta in either direction.
 func ComputeEnvDiff(localPath string, serverVars map[string]string) (SectionDiff, error) {
 	diff, err := compareBytes(localPath, RenderEnvBytes(serverVars))
 	if err != nil {
@@ -363,10 +599,29 @@ func ComputeEnvDiff(localPath string, serverVars map[string]string) (SectionDiff
 	if diff.Status == StatusDrift {
 		localBytes, err := os.ReadFile(localPath)
 		if err == nil {
-			diff.AdditiveOnly = envIsSubset(parseEnvBytes(localBytes), serverVars)
+			localVars := parseEnvBytes(localBytes)
+			if envMapsEqual(localVars, serverVars) {
+				return SectionDiff{Status: StatusInSync, Path: localPath}, nil
+			}
+			diff.AdditiveOnly = envIsSubset(localVars, serverVars)
+			diff.LocalIsSuperset = envIsSubset(serverVars, localVars)
 		}
 	}
 	return diff, nil
+}
+
+// envMapsEqual returns true when local and server have the same keys with
+// the same values. Used to suppress comment-only / whitespace-only diffs.
+func envMapsEqual(local, server map[string]string) bool {
+	if len(local) != len(server) {
+		return false
+	}
+	for k, v := range local {
+		if sv, ok := server[k]; !ok || sv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // envIsSubset is true when every key in local exists on the server with
@@ -417,14 +672,23 @@ func valuesAdditive(local, server any) bool {
 		}
 		return mapIsSubset(lv, sm)
 	case []any:
-		// Arrays must match in full, additive within an array is
-		// ambiguous (which entry corresponds to which?), so treat any
-		// difference as drift.
+		// Position-stable arrays: treat local as a prefix-of-server
+		// match. Returns true when local has fewer (or equal) entries
+		// AND every local[i] matches server[i] additively. Pre-fix the
+		// rule was strict length equality, which made `LocalIsSuperset`
+		// false whenever the user appended a new entry to a nested
+		// array (e.g. `secretFiles[]`) — the deploy gate then refused
+		// pure local-additions on nested arrays even though top-level
+		// additions sailed through (I10-R). RunOS yaml arrays are
+		// position-stable (secretFiles, servicePortMappings, requires,
+		// domains[]) so prefix-match aligns with conductor's
+		// positional diff semantics. Reordered or middle-inserted
+		// arrays still trip the gate (correct: they're real drift).
 		sl, ok := server.([]any)
 		if !ok {
 			return false
 		}
-		if len(lv) != len(sl) {
+		if len(lv) > len(sl) {
 			return false
 		}
 		for i := range lv {
@@ -435,6 +699,31 @@ func valuesAdditive(local, server any) bool {
 		return true
 	default:
 		return reflect.DeepEqual(local, server)
+	}
+}
+
+// RedactSecrets walks a DiffReport in place and replaces any sensitive
+// content (secret-env unified diff values, secret-file unified diffs)
+// with redaction markers. Plain env values are committed to VCS by
+// definition and stay readable.
+//
+// Used by the deploy drift gate (I4-B): the gate's purpose is to show
+// what's about to change, not to surface credentials. Pre-fix, deploy
+// printed `DATABASE_URL=postgresql://user:pass@host/db` straight to
+// the terminal, which CI logs persist verbatim. The values aren't
+// useful for the deploy decision (the user already authored them in
+// `.secret.env`), so always-redacting in the gate is the safer
+// default. Mirrors the redaction `apps_diff` opts in to via
+// `--redact-secrets`.
+func (r *DiffReport) RedactSecrets() {
+	if r == nil {
+		return
+	}
+	if r.SecretEnv.UnifiedDiff != "" {
+		r.SecretEnv.UnifiedDiff = RedactEnvUnifiedDiff(r.SecretEnv.UnifiedDiff)
+	}
+	for i := range r.SecretFiles.Entries {
+		r.SecretFiles.Entries[i].UnifiedDiff = ""
 	}
 }
 
@@ -764,12 +1053,22 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 	// also return empty Config/Env that the local yaml fills in. Merge
 	// covers both so the diff doesn't report false drift.
 	MergeRequiresUserAuthored(serverState, localApp)
+	// secretEnv / env path fields are CLI-side bookkeeping; preserve
+	// the local yaml's authored paths so a user who renamed the file
+	// (e.g. `secretEnv: .secret.env`) doesn't fight permanent drift
+	// against the canonical default (I3-B).
+	MergeUserEnvPaths(serverState, localApp)
 
 	yamlDir := filepath.Dir(yamlPath)
 	yamlDiff, err := ComputeYAMLDiff(yamlPath, serverState)
 	if err != nil {
 		return nil, fmt.Errorf("yaml diff: %w", err)
 	}
+	// I5-F: drop round-trip-only fields (sourceDir, dockerfile) from
+	// the yaml diff so pure local-tooling state doesn't trip the
+	// exit-2 contract. The push paths already ignore these fields;
+	// the diff path must match.
+	yamlDiff = FilterRoundTripFromYAMLDiff(yamlDiff)
 
 	// V3 fix: compute the env diff sections whenever EITHER side has
 	// content. The pre-fix gate (`len(serverVars) > 0`) ignored a local
@@ -787,8 +1086,20 @@ func BuildDiffReport(svc *Service, localApp *PulledApp, yamlPath, expectedAID, e
 	if !filepath.IsAbs(secretPath) {
 		secretPath = filepath.Join(yamlDir, secretPath)
 	}
-	if len(secretEnvVars) > 0 || fileExists(secretPath) {
-		secretEnvDiff, err = ComputeEnvDiff(secretPath, secretEnvVars)
+	// I5-F: strip platform-injected names (values in
+	// requires.<alias>.env) from BOTH local and server before
+	// comparison. The iter-3 R1 fix dropped them from the server
+	// side only (FilterPlatformInjectedEnv), which closed the
+	// "local missing → drift" case but left the asymmetric
+	// "local has, server-filtered doesn't → drift" gap. The
+	// conductor's push-side `stripOrphanKeysFromCustom` (iter-4 R2)
+	// removes the same names from anything the CLI sends, so any
+	// drift involving only these names is unactionable. Now both
+	// sides are filtered for the comparison.
+	platformInjected := requiresOwnedNames(serverState)
+	hasSecretContent := len(secretEnvVars) > 0 || fileExists(secretPath)
+	if hasSecretContent {
+		secretEnvDiff, err = ComputeEnvDiffFiltered(secretPath, secretEnvVars, platformInjected)
 		if err != nil {
 			return nil, fmt.Errorf("secret env diff: %w", err)
 		}

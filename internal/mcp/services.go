@@ -45,7 +45,7 @@ service type or field on conductor side flows through here without a CLI change.
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Defaults to the configured default cluster.",
+						Description: "Cluster ID. Defaults to the configured default cluster.",
 					},
 					"yaml_file": {
 						Type:        "string",
@@ -84,7 +84,7 @@ yaml_file is required when called via MCP.`,
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Cross-checked against the yaml's own cid field.",
+						Description: "Cluster ID. Cross-checked against the yaml's own cid field.",
 					},
 					"yaml_file": {
 						Type:        "string",
@@ -115,7 +115,7 @@ is auto-skipped when called via MCP.`,
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Cross-checked against the yaml's own cid field.",
+						Description: "Cluster ID. Cross-checked against the yaml's own cid field.",
 					},
 					"yaml_file": {
 						Type:        "string",

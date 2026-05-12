@@ -13,6 +13,7 @@ import (
 	"github.com/runos-official/cli/internal/services"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var servicesSyncCmd = &cobra.Command{
@@ -47,17 +48,47 @@ func init() {
 	servicesSyncCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt")
 	servicesSyncCmd.Flags().Bool("redact-secrets", false, "redact field values in the plan output (used by the MCP wrapper)")
 	servicesSyncCmd.Flags().BoolP("follow", "f", false, "wait for the emitted job to reach a terminal status; without it, prints the job ID and exits 0 the moment the conductor accepts the request")
+	// --json mirrors apps_sync's contract: plan-only, valid with
+	// --dry-run, emits the SyncPlan as JSON so CI gates can parse the
+	// plan structurally. Regression target: I10-I (CLI parity gap).
+	servicesSyncCmd.Flags().BoolP("json", "j", false, "emit the plan as JSON (requires --dry-run)")
 }
 
-func runServicesSync(cmd *cobra.Command, args []string) error {
-	ctx, err := prepareServicesCmd(cmd)
-	if err != nil {
-		return err
-	}
+func runServicesSync(cmd *cobra.Command, args []string) (rerr error) {
+	cmd.SilenceUsage = true
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	// planEmitted flips true once we've already written the plan JSON
+	// to stdout. The refused-fields exit-1 path (I10-D) sets this so
+	// the defer below doesn't emit a second JSON envelope after the
+	// plan itself — stdout stays a single parseable JSON document.
+	var planEmitted bool
+	// Route any returned error through the JSON envelope when --json is
+	// set so the failure path matches the success path's shape (mirrors
+	// apps_sync's I4-G defer). Regression target: I10-I.
+	defer func() {
+		if jsonOut && rerr != nil && !planEmitted {
+			rerr = emitJSONError(cmd, rerr)
+		} else if jsonOut && rerr != nil && planEmitted {
+			// Plan already on stdout; silence cobra's "Error: ..." print
+			// so the exit code is the only signal, leaving stdout pure.
+			cmd.SilenceErrors = true
+		}
+	}()
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	redact, _ := cmd.Flags().GetBool("redact-secrets")
 	follow, _ := cmd.Flags().GetBool("follow")
+
+	// --json is plan-only: it doesn't make sense alongside an apply step.
+	// Mirrors apps_sync's same constraint (I10-I parity).
+	if jsonOut && !dryRun {
+		return fmt.Errorf("--json is only valid with --dry-run")
+	}
+
+	ctx, err := prepareServicesCmd(cmd)
+	if err != nil {
+		return err
+	}
 
 	if len(args) != 1 {
 		return fmt.Errorf("pass the path to a runos.service.<cid>.<sid>.yaml file")
@@ -89,6 +120,11 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// showCmd is consulted by refusedDrift to split "unknown field, typo?"
+	// from "known but read-only / immutable after create" (I9-G). Best
+	// effort: a missing show command is non-fatal; the refusal message
+	// just falls back to the generic immutable wording.
+	showCmd, _ := services.ShowCommand(ctx.manifest, local.Type)
 
 	// Server state: only meaningful when local already has an id. Skipped
 	// for create flows so we don't 404 on a fresh service.
@@ -100,18 +136,63 @@ func runServicesSync(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	plan := services.ComputeSyncPlan(local, server, addCmd, updateCmd)
+	plan := services.ComputeSyncPlan(local, server, addCmd, updateCmd, showCmd)
+
+	// JSON path: emit the plan as a single JSON object so CI gates can
+	// parse the plan structurally. Mirrors apps_sync. Honour redact at
+	// this layer too. Regression targets: I10-I (parity) + I10-M-style
+	// secrets-in-json safety.
+	if jsonOut {
+		if redact {
+			plan.RedactSecrets()
+		}
+		if err := emitJSON(plan); err != nil {
+			return err
+		}
+		planEmitted = true
+		// Refused fields are a CI-actionable signal: a typo'd field name
+		// or an immutable-after-create edit needs human attention. Exit
+		// non-zero in JSON mode so the CI gate trips. The defer above
+		// skips the JSON-envelope wrap because planEmitted is true;
+		// stdout stays a single parseable plan JSON. Regression target:
+		// I10-D.
+		if len(plan.Refused) > 0 {
+			return fmt.Errorf("plan refused %d field(s); inspect the JSON for details", len(plan.Refused))
+		}
+		return nil
+	}
+
 	printServicesSyncPlan(plan, redact)
 
 	if !plan.HasChanges() {
 		fmt.Println("\nNothing to sync.")
+		if len(plan.Refused) > 0 {
+			return fmt.Errorf("plan refused %d field(s); see the refused section above", len(plan.Refused))
+		}
 		return nil
 	}
 	if dryRun {
 		fmt.Println("\nDry run, no changes applied.")
+		if len(plan.Refused) > 0 {
+			// Same exit-1 trip as the JSON path so dry-run + text mode
+			// also surfaces refused fields via the process exit code
+			// (I10-D). The text plan already printed the refused list.
+			return fmt.Errorf("plan refused %d field(s); see the refused section above", len(plan.Refused))
+		}
 		return nil
 	}
-	if !skipPrompt {
+	// Confirm before applying. Three short-circuits, matching the
+	// `runos deploy` pattern (I14-D):
+	//   1. `--yes` / `-y` set explicitly: skip the prompt verbatim.
+	//   2. stdin is not a terminal (CI / piped invocation): treat as
+	//      explicit skip. The prompt is useless when no human can see
+	//      it, and `confirm` reading EOF from a closed pipe returned
+	//      `read confirmation: EOF`, breaking IaC pipelines using
+	//      services sync for drift reconciliation. The user has
+	//      already authored the change in the yaml on disk; running
+	//      sync against it implies intent.
+	//   3. Otherwise prompt as before.
+	if !skipPrompt && term.IsTerminal(int(os.Stdin.Fd())) {
 		ok, err := confirm(fmt.Sprintf("\nApply changes to %s/%s on cluster %s? [y/N] ", plan.Type, plan.ID, plan.CID))
 		if err != nil {
 			return err
@@ -187,6 +268,12 @@ func printServicesSyncPlan(plan *services.SyncPlan, redact bool) {
 		fmt.Println()
 		fmt.Println(sectionRule("create", "POST"))
 		printBody(plan.CreateBody, redact, "  ")
+		// CREATE flow: no server state, so the hint relies on the body
+		// carrying both the named RRC and an override directly.
+		if hint := services.CustomSynthesisHint(plan.CreateBody, ""); hint != "" {
+			fmt.Println()
+			fmt.Printf("  %s\n", hint)
+		}
 	}
 	if plan.PatchBody != nil {
 		fmt.Println()
@@ -195,6 +282,14 @@ func printServicesSyncPlan(plan *services.SyncPlan, redact bool) {
 			printIndented(plan.Diff, "  ")
 		} else {
 			printBody(plan.PatchBody, redact, "  ")
+		}
+		// UPDATE flow: even a PATCH that only carries an override field
+		// (no RRC in body) flips RRC server-side when the stored class
+		// is named. Pass the server-stored RRC so the hint catches the
+		// "I just changed replicas, why did my class flip?" footgun.
+		if hint := services.CustomSynthesisHint(plan.PatchBody, plan.ServerRRC); hint != "" {
+			fmt.Println()
+			fmt.Printf("  %s\n", hint)
 		}
 	}
 

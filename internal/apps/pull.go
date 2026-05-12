@@ -86,6 +86,30 @@ type PulledApp struct {
 	Requires map[string]ServiceRequirement `yaml:"requires,omitempty"`
 }
 
+// MergeUserEnvPaths preserves the local yaml's authored `secretEnv` /
+// `env` path fields. These point at on-disk files (which the CLI reads
+// to send env content to the server, and writes when content comes
+// back) and are CLI-side bookkeeping only; the server has no notion of
+// where the file lives. Without this merge, a re-pull would overwrite
+// `secretEnv: .secret.env` with the canonical `.runos.<cid>.<id>.env`
+// that BuildServerStateForDiff stamps when env content exists, leaving
+// the user with permanent yaml drift on every `apps_diff` (I3-B).
+//
+// No-op when either argument is nil. An empty local field leaves the
+// canonical default in place (fresh pulls and apps that have never
+// customised the path keep the canonical name).
+func MergeUserEnvPaths(target, local *PulledApp) {
+	if target == nil || local == nil {
+		return
+	}
+	if local.SecretEnv != "" {
+		target.SecretEnv = local.SecretEnv
+	}
+	if local.Env != "" {
+		target.Env = local.Env
+	}
+}
+
 // MergeRequiresUserAuthored reconciles a server-built Requires map with
 // the user's local yaml. The /apps/:id/requires endpoint is the
 // authoritative source for Type, ID, Config, and Env; Class is the only
@@ -1140,6 +1164,67 @@ func SaveEnv(parentDir, base, cid, appID string, envVars map[string]string) (Wri
 		return WriteResult{}, err
 	}
 	return writeIfNeeded(filepath.Join(appDir, EnvFilename(cid, appID)), RenderEnvBytes(envVars), 0644)
+}
+
+// SaveSecretEnvAtPath writes the sensitive env file at the resolved
+// path with 0600 perms. Caller is responsible for resolving the path
+// (typically by reading the yaml's `secretEnv:` field, falling back
+// to SecretEnvFilename + appDir when empty).
+//
+// I4-L: pre-fix, apps_pull always wrote env content to the canonical
+// `.runos.<cid>.<id>.env` leaf via SaveSecretEnv, even when the local
+// yaml declared `secretEnv: .secret.env`. Result: two env files
+// after pull (the user's authoritative one referenced by `secretEnv:`
+// stayed at its prior content, the canonical-named twin held the
+// fresh server state, and edits to the canonical name silently
+// dropped at the next deploy because the deploy reads the
+// yaml-referenced path). The companion MergeUserEnvPaths (I3-B)
+// preserved the path field in the yaml; this writer makes the
+// content side honour the same field.
+func SaveSecretEnvAtPath(path string, envVars map[string]string) (WriteResult, error) {
+	if path == "" {
+		return WriteResult{}, fmt.Errorf("secret env path is empty")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return WriteResult{}, fmt.Errorf("failed to create %s: %w", dir, err)
+		}
+	}
+	return writeIfNeeded(path, RenderEnvBytes(envVars), 0600)
+}
+
+// SaveEnvAtPath writes the plain env file at the resolved path with
+// 0644 perms. Plain env is committed to VCS; the perms reflect that.
+// Same I4-L motivation as SaveSecretEnvAtPath.
+func SaveEnvAtPath(path string, envVars map[string]string) (WriteResult, error) {
+	if path == "" {
+		return WriteResult{}, fmt.Errorf("env path is empty")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return WriteResult{}, fmt.Errorf("failed to create %s: %w", dir, err)
+		}
+	}
+	return writeIfNeeded(path, RenderEnvBytes(envVars), 0644)
+}
+
+// ResolveLocalEnvPath returns the leaf and full filesystem path the
+// caller should use for an env file, given the yaml's authored value
+// and a canonical fallback. When authored is non-empty it wins; when
+// authored is empty, canonical is used. Relative leaves are joined
+// against appDir; absolute leaves are returned verbatim. Mirrors the
+// resolution `BuildDiffReport` uses for the same env-section paths so
+// pull's reads, writes, and diffs all converge on the same file.
+func ResolveLocalEnvPath(appDir, authored, canonical string) (leaf, fullPath string) {
+	leaf = authored
+	if leaf == "" {
+		leaf = canonical
+	}
+	fullPath = leaf
+	if !filepath.IsAbs(fullPath) {
+		fullPath = filepath.Join(appDir, fullPath)
+	}
+	return
 }
 
 // RenderEnvBytes produces the canonical on-disk representation of a set of

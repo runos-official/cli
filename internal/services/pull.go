@@ -8,17 +8,24 @@ import (
 	"github.com/runos-official/cli/internal/manifest"
 )
 
-// classCoupledFields are the cpu/memory/replica values a non-custom
-// resource class encapsulates server-side. The API exposes them on the
-// update endpoint so they CAN be overridden, but a server-stored class
-// other than "custom" means the values are the class's, not the user's.
+// classCoupledFields are the cpu/memory values a non-custom resource
+// class encapsulates server-side. The API exposes them on the update
+// endpoint so they CAN be overridden, but a server-stored class other
+// than "custom" means the values are the class's, not the user's.
 // Pulling them back into yaml in that case would re-pin derived values
 // the next sync would either echo (no-op) or accidentally flip the
 // class to "custom" (see services topic, "Resource class + overrides").
 //
-// Mirrors the apps_pull preset-wins gate in internal/apps/pull.go.
+// `replicas` was previously in this list but pulling without it broke
+// diff projection (I9-F): the diff's server-projection ran the same
+// preset-wins gate, so when the user edited `replicas:` locally the
+// unified diff showed the local line as additive rather than a value
+// change (server-projection had no `replicas` to compare against).
+// Replicas is also the most user-facing scaling knob, so dropping it
+// from the yaml surprised users following the services topic example
+// (which DOES show `replicas: 1`). Kept off the strip list now;
+// matches the apps_pull behaviour (no preset-wins strip on apps).
 var classCoupledFields = []string{
-	"replicas",
 	"cpuRequestMc",
 	"cpuLimitMc",
 	"memoryRequestMb",

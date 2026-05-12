@@ -12,10 +12,13 @@ import (
 	"strings"
 
 	"github.com/runos-official/cli/internal/apps"
+	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/git"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/services"
+
+	"github.com/spf13/pflag"
 
 	"github.com/spf13/cobra"
 )
@@ -79,11 +82,23 @@ func init() {
 	appsPullCmd.Flags().Bool("all", false, "pull every app in the cluster (required for bulk mode)")
 	appsPullCmd.Flags().String("cid", "", "cluster ID (overrides default)")
 	appsPullCmd.Flags().String("app-id", "", "app id to pull (alternative to passing a yaml file)")
+	// `--id` is an alias for --app-id: every dynacmd-generated apps_*
+	// command uses `--id` for the app identifier (see manifest field
+	// shape), so accepting it here keeps the hand-written apps_pull
+	// flag-name consistent with the rest of the surface. Regression
+	// target: I9-B.
+	appsPullCmd.Flags().SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		if name == "id" {
+			return pflag.NormalizedName("app-id")
+		}
+		return pflag.NormalizedName(name)
+	})
 	appsPullCmd.Flags().StringP("out", "o", "", "output directory: parent for --all (per-app subdirs appended), exact target for --app-id and yaml positional")
 	appsPullCmd.Flags().BoolP("force", "f", false, "overwrite local files even when they have diverged from the server")
 	appsPullCmd.Flags().BoolP("json", "j", false, "output pull summary as JSON")
 	appsPullCmd.Flags().Bool("code", false, "also pull the source archive from the most recent CLI deploy (single-app only)")
-	appsPullCmd.Flags().String("code-version", "", "pull a specific archive instead of the latest (cliUploadID; implies --code)")
+	appsPullCmd.Flags().String("code-version", "", "pull the source archive at a specific cliUploadID (code-only by default; pass --code-version-with-yaml to also overwrite yaml/env/secret-files/overrides with current server state)")
+	appsPullCmd.Flags().Bool("code-version-with-yaml", false, "with --code-version: also overwrite the local yaml + env files + secret files + overrides with current server state. Default behaviour with --code-version is code-only (leaves local config untouched), which matches the typical rollback intent: you want yesterday's source archive, not yesterday's RRC + replicas + custom domain.")
 	appsPullCmd.Flags().Bool("no-services", false, "skip pulling runos.service.<cid>.<sid>.yaml files for services referenced in requires:")
 	appsPullCmd.Flags().Bool("keep-env", false, "preserve local env files (.runos.{cid}.{id}.env and runos.{cid}.{id}.config.env); pull won't overwrite them with server values")
 	appsPullCmd.Flags().Bool("no-configpath-update", false, "skip auto-PATCHing the server-side configPath when a VCS app's local yaml lands at a different repo path; falls back to the existing stderr warning")
@@ -131,6 +146,15 @@ type pulledAppEntry struct {
 	// `apps_env-vars` ground truth.
 	EnvVars            int               `json:"envVarCount"`
 	SecretEnvVars      int               `json:"secretEnvVarCount"`
+	// SecretEnvVarsPlatformInjected is the count of secret env keys
+	// the pull wrote to disk that match a `requires.<alias>.env`
+	// mapping. They land in the file because the platform re-injects
+	// them on every deploy and the file must mirror the K8s Secret
+	// for the client-side diff to read clean — but they're not
+	// user-set, so the count is reported separately from
+	// SecretEnvVars (I5-E). Total bytes written = SecretEnvVars +
+	// SecretEnvVarsPlatformInjected.
+	SecretEnvVarsPlatformInjected int    `json:"secretEnvVarCountPlatformInjected,omitempty"`
 	SecretFilesTotal   int               `json:"secretFilesTotal,omitempty"`
 	SecretFilesWritten int               `json:"secretFilesWritten,omitempty"`
 	OverridesTotal     int               `json:"overridesTotal,omitempty"`
@@ -228,7 +252,17 @@ type pullSkipEntry struct {
 	Reason string `json:"reason"`
 }
 
-func runAppsPull(cmd *cobra.Command, args []string) error {
+func runAppsPull(cmd *cobra.Command, args []string) (rerr error) {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// I4-G: route any non-nil return through the JSON envelope when
+	// --json is set so the failure path matches the success path's
+	// shape. Defer keeps the rest of the function readable.
+	defer func() {
+		if jsonOutput && rerr != nil {
+			rerr = emitJSONError(cmd, rerr)
+		}
+	}()
+
 	ctx, err := prepareAppsCmd(cmd)
 	if err != nil {
 		return err
@@ -240,13 +274,28 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 	appIDFlag, _ := cmd.Flags().GetString("app-id")
 	codeFlag, _ := cmd.Flags().GetBool("code")
 	codeVersion, _ := cmd.Flags().GetString("code-version")
+	codeVersionWithYAML, _ := cmd.Flags().GetBool("code-version-with-yaml")
 	if codeVersion != "" {
 		codeFlag = true
 	}
-	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// I4-D: --code-version is code-only by default. The user-stated
+	// intent for "rollback" is "give me yesterday's source archive";
+	// the historical config (RRC, replicas, custom domain, etc.) is
+	// almost never what the user wants to revert alongside, and
+	// before this fix the implicit yaml/env overwrite silently zeroed
+	// resource fields and dropped probes when the user followed up
+	// with `runos deploy`. --code-version-with-yaml opts back into
+	// the full snapshot for users who explicitly want the historical
+	// shape.
+	codeOnly := codeVersion != "" && !codeVersionWithYAML
 	noServices, _ := cmd.Flags().GetBool("no-services")
 	keepEnv, _ := cmd.Flags().GetBool("keep-env")
 	noConfigPathUpdate, _ := cmd.Flags().GetBool("no-configpath-update")
+	// --code-version-with-yaml requires --code-version (it's a modifier,
+	// not a standalone behaviour switch).
+	if codeVersionWithYAML && codeVersion == "" {
+		return fmt.Errorf("--code-version-with-yaml requires --code-version <cliUploadID>")
+	}
 
 	// --all and --app-id paths have no local yaml to source cid from, so
 	// the user must have provided one explicitly. Yaml-positional and
@@ -314,7 +363,7 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		appDir := plan.appDirFor(ctx.cid, t.ID)
-		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, keepEnv, noConfigPathUpdate, plan.forceSuffixedYaml(), plan.defaultSourceDir())
+		entry, skips, drifted, err := pullOne(ctx.svc, appDir, ctx.cid, ctx.cfg.AccountID, t, force, jsonOutput, codeFlag, codeVersion, codeOnly, keepEnv, noConfigPathUpdate, plan.forceSuffixedYaml(), plan.defaultSourceDir())
 		if err != nil {
 			summary.Skipped = append(summary.Skipped, pullSkipEntry{
 				ID:     t.ID,
@@ -343,8 +392,11 @@ func runAppsPull(cmd *cobra.Command, args []string) error {
 		// every requires entry whose service id is set and whose yaml
 		// isn't already on disk. Lazy-build the executor + manifest
 		// the first time we hit this path so pulls without requires
-		// don't pay the cost.
-		if !noServices {
+		// don't pay the cost. Skip entirely in codeOnly mode: no app
+		// yaml was written, so the cascade has nothing to read and
+		// surfaces a spurious "open .../runos.yaml: no such file" skip
+		// entry that looks like a partial failure (I8-C).
+		if !noServices && !codeOnly {
 			if servicesExec == nil {
 				servicesExec = dynacmd.NewExecutor(ctx.cfg.GetAPIURL())
 			}
@@ -585,7 +637,61 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		}
 		return pullPlan{mode: "id-flat", appID: appIDFlag, fixedDir: absOut}, nil
 	}
+	// I5-G: if cwd already holds a pulled yaml for the same (cid, id)
+	// the user is asking for, refresh that yaml in place rather than
+	// creating a nested `runos.<cid>.<id>/runos.<cid>.<id>/` duplicate.
+	// Pre-fix this branch unconditionally appended the per-app subdir
+	// name to cwd, so running `runos apps pull --app-id appid1 --cid
+	// mycluster2 --force` from inside an already-pulled bookmarks subdir
+	// produced a fresh nested copy and left the outer yaml stale.
+	if absFixed, refresh := detectInPlaceRefresh(cwd, expectedCID, appIDFlag); refresh {
+		return pullPlan{mode: "id-subdir", appID: appIDFlag, fixedDir: absFixed}, nil
+	}
 	return pullPlan{mode: "id-subdir", appID: appIDFlag, fixedDir: filepath.Join(cwd, apps.DefaultBaseName(expectedCID, appIDFlag))}, nil
+}
+
+// detectInPlaceRefresh reports whether cwd already contains a pulled
+// yaml for the requested (cid, appID). When yes, returns the
+// absolute cwd path so the pull can refresh in place; when no,
+// returns ("", false) and the caller creates a fresh per-app subdir.
+//
+// The match check parses every runos*.yaml that FindPulledYAMLs
+// classifies as Valid and compares the cid + id against the request.
+// A single matching yaml means in-place refresh is appropriate; zero
+// or multiple matches fall back to the subdir-creating default
+// (the existing scan-for-multiple-yamls error path catches the
+// ambiguous case in yaml-positional mode but this id-subdir branch
+// only kicks in when the user passed --app-id, where multiple
+// matches are a yaml-authoring error worth surfacing too).
+//
+// Returns absolute path so vcsRepoRelPath's git-resolution path
+// stays correct regardless of CLI cwd quirks.
+func detectInPlaceRefresh(cwd, expectedCID, appID string) (string, bool) {
+	scan, err := apps.FindPulledYAMLs(cwd)
+	if err != nil {
+		return "", false
+	}
+	if len(scan.Valid) == 0 {
+		return "", false
+	}
+	for _, path := range scan.Valid {
+		localApp, lerr := apps.LoadLocalApp(path)
+		if lerr != nil || localApp == nil {
+			continue
+		}
+		if localApp.ID != appID {
+			continue
+		}
+		if expectedCID != "" && localApp.CID != expectedCID {
+			continue
+		}
+		absCwd, aerr := filepath.Abs(cwd)
+		if aerr != nil {
+			return "", false
+		}
+		return absCwd, true
+	}
+	return "", false
 }
 
 // validatePullPlan checks plan-level invariants that depend on flags
@@ -667,7 +773,37 @@ func pickDockerfile(yamlPath, serverDockerfile string) string {
 // defaultSourceDir is the sourceDir to stamp on the saved yaml when no
 // existing local yaml pins one (typically ".." for subdir-mode pulls,
 // empty otherwise; see pullPlan.defaultSourceDir).
-func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, keepEnv, noConfigPathUpdate, forceSuffixedYaml bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
+func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary, force, jsonOutput, codeFlag bool, codeVersion string, codeOnly, keepEnv, noConfigPathUpdate, forceSuffixedYaml bool, defaultSourceDir string) (*pulledAppEntry, []pullSkipEntry, bool, error) {
+	// I4-D: --code-version without --code-version-with-yaml is a
+	// "rollback the source archive only" operation. Skip every
+	// server fetch + write that would otherwise touch the local
+	// yaml / env files / secret files / overrides. The drift gate
+	// also intentionally bypasses: if the user is rolling back code,
+	// they don't need a "your local yaml differs from server"
+	// refusal that's irrelevant to the source-only operation.
+	if codeOnly {
+		if err := os.MkdirAll(appDir, 0755); err != nil {
+			return nil, nil, false, fmt.Errorf("create app dir: %w", err)
+		}
+		entry := &pulledAppEntry{
+			ID:   target.ID,
+			Name: target.Name,
+		}
+		var skips []pullSkipEntry
+		codeEntry, codeSkip := pullCode(svc, target.ID, cid, appDir, codeVersion)
+		if codeSkip != nil {
+			codeSkip.ID = target.ID
+			codeSkip.Name = target.Name
+			skips = append(skips, *codeSkip)
+		}
+		entry.Code = codeEntry
+		// Best-effort source-version status so callers see how far
+		// the rolled-back archive sits behind / ahead of the server.
+		if status, statusErr := apps.ComputeCodeVersionStatus(svc, cid, target.ID, appDir); statusErr == nil {
+			entry.CodeVersion = status
+		}
+		return entry, skips, false, nil
+	}
 	raw, err := svc.GetApp(target.ID)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("fetch app: %w", err)
@@ -730,18 +866,28 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// /requires is server-authoritative for type/id/config/env;
 	// only Class is local-only. The merge also handles legacy apps
 	// (deployed before /requires landed) that return empty
-	// Config/Env, by falling back to the local yaml's values.
+	// Config/Env, by falling back to the local yaml's values. The
+	// secretEnv / env path fields are CLI-side bookkeeping; preserve
+	// the user's authored paths so re-pull doesn't overwrite
+	// `secretEnv: .secret.env` with the canonical default (I3-B).
 	if existing, lerr := apps.LoadLocalApp(yamlPath); lerr == nil {
 		apps.MergeRequiresUserAuthored(serverState, existing)
+		apps.MergeUserEnvPaths(serverState, existing)
 	}
 
 	yamlDiff, err := apps.ComputeYAMLDiff(yamlPath, serverState)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("yaml diff: %w", err)
 	}
+	// I4-L: resolve env paths once after MergeUserEnvPaths and reuse
+	// for the diff, the on-disk write, and the --keep-env messages.
+	// The user-authored `secretEnv:` / `env:` field on the local yaml
+	// (now reflected on serverState via the merge) wins over the
+	// canonical defaults; absent, fall back to canonical.
+	secretEnvLeaf, secretEnvPath := apps.ResolveLocalEnvPath(appDir, serverState.SecretEnv, apps.SecretEnvFilename(cid, target.ID))
+	envLeaf, envPath := apps.ResolveLocalEnvPath(appDir, serverState.Env, apps.EnvFilename(cid, target.ID))
 	secretEnvDiff := apps.SectionDiff{Status: apps.StatusInSync}
 	if len(secretEnvVars) > 0 {
-		secretEnvPath := filepath.Join(appDir, apps.SecretEnvFilename(cid, target.ID))
 		secretEnvDiff, err = apps.ComputeEnvDiff(secretEnvPath, secretEnvVars)
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("secret env diff: %w", err)
@@ -749,7 +895,6 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	}
 	envDiff := apps.SectionDiff{Status: apps.StatusInSync}
 	if len(envVars) > 0 {
-		envPath := filepath.Join(appDir, apps.EnvFilename(cid, target.ID))
 		envDiff, err = apps.ComputeEnvDiff(envPath, envVars)
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("env diff: %w", err)
@@ -866,13 +1011,14 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	}
 
 	entry := &pulledAppEntry{
-		ID:               serverState.ID,
-		Name:             serverState.App,
-		YAML:             yamlRes,
-		EnvVars:          len(envVars),
-		SecretEnvVars:    userSecretCount,
-		SecretFilesTotal: len(serverState.SecretFiles),
-		OverridesTotal:   len(serverState.Overrides),
+		ID:                            serverState.ID,
+		Name:                          serverState.App,
+		YAML:                          yamlRes,
+		EnvVars:                       len(envVars),
+		SecretEnvVars:                 userSecretCount,
+		SecretEnvVarsPlatformInjected: len(injected),
+		SecretFilesTotal:              len(serverState.SecretFiles),
+		OverridesTotal:                len(serverState.Overrides),
 	}
 
 	// V14 / long-term V2: auto-update server-side configPath when a VCS
@@ -907,7 +1053,11 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 				patch["sourceDir"] = relocated
 			}
 		}
-		if _, patchErr := svc.UpdateApp(target.ID, patch); patchErr != nil {
+		// merge=true: this PATCH only touches configPath (+ optional
+		// sourceDir). With the I4-K fix on conductor, that means the
+		// apps_pull auto-update no longer zeroes resource fields or
+		// drops health-check / metrics settings as a side effect.
+		if _, patchErr := svc.UpdateApp(target.ID, patch, true); patchErr != nil {
 			// V18: surface the failure on the JSON / MCP side so callers
 			// without stderr access can detect "auto-update was attempted
 			// and rejected" and act on the conductor's verbatim error
@@ -949,23 +1099,27 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		if !jsonOutput {
 			if len(secretEnvVars) > 0 {
 				fmt.Printf("  secret env vars: kept local %s (--keep-env, server has %d key(s))\n",
-					apps.SecretEnvFilename(cid, target.ID), len(secretEnvVars))
+					secretEnvLeaf, len(secretEnvVars))
 			}
 			if len(envVars) > 0 {
 				fmt.Printf("  plain env vars:  kept local %s (--keep-env, server has %d key(s))\n",
-					apps.EnvFilename(cid, target.ID), len(envVars))
+					envLeaf, len(envVars))
 			}
 		}
 	} else {
+		// I4-L: write to the user-authored path when set; fall back
+		// to the canonical leaf otherwise. ResolveLocalEnvPath
+		// already computed both above so the diff, write, and
+		// keep-env messages converge on the same file.
 		if len(secretEnvVars) > 0 {
-			secretEnvRes, err := apps.SaveSecretEnv(appDir, "", cid, target.ID, secretEnvVars)
+			secretEnvRes, err := apps.SaveSecretEnvAtPath(secretEnvPath, secretEnvVars)
 			if err != nil {
 				return entry, skips, false, fmt.Errorf("save secret env: %w", err)
 			}
 			entry.SecretEnv = &secretEnvRes
 		}
 		if len(envVars) > 0 {
-			envRes, err := apps.SaveEnv(appDir, "", cid, target.ID, envVars)
+			envRes, err := apps.SaveEnvAtPath(envPath, envVars)
 			if err != nil {
 				return entry, skips, false, fmt.Errorf("save env: %w", err)
 			}
@@ -1238,7 +1392,7 @@ func printPullSummary(s pullSummary) {
 		}
 		fmt.Printf("Skipped due to local drift (%d app(s)). Re-run with --force to overwrite:\n", len(s.Drifted))
 		for _, d := range s.Drifted {
-			fmt.Printf("  %s (%s) → runos apps pull %s --cid %s --force\n", d.Name, d.ID, d.ID, s.CID)
+			fmt.Printf("  %s (%s) → runos apps pull --app-id %s --cid %s --force\n", d.Name, d.ID, d.ID, s.CID)
 		}
 	}
 
@@ -1257,12 +1411,31 @@ func printPullSummary(s pullSummary) {
 // printUpdatedApp renders an app that had at least one file change.
 func printUpdatedApp(a pulledAppEntry) {
 	fmt.Printf("  %s (%s)\n", a.Name, a.ID)
-	fmt.Printf("    yaml: %s (%s)\n", a.YAML.Path, writeStateLabel(a.YAML))
+	// In code-only mode (--code-version without --code-version-with-yaml)
+	// no yaml is written, so a.YAML is a zero-value WriteResult with an
+	// empty Path. Skip the line entirely instead of printing the
+	// malformed `yaml:  (written)` with no path (I8-C).
+	if a.YAML.Path != "" {
+		fmt.Printf("    yaml: %s (%s)\n", a.YAML.Path, writeStateLabel(a.YAML))
+	}
 	if a.Env != nil {
 		fmt.Printf("    env:        %s (%s, %d vars)\n", a.Env.Path, writeStateLabel(*a.Env), a.EnvVars)
 	}
 	if a.SecretEnv != nil {
-		fmt.Printf("    secret env: %s (%s, %d vars)\n", a.SecretEnv.Path, writeStateLabel(*a.SecretEnv), a.SecretEnvVars)
+		// I5-E: the file on disk holds user-set + platform-injected
+		// keys (the pre-deploy merge re-introduces the latter on
+		// every push, so the file must mirror the K8s Secret). Show
+		// both counts so the displayed number matches what's
+		// actually on disk; the pre-fix "(written, N vars)" line
+		// only counted user-set and undercount-ed by the number of
+		// requires.<alias>.env-claimed entries.
+		if a.SecretEnvVarsPlatformInjected > 0 {
+			fmt.Printf("    secret env: %s (%s, %d user + %d platform-injected)\n",
+				a.SecretEnv.Path, writeStateLabel(*a.SecretEnv),
+				a.SecretEnvVars, a.SecretEnvVarsPlatformInjected)
+		} else {
+			fmt.Printf("    secret env: %s (%s, %d vars)\n", a.SecretEnv.Path, writeStateLabel(*a.SecretEnv), a.SecretEnvVars)
+		}
 	}
 	if a.SecretFilesTotal > 0 {
 		fmt.Printf("    secretFiles: %s\n", writtenInSyncLabel(a.SecretFilesWritten, a.SecretFilesTotal-a.SecretFilesWritten))
@@ -1379,6 +1552,58 @@ func emitJSON(v any) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// emitJSONError writes a structured error envelope to stdout in the same
+// shape `--json` consumers already parse. Returns the original error so
+// the caller can return it to cobra (after setting SilenceErrors so the
+// plain-text "Error: ..." line doesn't double-print). Used by
+// `--json`-aware commands to satisfy the I4-G contract: errors must be
+// machine-parseable in JSON mode, not freeform stderr text that breaks
+// CI pipelines piping stdout into `jq`.
+//
+// The envelope is intentionally small — `{"error": "<msg>", "statusCode":
+// <int optional>}` — so future additions (request id, hint URLs) can
+// extend it without breaking parsers that already key off `error`. The
+// status code surfaces only when the error chain carries a typed
+// dynacmd.APIError or deploy.APIError, both of which already preserve
+// the conductor's HTTP status code verbatim.
+func emitJSONError(cmd *cobra.Command, err error) error {
+	if cmd != nil {
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+	}
+	// Delegate the dynacmd-APIError case (the common one) to the
+	// shared envelope builder so both surfaces parse the inner API
+	// body identically (I10-G: pre-fix, dynacmd parsed but
+	// apps_pull double-encoded). The deploy.APIError case is
+	// handled inline since it lives in a different package; the
+	// envelope shape stays the same.
+	envelope := dynacmd.BuildAPIErrorEnvelope(err)
+	if _, has := envelope["statusCode"]; !has {
+		var deployErr *deploy.APIError
+		if errors.As(err, &deployErr) {
+			envelope["statusCode"] = deployErr.StatusCode
+			var inner map[string]any
+			if jErr := json.Unmarshal(deployErr.Body, &inner); jErr == nil {
+				if msg, ok := inner["error"].(string); ok && msg != "" {
+					envelope["error"] = msg
+				}
+			}
+		}
+	}
+	out, mErr := json.MarshalIndent(envelope, "", "  ")
+	if mErr != nil {
+		// Marshal can fail on cyclic structures, but our envelope is
+		// flat. Fall back to a literal so the JSON parser still sees a
+		// valid object even if the error message had odd characters
+		// (json.MarshalIndent quotes strings safely, so this branch is
+		// effectively unreachable).
+		fmt.Printf(`{"error":%q}`+"\n", err.Error())
+		return err
+	}
+	fmt.Println(string(out))
+	return err
 }
 
 // vcsRepoRelPath returns the repo-relative form of a filesystem path,

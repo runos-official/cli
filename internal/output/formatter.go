@@ -95,11 +95,16 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	// Calculate column widths (use display name without dots for header)
 	widths := make([]int, len(fields))
 	displayNames := make([]string, len(fields))
+	headers := make([]string, len(fields))
 	for i, field := range fields {
 		// Use the last part of dot notation as display name (e.g., "flags.systemInstance" -> "systemInstance")
 		parts := strings.Split(field, ".")
 		displayNames[i] = parts[len(parts)-1]
-		widths[i] = len(displayNames[i])
+		// I5-B: legacy field names like `__docId` map to a friendlier
+		// header (`ID`) so the table doesn't render the raw Firestore
+		// subdoc convention name.
+		headers[i] = headerLabel(displayNames[i])
+		widths[i] = len(headers[i])
 	}
 	for _, item := range items {
 		for i, field := range fields {
@@ -113,7 +118,7 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	// Print header
 	header := ""
 	for i := range fields {
-		header += fmt.Sprintf("%-*s  ", widths[i], strings.ToUpper(displayNames[i]))
+		header += fmt.Sprintf("%-*s  ", widths[i], headers[i])
 	}
 	fmt.Println(header)
 	fmt.Println(strings.Repeat("-", len(header)))
@@ -157,13 +162,95 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 		}
 	}
 
-	// Print key-value pairs
+	// Print key-value pairs. Array-of-objects fields (e.g. `archives` on
+	// `apps cli-archives`, `users` on a postgres `show`) used to render
+	// inline as semicolon-mashed `k=v, k=v; k=v, ...` strings that broke
+	// the terminal layout and forced consumers into `--json`. Render
+	// them instead as `<N entries>` followed by an indented sub-table,
+	// so the user sees both the count summary and the rows. Single
+	// values and primitive arrays keep their old one-line rendering.
+	// Regression target: I12-E.
 	for i, field := range fields {
-		val := formatValue(getNestedValue(item, field))
+		raw := getNestedValue(item, field)
+		if rows, ok := arrayOfObjects(raw); ok && len(rows) > 0 {
+			label := "entries"
+			if len(rows) == 1 {
+				label = "entry"
+			}
+			fmt.Printf("%-*s: %d %s\n", maxLen, displayNames[i], len(rows), label)
+			printIndentedSubTable(rows, "  ")
+			continue
+		}
+		val := formatValue(raw)
 		fmt.Printf("%-*s: %s\n", maxLen, displayNames[i], val)
 	}
 
 	return nil
+}
+
+// arrayOfObjects reports whether v is a non-empty `[]any` where every
+// element is a `map[string]any`. Used to decide whether a field's value
+// should render as a nested sub-table or as a single-line string.
+func arrayOfObjects(v any) ([]map[string]any, bool) {
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return nil, false
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, it := range arr {
+		m, ok := it.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, m)
+	}
+	return out, true
+}
+
+// printIndentedSubTable renders a slice of homogeneous objects as a
+// table prefixed with `indent` on every line. Column order is the union
+// of keys across all rows, sorted alphabetically. Used by formatObject
+// to render array-of-objects fields without semicolon-mashing.
+func printIndentedSubTable(rows []map[string]any, indent string) {
+	keys := map[string]bool{}
+	for _, r := range rows {
+		for k := range r {
+			keys[k] = true
+		}
+	}
+	headers := make([]string, 0, len(keys))
+	for k := range keys {
+		headers = append(headers, k)
+	}
+	sort.Strings(headers)
+
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = len(strings.ToUpper(h))
+	}
+	for _, r := range rows {
+		for i, h := range headers {
+			val := formatCellValue(r[h])
+			if len(val) > widths[i] {
+				widths[i] = len(val)
+			}
+		}
+	}
+
+	headerLine := indent
+	for i, h := range headers {
+		headerLine += fmt.Sprintf("%-*s  ", widths[i], strings.ToUpper(h))
+	}
+	fmt.Println(strings.TrimRight(headerLine, " "))
+	fmt.Println(indent + strings.Repeat("-", len(headerLine)-len(indent)))
+
+	for _, r := range rows {
+		row := indent
+		for i, h := range headers {
+			row += fmt.Sprintf("%-*s  ", widths[i], formatCellValue(r[h]))
+		}
+		fmt.Println(strings.TrimRight(row, " "))
+	}
 }
 
 func formatValue(v any) string {
@@ -232,6 +319,41 @@ func formatCellValue(v any) string {
 	return formatValueWithIndent(v, 0)
 }
 
+// fieldNameAliases maps legacy manifest output field names to their
+// post-normalisation equivalents. The conductor's `apps_overrides`
+// (and related) endpoints used to expose Firestore's `__docId`
+// subdoc identifier as a field name; the response was later
+// normalised to `id` (iter-1 11b). The manifest's `output.fields`
+// list still carries the legacy `__docId` name in some commands,
+// so the response body has `id` but the renderer is asked to look
+// up `__docId` and finds nothing. Result: a literal `__DOCID`
+// column header and an empty value column (I5-B).
+//
+// The alias map is the defensive CLI layer: when getNestedValue
+// resolves the manifest-declared name and finds nothing, it retries
+// against the alias before giving up. headerLabel does the matching
+// thing for the column header so `__DOCID` displays as `ID`.
+//
+// Each entry is one-way (legacy → current) and case-sensitive. Add
+// to the map when a future manifest output field renames; the alias
+// keeps older CLI binaries rendering correctly until the user
+// re-runs `runos manifest update`.
+var fieldNameAliases = map[string]string{
+	"__docId": "id",
+}
+
+// headerLabel returns the column-header text for a manifest output
+// field name. Defaults to upper-casing the display name (the last
+// dotted segment); when the field has an alias defined,
+// upper-cases the alias instead so legacy names like `__docId`
+// render as `ID` rather than `__DOCID`.
+func headerLabel(displayName string) string {
+	if alias, ok := fieldNameAliases[displayName]; ok {
+		return strings.ToUpper(alias)
+	}
+	return strings.ToUpper(displayName)
+}
+
 // getNestedValue retrieves a value from a map using dot notation (e.g., "flags.systemInstance")
 func getNestedValue(item map[string]any, field string) any {
 	parts := strings.Split(field, ".")
@@ -242,6 +364,17 @@ func getNestedValue(item map[string]any, field string) any {
 			current = m[part]
 		} else {
 			return nil
+		}
+	}
+	// I5-B: when a legacy field name (e.g. `__docId`) resolves to nil
+	// because the response has been normalised to a new name (e.g.
+	// `id`), retry against the alias before giving up. Only applies
+	// to single-segment lookups; dotted nested paths fall through.
+	if current == nil && len(parts) == 1 {
+		if alias, ok := fieldNameAliases[parts[0]]; ok {
+			if v, found := item[alias]; found {
+				return v
+			}
 		}
 	}
 	return current

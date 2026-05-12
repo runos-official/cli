@@ -52,6 +52,24 @@ type AppSummary struct {
 	Port int    `json:"port"`
 }
 
+// APIError is returned by the apps.Service get/json helpers when the
+// conductor responds with a non-2xx status. Callers that need to
+// branch on status code (e.g. preDeployDriftCheck distinguishing a
+// 404 "app deleted server-side" from a generic network failure to
+// surface different recovery guidance — I14-B) errors.As to reach the
+// typed value. The Error() string format is identical to the historic
+// plain-error shape so callers that only print get the same message.
+type APIError struct {
+	StatusCode int
+	Body       []byte
+}
+
+// Error renders the historic one-liner so non-typed callers print
+// unchanged.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (%d): %s", e.StatusCode, string(e.Body))
+}
+
 // NewService creates a new apps service.
 func NewService(baseURL, token, cid, aid string) *Service {
 	return &Service{
@@ -84,7 +102,7 @@ func (s *Service) get(reqURL string, out any) error {
 	}
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	if out == nil {
@@ -325,8 +343,24 @@ func (s *Service) writeJSON(method, reqURL string, body any, out any) (*jobAck, 
 // UpdateApp patches whichever fields are present in the body. Server-side
 // rule: name-only edits are sync, anything else triggers an async redeploy.
 // Endpoint: PATCH /:aid/:cid/apps/:id
-func (s *Service) UpdateApp(appID string, fields map[string]any) (string, error) {
+//
+// merge=false is the desired-state shape `apps_sync` relies on: the body
+// describes the full intended config, omitted fields go to their
+// preserve/clear defaults per the conductor's PATCH contract (5 fields
+// clear, others preserve).
+//
+// merge=true (?merge=true on the URL) is the partial-update shape: every
+// omitted field falls back to the AppDocument's existing value, so
+// callers with a few fields to change (e.g. apps_pull's configPath
+// auto-update; the user-facing `apps update` command tweaking replicas)
+// don't accidentally zero cpu/memory or drop healthCheck/metrics
+// settings. I4-K conductor fix added the `?merge=true` query param;
+// CLI partial-PATCH callers must opt in.
+func (s *Service) UpdateApp(appID string, fields map[string]any, merge bool) (string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+	if merge {
+		reqURL += "?merge=true"
+	}
 	ack, err := s.writeJSON(http.MethodPatch, reqURL, fields, nil)
 	if err != nil {
 		return "", err
@@ -500,6 +534,22 @@ type CliArchive struct {
 	PushTime    string `json:"pushTime"`
 }
 
+// cliArchivesEnvelope mirrors the conductor's GET /apps/:id/cli-archives
+// response shape (manifest 9.0.0+): `{cid, appId, appName, archives,
+// currentCliUploadId?}`. The CurrentCliUploadID names which archive
+// matches the currently-running image-version on the cluster; useful
+// info but distinct from the CLI's own per-local-source sidecar marker,
+// so `ListCliArchives` returns the archives slice only. Callers that
+// need the conductor-side current marker should call
+// `ListCliArchivesEnvelope`.
+type cliArchivesEnvelope struct {
+	CID                string       `json:"cid"`
+	AppID              string       `json:"appId"`
+	AppName            string       `json:"appName"`
+	Archives           []CliArchive `json:"archives"`
+	CurrentCliUploadID string       `json:"currentCliUploadId,omitempty"`
+}
+
 // CliPullTicket is the short-lived, single-use download credential the
 // cluster mints for one archive. The downloadURL carries its own auth
 // in the path; no Authorization header is sent on the GET.
@@ -511,18 +561,41 @@ type CliPullTicket struct {
 
 // ListCliArchives returns the archives recorded for an app.
 // Endpoint: GET /:aid/:cid/apps/:id/cli-archives
+//
+// Deserialises the conductor's envelope shape (manifest 9.0.0+):
+// `{cid, appId, appName, archives[], currentCliUploadId?}`. Callers
+// that only need the archives slice get a flattened view; the envelope
+// also carries `currentCliUploadId` (the archive whose image matches
+// the running deployment) for callers that want it via
+// `ListCliArchivesEnvelope`. Regression target: I8-K (the conductor R1
+// envelope-shape change broke the pre-9.0.0 `var out []CliArchive`
+// unmarshal target with "cannot unmarshal object into Go value of type
+// []apps.CliArchive").
 func (s *Service) ListCliArchives(appID string) ([]CliArchive, error) {
+	env, err := s.ListCliArchivesEnvelope(appID)
+	if err != nil {
+		return nil, err
+	}
+	return env.Archives, nil
+}
+
+// ListCliArchivesEnvelope returns the full conductor response including
+// `currentCliUploadId` (the archive whose image is currently deployed).
+// Distinct from the local sidecar's source-version marker (which tracks
+// "which archive matches my local source tree"). Use this when you want
+// the conductor-side "is this archive live?" signal.
+func (s *Service) ListCliArchivesEnvelope(appID string) (cliArchivesEnvelope, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/cli-archives",
 		s.baseURL,
 		url.PathEscape(s.aid),
 		url.PathEscape(s.cid),
 		url.PathEscape(appID),
 	)
-	var out []CliArchive
-	if err := s.get(reqURL, &out); err != nil {
-		return nil, err
+	var env cliArchivesEnvelope
+	if err := s.get(reqURL, &env); err != nil {
+		return cliArchivesEnvelope{}, err
 	}
-	return out, nil
+	return env, nil
 }
 
 // PrepareCliPull mints a single-use download URL for a specific archive.

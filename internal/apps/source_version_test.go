@@ -173,12 +173,18 @@ func TestSourceVersionFilename_PerApp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // archivesServer stands up a minimal httptest server that answers
-// ListCliArchives and falls back to {} for any other path.
+// ListCliArchives with the conductor's envelope shape (manifest 9.0.0+)
+// and falls back to {} for any other path.
 func archivesServer(t *testing.T, archives []CliArchive) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/cli-archives") {
-			writeJSON(t, w, 200, archives)
+			writeJSON(t, w, 200, cliArchivesEnvelope{
+				CID:      testSidecarCID,
+				AppID:    testSidecarApp,
+				AppName:  "test-app",
+				Archives: archives,
+			})
 			return
 		}
 		writeJSON(t, w, 200, map[string]any{})

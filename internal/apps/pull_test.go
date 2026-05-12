@@ -284,6 +284,69 @@ func TestMergeRequiresUserAuthored(t *testing.T) {
 	})
 }
 
+// I3-B regression: the secretEnv / env path fields are CLI-side
+// bookkeeping (where the user keeps the file on disk), not server-
+// authoritative state. Pull must preserve user-explicit values so a
+// user who sets `secretEnv: .secret.env` doesn't fight permanent
+// drift against the canonical default that BuildServerStateForDiff
+// stamps when env content exists.
+func TestMergeUserEnvPaths(t *testing.T) {
+	t.Run("explicit local paths win over canonical defaults", func(t *testing.T) {
+		target := &PulledApp{
+			SecretEnv: ".runos.k1.ab12c.env",
+			Env:       "runos.k1.ab12c.config.env",
+		}
+		local := &PulledApp{
+			SecretEnv: ".secret.env",
+			Env:       "plain.env",
+		}
+		MergeUserEnvPaths(target, local)
+		if target.SecretEnv != ".secret.env" {
+			t.Errorf("SecretEnv = %q, want .secret.env", target.SecretEnv)
+		}
+		if target.Env != "plain.env" {
+			t.Errorf("Env = %q, want plain.env", target.Env)
+		}
+	})
+
+	t.Run("empty local fields leave canonical defaults in place", func(t *testing.T) {
+		target := &PulledApp{
+			SecretEnv: ".runos.k1.ab12c.env",
+			Env:       "runos.k1.ab12c.config.env",
+		}
+		local := &PulledApp{} // user has neither field set
+		MergeUserEnvPaths(target, local)
+		if target.SecretEnv != ".runos.k1.ab12c.env" {
+			t.Errorf("SecretEnv = %q, want canonical default preserved", target.SecretEnv)
+		}
+		if target.Env != "runos.k1.ab12c.config.env" {
+			t.Errorf("Env = %q, want canonical default preserved", target.Env)
+		}
+	})
+
+	t.Run("partial: only one side overridden locally", func(t *testing.T) {
+		target := &PulledApp{
+			SecretEnv: ".runos.k1.ab12c.env",
+			Env:       "runos.k1.ab12c.config.env",
+		}
+		local := &PulledApp{SecretEnv: ".secret.env"} // local custom secret only
+		MergeUserEnvPaths(target, local)
+		if target.SecretEnv != ".secret.env" {
+			t.Errorf("SecretEnv = %q, want .secret.env", target.SecretEnv)
+		}
+		if target.Env != "runos.k1.ab12c.config.env" {
+			t.Errorf("Env = %q, want canonical Env preserved when local empty", target.Env)
+		}
+	})
+
+	t.Run("nil-safe", func(t *testing.T) {
+		MergeUserEnvPaths(nil, nil)
+		MergeUserEnvPaths(&PulledApp{}, nil)
+		MergeUserEnvPaths(nil, &PulledApp{})
+		// No panic, no crash.
+	})
+}
+
 // TestPulledApp_SourceDirRoundTrip mirrors the DeployConfig round-trip
 // guard. The on-disk yaml shape must agree between pull and deploy so
 // pulled yamls re-deploy cleanly.
@@ -2152,5 +2215,140 @@ func TestSaveYAMLSuffixed_ConcurrentWritesDoNotRace(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "runos.yaml")); !os.IsNotExist(err) {
 		t.Errorf("runos.yaml MUST NOT appear from concurrent SaveYAMLSuffixed calls; the V1 race fix breaks if any caller lands on the canonical slot")
+	}
+}
+
+// I4-L regression: ResolveLocalEnvPath must prefer the user-authored
+// path when set and fall back to the canonical default otherwise.
+// Pinned per shape so a future caller can't accidentally drop the
+// authored field and silently fan out to two env files on disk.
+func TestResolveLocalEnvPath(t *testing.T) {
+	appDir := "/tmp/runos.k1.ab12c"
+	cases := []struct {
+		name         string
+		authored     string
+		canonical    string
+		wantLeaf     string
+		wantFullPath string
+	}{
+		{
+			name:         "user-authored relative leaf wins",
+			authored:     ".secret.env",
+			canonical:    ".runos.k1.ab12c.env",
+			wantLeaf:     ".secret.env",
+			wantFullPath: filepath.Join(appDir, ".secret.env"),
+		},
+		{
+			name:         "user-authored relative path with subdir wins",
+			authored:     "config/.env",
+			canonical:    ".runos.k1.ab12c.env",
+			wantLeaf:     "config/.env",
+			wantFullPath: filepath.Join(appDir, "config/.env"),
+		},
+		{
+			name:         "empty authored falls back to canonical",
+			authored:     "",
+			canonical:    ".runos.k1.ab12c.env",
+			wantLeaf:     ".runos.k1.ab12c.env",
+			wantFullPath: filepath.Join(appDir, ".runos.k1.ab12c.env"),
+		},
+		{
+			name:         "absolute authored path returned verbatim",
+			authored:     "/etc/runos/secret.env",
+			canonical:    ".runos.k1.ab12c.env",
+			wantLeaf:     "/etc/runos/secret.env",
+			wantFullPath: "/etc/runos/secret.env",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			leaf, fullPath := ResolveLocalEnvPath(appDir, c.authored, c.canonical)
+			if leaf != c.wantLeaf {
+				t.Errorf("leaf = %q, want %q", leaf, c.wantLeaf)
+			}
+			if fullPath != c.wantFullPath {
+				t.Errorf("fullPath = %q, want %q", fullPath, c.wantFullPath)
+			}
+		})
+	}
+}
+
+// I4-L regression: SaveSecretEnvAtPath must write to the exact path
+// the caller resolves (typically `serverState.SecretEnv` after the
+// MergeUserEnvPaths pass). Pre-fix, apps_pull always wrote to
+// SecretEnvFilename(cid, appID) so a yaml with `secretEnv: .secret.env`
+// ended up with TWO files: the user-authored one (referenced by the
+// yaml) and an orphan canonical-name twin (holding the latest server
+// state). This test pins the path-honouring write.
+func TestSaveSecretEnvAtPath_RespectsAuthoredLeaf(t *testing.T) {
+	dir := t.TempDir()
+	authoredPath := filepath.Join(dir, ".secret.env")
+	envs := map[string]string{"USER_TOKEN": "abc"}
+
+	res, err := SaveSecretEnvAtPath(authoredPath, envs)
+	if err != nil {
+		t.Fatalf("SaveSecretEnvAtPath: %v", err)
+	}
+	if res.Path != authoredPath {
+		t.Errorf("Path = %q, want %q", res.Path, authoredPath)
+	}
+	// File must exist at the authored path with 0600 perms.
+	info, err := os.Stat(authoredPath)
+	if err != nil {
+		t.Fatalf("stat authored path: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("perm = %o, want 0600", perm)
+		}
+	}
+	// No canonical-name file should appear; the user-authored leaf
+	// is the only file. (I4-L's symptom was an orphan canonical
+	// twin; this assertion is the regression guard.)
+	canonical := filepath.Join(dir, ".runos.k1.ab12c.env")
+	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
+		t.Errorf("canonical-name twin must not appear at %q", canonical)
+	}
+}
+
+// I4-L plain side: same path-honouring assertion, with 0644 perms
+// (committed to VCS).
+func TestSaveEnvAtPath_RespectsAuthoredLeaf(t *testing.T) {
+	dir := t.TempDir()
+	authoredPath := filepath.Join(dir, "plain.env")
+	envs := map[string]string{"LOG_LEVEL": "info"}
+
+	res, err := SaveEnvAtPath(authoredPath, envs)
+	if err != nil {
+		t.Fatalf("SaveEnvAtPath: %v", err)
+	}
+	if res.Path != authoredPath {
+		t.Errorf("Path = %q, want %q", res.Path, authoredPath)
+	}
+	info, err := os.Stat(authoredPath)
+	if err != nil {
+		t.Fatalf("stat authored path: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Errorf("perm = %o, want 0644", perm)
+		}
+	}
+	canonical := filepath.Join(dir, "runos.k1.ab12c.config.env")
+	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
+		t.Errorf("canonical-name twin must not appear at %q", canonical)
+	}
+}
+
+// I4-L: empty path is rejected (defensive — caller should always
+// resolve via ResolveLocalEnvPath which always returns a non-empty
+// leaf, but if a future caller skips that step we'd rather fail loud
+// than silently write to "./" or some other surprising location).
+func TestSaveEnvAtPath_EmptyPathRejected(t *testing.T) {
+	if _, err := SaveSecretEnvAtPath("", map[string]string{"A": "1"}); err == nil {
+		t.Error("expected error on empty secret path")
+	}
+	if _, err := SaveEnvAtPath("", map[string]string{"A": "1"}); err == nil {
+		t.Error("expected error on empty env path")
 	}
 }

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,7 +74,38 @@ func init() {
 	deployCmd.AddCommand(deploySyncCmd)
 }
 
-func runDeploy(cmd *cobra.Command, args []string) error {
+func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
+	// SilenceUsage right away so any early-stage error (config load,
+	// yaml parse, cid resolution, ...) doesn't dump the full cobra help
+	// block after the diagnostic. I7-G regression target.
+	cmd.SilenceUsage = true
+	// Route any returned error through the JSON envelope when --json is
+	// set so the failure path matches the success path's shape. Pairs
+	// with the API-error envelope in dynacmd's executor; without it,
+	// parse-stage errors bypassed the contract and emitted human-only
+	// text to stderr. I7-G regression target.
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	defer func() {
+		if jsonOutput && rerr != nil {
+			rerr = emitJSONError(cmd, rerr)
+		}
+	}()
+	// Under --json, route every human-readable progress line to stderr
+	// so stdout stays pure JSON (consumable by `jq` on a CI gate).
+	// Pre-fix the preamble ("Deploying ...", "Preparing deployment...",
+	// "Creating archive...", "Upload complete.") was emitted to stdout
+	// before the JSON envelope, breaking `jq` parsing. The follow path
+	// after the envelope keeps using stdout per its own streaming
+	// contract; the test agent's I10-L was specifically about the
+	// preamble. Regression target: I10-L.
+	progress := func(format string, args ...any) {
+		if jsonOutput {
+			fmt.Fprintf(os.Stderr, format, args...)
+			return
+		}
+		fmt.Printf(format, args...)
+	}
+
 	// Load CLI config
 	cfg, err := config.Load()
 	if err != nil {
@@ -161,13 +194,42 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	deployConfig, err := deploy.LoadConfig(configPath)
 	if err != nil {
-		return err
+		// When the user didn't override -c and the default `runos.yaml`
+		// is missing, auto-detect pulled/fresh yamls in cwd. A unique
+		// hit is auto-picked (so a per-app dir with only
+		// `runos.<cid>.<id>.yaml` "just works"); multiple hits surface
+		// the candidate list mirroring `apps diff`'s auto-detect, which
+		// is the I15-A fix. Zero hits falls through to LoadConfig's
+		// original "runos.yaml not found at <path>" message.
+		if !cmd.Flags().Changed("config") {
+			detected, detectErr := autoDetectDeployYAML(filepath.Dir(configPath))
+			if detectErr != nil {
+				return detectErr
+			}
+			if detected != "" {
+				configPath = detected
+				deployConfig, err = deploy.LoadConfig(configPath)
+				if err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+		} else {
+			return err
+		}
 	}
 
 	// Yaml provides the third cid source: a checked-in runos.yaml that
 	// already carries `cid:` shouldn't need an extra flag/config to deploy.
-	if cid == "" && deployConfig.CID != "" {
-		cid = deployConfig.CID
+	// ReconcileCID also cross-checks when BOTH sources are set, refusing on
+	// mismatch the same way `apps diff` does (I18-B: pre-fix the flag
+	// silently won and a stale --cid against a directory-per-app yaml could
+	// push to the wrong cluster).
+	cid, err = deploy.ReconcileCID(cid, deployConfig.CID)
+	if err != nil {
+		cmd.SilenceUsage = true
+		return err
 	}
 	if cid == "" {
 		return fmt.Errorf("cluster ID required: pass --cid, run 'runos config set cid <cluster-id>', or include cid: in %s", configPath)
@@ -238,6 +300,17 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// directory's last pull (or last deploy) and now? If so, refuse so
 	// the user can pull-and-rebase before overwriting upstream code.
 	if err := preDeployCodeDriftCheck(cfg, token, cid, configPath, force); err != nil {
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		return err
+	}
+	// Domain-removal gate (I2-4e): if the local yaml drops a `domain:`
+	// or `servicePortMappings[].domains[].fqdn` that the server still
+	// has attached to this app, conductor's reconciler will silently
+	// remove the mapping (along with any provider-managed DNS record).
+	// Prompt the user before proceeding. Auto-skipped when stdin is
+	// not a terminal (CI), --yes is set, or --force is set.
+	if err := preDeployDomainRemovalGate(svc, deployConfig, force, flagYes); err != nil {
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
 		return err
@@ -365,10 +438,24 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Deploying %s...\n", deployConfig.App)
+	progress("Deploying %s...\n", deployConfig.App)
+
+	// Load secretFiles[].local file bytes (base64-encoded) into each
+	// entry's Content field so PrepareDeployment's marshal carries the
+	// conductor's expected wire shape `{filename, mountPath, content}`.
+	// Conductor R2 wires the receive + orchestration end-to-end via the
+	// new "Apply user secret files" step (update-only); without this
+	// CLI-side load the wire body has only filename + mountPath and
+	// the conductor's normalizeYaml treats the entries as malformed.
+	// First-deploy users still need apps_secret-files_update because
+	// the orchestration step is update-only. Regression target: I10-K
+	// CLI half (wire-side flip).
+	if err := deployConfig.LoadSecretFileContents(configDir); err != nil {
+		return fmt.Errorf("failed to load secret file contents: %w", err)
+	}
 
 	// Prepare deployment
-	fmt.Println("Preparing deployment...")
+	progress("Preparing deployment...\n")
 	prepResp, err := svc.PrepareDeployment(deployConfig)
 	if err != nil {
 		return fmt.Errorf("failed to prepare deployment: %w", err)
@@ -385,9 +472,12 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// each one so the user ends up with proper IaC even when they used
 	// the requires.<alias>.class quickstart. Best-effort: failures here
 	// don't abort the deploy, since the conductor side has already
-	// provisioned the service.
-	if err := writeProvisionedServiceYAMLs(cfg, configDir, cid, prepResp); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	// provisioned the service. 404s from a still-async create land in
+	// the deferred bucket and are retried after the deploy job
+	// completes (see flagFollow path below).
+	freshSvcResult := writeProvisionedServiceYAMLs(cfg, configDir, cid, prepResp)
+	if len(freshSvcResult.failed) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: write service yamls (some failed):\n  %s\n", strings.Join(freshSvcResult.failed, "\n  "))
 	}
 
 	// Post-deploy IaC artifacts: write the same `.dockerignore` template
@@ -399,25 +489,34 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// `docker build` invocations from leaking RunOS-managed config into
 	// images. Errors are warnings; the deploy itself doesn't roll back.
 	if appID := chooseDeployAppID(deployConfig, prepResp); appID != "" {
-		writeDeployIaCArtifacts(configDir, cid, appID)
+		// Honor an explicit `env: <path>` in the local yaml (I3-A).
+		// ResolveEnvFiles populates deployConfig.Env earlier; on a
+		// genuinely-fresh deploy that ran with no app id at the time
+		// of resolution, fall back to the canonical default keyed on
+		// the freshly-minted appID.
+		envFilename := deployConfig.Env
+		if envFilename == "" {
+			envFilename = apps.EnvFilename(cid, appID)
+		}
+		writeDeployIaCArtifacts(configDir, envFilename)
 	}
 
 	// Create tarball
-	fmt.Println("Creating archive...")
+	progress("Creating archive...\n")
 	tarball, err := deploy.CreateTarball(archiveRoot)
 	if err != nil {
 		return fmt.Errorf("failed to create archive: %w", err)
 	}
 
-	fmt.Printf("Archive size: %d bytes\n", tarball.Len())
+	progress("Archive size: %d bytes\n", tarball.Len())
 
 	// Upload tarball
-	fmt.Println("Uploading archive...")
+	progress("Uploading archive...\n")
 	if err := svc.UploadTarball(prepResp.UploadURL, prepResp.Token, tarball); err != nil {
 		return fmt.Errorf("failed to upload archive: %w", err)
 	}
 
-	fmt.Println("Upload complete.")
+	progress("Upload complete.\n")
 
 	// Record the new source version so the next deploy / pull can
 	// detect upstream drift relative to this deploy. Sidecar is per-app
@@ -439,8 +538,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Output response
-	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// Output response (jsonOutput is captured at the top of runDeploy)
 	if jsonOutput {
 		output, err := json.MarshalIndent(prepResp, "", "  ")
 		if err != nil {
@@ -464,6 +562,19 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  Console:    %s/%s/%s/applications/manage/%s\n",
 					consoleURL, cfg.GetAccountID(), cid, appID)
 			}
+		}
+		// Fire-and-forget mode only: surface the deferred yaml hint
+		// here. Under --follow the retryDeferredServiceYAMLs call in
+		// the success branch below materialises the yamls itself and
+		// emits `Wrote service yaml: ...` for each, so this note would
+		// be a misleading duplicate (I2-1b' papercut, TEST_LOG.md).
+		if !flagFollow && len(freshSvcResult.deferred) > 0 {
+			ids := make([]string, 0, len(freshSvcResult.deferred))
+			for _, s := range freshSvcResult.deferred {
+				ids = append(ids, s.Type+"/"+s.ID)
+			}
+			fmt.Printf("\nNote: yamls for newly-provisioned %s will materialise on the next `runos apps pull --force`.\n",
+				strings.Join(ids, ", "))
 		}
 	}
 
@@ -497,6 +608,17 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println("\nDeployment completed successfully!")
 
+		// Retry any service yaml writes that 404'd at prepare-time
+		// because the conductor's service-create work was still async.
+		// By the time --follow returns success the resources have
+		// settled, so the show endpoint should be 200.
+		retryDeferredServiceYAMLs(cfg, configDir, cid, freshSvcResult.deferred)
+
+		// I2-1d: AppDocument is settled now, so it's safe to fetch the
+		// synthesized RRC and stamp it on the local yaml without
+		// racing the deploy job's Firestore writes.
+		stampSynthesizedResources(svc, deployConfig, configPath)
+
 		// Extract app ID for network access lookup
 		appID := prepResp.AppID
 		if appID == "" {
@@ -521,10 +643,26 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// which intentionally does NOT auto-refresh after deploy: the
 	// conductor PATCH/build orchestration is async and a GET issued
 	// here would race the Firestore write. Users who want the
-	// server-applied defaults (clusterDomainId, resourceRequirementClassId,
-	// requires.config, requires.env) on disk should run apps_pull.
+	// server-applied defaults (clusterDomainId, requires.config,
+	// requires.env) on disk should run apps_pull.
 	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: post-deploy sync failed: %v\n", err)
+	}
+
+	// I2-1d: stamp the synthesised resource class on the local yaml.
+	// Conductor's resolveRRC fills in a default class (e.g.
+	// app.sl1.beff) on first deploy when the user has none set; absent
+	// this stamp, the local yaml stays bare and `apps diff` reports
+	// in_sync because the field is preserve-on-omit, leaving the user
+	// no transparency into which class their app actually runs under.
+	// Only fills absent local fields; user-set values are never
+	// overwritten. Fire-and-forget mode opts out (the GET would race
+	// the conductor's Firestore write before the deploy job touches
+	// the AppDocument); --follow waits for terminal state and runs
+	// later in the success branch instead. This pre-block path keeps
+	// the env / requires sync ordering identical to before.
+	if !flagFollow {
+		stampSynthesizedResources(svc, deployConfig, configPath)
 	}
 
 	// Last thing printed: any local-env vs server-env warnings, ordered
@@ -630,32 +768,55 @@ func chooseDeployAppID(deployConfig *deploy.DeployConfig, prepResp *deploy.Prepa
 // writeDeployIaCArtifacts writes the post-deploy IaC artifacts the user
 // would otherwise get only after running `apps_pull --force` once: the
 // `.dockerignore` template (covers external `docker build` invocations)
-// and a placeholder `runos.<cid>.<id>.config.env` (so the yaml's `env:`
-// reference points at a real file rather than dangling). Both writes are
-// idempotent: existing files are left untouched. Errors print as
-// warnings; the deploy doesn't roll back since the conductor side has
-// already accepted the request.
-func writeDeployIaCArtifacts(configDir, cid, appID string) {
+// and a placeholder env file at envFilename (so the yaml's `env:`
+// reference points at a real file rather than dangling). Both writes
+// are idempotent: existing files are left untouched. envFilename is
+// the path resolved against the local yaml (caller honours an explicit
+// `env:` field; falls back to the canonical
+// `runos.<cid>.<id>.config.env` when absent), so a user with
+// `env: plain.env` doesn't accumulate a dead canonical sibling
+// alongside the real file (I3-A). Errors print as warnings; the deploy
+// doesn't roll back since the conductor side has already accepted the
+// request.
+func writeDeployIaCArtifacts(configDir, envFilename string) {
 	if dr, err := apps.EnsureDockerignore(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write .dockerignore: %v\n", err)
 	} else if !dr.InSync {
 		fmt.Printf("Wrote .dockerignore: %s\n", dr.Path)
 	}
-	envPath := filepath.Join(configDir, apps.EnvFilename(cid, appID))
+	if envFilename == "" {
+		return
+	}
+	envPath := filepath.Join(configDir, envFilename)
 	if _, err := os.Stat(envPath); err == nil {
 		return
 	} else if !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to stat %s: %v\n", envPath, err)
 		return
 	}
-	header := "# Plain ConfigMap-backed env vars for this app on cluster " + cid + ".\n" +
-		"# Committed to VCS, never put credentials here (use the .runos.<cid>.<id>.env\n" +
-		"# secret file instead, which is gitignored). Lines are KEY=value, # comments allowed.\n"
+	header := "# Plain ConfigMap-backed env vars for this app.\n" +
+		"# Committed to VCS, never put credentials here (use the secret env\n" +
+		"# file instead, which is gitignored). Lines are KEY=value, # comments allowed.\n"
 	if err := os.WriteFile(envPath, []byte(header), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write %s: %v\n", envPath, err)
 		return
 	}
 	fmt.Printf("Wrote env file: %s\n", envPath)
+}
+
+// writeProvisionedServiceYAMLsResult breaks the per-service outcome into
+// three buckets so callers can react sensibly:
+//   - written: service yamls successfully landed on disk this call.
+//   - deferred: services the conductor accepted but whose show endpoint
+//     still 404s (the create job is async). Common for first-deploy of a
+//     brand-new mysql/valkey/etc. through requires.<alias>.class. Caller
+//     retries these after the deploy job completes.
+//   - failed: anything else (non-404 pull error, save error). These do
+//     surface as warnings.
+type writeProvisionedServiceYAMLsResult struct {
+	written  []string
+	deferred []deploy.ProvisionedService
+	failed   []string
 }
 
 // writeProvisionedServiceYAMLs walks the prepare response's freshly
@@ -667,11 +828,16 @@ func writeDeployIaCArtifacts(configDir, cid, appID string) {
 //
 // Skips services that already have a yaml on disk (idempotent re-runs)
 // and services flagged as not new (already linked, not provisioned by
-// this deploy). Errors are returned aggregated; the caller logs them as
-// warnings since the conductor has already provisioned the services.
-func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, prepResp *deploy.PrepareResponse) error {
+// this deploy). 404s on the show endpoint are routed to the deferred
+// bucket because the conductor's service-create work runs async and the
+// yaml becomes pullable later in the deploy lifecycle. The caller is
+// expected to retry deferred entries via retryDeferredServiceYAMLs once
+// the deploy job is complete (--follow mode) or to inform the user that
+// `runos apps pull --force` will materialise them later.
+func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, prepResp *deploy.PrepareResponse) writeProvisionedServiceYAMLsResult {
+	var res writeProvisionedServiceYAMLsResult
 	if prepResp == nil || len(prepResp.Services) == 0 {
-		return nil
+		return res
 	}
 	// Only act on services this deploy actually created. Conductor sets
 	// IsNew=true exactly when the prepare endpoint provisioned a fresh
@@ -684,42 +850,98 @@ func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, pre
 		}
 	}
 	if len(fresh) == 0 {
-		return nil
+		return res
 	}
 	m, err := loadLocalManifest(cfg.GetAPIURL())
 	if err != nil {
-		return fmt.Errorf("write service yamls: %w", err)
+		res.failed = append(res.failed, fmt.Sprintf("load manifest: %v", err))
+		return res
 	}
 	exec := dynacmd.NewExecutor(cfg.GetAPIURL())
-	// V4 parity with apps_pull's cascade: prefer a workspace scan from
-	// the git repo root so canonical service yamls living in a sibling
-	// directory (e.g. infra/runos/services/) suppress an idempotent
-	// re-write next to the deploy yaml. Falls back to a single-dir
-	// check on configDir when not in a git checkout.
 	repoRoot, _ := git.RepoRoot()
-	var errs []string
 	for _, s := range fresh {
-		// Header-based lookup: a service yaml the user pulled and
-		// renamed under any name still counts as "already on disk".
 		if existing := services.ExistingServiceYamlPath(repoRoot, configDir, cid, s.ID); existing != "" {
 			continue
 		}
 		pulled, err := services.Pull(exec, m, s.Type, cid, cfg.AccountID, s.ID)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s/%s: pull: %v", s.Type, s.ID, err))
+			if isAPINotFound(err) {
+				// Conductor accepted the create but the service show
+				// endpoint isn't 200 yet. Defer the yaml write until
+				// after the deploy job, when the resource has settled.
+				res.deferred = append(res.deferred, s)
+				continue
+			}
+			res.failed = append(res.failed, fmt.Sprintf("%s/%s: pull: %v", s.Type, s.ID, err))
 			continue
 		}
 		dest := services.FilenameFor(configDir, cid, s.Type, s.ID)
 		if err := services.Save(dest, pulled); err != nil {
-			errs = append(errs, fmt.Sprintf("%s/%s: save: %v", s.Type, s.ID, err))
+			res.failed = append(res.failed, fmt.Sprintf("%s/%s: save: %v", s.Type, s.ID, err))
+			continue
+		}
+		fmt.Printf("Wrote service yaml: %s\n", dest)
+		res.written = append(res.written, dest)
+	}
+	return res
+}
+
+// retryDeferredServiceYAMLs re-runs the writer for services that 404'd
+// on the first attempt. Called after the deploy job completes
+// successfully so the conductor's async service-create has had time to
+// produce a queryable resource. Errors here surface as best-effort
+// warnings: a still-failing yaml just means the user runs
+// `runos apps pull --force` later.
+func retryDeferredServiceYAMLs(cfg *config.Config, configDir, cid string, deferred []deploy.ProvisionedService) {
+	if len(deferred) == 0 {
+		return
+	}
+	m, err := loadLocalManifest(cfg.GetAPIURL())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: write service yamls: load manifest: %v\n", err)
+		return
+	}
+	exec := dynacmd.NewExecutor(cfg.GetAPIURL())
+	repoRoot, _ := git.RepoRoot()
+	var stillMissing []string
+	for _, s := range deferred {
+		if existing := services.ExistingServiceYamlPath(repoRoot, configDir, cid, s.ID); existing != "" {
+			continue
+		}
+		pulled, err := services.Pull(exec, m, s.Type, cid, cfg.AccountID, s.ID)
+		if err != nil {
+			stillMissing = append(stillMissing, fmt.Sprintf("%s/%s", s.Type, s.ID))
+			continue
+		}
+		dest := services.FilenameFor(configDir, cid, s.Type, s.ID)
+		if err := services.Save(dest, pulled); err != nil {
+			stillMissing = append(stillMissing, fmt.Sprintf("%s/%s: save: %v", s.Type, s.ID, err))
 			continue
 		}
 		fmt.Printf("Wrote service yaml: %s\n", dest)
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("write service yamls (some failed):\n  %s", strings.Join(errs, "\n  "))
+	if len(stillMissing) > 0 {
+		fmt.Fprintf(os.Stderr, "Note: service yaml(s) not yet pullable for: %s. Run `runos apps pull --force` once the services finish provisioning.\n",
+			strings.Join(stillMissing, ", "))
 	}
-	return nil
+}
+
+// isAPINotFound reports whether an error chain carries a 404 from
+// either the dynacmd executor or the deploy service's typed APIError
+// sentinel. Used to recognise the first-deploy ordering case (the
+// AppDocument hasn't been minted yet, so env-vars/dependencies/show
+// 404s are correct, not bug signal) and silence the misleading
+// warnings that would otherwise look like a deploy failure (I3-D).
+func isAPINotFound(err error) bool {
+	var dynaErr *dynacmd.APIError
+	if errors.As(err, &dynaErr) {
+		return dynaErr.StatusCode == http.StatusNotFound
+	}
+	var deployErr *deploy.APIError
+	if errors.As(err, &deployErr) {
+		return deployErr.StatusCode == http.StatusNotFound
+	}
+	return false
 }
 
 // syncResult holds what changed during a sync operation
@@ -749,10 +971,15 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	configDir := filepath.Dir(configPath)
 	result := &syncResult{}
 
-	// Fetch and sync dependencies
+	// Fetch and sync dependencies. 404 is the first-deploy ordering case
+	// (the AppDocument hasn't been minted yet); the upcoming
+	// PrepareDeployment will create it, so the empty result is correct
+	// and the warning was just noise (I3-D).
 	deps, err := svc.GetAppDependencies(deployConfig.ID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", err)
+		if !isAPINotFound(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", err)
+		}
 	} else {
 		result.deps = deps
 		if deps != nil && deployConfig.Requires != nil {
@@ -774,9 +1001,12 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	// runos.{cid}.{id}.config.env.
 	envPaths, _ := deploy.ResolveEnvFiles(configDir, deployConfig, cid)
 
-	// Secret side.
+	// Secret side. Same 404-is-fine-on-first-deploy treatment as the
+	// dependencies fetch above (I3-D).
 	if secretEnvVars, err := svc.GetAppSecretEnvVars(deployConfig.ID); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to fetch secret env vars: %v\n", err)
+		if !isAPINotFound(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch secret env vars: %v\n", err)
+		}
 	} else {
 		result.secretEnvVars = secretEnvVars
 		if len(secretEnvVars) > 0 {
@@ -793,9 +1023,11 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 		}
 	}
 
-	// Plain side.
+	// Plain side. Same 404 suppression (I3-D).
 	if envVars, err := svc.GetAppEnvVars(deployConfig.ID); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", err)
+		if !isAPINotFound(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", err)
+		}
 	} else {
 		result.envVars = envVars
 		if len(envVars) > 0 {
@@ -818,6 +1050,66 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	}
 
 	return result, nil
+}
+
+// stampSynthesizedResources fills in the resource class + cpu/memory
+// fields on deployConfig when the user has nothing set locally and the
+// server has populated values (the resolveRRC synthesis path), then
+// rewrites the local yaml so the manifest is self-describing.
+//
+// Never overwrites user-set values: the local yaml stays the source of
+// truth for anything the user explicitly typed. Best-effort: any I/O
+// failure just leaves the local yaml absent of these fields, which is
+// the pre-fix status quo. Errors warn rather than propagate.
+//
+// Called only after the deploy is observed successful (--follow mode)
+// or right after prepare/upload in fire-and-forget mode. The pre-deploy
+// syncAppState path deliberately does NOT call this so a user who
+// omits RRC on purpose has the prepare endpoint reapply that omission
+// rather than silently round-tripping a synthesized value.
+func stampSynthesizedResources(svc *deploy.Service, c *deploy.DeployConfig, configPath string) {
+	if c == nil || c.ID == "" {
+		return
+	}
+	hasAny := c.ResourceRequirementClassID != "" ||
+		c.CPURequestMc > 0 || c.CPULimitMc > 0 ||
+		c.MemoryRequestMb > 0 || c.MemoryLimitMb > 0
+	if hasAny {
+		return
+	}
+	app, err := svc.GetApp(c.ID)
+	if err != nil {
+		// First-deploy fire-and-forget: the AppDocument hasn't
+		// settled yet and a 404 here just means the synthesis hasn't
+		// run. The user will see the synthesized class on their next
+		// `apps_pull` once the orchestration finishes (I3-D).
+		if !isAPINotFound(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch synthesized resource class: %v\n", err)
+		}
+		return
+	}
+	if app == nil || app.ResourceRequirementClassID == "" {
+		return
+	}
+	c.ResourceRequirementClassID = app.ResourceRequirementClassID
+	if app.CPURequestMc > 0 {
+		c.CPURequestMc = app.CPURequestMc
+	}
+	if app.CPULimitMc > 0 {
+		c.CPULimitMc = app.CPULimitMc
+	}
+	if app.MemoryRequestMb > 0 {
+		c.MemoryRequestMb = app.MemoryRequestMb
+	}
+	if app.MemoryLimitMb > 0 {
+		c.MemoryLimitMb = app.MemoryLimitMb
+	}
+	if err := deploy.SaveConfig(configPath, c); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to record synthesized resource class to local yaml: %v\n", err)
+		return
+	}
+	fmt.Printf("Recorded synthesized resourceRequirementClassId=%q in %s\n",
+		app.ResourceRequirementClassID, configPath)
 }
 
 // sourceVersionFromPrepare picks the identifier to record in the
@@ -962,34 +1254,93 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 	appsSvc := apps.NewService(cfg.GetAPIURL(), token, cid, cfg.AccountID)
 	report, err := apps.BuildDiffReport(appsSvc, localApp, configPath, cfg.AccountID, cid)
 	if err != nil {
+		// I14-B: a 404 from the drift gate's `GET /apps/:id` means the
+		// app id in the local yaml no longer exists server-side (most
+		// commonly: user deleted the app via console / `apps delete`
+		// and then came back to a stale `runos.yaml`). Pre-fix the
+		// gate emitted a generic "Warning: drift check failed" line
+		// and proceeded with the deploy, which then failed at the
+		// prepare-cli-deployment step with a different 400 — the user
+		// hit a dead end with no recovery guidance. Surface the cause
+		// + the two clean paths so a fresh-start deploy isn't a maze.
+		var apiErr *apps.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			fmt.Fprintf(os.Stderr, "Error: app %q in %q no longer exists on cluster %q (server returned 404).\n", localApp.ID, configPath, cid)
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "Two recovery paths:")
+			fmt.Fprintf(os.Stderr, "  1. Re-create as a fresh app: clear the `id:` line from %s and re-run `runos deploy`.\n", configPath)
+			fmt.Fprintln(os.Stderr, "     The conductor mints a new app + osid; subsequent deploys pin to it.")
+			fmt.Fprintf(os.Stderr, "  2. Bypass the gate: `runos deploy %s --force` (only useful if you genuinely want the\n", configPath)
+			fmt.Fprintln(os.Stderr, "     prepare step to surface its own 404; doesn't re-create the app).")
+			return fmt.Errorf("app deleted server-side; clear `id:` from yaml or pass --force")
+		}
 		fmt.Fprintf(os.Stderr, "Warning: pre-deploy drift check failed: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Proceeding with deploy. Run 'runos apps diff %s' manually to verify.\n", configPath)
 		return nil
 	}
+	// I4-B: deploy gate output flows into CI logs by default; redact
+	// sensitive content (secret-env values, secret-file diffs) before
+	// any printDiffReport call so credentials don't end up in build
+	// pipelines. The user already authored these locally — the gate
+	// is informational, not diagnostic. `apps diff` keeps its
+	// `--redact-secrets` opt-in for users who explicitly want the
+	// values rendered for inspection.
+	report.RedactSecrets()
 	// emitDeletionWarning surfaces server-only fields that a deploy
-	// might clear. Under the new conductor's omit-equals-clear rule,
-	// any of healthCheck / healthCheckPort / healthCheckPath /
-	// metricsPort / metricsPath that the server has but the local
-	// yaml omits will be DELETED on push. Other server-only fields
-	// (replicas, clusterDomainId, etc.) are partial-update: the
-	// server preserves them on omission. We surface every server-only
-	// field rather than try to filter, so the user sees the same
-	// list the diff renders and isn't surprised either way.
+	// might clear. The warning is split into two buckets:
+	//   - clearOnOmit: fields the server WILL wipe because they have
+	//     omit-equals-clear semantics on the PATCH endpoint
+	//     (apps.OmitClearFields).
+	//   - preserveOnOmit: server-only fields that stay put on push.
+	// Earlier versions of this warning hardcoded "healthCheck* and
+	// metrics* fields will be CLEARED" regardless of which fields were
+	// actually in scope, which mismatched the bulleted list whenever
+	// only preserve-on-omit fields drifted (e.g. cpu*/memory*). We now
+	// only print the clearing line when there's actually something to
+	// clear, and we stay quiet entirely when nothing is server-only.
 	emitDeletionWarning := func() {
 		if len(report.YAML.ServerOnlyFields) == 0 {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "WARNING: the server has fields your local yaml doesn't.")
-		fmt.Fprintln(os.Stderr, "         healthCheck* and metrics* fields will be CLEARED by this deploy")
-		fmt.Fprintln(os.Stderr, "         (omit-equals-clear). Other fields are preserved server-side.")
-		fmt.Fprintln(os.Stderr)
-		for _, f := range report.YAML.ServerOnlyFields {
-			fmt.Fprintf(os.Stderr, "           - %s\n", f)
+		// I4-F: drop fields the deploy orchestration removes via a
+		// step OTHER than the apps PATCH (currently `requires.*` —
+		// `replaceDependencies` handles those edges, and as of
+		// conductor R2 the orphan secret keys are stripped too). The
+		// pre-fix message landed `requires.<alias> (3 fields)` under
+		// "Preserved server-side (no action needed)" even though the
+		// user had intentionally removed the alias and the post-
+		// deploy state confirmed the removal. Filtering early keeps
+		// the bulleted summary honest about what's actually still in
+		// scope of the apps PATCH's omit-clear / omit-preserve rules.
+		serverOnly := apps.FilterOrchestrationRemoved(report.YAML.ServerOnlyFields)
+		if len(serverOnly) == 0 {
+			return
 		}
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, "         To keep them, cancel and run:")
-		fmt.Fprintf(os.Stderr, "           runos apps pull %s --force\n", configPath)
-		fmt.Fprintln(os.Stderr, "         which merges server state into your local yaml first.")
+		clearOnOmit, preserveOnOmit := apps.PartitionServerOnlyByClearSemantics(serverOnly)
+		if len(clearOnOmit) == 0 && len(preserveOnOmit) == 0 {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "Note: the server has fields your local yaml doesn't.")
+		if len(clearOnOmit) > 0 {
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "  WILL be cleared by this deploy (omit-equals-clear):")
+			for _, f := range clearOnOmit {
+				fmt.Fprintf(os.Stderr, "    - %s\n", f)
+			}
+		}
+		if len(preserveOnOmit) > 0 {
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "  Preserved server-side (no action needed):")
+			for _, f := range preserveOnOmit {
+				fmt.Fprintf(os.Stderr, "    - %s\n", f)
+			}
+		}
+		if len(clearOnOmit) > 0 {
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "  To keep the cleared fields, cancel and run:")
+			fmt.Fprintf(os.Stderr, "    runos apps pull %s --force\n", configPath)
+			fmt.Fprintln(os.Stderr, "  which merges server state into your local yaml first.")
+		}
 		fmt.Fprintln(os.Stderr)
 	}
 
@@ -1019,11 +1370,12 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 		// values (overwrite on push). In both cases the diff above
 		// shows what's about to happen; we only need a one-liner
 		// preface so the user (or LLM) knows --force is in effect.
-		fmt.Fprintln(os.Stderr, "Warning: server has changes your local yaml doesn't reflect, but --force was passed.")
+		fmt.Fprintln(os.Stderr, deployDriftHeadlineForce(report))
 		fmt.Fprintln(os.Stderr, "         Deploy will reconcile the server to match the local yaml.")
 		if hasLegacy {
-			fmt.Fprintln(os.Stderr, "         Note: this yaml uses deprecated fields (port:/domain:/standardHttps:).")
-			fmt.Fprintln(os.Stderr, "         Forcing through means the same drift will reappear on every deploy.")
+			fmt.Fprintln(os.Stderr, "         Note: this yaml uses top-level shorthand fields (port:/standardHttps:)")
+			fmt.Fprintln(os.Stderr, "         that duplicate servicePortMappings[]. Forcing through means the same")
+			fmt.Fprintln(os.Stderr, "         drift will reappear on every deploy.")
 			fmt.Fprintf(os.Stderr, "         Recommended fix: runos apps pull %s --force\n", configPath)
 		}
 		fmt.Fprintln(os.Stderr)
@@ -1032,22 +1384,22 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 		return nil
 	}
 
-	fmt.Printf("\n%s (%s) on cluster %s, the server has state your local yaml doesn't reflect.\n", report.AppName, report.AppID, report.CID)
+	fmt.Printf("\n%s (%s) on cluster %s, %s\n", report.AppName, report.AppID, report.CID, deployDriftHeadline(report))
 	fmt.Println("Deploying now would overwrite changes that aren't in your local files.")
 	printDiffReport(report)
 	fmt.Println()
 	if hasLegacy {
-		fmt.Println("Your runos.yaml uses deprecated field names (top-level `port:`, `domain:`, or")
-		fmt.Println("`standardHttps:`) that have been superseded by `servicePortMappings`. This is the")
-		fmt.Println("most likely cause of the drift above; the server already stores the canonical shape.")
+		fmt.Println("Your runos.yaml uses top-level shorthand fields (`port:`, `standardHttps:`) that")
+		fmt.Println("duplicate `servicePortMappings[]`. The server stores the canonical shape, which")
+		fmt.Println("is the most likely cause of the drift above.")
 		fmt.Println()
-		fmt.Println("RECOMMENDED — migrate the local yaml to the canonical format:")
+		fmt.Println("RECOMMENDED, migrate the local yaml to the canonical format:")
 		fmt.Printf("  runos apps pull %s --force\n", configPath)
 		fmt.Println("Then re-run `runos deploy`. The migration is one-time per yaml.")
 		fmt.Println()
 		fmt.Println("Other options:")
 		fmt.Printf("  Inspect:       runos apps diff %s\n", configPath)
-		fmt.Printf("  Deploy anyway: runos deploy --force   (keeps the legacy shape; same drift\n")
+		fmt.Printf("  Deploy anyway: runos deploy --force   (keeps the shorthand; same drift\n")
 		fmt.Println("                                        will reappear next deploy)")
 	} else {
 		fmt.Printf("Reconcile:  runos apps pull %s --force      (merge server state into your yaml first)\n", configPath)
@@ -1055,6 +1407,73 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 		fmt.Printf("Deploy anyway: runos deploy --force         (push your yaml; server state updates to match)\n")
 	}
 	return fmt.Errorf("upstream drift detected; pass --force to deploy anyway")
+}
+
+// deployDriftHeadline picks a directionally-correct headline for the
+// deploy drift-gate refusal. Pre-fix the gate always said "the server
+// has state your local yaml doesn't reflect", which was backwards or
+// at best partial when the user had local additions ahead of the
+// server (or both sides had unique state). Now:
+//
+//   - Pure server-additions (local⊆server, the most common case where
+//     server-applied defaults landed after the last pull): clobber
+//     warning unchanged.
+//   - Mixed (both sides have unique state, e.g. local edited a value
+//     the server also has but with a different value): "your yaml has
+//     diverged from the server".
+//
+// Local-only additions (local⊇server) aren't blocking per
+// NeedsForceToDeploy, so this helper is only reached for the two
+// blocking cases.
+//
+// Regression target: I10-A.
+func deployDriftHeadline(r *apps.DiffReport) string {
+	yamlDirection := classifyDriftDirection(r.YAML)
+	codeStale := r.Code.IsStale()
+	switch {
+	case yamlDirection == "server-additions" && !codeStale:
+		return "the server has state your local yaml doesn't reflect."
+	case yamlDirection == "mixed":
+		return "your local yaml has diverged from the server."
+	case codeStale && yamlDirection == "":
+		return "newer source archives exist on the server than your recorded baseline."
+	default:
+		return "your local yaml has diverged from the server."
+	}
+}
+
+// deployDriftHeadlineForce is the --force-pass-through variant of
+// deployDriftHeadline. Same direction logic; phrased as a warning
+// rather than a refusal headline.
+func deployDriftHeadlineForce(r *apps.DiffReport) string {
+	yamlDirection := classifyDriftDirection(r.YAML)
+	switch yamlDirection {
+	case "server-additions":
+		return "Warning: server has changes your local yaml doesn't reflect, but --force was passed."
+	case "mixed":
+		return "Warning: your local yaml has diverged from the server, but --force was passed."
+	default:
+		return "Warning: drift detected, but --force was passed."
+	}
+}
+
+// classifyDriftDirection inspects a SectionDiff's AdditiveOnly +
+// LocalIsSuperset flags and returns "server-additions" (local⊆server),
+// "local-additions" (server⊆local), "mixed" (neither subset), or ""
+// (no drift). Used by the drift-gate headline so the user sees which
+// side has the unique state.
+func classifyDriftDirection(sd apps.SectionDiff) string {
+	if sd.Status != apps.StatusDrift {
+		return ""
+	}
+	switch {
+	case sd.AdditiveOnly && !sd.LocalIsSuperset:
+		return "server-additions"
+	case !sd.AdditiveOnly && sd.LocalIsSuperset:
+		return "local-additions"
+	default:
+		return "mixed"
+	}
 }
 
 func runDeploySync(cmd *cobra.Command, args []string) error {
@@ -1098,6 +1517,15 @@ func runDeploySync(cmd *cobra.Command, args []string) error {
 
 	deployConfig, err := deploy.LoadConfig(configPath)
 	if err != nil {
+		return err
+	}
+
+	// Cross-check yaml's cid against flag/config cid before overwriting
+	// deployConfig.CID below. Same I18-B fix as runDeploy: refuse on
+	// mismatch instead of silently overwriting.
+	cid, err = deploy.ReconcileCID(cid, deployConfig.CID)
+	if err != nil {
+		cmd.SilenceUsage = true
 		return err
 	}
 
@@ -1278,6 +1706,102 @@ func warnLocalDeletions(path string, missing []string, requiresFiltered map[stri
 	fmt.Fprintf(os.Stderr, "\n`runos deploy` is additive: it pulls server env vars down into local but never pushes deletions up.\n")
 	fmt.Fprintf(os.Stderr, "If you intended to remove these from the server, run `runos apps sync` (NOT another deploy);\n")
 	fmt.Fprintf(os.Stderr, "the replace-all env-vars push is the only way the CLI deletes server-side env vars.\n")
+}
+
+// preDeployDomainRemovalGate fetches the per-app custom-domain list,
+// diffs against the local yaml's declared fqdns, and surfaces a
+// destructive-removal warning when any server-side domain is about to
+// be removed by this deploy.
+//
+// I2-4e regression target (TEST_LOG.md): conductor's reconciler treats
+// omit as delete (consistent with omit-equals-clear elsewhere), so
+// dropping a `domain:` line or a `servicePortMappings[].domains[]`
+// entry silently removes the mapping AND its DNS record on next
+// deploy. The previous CLI gave no warning.
+//
+// I2-4e' refinement: the WARNING block ALWAYS prints when a removal is
+// detected, regardless of `--force` / `--yes` / non-tty. Only the
+// interactive y/N prompt is conditional. Earlier the gate auto-
+// skipped entirely under `--force`, but the upstream drift gate
+// already funnels users to `--force` for any local-vs-server
+// divergence, so the warning never surfaced in practice. Now the
+// destructive-action signal is in the build log no matter how the
+// deploy was invoked.
+//
+// Skip semantics for the prompt:
+//   - --force: warning prints, proceeds without prompt
+//   - --yes: warning prints, proceeds without prompt
+//   - stdin not a TTY (CI, piped input): warning prints, proceeds
+//   - otherwise: warning prints, prompts y/N, anything other than
+//     y/yes aborts
+//
+// Best-effort fetch: a failure to call GetAppCustomDomains warns and
+// proceeds. Refusing the deploy because a read endpoint hiccupped
+// would be worse than the prior status quo (no warning at all).
+//
+// Returns nil to proceed; a non-nil error aborts the deploy (only
+// possible when the interactive prompt is reached and the user answers
+// no).
+func preDeployDomainRemovalGate(svc *deploy.Service, c *deploy.DeployConfig, force, skipPrompt bool) error {
+	if c == nil || c.ID == "" {
+		return nil
+	}
+	serverDomains, err := svc.GetAppCustomDomains(c.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: domain-removal gate skipped (fetch failed: %v)\n", err)
+		return nil
+	}
+	if len(serverDomains) == 0 {
+		return nil
+	}
+	local := make(map[string]struct{})
+	for _, fqdn := range deploy.LocalDomainFqdns(c) {
+		local[fqdn] = struct{}{}
+	}
+	var removals []string
+	for _, fqdn := range serverDomains {
+		if _, kept := local[fqdn]; !kept {
+			removals = append(removals, fqdn)
+		}
+	}
+	if len(removals) == 0 {
+		return nil
+	}
+
+	// Always surface the warning. Skipping the prompt does not skip
+	// the destructive-action signal (I2-4e' fix).
+	fmt.Fprintln(os.Stderr, "WARNING: this deploy will REMOVE the following custom domain(s) attached to the app:")
+	for _, fqdn := range removals {
+		fmt.Fprintf(os.Stderr, "  - %s\n", fqdn)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Removal also drops any provider-managed DNS record (Cloudflare, etc.).")
+	fmt.Fprintln(os.Stderr, "To keep these domains, cancel and add them back to runos.yaml's `domain:` or")
+	fmt.Fprintln(os.Stderr, "`servicePortMappings[].domains[]` before redeploying.")
+
+	if force || skipPrompt {
+		fmt.Fprintln(os.Stderr)
+		switch {
+		case force:
+			fmt.Fprintln(os.Stderr, "--force passed; proceeding without prompt.")
+		case skipPrompt:
+			fmt.Fprintln(os.Stderr, "--yes passed; proceeding without prompt.")
+		}
+		return nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "stdin is not a terminal (CI / piped input); proceeding without prompt.")
+		return nil
+	}
+	ok, err := confirm("\nProceed with removal? [y/N] ")
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("deploy cancelled to preserve custom domain(s)")
+	}
+	return nil
 }
 
 // confirmDeploy prints summary on stderr and prompts the user to confirm.

@@ -2,11 +2,265 @@ package apps
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// Regression test for I2-4c (TEST_LOG.md): the pre-deploy "fields will
+// be CLEARED" warning previously hardcoded the clear families
+// (healthCheck*/metrics*) regardless of what was actually in scope. The
+// partition helper feeds the warning so the listed clearing fields
+// always match the warning text. cpu* / memory* / replicas /
+// clusterDomainId are partial-update on the conductor's PATCH
+// endpoint, so they must NOT be classified as clearing.
+func TestPartitionServerOnlyByClearSemantics(t *testing.T) {
+	cases := []struct {
+		name             string
+		serverOnly       []string
+		wantClear        []string
+		wantPreserveOnly []string
+	}{
+		{
+			name:             "I2-4c canonical: cpu/memory only",
+			serverOnly:       []string{"cpuLimitMc", "cpuRequestMc", "memoryLimitMb", "memoryRequestMb"},
+			wantClear:        nil,
+			wantPreserveOnly: []string{"cpuLimitMc", "cpuRequestMc", "memoryLimitMb", "memoryRequestMb"},
+		},
+		{
+			name:             "all five omit-clear fields",
+			serverOnly:       []string{"healthCheck", "healthCheckPort", "healthCheckPath", "metricsPort", "metricsPath"},
+			wantClear:        []string{"healthCheck", "healthCheckPort", "healthCheckPath", "metricsPort", "metricsPath"},
+			wantPreserveOnly: nil,
+		},
+		{
+			name:             "mixed: some clear, some preserve",
+			serverOnly:       []string{"healthCheckPath", "cpuLimitMc", "metricsPort", "replicas", "clusterDomainId"},
+			wantClear:        []string{"healthCheckPath", "metricsPort"},
+			wantPreserveOnly: []string{"cpuLimitMc", "replicas", "clusterDomainId"},
+		},
+		{
+			name:             "nested non-domain paths classified by top-level only",
+			serverOnly:       []string{"requires.foo.config", "healthCheckPort"},
+			wantClear:        []string{"healthCheckPort"},
+			wantPreserveOnly: []string{"requires.foo.config"},
+		},
+		{
+			// Regression test for I2-4e' (TEST_LOG.md): a removed
+			// `servicePortMappings[].domains` entry is omit-deletes,
+			// not preserve. Earlier versions of the partition lumped
+			// it under "Preserved server-side" because the top-level
+			// extractor saw `servicePortMappings` and that wasn't in
+			// OmitClearFields. The IsOmitClearPath nested matcher
+			// catches it now.
+			name:             "I2-4e' regression: servicePortMappings[N].domains is clear",
+			serverOnly:       []string{`servicePortMappings[0].domains (1 entry)`, `servicePortMappings[0].port (3000)`},
+			wantClear:        []string{`servicePortMappings[0].domains (1 entry)`},
+			wantPreserveOnly: []string{`servicePortMappings[0].port (3000)`},
+		},
+		{
+			// I2-4e' partner: top-level `domain:` is also omit-
+			// deletes per the iter-2 conductor decision. Must NOT
+			// land in the preserve bucket.
+			name:             "I2-4e' regression: top-level domain is clear",
+			serverOnly:       []string{`domain ("example.com")`},
+			wantClear:        []string{`domain ("example.com")`},
+			wantPreserveOnly: nil,
+		},
+		{
+			name:             "empty input",
+			serverOnly:       nil,
+			wantClear:        nil,
+			wantPreserveOnly: nil,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			gotClear, gotPreserve := PartitionServerOnlyByClearSemantics(tt.serverOnly)
+			if !reflect.DeepEqual(gotClear, tt.wantClear) {
+				t.Errorf("clearOnOmit: got %v, want %v", gotClear, tt.wantClear)
+			}
+			if !reflect.DeepEqual(gotPreserve, tt.wantPreserveOnly) {
+				t.Errorf("preserveOnOmit: got %v, want %v", gotPreserve, tt.wantPreserveOnly)
+			}
+		})
+	}
+}
+
+// I3-E retest follow-up: classify each server-only entry as
+// blocking (refuses deploy without --force) or benign (waved through
+// when AdditiveOnly). Pinned per shape so a future formatter change
+// to summarizeValue can't silently inflate the benign set.
+func TestIsBenignPreserveZero(t *testing.T) {
+	cases := []struct {
+		entry string
+		want  bool
+		why   string
+	}{
+		// Benign zero defaults that must NOT block deploy.
+		{"cpuRequestMc (0)", true, "preserve-on-omit numeric zero"},
+		{"cpuLimitMc (0)", true, "preserve-on-omit numeric zero"},
+		{"memoryRequestMb (0)", true, "preserve-on-omit numeric zero"},
+		{"memoryLimitMb (0)", true, "preserve-on-omit numeric zero"},
+		{"replicas (0)", true, "preserve-on-omit numeric zero"},
+		{`clusterDomainId ("")`, true, "preserve-on-omit empty string"},
+		{"someBoolField (false)", true, "preserve-on-omit zero bool"},
+		{"someListField (0 entries)", true, "preserve-on-omit empty list"},
+		{"someMapField (0 fields)", true, "preserve-on-omit empty map"},
+		{"someNullableField (null)", true, "preserve-on-omit null"},
+		// Non-zero preserve-on-omit values: blocking (user might want
+		// to preserve a server-side customisation).
+		{"cpuRequestMc (500)", false, "preserve-on-omit but non-zero"},
+		{"memoryRequestMb (256)", false, "preserve-on-omit but non-zero"},
+		{`resourceRequirementClassId ("custom")`, false, "preserve-on-omit non-empty string"},
+		{`clusterDomainId ("elpfn")`, false, "preserve-on-omit non-empty string"},
+		// clearOnOmit fields: never benign (omit wipes them, scary).
+		{`domain ("foo.com")`, false, "clearOnOmit, never benign"},
+		{`healthCheck ("startup")`, false, "clearOnOmit, never benign"},
+		{"healthCheckPort (3000)", false, "clearOnOmit, never benign"},
+		{`healthCheckPath ("/healthz")`, false, "clearOnOmit, never benign"},
+		{"metricsPort (9090)", false, "clearOnOmit, never benign"},
+		{`metricsPath ("/metrics")`, false, "clearOnOmit, never benign"},
+		// clearOnOmit at zero: still blocking — omit semantics matter
+		// even when the value is the zero default.
+		{"healthCheckPort (0)", false, "clearOnOmit at zero, still not benign"},
+		// Nested clearOnOmit (servicePortMappings[N].domains).
+		{`servicePortMappings[0].domains (1 entry)`, false, "nested clearOnOmit"},
+		// Entry with no value summary parses to name only; absent
+		// summary is not zero (no signal), so blocking.
+		{"someField", false, "no summary, no zero signal"},
+		// Empty entry.
+		{"", false, "empty entry"},
+	}
+	for _, c := range cases {
+		t.Run(c.entry, func(t *testing.T) {
+			if got := IsBenignPreserveZero(c.entry); got != c.want {
+				t.Errorf("IsBenignPreserveZero(%q) = %v, want %v (%s)", c.entry, got, c.want, c.why)
+			}
+		})
+	}
+}
+
+// I4-F regression: `requires` server-only fields must drop out of
+// the pre-deploy gate's bulleted summary so the user doesn't read
+// "Preserved server-side: requires.<alias>" right after they
+// intentionally removed the alias. The conductor's
+// `replaceDependencies` step handles requires edge removal
+// regardless of the apps PATCH's omit-clear semantics, so the
+// classification is structurally inappropriate.
+func TestIsOrchestrationRemovedPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		// Top-level requires entry.
+		{"requires", true},
+		// Aliased requires entries (the typical listServerOnlyFields shape).
+		{"requires.shortlinks-dev-cache", true},
+		{"requires.poll-app-db", true},
+		// Summary-suffixed forms produced by the walker.
+		{"requires (3 fields)", true},
+		// Nested deep requires shapes (defensive).
+		{"requires.foo.config.databaseName", true},
+		// Non-requires paths unaffected.
+		{"replicas", false},
+		{"cpuRequestMc", false},
+		{"healthCheckPort", false},
+		{"servicePortMappings[0].domains", false},
+		{`domain ("foo.com")`, false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			if got := IsOrchestrationRemovedPath(c.path); got != c.want {
+				t.Errorf("IsOrchestrationRemovedPath(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+func TestFilterOrchestrationRemoved(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty input", nil, nil},
+		{
+			"requires only: filtered to empty",
+			[]string{"requires.cache (3 fields)"},
+			[]string{},
+		},
+		{
+			"mixed: requires dropped, others preserved",
+			[]string{
+				"cpuRequestMc (0)",
+				"requires.cache (3 fields)",
+				`domain ("foo.com")`,
+				"requires.db (4 fields)",
+				"healthCheckPort (3000)",
+			},
+			[]string{
+				"cpuRequestMc (0)",
+				`domain ("foo.com")`,
+				"healthCheckPort (3000)",
+			},
+		},
+		{
+			"all non-requires: passthrough",
+			[]string{"cpuRequestMc (0)", `domain ("foo.com")`},
+			[]string{"cpuRequestMc (0)", `domain ("foo.com")`},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := FilterOrchestrationRemoved(c.in)
+			if !reflect.DeepEqual(got, c.want) {
+				// Tolerate nil vs empty-slice equivalence: callers
+				// only iterate, length is what matters.
+				if len(got) == 0 && len(c.want) == 0 {
+					return
+				}
+				t.Errorf("FilterOrchestrationRemoved(%v) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// I4-F partner: FilterOrchestrationRemoved must not mutate its input.
+func TestFilterOrchestrationRemoved_DoesNotMutateInput(t *testing.T) {
+	input := []string{"cpuRequestMc (0)", "requires.cache (3 fields)", `domain ("foo.com")`}
+	original := append([]string(nil), input...)
+	_ = FilterOrchestrationRemoved(input)
+	if !reflect.DeepEqual(input, original) {
+		t.Errorf("input mutated: got %v, want %v", input, original)
+	}
+}
+
+func TestAnyServerOnlyIsBlocking(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []string
+		want    bool
+	}{
+		{"empty list", nil, false},
+		{"all benign zeros", []string{"cpuRequestMc (0)", "memoryRequestMb (0)"}, false},
+		{"single clearOnOmit", []string{`domain ("foo.com")`}, true},
+		{"single non-zero preserve-on-omit", []string{"cpuRequestMc (500)"}, true},
+		{"mixed benign + clearOnOmit", []string{"cpuRequestMc (0)", `domain ("x")`}, true},
+		{"mixed benign + non-zero", []string{"cpuRequestMc (0)", "memoryRequestMb (256)"}, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AnyServerOnlyIsBlocking(tt.entries); got != tt.want {
+				t.Errorf("AnyServerOnlyIsBlocking(%v) = %v, want %v", tt.entries, got, tt.want)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // computeEnvChange
@@ -1015,6 +1269,58 @@ func TestComputeSyncPlan_NoChangesProducesEmptyPlan(t *testing.T) {
 	if plan.HasChanges() {
 		t.Errorf("expected no changes, got plan: %+v", plan)
 	}
+	// I4-I: HasChangesField mirrors HasChanges() and is always
+	// emitted in JSON. Pre-fix, `apps_sync --dry-run --json` on a
+	// no-op plan collapsed to {appId, appName, cid} and CI parsers
+	// had no signal between "ran cleanly, nothing to do" and
+	// "ran a partial plan we should investigate".
+	if plan.HasChangesField {
+		t.Errorf("HasChangesField must mirror HasChanges() (false here)")
+	}
+}
+
+// I4-I: a plan with changes must have HasChangesField=true so JSON
+// consumers can branch on a single field without having to inspect
+// every section.
+func TestComputeSyncPlan_HasChangesFieldTrueOnChanges(t *testing.T) {
+	in := SyncInputs{
+		LocalApp: &PulledApp{
+			ID: "ab12c", CID: "k1", AID: "acc-1", App: "web",
+			Replicas:            2,
+			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
+		},
+		LocalEnvVars: map[string]string{"NEW_KEY": "value"},
+		ServerRaw: map[string]any{
+			"id":       "ab12c",
+			"name":     "web",
+			"replicas": float64(1), // diverges from local
+			"servicePortMappings": []any{
+				map[string]any{"port": float64(8080), "standardHttps": true},
+			},
+		},
+	}
+	plan := ComputeSyncPlan(in)
+	if !plan.HasChanges() {
+		t.Fatal("expected HasChanges() to be true given replicas + env delta")
+	}
+	if !plan.HasChangesField {
+		t.Errorf("HasChangesField must mirror HasChanges() (true here)")
+	}
+}
+
+// I4-I: HasChangesField must round-trip through JSON serialisation
+// so consumers always see the field in the wire format.
+func TestSyncPlan_HasChangesFieldJSONShape(t *testing.T) {
+	plan := &SyncPlan{AppID: "ab12c", AppName: "web", CID: "k1"}
+	// Simulate the no-op outcome.
+	plan.HasChangesField = plan.HasChanges()
+	out, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"hasChanges":false`) {
+		t.Errorf("expected JSON to carry hasChanges:false, got %s", string(out))
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,3 +1684,145 @@ func TestCheckEmptySecretEnvWipe_PassesWhenFinalMixesUserAndPlatform(t *testing.
 	}
 }
 
+
+// TestSyncPlan_RedactSecrets pins the JSON-path redaction added for
+// I10-M: --redact-secrets must apply when the plan is emitted as JSON,
+// not just when it's printed as text. Pre-fix `apps sync --dry-run
+// --json --redact-secrets` leaked ADMIN_TOKEN / JWT_SECRET / full
+// DATABASE_URL (with password) into LLM context via the MCP wrapper.
+func TestSyncPlan_RedactSecrets(t *testing.T) {
+	t.Parallel()
+	plan := &SyncPlan{
+		SecretEnv: &EnvChange{
+			Add:    map[string]string{"ADMIN_TOKEN": "supersecret123"},
+			Update: map[string]string{"JWT_SECRET": "jw7-secret"},
+			Final: map[string]string{
+				"ADMIN_TOKEN":  "supersecret123",
+				"JWT_SECRET":   "jw7-secret",
+				"DATABASE_URL": "postgresql://u:realpw@host:5432/db",
+			},
+		},
+		Env: &EnvChange{
+			Add:   map[string]string{"FEATURE_FLAG": "on"},
+			Final: map[string]string{"FEATURE_FLAG": "on", "LOG_LEVEL": "debug"},
+		},
+	}
+	plan.RedactSecrets()
+
+	if plan.SecretEnv.Add["ADMIN_TOKEN"] != "<redacted>" {
+		t.Errorf("ADMIN_TOKEN not redacted in Add: %q", plan.SecretEnv.Add["ADMIN_TOKEN"])
+	}
+	if plan.SecretEnv.Update["JWT_SECRET"] != "<redacted>" {
+		t.Errorf("JWT_SECRET not redacted in Update: %q", plan.SecretEnv.Update["JWT_SECRET"])
+	}
+	for k, v := range plan.SecretEnv.Final {
+		if v != "<redacted>" {
+			t.Errorf("SecretEnv.Final[%q] = %q, want <redacted>", k, v)
+		}
+	}
+	for k, v := range plan.Env.Final {
+		if v != "<redacted>" {
+			t.Errorf("Env.Final[%q] = %q, want <redacted> (plain env values also masked per --redact-secrets contract)", k, v)
+		}
+	}
+}
+
+func TestSyncPlan_RedactSecrets_NilSafe(t *testing.T) {
+	t.Parallel()
+	var plan *SyncPlan
+	plan.RedactSecrets() // must not panic
+
+	plan = &SyncPlan{} // no SecretEnv, no Env
+	plan.RedactSecrets() // must not panic
+}
+
+// TestRenderYAMLPatchAsDiff_StructuredValuesUseYAML pins I11-G: non-scalar
+// values in the yamlDiff render as nested YAML, not Go `map[...]`
+// literals. The diff is what `apps sync --dry-run --json` returns under
+// `yamlDiff`; consumers need readable YAML so they can display or parse
+// the change without writing a Go-map-literal grammar.
+func TestRenderYAMLPatchAsDiff_StructuredValuesUseYAML(t *testing.T) {
+	t.Parallel()
+
+	patch := map[string]any{
+		"servicePortMappings": []any{
+			map[string]any{
+				"port":          3000,
+				"standardHttps": false,
+				"domains": []any{
+					map[string]any{
+						"fqdn":                  "new.example.com",
+						"enableCloudflareProxy": true,
+					},
+				},
+			},
+		},
+	}
+	server := map[string]any{
+		"servicePortMappings": []any{
+			map[string]any{
+				"port":          3000,
+				"standardHttps": false,
+				"domains": []any{
+					map[string]any{
+						"fqdn":                  "old.example.com",
+						"enableCloudflareProxy": false,
+					},
+				},
+			},
+		},
+	}
+
+	got := renderYAMLPatchAsDiff(patch, server)
+
+	if strings.Contains(got, "map[") {
+		t.Errorf("rendered diff must not contain Go map literals; got:\n%s", got)
+	}
+	if !strings.Contains(got, "- servicePortMappings:") {
+		t.Errorf("expected '- servicePortMappings:' header line; got:\n%s", got)
+	}
+	if !strings.Contains(got, "+ servicePortMappings:") {
+		t.Errorf("expected '+ servicePortMappings:' header line; got:\n%s", got)
+	}
+	if !strings.Contains(got, "new.example.com") || !strings.Contains(got, "old.example.com") {
+		t.Errorf("expected both old/new fqdn values in diff; got:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if line == "" {
+			continue
+		}
+		if line[0] != '-' && line[0] != '+' {
+			t.Errorf("diff line missing -/+ prefix: %q (in:\n%s\n)", line, got)
+		}
+	}
+}
+
+// TestRenderYAMLPatchAsDiff_ScalarsStayOnOneLine pins the scalar
+// rendering: scalars (string, bool, int) stay on one line as
+// `± key: value`, only complex values nest. Mirrors the readable
+// experience the test report asks for in I11-G.
+func TestRenderYAMLPatchAsDiff_ScalarsStayOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	patch := map[string]any{
+		"replicas":    3,
+		"healthCheck": "/health",
+	}
+	server := map[string]any{
+		"replicas":    1,
+		"healthCheck": "",
+	}
+
+	got := renderYAMLPatchAsDiff(patch, server)
+
+	wantLines := []string{
+		"+ healthCheck: /health",
+		"- replicas: 1",
+		"+ replicas: 3",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected line containing %q in:\n%s", want, got)
+		}
+	}
+}

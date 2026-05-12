@@ -111,9 +111,31 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	}
 
 	// Extract cid from args if provided (will be used in endpoint building)
-	// cid can be in format "xyz" or "xyz (Cluster Name)" - extract short ID before space
+	// cid can be in format "xyz" or "xyz (Cluster Name)" - extract short ID before space.
+	// Mirror the stripped value back into args so any body-field path that reads
+	// args["cid"] (e.g. account-scoped POSTs like cluster-domains/add where cid is a
+	// body field, not a path segment) sees the canonical short id, not the display
+	// label. Without this, conductor received "mycluster2 (Cluster-2 mycluster2)" as cid in the
+	// POST body and failed downstream lookups on the bogus id. Regression: I16-C.
 	cid, _ := args["cid"].(string)
 	cid = extractCID(cid)
+	if _, ok := args["cid"]; ok {
+		args["cid"] = cid
+	}
+
+	// `cluster-domains show --id runos` targets the synthetic per-cluster
+	// runos row, which is ambiguous without a cluster scope (the same id
+	// exists once per cluster in the account). The endpoint is global
+	// (/:aid/cluster-domains/:id), so even passing cid here can't reach
+	// the right scope. The cobra/dynacmd path (internal/dynacmd/executor.go)
+	// intercepts the same shape and emits an actionable redirect; mirror
+	// it here so MCP/LLM consumers see the same hint instead of a bare
+	// conductor 404. Regression target: I17-A (parity with I11-W).
+	if cmdDef.Command == "cluster-domains/{id}/show" || cmdDef.Command == "cluster-domains/show" {
+		if id, _ := args["id"].(string); id == "runos" {
+			return "", fmt.Errorf("`runos` is a synthetic per-cluster cluster-domain; use the `cluster-domains_list-by-cluster` tool with a specific cid to see it scoped to a cluster")
+		}
+	}
 
 	// Get auth token
 	cfg, err := config.Load()
@@ -130,6 +152,21 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	endpoint, err := e.buildEndpointWithCID(cmdDef.Endpoint, args, cmdDef, cid)
 	if err != nil {
 		return "", err
+	}
+
+	// I4-K (MCP path): the conductor's PATCH /apps/:id endpoint
+	// preserves omitted fields only when `?merge=true` is set on the
+	// URL. The cobra/dynacmd path opts in via a similar shim in
+	// internal/dynacmd/executor.go:dispatch, but the MCP server runs
+	// commands through its own executor (this file), bypassing that
+	// shim. Iter-4 R1 retest pinned the diagnosis: cpu/memory
+	// preserved (resources fallback runs in both modes) but the 5
+	// clearables (healthCheck*, metrics*) wiped, exactly the
+	// desired-state-mode signature. Mirror the dynacmd shim here so
+	// every CLI surface (cobra, MCP) reaches the conductor with
+	// merge semantics for partial-PATCH callers.
+	if cmdDef.Command == "apps/update" {
+		endpoint = appendMergeQuery(endpoint)
 	}
 
 	// Build request body (for POST/PUT/PATCH) - exclude cid from body
@@ -419,6 +456,24 @@ func (e *CommandExecutor) doRequestWithCID(method, url string, body map[string]a
 	}
 
 	return e.httpClient.Do(req)
+}
+
+// appendMergeQuery returns endpoint with `merge=true` appended as a
+// query string parameter, preserving any existing query (e.g.
+// `?foo=bar` becomes `?foo=bar&merge=true`). Idempotent: a second
+// call doesn't double-add. Mirrors the same-named helper in
+// internal/dynacmd/executor.go (the two packages can't share a
+// helper without a third-party package; the function is small enough
+// that one duplicate is preferable to a `internal/util` shim that
+// just exposes a 5-line string op).
+func appendMergeQuery(endpoint string) string {
+	if strings.Contains(endpoint, "merge=true") {
+		return endpoint
+	}
+	if strings.Contains(endpoint, "?") {
+		return endpoint + "&merge=true"
+	}
+	return endpoint + "?merge=true"
 }
 
 // extractCID extracts the short cluster ID from a string that may be in

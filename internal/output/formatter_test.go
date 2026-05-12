@@ -71,6 +71,56 @@ func TestGetNestedValue(t *testing.T) {
 	}
 }
 
+// I5-B regression: legacy manifest output field name `__docId` must
+// resolve to the response body's `id` key when the conductor has
+// normalised the field name (iter-1 11b). Pre-fix the table renderer
+// looked up `__docId`, found nothing, and printed a blank column
+// under the literal `__DOCID` header.
+func TestGetNestedValue_LegacyDocIDAlias(t *testing.T) {
+	item := map[string]any{"id": "abc12", "name": "override-1"}
+	if got := getNestedValue(item, "__docId"); got != "abc12" {
+		t.Errorf(`getNestedValue("__docId") = %v, want "abc12" (alias to id)`, got)
+	}
+	// `id` itself still resolves directly.
+	if got := getNestedValue(item, "id"); got != "abc12" {
+		t.Errorf(`getNestedValue("id") = %v, want "abc12"`, got)
+	}
+}
+
+// I5-B partner: alias only kicks in when the manifest field name is
+// the legacy one AND the response lacks it. A response that genuinely
+// has `__docId` returns that value verbatim (defensive: older
+// conductors still emit `__docId`).
+func TestGetNestedValue_LegacyDocIDPresentInResponse(t *testing.T) {
+	item := map[string]any{"__docId": "legacy", "id": "abc12"}
+	if got := getNestedValue(item, "__docId"); got != "legacy" {
+		t.Errorf(`getNestedValue("__docId") = %v, want "legacy" (no alias when key exists)`, got)
+	}
+}
+
+// I5-B regression: column-header label upper-cases the aliased name
+// for legacy fields so the table reads `ID`, not the raw Firestore
+// subdoc convention `__DOCID`.
+func TestHeaderLabel(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"name", "NAME"},
+		{"createdAt", "CREATEDAT"},
+		{"id", "ID"},
+		{"__docId", "ID"},     // alias → upper(id)
+		{"enabled", "ENABLED"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := headerLabel(c.in); got != c.want {
+				t.Errorf("headerLabel(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestFormatValue(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -9,6 +9,33 @@ import (
 	"github.com/runos-official/cli/internal/manifest"
 )
 
+// I4-K MCP path regression: the MCP executor must opt into
+// `?merge=true` for `apps/update` exactly the way the cobra/dynacmd
+// path does. Pre-fix, the MCP path wrote partial-PATCH bodies (e.g.
+// `{replicas: 4}`) to the bare endpoint and the conductor's
+// desired-state mode wiped healthCheck/metrics. Pinned per shape so
+// neither implementation can drift from the other silently.
+func TestAppendMergeQueryMCP(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"/myacct/mycluster2/apps/abc12", "/myacct/mycluster2/apps/abc12?merge=true"},
+		{"/myacct/mycluster2/apps/abc12?", "/myacct/mycluster2/apps/abc12?&merge=true"},
+		{"/myacct/mycluster2/apps/abc12?foo=bar", "/myacct/mycluster2/apps/abc12?foo=bar&merge=true"},
+		// Idempotent.
+		{"/myacct/mycluster2/apps/abc12?merge=true", "/myacct/mycluster2/apps/abc12?merge=true"},
+		{"/myacct/mycluster2/apps/abc12?foo=bar&merge=true", "/myacct/mycluster2/apps/abc12?foo=bar&merge=true"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := appendMergeQuery(c.in); got != c.want {
+				t.Errorf("appendMergeQuery(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestExtractCID(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -180,5 +207,47 @@ func TestSubstituteFields(t *testing.T) {
 				t.Errorf("substituteFields() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// I16-C regression: the MCP executor strips the "(Cluster Name)" suffix off
+// args["cid"] before buildBody runs, so account-scoped POSTs that carry cid as
+// a BODY field (e.g. cluster-domains/add, endpoint /:aid/cluster-domains)
+// don't leak the display label onto the wire. Pre-fix, conductor received
+// `cid: "mycluster2 (Cluster-2 mycluster2)"` in the POST body and silently accepted it,
+// then failed downstream when no cluster with that bogus id existed.
+func TestBuildBodyStripsClusterNameSuffixFromCID(t *testing.T) {
+	e := &CommandExecutor{}
+	cmdDef := &manifest.Command{
+		Method:   "POST",
+		Endpoint: "/:aid/cluster-domains",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "cid", Type: "string", Required: true},
+				{Name: "zone", Type: "string", Required: true},
+				{Name: "integrationId", Type: "string", Required: true},
+				{Name: "isDefault", Type: "boolean"},
+			},
+		},
+	}
+	args := map[string]any{
+		"cid":           "mycluster2 (Cluster-2 mycluster2)",
+		"zone":          "example.com",
+		"integrationId": "int-1",
+	}
+	// Mirror the canonicalization performed at the top of Execute (the fix).
+	if cid, ok := args["cid"].(string); ok {
+		args["cid"] = extractCID(cid)
+	}
+
+	body := e.buildBody(args, cmdDef)
+	if got := body["cid"]; got != "mycluster2" {
+		t.Fatalf("body[\"cid\"] = %q, want %q (display-label suffix leaked into wire body)", got, "mycluster2")
+	}
+	if got := body["zone"]; got != "example.com" {
+		t.Errorf("body[\"zone\"] = %q, want %q", got, "example.com")
+	}
+	if got := body["integrationId"]; got != "int-1" {
+		t.Errorf("body[\"integrationId\"] = %q, want %q", got, "int-1")
 	}
 }

@@ -28,12 +28,20 @@ func init() {
 	servicesDiffCmd.Flags().BoolP("json", "j", false, "output diff as JSON")
 }
 
-func runServicesDiff(cmd *cobra.Command, args []string) error {
+func runServicesDiff(cmd *cobra.Command, args []string) (rerr error) {
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	// I4-G: route errors through the JSON envelope when --json is set
+	// so CI parsers don't have to special-case the failure path.
+	defer func() {
+		if jsonOut && rerr != nil {
+			rerr = emitJSONError(cmd, rerr)
+		}
+	}()
+
 	ctx, err := prepareServicesCmd(cmd)
 	if err != nil {
 		return err
 	}
-	jsonOut, _ := cmd.Flags().GetBool("json")
 
 	if len(args) != 1 {
 		return fmt.Errorf("pass the path to a runos.service.<cid>.<sid>.yaml file")

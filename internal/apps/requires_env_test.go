@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -106,6 +107,118 @@ func TestFindServerInjectedEnvCollisions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// I3-E regression: server-side platform-injected names (DATABASE_URL,
+// REDIS_*, ...) must drop out of the drift comparison so a freshly-
+// provisioned app's empty local `.secret.env` doesn't trip the
+// pre-deploy gate. Mirrors apps_pull's count-side filter.
+func TestFilterPlatformInjectedEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		serverEnv map[string]string
+		requires  map[string]ServiceRequirement
+		want      map[string]string
+	}{
+		{
+			name:      "no requires, server env passes through",
+			serverEnv: map[string]string{"FOO": "bar"},
+			requires:  nil,
+			want:      map[string]string{"FOO": "bar"},
+		},
+		{
+			name:      "empty server env, untouched",
+			serverEnv: map[string]string{},
+			requires: map[string]ServiceRequirement{
+				"db": {Env: map[string]string{"url": "DATABASE_URL"}},
+			},
+			want: map[string]string{},
+		},
+		{
+			name: "platform-injected key removed",
+			serverEnv: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"USER_TOKEN":   "user-set",
+			},
+			requires: map[string]ServiceRequirement{
+				"db": {Env: map[string]string{"url": "DATABASE_URL"}},
+			},
+			want: map[string]string{"USER_TOKEN": "user-set"},
+		},
+		{
+			name: "multiple platform names removed across aliases",
+			serverEnv: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"REDIS_URL":    "redis://...",
+				"REDIS_HOST":   "valkey.svc",
+				"USER_TOKEN":   "user-set",
+				"LOG_LEVEL":    "info",
+			},
+			requires: map[string]ServiceRequirement{
+				"db":    {Env: map[string]string{"url": "DATABASE_URL"}},
+				"cache": {Env: map[string]string{"url": "REDIS_URL", "host": "REDIS_HOST"}},
+			},
+			want: map[string]string{
+				"USER_TOKEN": "user-set",
+				"LOG_LEVEL":  "info",
+			},
+		},
+		{
+			name: "requires with no env mapping leaves server env untouched",
+			serverEnv: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"USER_TOKEN":   "user-set",
+			},
+			requires: map[string]ServiceRequirement{
+				"db": {Type: "postgresql"}, // no Env mapping
+			},
+			want: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"USER_TOKEN":   "user-set",
+			},
+		},
+		{
+			name: "empty env-name string in requires is ignored",
+			serverEnv: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"":             "should-not-match",
+			},
+			requires: map[string]ServiceRequirement{
+				"db": {Env: map[string]string{"url": ""}},
+			},
+			want: map[string]string{
+				"DATABASE_URL": "postgresql://...",
+				"":             "should-not-match",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FilterPlatformInjectedEnv(tt.serverEnv, tt.requires)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// FilterPlatformInjectedEnv must not mutate its input map.
+func TestFilterPlatformInjectedEnv_DoesNotMutateInput(t *testing.T) {
+	serverEnv := map[string]string{
+		"DATABASE_URL": "postgresql://...",
+		"USER_TOKEN":   "user-set",
+	}
+	requires := map[string]ServiceRequirement{
+		"db": {Env: map[string]string{"url": "DATABASE_URL"}},
+	}
+	original := make(map[string]string, len(serverEnv))
+	for k, v := range serverEnv {
+		original[k] = v
+	}
+	_ = FilterPlatformInjectedEnv(serverEnv, requires)
+	if !reflect.DeepEqual(serverEnv, original) {
+		t.Errorf("input mutated: got %+v, want %+v", serverEnv, original)
 	}
 }
 

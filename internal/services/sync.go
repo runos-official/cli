@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
@@ -42,11 +43,60 @@ type SyncPlan struct {
 	// used by the plan output and the dry-run preview. Empty when there
 	// is no drift.
 	Diff string `json:"diff,omitempty"`
+
+	// ServerRRC is the resourceRequirementClassId currently stored on
+	// the service (empty for CREATE flows). Used by the custom-synthesis
+	// hint to detect implicit RRC flips on PATCH (a body containing only
+	// an override field flips named->custom server-side when the stored
+	// class is named). Regression target: I9-H.
+	ServerRRC string `json:"-"`
 }
 
 // HasChanges reports whether applying the plan would touch the cluster.
 func (p *SyncPlan) HasChanges() bool {
 	return len(p.CreateBody) > 0 || len(p.PatchBody) > 0
+}
+
+// RedactSecrets replaces every value in CreateBody / PatchBody whose
+// key looks like a secret (password, secret, token, apikey, ...) with
+// the "<redacted>" marker. Non-secret config (name, resource class
+// enum, capacity, replicas) stays legible. Used by the JSON dry-run
+// path so the sync-plan JSON doesn't leak credentials into LLM context
+// when invoked through the MCP wrapper.
+//
+// The text plan rendering already redacts via isSensitiveKey at print
+// time; this method mirrors that for the JSON shape. Mutates in place;
+// nil-safe.
+//
+// Regression target: I10-I client-side parity + I10-M-style
+// secrets-in-json safety on the services surface.
+func (p *SyncPlan) RedactSecrets() {
+	if p == nil {
+		return
+	}
+	redactBodyValues(p.CreateBody)
+	redactBodyValues(p.PatchBody)
+}
+
+func redactBodyValues(body map[string]any) {
+	for k := range body {
+		if looksSensitive(k) {
+			body[k] = "<redacted>"
+		}
+	}
+}
+
+// looksSensitive reports whether a service field name conventionally
+// holds sensitive data. Mirrors the cmd/services_sync.go gate so the
+// JSON path and the text-render path use the same heuristic.
+func looksSensitive(k string) bool {
+	lower := strings.ToLower(k)
+	for _, marker := range []string{"password", "secret", "token", "apikey", "api_key", "credential", "privatekey", "private_key"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ComputeSyncPlan diffs local against server and produces a SyncPlan. No
@@ -61,17 +111,31 @@ func (p *SyncPlan) HasChanges() bool {
 // drift means no PATCH).
 //
 // Either way, any local field that the relevant write endpoint doesn't
-// accept AND that drifts from the server lands in Refused.
-func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd *manifest.Command) *SyncPlan {
+// accept AND that drifts from the server lands in Refused. showCmd is
+// consulted to split "unknown field, typo?" from "known but read-only /
+// immutable after create" in the refused message (I9-G); pass nil to
+// skip the split and use the generic immutable wording.
+func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd, showCmd *manifest.Command) *SyncPlan {
 	plan := &SyncPlan{
 		Type: local.Type,
 		ID:   local.ID,
 		CID:  local.CID,
 	}
 
+	knownFields := showFieldNames(showCmd)
+
 	if local.ID == "" {
-		plan.CreateBody = filterToInputFields(local.Fields, AddInputFieldNames(addCmd))
-		plan.Refused = refusedDrift(local.Fields, nil, AddInputFieldNames(addCmd), true)
+		// Lift any nested `flags: {X: true}` mapping into top-level keys
+		// matching the addCmd's declared Input.Flags. Pull writes flags
+		// nested to mirror the conductor's show response shape, but the
+		// wire body for CREATE expects each flag at the top level (per
+		// dynacmd's executor flag handling). Without the lift,
+		// `filterToInputFields` would drop the entire `flags` block and
+		// `refusedDrift` would surface it as refused. Regression target:
+		// I9-I (flags half).
+		liftedLocal := liftServiceFlags(local.Fields, addCmd)
+		plan.CreateBody = filterToInputFields(liftedLocal, AddInputFieldNames(addCmd))
+		plan.Refused = refusedDrift(liftedLocal, nil, AddInputFieldNames(addCmd), true, knownFields)
 		return plan
 	}
 
@@ -82,10 +146,143 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd 
 			serverFields = server.Fields
 		}
 		plan.PatchBody = computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
-		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd), false)
+		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd), false, knownFields)
 		plan.Diff = renderFieldDiff(local, server)
+		if server != nil {
+			if rrc, ok := server.Fields["resourceRequirementClassId"].(string); ok {
+				plan.ServerRRC = rrc
+			}
+		}
 	}
 	return plan
+}
+
+// showFieldNames returns the set of field names the show endpoint emits,
+// or nil when showCmd is nil. Used by refusedDrift to split "unknown
+// field, typo?" from "known but read-only / immutable after create" in
+// the refusal message (I9-G).
+func showFieldNames(showCmd *manifest.Command) map[string]bool {
+	if showCmd == nil {
+		return nil
+	}
+	names := ShowOutputFields(showCmd)
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
+}
+
+// customSynthesisOverrideFields are the cpu/memory/replica fields that,
+// when submitted alongside a named (non-custom) resourceRequirementClassId,
+// flip the server-stored class to `custom` and materialise the named
+// class's other defaults. The conductor's "Resource class + overrides"
+// rule treats every class-plus-override submission as a custom config;
+// the user often doesn't expect this until the NEXT pull reveals the
+// flip. Used by CustomSynthesisHint to give a heads-up at plan time.
+//
+// Regression target: I9-H.
+var customSynthesisOverrideFields = []string{
+	"replicas",
+	"cpuRequestMc",
+	"cpuLimitMc",
+	"memoryRequestMb",
+	"memoryLimitMb",
+}
+
+// CustomSynthesisHint returns a one-line warning when applying body
+// against serverRRC would flip the server-stored resource class from a
+// named class to `custom`. Two flip paths trigger the hint:
+//
+//  1. CREATE / explicit re-submit: body itself carries both a named
+//     (non-custom, non-empty) `resourceRequirementClassId` AND one or
+//     more class-coupled override fields (replicas / cpu* / memory*).
+//  2. Implicit flip on PATCH: body changes only an override field, but
+//     the server-stored class is named — conductor's synthesis rule
+//     treats the override as flipping RRC to `custom`.
+//
+// serverRRC is the resourceRequirementClassId currently stored on the
+// service (pass "" for CREATE flows or when unknown — case 2 then
+// degrades to a no-op).
+//
+// Mirrors the iter-6 I6-F pattern: the conductor emits an
+// `rrcFlipHint` on the `apps_update` response when an override flips
+// RRC named→custom. Services don't emit that hint server-side, so the
+// CLI surfaces it at plan time. Regression target: I9-H.
+func CustomSynthesisHint(body map[string]any, serverRRC string) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var overrides []string
+	for _, k := range customSynthesisOverrideFields {
+		if _, has := body[k]; has {
+			overrides = append(overrides, k)
+		}
+	}
+	if len(overrides) == 0 {
+		return ""
+	}
+	bodyRRC, _ := body["resourceRequirementClassId"].(string)
+	effectiveRRC := bodyRRC
+	if effectiveRRC == "" {
+		effectiveRRC = serverRRC
+	}
+	if effectiveRRC == "" || effectiveRRC == "custom" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Note: this submission combines resourceRequirementClassId=%q with override field(s) %v. The conductor will store resourceRequirementClassId='custom' on the service and materialise %q's other defaults; the next 'services pull' will write 'custom' back into the yaml. To stay on %q, drop the override(s); to pin this configuration cleanly, set resourceRequirementClassId='custom' explicitly.",
+		effectiveRRC, overrides, effectiveRRC, effectiveRRC,
+	)
+}
+
+// liftServiceFlags returns a copy of local with any nested
+// `flags: {X: true, Y: false}` mapping expanded into top-level keys
+// when those keys are declared in addCmd.Input.Flags. Pull writes flags
+// nested to mirror the show response shape, but the wire body for the
+// add endpoint expects each flag at the top level. Keys not declared in
+// Input.Flags stay nested under `flags` so they surface as refused (a
+// typo'd flag name shouldn't silently disappear).
+//
+// Returns local unchanged when there's no `flags` key, when addCmd has
+// no Input.Flags, or when the flags value isn't a map (defensive: a
+// hand-edited yaml might shape it as a list of strings).
+//
+// Regression target: I9-I (flags half).
+func liftServiceFlags(local map[string]any, addCmd *manifest.Command) map[string]any {
+	if local == nil || addCmd == nil || addCmd.Input == nil || len(addCmd.Input.Flags) == 0 {
+		return local
+	}
+	rawFlags, ok := local["flags"].(map[string]any)
+	if !ok || len(rawFlags) == 0 {
+		return local
+	}
+	known := make(map[string]bool, len(addCmd.Input.Flags))
+	for _, fl := range addCmd.Input.Flags {
+		known[fl.Name] = true
+	}
+	out := make(map[string]any, len(local)+len(rawFlags))
+	for k, v := range local {
+		if k == "flags" {
+			continue
+		}
+		out[k] = v
+	}
+	leftover := map[string]any{}
+	for k, v := range rawFlags {
+		if known[k] {
+			out[k] = v
+			continue
+		}
+		leftover[k] = v
+	}
+	if len(leftover) > 0 {
+		out["flags"] = leftover
+	}
+	return out
 }
 
 // computeDriftPatch returns the local-vs-server drift restricted to fields
@@ -171,12 +368,19 @@ func filterToInputFields(fields map[string]any, allowed map[string]bool) map[str
 // reflected on the cluster", not "every key that's not patchable".
 // Read-only fields the user pulled and never edited shouldn't show up.
 //
+// `knownFields` is the set of field names the show endpoint emits (or
+// nil to skip the split). When non-nil, the refused message splits on
+// whether the field is known-but-immutable (in knownFields) or
+// unknown-typo (not in knownFields). Pre-fix every refusal said
+// "requires service recreation", which actively misled users who'd
+// simply typo'd a field name. Regression target: I9-G.
+//
 // Equality is computed via JSON canonicalisation rather than DeepEqual:
 // a yaml-decoded int and a JSON-decoded float64 of the same numeric
 // value should compare equal here, since they round-trip through the
 // same conductor wire format. Without this, every numeric field on a
 // freshly-pulled yaml would falsely show up as refused.
-func refusedDrift(local, server map[string]any, allowed map[string]bool, isCreate bool) []string {
+func refusedDrift(local, server map[string]any, allowed map[string]bool, isCreate bool, knownFields map[string]bool) []string {
 	var refused []string
 	for k, lv := range local {
 		if allowed[k] {
@@ -188,16 +392,24 @@ func refusedDrift(local, server map[string]any, allowed map[string]bool, isCreat
 				continue
 			}
 		}
+		known := knownFields != nil && knownFields[k]
 		// Distinct wording for CREATE vs PATCH: "not patchable" was
 		// misleading on the CREATE path (no service exists yet to
 		// patch), where the refusal really means "the add endpoint
 		// doesn't accept this field, drop it from the yaml or set
 		// it via a service-specific writer post-create".
-		if isCreate {
-			refused = append(refused, fmt.Sprintf("%s: not accepted by this service type's add endpoint; remove from yaml before creating, set via the service's dedicated writer post-create if needed", k))
-		} else {
-			refused = append(refused, fmt.Sprintf("%s: not patchable on this service type (read-only or immutable after create); change requires service recreation", k))
+		var msg string
+		switch {
+		case isCreate && known:
+			msg = fmt.Sprintf("%s: not accepted by this service type's add endpoint (read-only on creation; set via the service's dedicated writer post-create if needed)", k)
+		case isCreate:
+			msg = fmt.Sprintf("%s: not a recognised field on this service type's add endpoint; did you typo the name? Remove from yaml or check the manifest for the correct spelling", k)
+		case known:
+			msg = fmt.Sprintf("%s: not patchable on this service type (read-only or immutable after create); change requires service recreation", k)
+		default:
+			msg = fmt.Sprintf("%s: not a recognised field on this service type; did you typo the name? Remove from yaml or check the manifest for the correct spelling", k)
 		}
+		refused = append(refused, msg)
 	}
 	sort.Strings(refused)
 	return refused

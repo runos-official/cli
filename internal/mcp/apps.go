@@ -54,7 +54,7 @@ all and yaml_file/app_id are mutually exclusive.`,
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Defaults to the configured default cluster.",
+						Description: "Cluster ID. Defaults to the configured default cluster.",
 					},
 					"all": {
 						Type:        "boolean",
@@ -85,7 +85,12 @@ all and yaml_file/app_id are mutually exclusive.`,
 					},
 					"code_version": {
 						Type:        "string",
-						Description: "Pull a specific archive by cliUploadID (rollback flow). Implies code=true. Use apps_list_previous_uploads to discover IDs.",
+						Description: "Pull a specific archive by cliUploadID (rollback flow). Implies code=true. Use apps_list_previous_uploads to discover IDs. Code-only by default: leaves local yaml/env/secret-files/overrides untouched. Pair with code_version_with_yaml=true to also overwrite local config with current server state.",
+					},
+					"code_version_with_yaml": {
+						Type:        "boolean",
+						Description: "With code_version: also overwrite local yaml + env files + secret files + overrides with current server state. Default behaviour with code_version is code-only (typical rollback intent: yesterday's source archive, not yesterday's RRC + replicas + custom domain). Set true for full-state rollback.",
+						Default:     false,
 					},
 					"keep_env": {
 						Type:        "boolean",
@@ -108,7 +113,7 @@ yaml_file is required when called via MCP (the MCP subprocess can't reliably aut
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Cross-checked against the yaml's own cid field.",
+						Description: "Cluster ID. Cross-checked against the yaml's own cid field.",
 					},
 					"yaml_file": {
 						Type:        "string",
@@ -121,7 +126,9 @@ yaml_file is required when called via MCP (the MCP subprocess can't reliably aut
 
 		tools = append(tools, Tool{
 			Name: "apps_list_previous_uploads",
-			Description: `List previously CLI-uploaded source archives for an app. Each entry has a cliUploadID you can pass to apps_pull as code_version to restore that exact source locally; running runos deploy from the per-app directory then redeploys it.
+			Description: `List previously CLI-uploaded source archives for an app, addressed by yaml-file path. Each entry has a cliUploadID you can pass to apps_pull as code_version to restore that exact source locally; running runos deploy from the per-app directory then redeploys it.
+
+The sibling tool apps_cli-archives returns the same data via app_id + cid directly (no yaml-file path required); prefer that shape when the caller already has identifiers in hand.
 
 Apps deployed via git/CI (not the runos deploy command) will return an empty list, they have no CLI archives.`,
 			InputSchema: InputSchema{
@@ -129,7 +136,7 @@ Apps deployed via git/CI (not the runos deploy command) will return an empty lis
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Cross-checked against the yaml's own cid field.",
+						Description: "Cluster ID. Cross-checked against the yaml's own cid field.",
 					},
 					"yaml_file": {
 						Type:        "string",
@@ -163,7 +170,7 @@ EMPTY SECRET-ENV WIPE GATE: by default, sync REFUSES to push an empty (or platfo
 				Properties: map[string]Property{
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID in format 'xyz (Cluster Name)'. Cross-checked against the yaml's own cid field.",
+						Description: "Cluster ID. Cross-checked against the yaml's own cid field.",
 					},
 					"yaml_file": {
 						Type:        "string",
@@ -316,6 +323,9 @@ func buildAppsPullArgs(args map[string]any) []string {
 	}
 	if codeVer, ok := stringArg(args, "code_version"); ok {
 		out = append(out, "--code-version", codeVer)
+		if boolArg(args, "code_version_with_yaml") {
+			out = append(out, "--code-version-with-yaml")
+		}
 	} else if boolArg(args, "code") {
 		out = append(out, "--code")
 	}

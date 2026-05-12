@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -178,6 +179,72 @@ func TestDeployConfig_NilPointerFieldsRoundTripCleanly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Regression test for I2-4e (TEST_LOG.md): the local-fqdn extractor
+// drives the pre-deploy domain-removal gate's diff. Must dedupe across
+// the legacy top-level `domain:` slice and the canonical
+// `servicePortMappings[].domains[].fqdn` shape.
+func TestLocalDomainFqdns(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *DeployConfig
+		want []string
+	}{
+		{
+			name: "nil",
+			in:   nil,
+			want: nil,
+		},
+		{
+			name: "empty config",
+			in:   &DeployConfig{},
+			want: nil,
+		},
+		{
+			name: "top-level domain only",
+			in:   &DeployConfig{Domain: StringOrSlice{"example.com", "www.example.com"}},
+			want: []string{"example.com", "www.example.com"},
+		},
+		{
+			name: "mapping domains only",
+			in: &DeployConfig{
+				ServicePortMappings: []ServicePortMapping{
+					{Port: 3000, Domains: []MappingDomain{{Fqdn: "api.example.com"}}},
+					{Port: 9090, Domains: []MappingDomain{{Fqdn: "metrics.example.com"}}},
+				},
+			},
+			want: []string{"api.example.com", "metrics.example.com"},
+		},
+		{
+			name: "both shapes deduped",
+			in: &DeployConfig{
+				Domain: StringOrSlice{"example.com"},
+				ServicePortMappings: []ServicePortMapping{
+					{Port: 3000, Domains: []MappingDomain{{Fqdn: "example.com"}, {Fqdn: "alt.example.com"}}},
+				},
+			},
+			want: []string{"example.com", "alt.example.com"},
+		},
+		{
+			name: "empty fqdn skipped",
+			in: &DeployConfig{
+				Domain: StringOrSlice{"", "ok.example.com"},
+				ServicePortMappings: []ServicePortMapping{
+					{Port: 3000, Domains: []MappingDomain{{Fqdn: ""}, {Fqdn: "also.example.com"}}},
+				},
+			},
+			want: []string{"ok.example.com", "also.example.com"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := LocalDomainFqdns(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("LocalDomainFqdns: got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // HasLegacyFields — gate uses this to emit migration-tailored output
 // ---------------------------------------------------------------------------
 
@@ -209,9 +276,14 @@ func TestHasLegacyFields(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "legacy domain at top level",
+			// Regression test for I2-4d (TEST_LOG.md): top-level
+			// `domain:` is the documented form; it must NOT be
+			// classified as legacy. Earlier versions tagged this as
+			// deprecated, which contradicted the `domain` topic and
+			// fired the migration banner on documented yaml shapes.
+			name: "top-level domain is current shape, not legacy",
 			in:   &DeployConfig{App: "x", Domain: StringOrSlice{"example.com"}},
-			want: true,
+			want: false,
 		},
 		{
 			name: "legacy standardHttps at top level",
@@ -1516,4 +1588,219 @@ func extractTarballContents(t *testing.T, buf *bytes.Buffer) map[string]string {
 		}
 	}
 	return contents
+}
+
+// TestLoadSecretFileContents pins the CLI-side wire-shape population
+// added for I10-K (CLI half): each yaml entry's `local` file path is
+// read, base64-encoded, and written to the entry's `Content` field so
+// the conductor's normalizeYaml + new orchestration step receive the
+// canonical `{filename, mountPath, content}` shape. Local + md5 stay
+// suppressed from JSON via struct tags; the yaml stays untouched on
+// disk.
+func TestLoadSecretFileContents(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	relPath := "secret.txt"
+	absPath := filepath.Join(dir, relPath)
+	body := []byte("hello world\n")
+	if err := os.WriteFile(absPath, body, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	t.Run("relative local path resolved against configDir", func(t *testing.T) {
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "secret.txt", MountPath: "/etc/s", Local: relPath},
+		}}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		want := "aGVsbG8gd29ybGQK" // base64("hello world\n")
+		if cfg.SecretFiles[0].Content != want {
+			t.Errorf("Content = %q, want %q", cfg.SecretFiles[0].Content, want)
+		}
+		if cfg.SecretFiles[0].Local != relPath {
+			t.Errorf("Local should stay untouched: %q", cfg.SecretFiles[0].Local)
+		}
+		// I10-Q: md5 sidecar is refreshed from the just-loaded bytes
+		// so the yaml round-trip carries a current digest.
+		wantMD5 := "6f5902ac237024bdd0c176cb93063dc4" // md5("hello world\n")
+		if cfg.SecretFiles[0].MD5 != wantMD5 {
+			t.Errorf("MD5 = %q, want %q (I10-Q refresh)", cfg.SecretFiles[0].MD5, wantMD5)
+		}
+	})
+
+	t.Run("I10-Q: stale md5 in yaml gets overwritten with fresh digest", func(t *testing.T) {
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "secret.txt", MountPath: "/etc/s", Local: relPath, MD5: "deadbeefstale"},
+		}}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if cfg.SecretFiles[0].MD5 == "deadbeefstale" {
+			t.Errorf("MD5 should be overwritten, still has stale value")
+		}
+		if cfg.SecretFiles[0].MD5 != "6f5902ac237024bdd0c176cb93063dc4" {
+			t.Errorf("MD5 = %q, want fresh digest", cfg.SecretFiles[0].MD5)
+		}
+	})
+
+	t.Run("absolute local path used as-is", func(t *testing.T) {
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "secret.txt", MountPath: "/etc/s", Local: absPath},
+		}}
+		if err := cfg.LoadSecretFileContents("/non/existent/dir"); err != nil {
+			t.Fatalf("load with abs path should ignore configDir: %v", err)
+		}
+		if cfg.SecretFiles[0].Content == "" {
+			t.Error("Content empty after abs-path load")
+		}
+	})
+
+	t.Run("empty local entry left alone for server to refuse", func(t *testing.T) {
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "no-local.txt", MountPath: "/etc/s", Local: ""},
+		}}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if cfg.SecretFiles[0].Content != "" {
+			t.Errorf("Content should stay empty for missing-local entry, got %q", cfg.SecretFiles[0].Content)
+		}
+	})
+
+	t.Run("missing file returns descriptive error", func(t *testing.T) {
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "nope.txt", MountPath: "/etc/s", Local: "nope.txt"},
+		}}
+		err := cfg.LoadSecretFileContents(dir)
+		if err == nil {
+			t.Fatal("expected error on missing file")
+		}
+		if !strings.Contains(err.Error(), "nope.txt") {
+			t.Errorf("error should name the file: %v", err)
+		}
+	})
+
+	t.Run("size cap enforced", func(t *testing.T) {
+		bigPath := filepath.Join(dir, "big.bin")
+		if err := os.WriteFile(bigPath, make([]byte, maxSecretFileBytes+1), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg := &DeployConfig{SecretFiles: []SecretFile{
+			{Filename: "big.bin", MountPath: "/etc/s", Local: "big.bin"},
+		}}
+		err := cfg.LoadSecretFileContents(dir)
+		if err == nil {
+			t.Fatal("expected size-cap error")
+		}
+		if !strings.Contains(err.Error(), "cap") {
+			t.Errorf("error should mention the cap: %v", err)
+		}
+	})
+
+	t.Run("nil receiver no-op", func(t *testing.T) {
+		var cfg *DeployConfig
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Errorf("nil receiver should be no-op, got: %v", err)
+		}
+	})
+
+	t.Run("empty slice no-op", func(t *testing.T) {
+		cfg := &DeployConfig{}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Errorf("empty slice should be no-op, got: %v", err)
+		}
+	})
+
+	t.Run("yaml round-trip excludes Content", func(t *testing.T) {
+		// After loading, marshal to yaml and verify Content is omitted
+		// so the on-disk yaml doesn't accidentally carry base64 bytes.
+		cfg := &DeployConfig{
+			App: "demo",
+			SecretFiles: []SecretFile{
+				{Filename: "s.txt", MountPath: "/etc/s", Local: relPath},
+			},
+			ServicePortMappings: []ServicePortMapping{{Port: 3000}},
+		}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		out, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "content:") {
+			t.Errorf("yaml round-trip should not carry Content, got:\n%s", out)
+		}
+		if strings.Contains(string(out), "aGVsbG8") {
+			t.Errorf("yaml round-trip should not leak base64 bytes")
+		}
+	})
+
+	t.Run("json wire body carries Content not Local", func(t *testing.T) {
+		cfg := &DeployConfig{
+			App: "demo",
+			SecretFiles: []SecretFile{
+				{Filename: "s.txt", MountPath: "/etc/s", Local: relPath, MD5: "abc"},
+			},
+		}
+		if err := cfg.LoadSecretFileContents(dir); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		out, err := json.Marshal(cfg.SecretFiles[0])
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(out), `"content":"aGVsbG8gd29ybGQK"`) {
+			t.Errorf("wire body should carry base64 content: %s", out)
+		}
+		if strings.Contains(string(out), `"local":`) {
+			t.Errorf("wire body must not carry Local path: %s", out)
+		}
+		if strings.Contains(string(out), `"md5":`) {
+			t.Errorf("wire body must not carry MD5: %s", out)
+		}
+	})
+}
+
+// I18-B regression: deploy must cross-check yaml's cid against the
+// flag/config cid the same way apps_diff does, refusing on mismatch
+// instead of silently letting the flag override the yaml.
+func TestReconcileCID(t *testing.T) {
+	cases := []struct {
+		name      string
+		caller    string
+		yaml      string
+		wantCID   string
+		wantErr   bool
+		errSubstr string
+	}{
+		{"both empty returns empty", "", "", "", false, ""},
+		{"yaml fills when caller empty", "", "mycluster2", "mycluster2", false, ""},
+		{"caller passes through when yaml empty", "mycluster2", "", "mycluster2", false, ""},
+		{"match passes through", "mycluster2", "mycluster2", "mycluster2", false, ""},
+		{"mismatch errors with both ids named", "mycluster2", "mycluster3", "", true, `yaml is for cluster "mycluster3" but --cid (or default) is "mycluster2"`},
+		{"mismatch error mentions refusal verb", "mycluster2", "mycluster3", "", true, "refusing to deploy"},
+		{"mismatch is case-sensitive (mycluster2 vs I4Y)", "I4Y", "mycluster2", "", true, "cluster mismatch"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ReconcileCID(tt.caller, tt.yaml)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ReconcileCID(%q, %q): want error, got nil (cid=%q)", tt.caller, tt.yaml, got)
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error %q missing substring %q", err.Error(), tt.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReconcileCID(%q, %q): unexpected error %v", tt.caller, tt.yaml, err)
+			}
+			if got != tt.wantCID {
+				t.Errorf("ReconcileCID(%q, %q) = %q, want %q", tt.caller, tt.yaml, got, tt.wantCID)
+			}
+		})
+	}
 }

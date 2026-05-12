@@ -55,8 +55,7 @@ func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error
 			return err
 		}
 
-		EmitFollowDeltas(os.Stdout, job, items.WorkItems, state)
-		EmitFollowLogs(os.Stdout, svc, jobID, items.WorkItems, state)
+		EmitFollowDeltasWithLogs(os.Stdout, svc, jobID, job, items.WorkItems, state)
 
 		if job.IsTerminal() {
 			if job.Status == "failed" {

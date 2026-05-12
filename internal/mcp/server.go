@@ -98,6 +98,12 @@ type Property struct {
 	// Items is set when Type=="array" to declare the element type.
 	// Same motivation as AdditionalProperties.
 	Items *Property `json:"items,omitempty"`
+	// Properties and Required are populated when Type=="object" and the
+	// element shape is known (manifest field carries `itemFields`). Used
+	// for array-of-object fields like apps/secret-files/update.add so an
+	// LLM that follows the schema strictly passes objects, not strings.
+	Properties map[string]Property `json:"properties,omitempty"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 // ToolsListResult represents the response to a tools/list request.
@@ -170,6 +176,16 @@ type Server struct {
 	// mcp_topics_search or mcp_topics_show during this session. Used to gate
 	// non-topic tools on the read server until minTopicsRead is reached.
 	topicsRead map[string]struct{}
+	// startupBinaryMtime records the mtime of the running binary at MCP
+	// server start. When the on-disk binary's mtime advances past this
+	// (i.e. the user rebuilt the CLI while this MCP process kept running),
+	// every subsequent tool response is prefixed with a stale-binary
+	// warning so the LLM/operator notices the version drift instead of
+	// silently getting stale answers from cli_version-check etc.
+	// Regression target: I13-A.
+	startupBinaryMtime  time.Time
+	startupBinaryPath   string
+	staleBinaryDetected bool
 }
 
 // ToolExecutor defines the interface for executing MCP tools against the API.
@@ -180,12 +196,56 @@ type ToolExecutor interface {
 
 // NewServer creates a new MCP server with the given manifest, executor, version, and category.
 func NewServer(m *manifest.Manifest, executor ToolExecutor, version, category string) *Server {
-	return &Server{
+	s := &Server{
 		manifest: m,
 		executor: executor,
 		version:  version,
 		category: category,
 	}
+	// Capture the running binary's mtime at startup so subsequent tool
+	// calls can detect a rebuilt-while-running situation (I13-A). Best
+	// effort: a missing or unreadable executable leaves the fields at
+	// their zero value, which checkStaleBinary treats as "can't tell"
+	// and silently skips the warning.
+	if path, err := os.Executable(); err == nil {
+		if info, err := os.Stat(path); err == nil {
+			s.startupBinaryPath = path
+			s.startupBinaryMtime = info.ModTime()
+		}
+	}
+	return s
+}
+
+// checkStaleBinary stats the running binary and returns true when its
+// mtime has advanced past the recorded startup mtime. Once true, the
+// flag stays sticky for the rest of the session so every subsequent
+// response carries the warning. Returns false when the path was never
+// captured (e.g. os.Executable failed at startup), avoiding a false
+// positive on the first call. Regression target: I13-A.
+func (s *Server) checkStaleBinary() bool {
+	if s.staleBinaryDetected {
+		return true
+	}
+	if s.startupBinaryPath == "" || s.startupBinaryMtime.IsZero() {
+		return false
+	}
+	info, err := os.Stat(s.startupBinaryPath)
+	if err != nil {
+		return false
+	}
+	if info.ModTime().After(s.startupBinaryMtime) {
+		s.staleBinaryDetected = true
+		return true
+	}
+	return false
+}
+
+// staleBinaryWarning returns the prefix to inject into every MCP tool
+// response when the binary has been rebuilt mid-session. Kept as a
+// helper so the wording is single-sourced. Single line so it doesn't
+// dwarf the actual response in transcripts.
+func (s *Server) staleBinaryWarning() string {
+	return "[runos-mcp warning] this MCP server is running an outdated runos binary (rebuilt at " + s.startupBinaryPath + " after the server started). Restart the MCP server / IDE host to pick up the new binary; responses below were produced by the older code path.\n\n"
 }
 
 // Run starts the MCP server, reading JSON-RPC requests from stdin and writing responses to stdout.
@@ -459,12 +519,23 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		result, err = s.executor.Execute(params.Name, params.Arguments)
 	}
 
+	// I13-A: warn when the on-disk binary has been rebuilt since this
+	// MCP server started. The warning prefixes every subsequent tool
+	// response (success and error paths) so the operator notices the
+	// drift instead of silently consuming stale cli_version-check
+	// answers / out-of-date tool descriptions. Once tripped, the flag
+	// stays sticky for the session.
+	stalePrefix := ""
+	if s.checkStaleBinary() {
+		stalePrefix = s.staleBinaryWarning()
+	}
+
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: err.Error()}},
+				Content: []ContentBlock{{Type: "text", Text: stalePrefix + err.Error()}},
 				IsError: true,
 			},
 		}
@@ -474,7 +545,7 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result: CallToolResult{
-			Content: []ContentBlock{{Type: "text", Text: result}},
+			Content: []ContentBlock{{Type: "text", Text: stalePrefix + result}},
 		},
 	}
 }
@@ -607,7 +678,7 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 					Properties: map[string]Property{
 						"cid": {
 							Type:        "string",
-							Description: "Cluster ID to deploy to, in format 'xyz (Cluster Name)' e.g. 'mycluster2 (Local AI Cluster)'. REQUIRED if no default cluster is set. Get from user or use clusters_list.",
+							Description: "Cluster ID to deploy to (the bare id, e.g. 'mycluster2'). REQUIRED if no default cluster is set. Get from user or use clusters_list.",
 						},
 						"yaml_file": {
 							Type:        "string",
@@ -650,7 +721,7 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 		if strings.Contains(cmd.Endpoint, ":cid") {
 			tool.InputSchema.Properties["cid"] = Property{
 				Type:        "string",
-				Description: "Cluster ID in format 'xyz (Cluster Name)' e.g. 'mycluster2 (Local AI Cluster)'. Always include the name so user sees which cluster is being used. Get from user or use clusters_list.",
+				Description: "Cluster ID (the bare id, e.g. 'mycluster2'). Get from user or use clusters_list.",
 			}
 		}
 
@@ -686,7 +757,7 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 					prop.AdditionalProperties = &Property{Type: "string"}
 				}
 				if prop.Type == "array" {
-					prop.Items = &Property{Type: "string"}
+					prop.Items = s.projectArrayItems(field)
 				}
 				tool.InputSchema.Properties[field.Name] = prop
 
@@ -733,6 +804,48 @@ func (s *Server) mapType(t string) string {
 	default:
 		return "string"
 	}
+}
+
+// projectArrayItems builds the JSON Schema `items` descriptor for an
+// array field. When the manifest declares `itemType` (and optionally
+// `itemFields` for object elements), the projection emits the richer
+// shape so LLMs that strict-validate the tool schema send the correct
+// element type. Defaults to `{type: "string"}` for back-compat with
+// existing []string fields whose manifest entries pre-date itemType.
+//
+// Regression target: I6-H. The conductor's R2 manifest bump added
+// itemType + itemFields to apps/secret-files/update.add and
+// apps/secrets/update.add but the projection bridge here kept emitting
+// items.type=string, so MCP clients that followed the schema strictly
+// still hit "Each file in 'add' must have a 'filename' string" on the
+// server.
+func (s *Server) projectArrayItems(field manifest.Field) *Property {
+	itemType := field.ItemType
+	if itemType == "" {
+		return &Property{Type: "string"}
+	}
+	mapped := s.mapType(itemType)
+	items := &Property{Type: mapped}
+	if mapped == "object" && len(field.ItemFields) > 0 {
+		items.Properties = make(map[string]Property, len(field.ItemFields))
+		for _, sub := range field.ItemFields {
+			subProp := Property{
+				Type:        s.mapType(sub.Type),
+				Description: sub.Description,
+			}
+			if len(sub.Enum) > 0 {
+				subProp.Enum = sub.Enum
+			}
+			if sub.Default != nil {
+				subProp.Default = sub.Default
+			}
+			items.Properties[sub.Name] = subProp
+			if sub.Required {
+				items.Required = append(items.Required, sub.Name)
+			}
+		}
+	}
+	return items
 }
 
 func (s *Server) sendResponse(resp *Response) {

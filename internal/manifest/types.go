@@ -37,6 +37,23 @@ type Field struct {
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`
 	Format      string   `yaml:"format,omitempty" json:"format,omitempty"`         // e.g., "key_value" for tags
 	Positional  bool     `yaml:"positional,omitempty" json:"positional,omitempty"` // true = positional arg, not flag
+	// AllowEmpty opts a required string field out of the CLI's
+	// empty-required gate (validateInputValues). Used when empty-string
+	// carries semantic meaning (e.g. `nodes/rename --name ""` clears
+	// the display name back to the bootstrap default). Conductor's
+	// manifest sets `allowEmpty: true` on the relevant fields; the CLI
+	// honours it by skipping the empty-string refusal but still leaves
+	// the rest of the required-input plumbing (positional/flag/-f file
+	// missing-arg gate) intact. Regression target: I13-K.
+	AllowEmpty bool `yaml:"allowEmpty,omitempty" json:"allowEmpty,omitempty"`
+	// ItemType + ItemFields describe array element shape. When Type=="array"
+	// and ItemType is set, the MCP tool-schema projection emits a richer
+	// `items` definition than the default `{type: "string"}`. ItemFields
+	// declares object-element key shape (used when ItemType == "object").
+	// Manifest fields are optional; when absent the projection falls back
+	// to the legacy `items: {type: "string"}` shape.
+	ItemType   string  `yaml:"itemType,omitempty" json:"itemType,omitempty"`
+	ItemFields []Field `yaml:"itemFields,omitempty" json:"itemFields,omitempty"`
 }
 
 // Flag defines a boolean flag

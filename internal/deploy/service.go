@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,23 @@ type Service struct {
 	token      string
 	cid        string
 	aid        string
+}
+
+// APIError is returned by the deploy service's GET methods when the
+// conductor responds with a non-2xx status. Callers that need to
+// branch on the status code (e.g. suppressing a 404 warning when the
+// AppDocument hasn't been minted yet on first deploy) errors.As to
+// reach the typed value. The Error() string format is identical to
+// the historic plain-error shape so callers that only print get the
+// same message.
+type APIError struct {
+	StatusCode int
+	Body       []byte
+}
+
+// Error renders the same one-liner the historic GET methods emitted.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (%d): %s", e.StatusCode, string(e.Body))
 }
 
 // PrepareResponse is the response from the prepare-cli-deployment endpoint.
@@ -149,6 +167,159 @@ type NetworkAccess struct {
 	Link string `json:"link"`
 }
 
+// Domain mirrors the `/:aid/domains` list-entry shape (manifest
+// `domains/list`). Only the fields the domain-removal gate consumes
+// are typed; anything else is left in the raw response unparsed.
+type Domain struct {
+	ID               string `json:"id"`
+	Fqdn             string `json:"fqdn"`
+	TargetIngressURL string `json:"targetIngressUrl"`
+}
+
+// GetAccountDomains fetches the account-wide custom-domain list. The
+// endpoint isn't cluster- or app-scoped; callers filter by
+// targetIngressUrl when they need a per-app view.
+func (s *Service) GetAccountDomains() ([]Domain, error) {
+	reqURL := fmt.Sprintf("%s/%s/domains", s.baseURL, url.PathEscape(s.aid))
+
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result []Domain
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return result, nil
+}
+
+// GetAppCustomDomains returns the deduplicated set of user-supplied
+// custom-domain fqdns currently attached to the named app. Sources
+// from the account-wide /:aid/domains endpoint and filters by
+// targetIngressUrl matching the app's K8s service name `app-<id>`.
+//
+// Used by the pre-deploy domain-removal gate (I2-4e) to identify
+// which server-side fqdns the next deploy would remove if the local
+// yaml's `domain:` / `servicePortMappings[].domains` no longer
+// references them. Empty list when the app has no custom domains
+// attached.
+//
+// Regression history (TEST_LOG.md):
+//   - I2-4e (round 3): originally sourced from /:aid/:cid/apps/:id/
+//     network-access. Worked initially.
+//   - I2-4e'' (round 5): tightened filter to drop IN_CLUSTER and
+//     *.svc.cluster.local entries, since the original filter let K8s
+//     internal service DNS through.
+//   - I2-4e''' (round 6, this commit): switched source endpoint to
+//     /:aid/domains. The network-access endpoint never includes
+//     user custom domains (only RUNOS_PUBLIC_<port> + IN_CLUSTER_<port>),
+//     so round-5's tightened filter went from "too many entries" to
+//     "zero entries even on real removals." domains/list IS the
+//     authoritative custom-domain register.
+func (s *Service) GetAppCustomDomains(appID string) ([]string, error) {
+	if appID == "" {
+		return nil, nil
+	}
+	domains, err := s.GetAccountDomains()
+	if err != nil {
+		return nil, err
+	}
+	osid := "app-" + appID
+	seen := make(map[string]struct{})
+	var out []string
+	for _, d := range domains {
+		if d.Fqdn == "" {
+			continue
+		}
+		if !targetIngressMatchesOSID(d.TargetIngressURL, osid) {
+			continue
+		}
+		if _, ok := seen[d.Fqdn]; ok {
+			continue
+		}
+		seen[d.Fqdn] = struct{}{}
+		out = append(out, d.Fqdn)
+	}
+	return out, nil
+}
+
+// targetIngressMatchesOSID reports whether a domain's
+// targetIngressUrl references the K8s service named `osid` (which is
+// the conductor's `app-<id>` convention). Matches when osid appears
+// as a delimited token, so `app-appid2` matches in
+// `http://app-appid2.app-appid2.svc.cluster.local:3000` AND
+// `https://app-appid2-3000.mycluster2.aid.dev.runos.xyz` but does NOT match
+// in `app-hmx9oa-3000...` (different app whose id starts with the
+// same prefix).
+//
+// Token boundaries are characters K8s / URL syntax allows next to a
+// hostname segment: `.`, `-`, `:`, `/`, or end-of-string. Conductor's
+// targetIngressUrl format is opaque to the CLI by design, so the
+// match is structural rather than format-specific.
+func targetIngressMatchesOSID(target, osid string) bool {
+	if target == "" || osid == "" {
+		return false
+	}
+	idx := 0
+	for {
+		hit := strings.Index(target[idx:], osid)
+		if hit < 0 {
+			return false
+		}
+		hit += idx
+		end := hit + len(osid)
+		// Right boundary: osid must end at a non-alphanumeric.
+		if end < len(target) {
+			c := target[end]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+				idx = end
+				continue
+			}
+		}
+		// Left boundary: avoid `xapp-appid2` matching `app-appid2`.
+		if hit > 0 {
+			c := target[hit-1]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+				idx = end
+				continue
+			}
+		}
+		return true
+	}
+}
+
+// hostFromLink extracts the host portion of a URL (strips scheme and
+// any path / query / port). Returns the input unchanged if URL parsing
+// fails — the caller treats the result as an opaque fqdn either way.
+func hostFromLink(link string) string {
+	u, err := url.Parse(link)
+	if err != nil || u == nil {
+		return link
+	}
+	host := u.Hostname()
+	if host == "" {
+		return link
+	}
+	return host
+}
+
 // GetNetworkAccess fetches network access URLs for an application
 func (s *Service) GetNetworkAccess(appID string) ([]NetworkAccess, error) {
 	// Endpoint: /:aid/:cid/apps/:id/networkAccess
@@ -198,6 +369,16 @@ type AppShow struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	DeployType string `json:"deployType"`
+	// Resource fields. These come back populated even when the local
+	// yaml omits them, because the conductor's resolveRRC synthesises a
+	// default class on first deploy. The post-deploy stamp-back uses
+	// these to fill in absent local fields so the manifest is self-
+	// describing without the user having to run apps_pull manually.
+	ResourceRequirementClassID string `json:"resourceRequirementClassId,omitempty"`
+	CPURequestMc               int    `json:"cpuRequestMc,omitempty"`
+	CPULimitMc                 int    `json:"cpuLimitMc,omitempty"`
+	MemoryRequestMb            int    `json:"memoryRequestMb,omitempty"`
+	MemoryLimitMb              int    `json:"memoryLimitMb,omitempty"`
 }
 
 // VCSDeployResponse is what POST /apps/:id/deploy returns (202 + jobId).
@@ -228,7 +409,7 @@ func (s *Service) GetApp(appID string) (*AppShow, error) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	var result AppShow
@@ -360,7 +541,7 @@ func (s *Service) fetchEnvVarMap(reqURL string) (map[string]string, error) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	var envVars map[string]string
@@ -409,7 +590,7 @@ func (s *Service) GetAppDependencies(appID string) ([]AppDependency, error) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	var deps []AppDependency

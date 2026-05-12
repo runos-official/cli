@@ -17,6 +17,50 @@ type ServerInjectedEnvCollision struct {
 	Field  string // credential-field key on the linked service (e.g. "url")
 }
 
+// FilterPlatformInjectedEnv returns serverEnv with every key removed
+// whose name appears as a value in any requires.<alias>.env mapping.
+// These names are claimed by the platform: the conductor re-injects
+// them on every deploy from the linked service's credentials, so a
+// local file that lacks them isn't real drift, it's just code that
+// doesn't read those particular vars yet.
+//
+// Used by the pre-deploy drift gate (and `apps diff`) to suppress the
+// I3-E false-positive: a freshly-provisioned app has DATABASE_URL,
+// REDIS_*, etc. on the server immediately, but the user's local
+// `.secret.env` is empty (apps_pull writes them only after the user
+// runs it explicitly). Without this filter, every "second deploy"
+// would trip the drift gate even when the user had no local change
+// to push.
+//
+// Returns serverEnv unchanged when either input is empty or no
+// requires entry maps an env name (i.e. all entries are infra-only).
+// Never mutates serverEnv; the result is a fresh map when filtering
+// is needed, the original reference otherwise.
+func FilterPlatformInjectedEnv(serverEnv map[string]string, requires map[string]ServiceRequirement) map[string]string {
+	if len(serverEnv) == 0 || len(requires) == 0 {
+		return serverEnv
+	}
+	injected := make(map[string]bool)
+	for _, req := range requires {
+		for _, envName := range req.Env {
+			if envName != "" {
+				injected[envName] = true
+			}
+		}
+	}
+	if len(injected) == 0 {
+		return serverEnv
+	}
+	out := make(map[string]string, len(serverEnv))
+	for k, v := range serverEnv {
+		if injected[k] {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // FindServerInjectedEnvCollisions returns every entry in localEnv whose
 // key matches an env var name claimed by some requires.<alias>.env value.
 // Order is deterministic (sorted by env var name, then alias) so the

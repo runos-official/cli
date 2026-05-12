@@ -9,15 +9,27 @@ import (
 	"github.com/runos-official/cli/internal/apps"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var appsDiffCmd = &cobra.Command{
 	Use:   "diff [yaml-file]",
 	Short: "Show drift between local synced config and the cluster",
 	Long: `Compare a local yaml manifest + the files it references (env, secret
-files, overrides) against the current server state. Nothing is written;
-the command exits non-zero when any drift is detected so it can be used
-as a CI gate.
+files, overrides) against the current server state. Nothing is written.
+
+Exit codes (CI-gate friendly):
+  0 = no surfaced drift. Includes scenarios where the diff layer
+      already absorbed a "waiver" upstream: platform-injected secret
+      env names (DATABASE_URL, REDIS_*) are filtered before the env
+      comparison, comment-only env edits are not drift, etc., so a
+      report that visibly differs from a naive yaml-bytes diff but
+      has no actionable user-side delta exits 0.
+  1 = the diff itself errored (auth failure, network, parse problem)
+  2 = drift the user should reconcile or push: yaml field values
+      disagree, server has user-set fields local doesn't have, env
+      keys the user authored differ in either direction, secret-file
+      or override delta.
 
 If no yaml file is passed, diff scans the current directory for a unique
 runos*.yaml that parses as a pulled-app manifest (so "cd into the per-app
@@ -47,50 +59,71 @@ func init() {
 }
 
 func runAppsDiff(cmd *cobra.Command, args []string) error {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// errReturn routes errors through the JSON envelope when --json is
+	// set so CI pipelines parsing stdout don't have to special-case
+	// the failure path (I4-G).
+	errReturn := func(err error) error {
+		if jsonOutput {
+			return emitJSONError(cmd, err)
+		}
+		return err
+	}
+
 	ctx, err := prepareAppsCmd(cmd)
 	if err != nil {
-		return err
+		return errReturn(err)
 	}
 
 	yamlPath, err := resolveYamlArg(args, "diff")
 	if err != nil {
-		return err
+		return errReturn(err)
 	}
 
 	localApp, err := apps.LoadLocalApp(yamlPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("yaml file %q not found", yamlPath)
+			return errReturn(fmt.Errorf("yaml file %q not found", yamlPath))
 		}
-		return fmt.Errorf("read yaml: %w", err)
+		return errReturn(fmt.Errorf("read yaml: %w", err))
 	}
 	if localApp.ID == "" || localApp.CID == "" || localApp.AID == "" {
-		return fmt.Errorf("yaml at %q is missing id/cid/aid, pull again to refresh", yamlPath)
+		return errReturn(fmt.Errorf("yaml at %q is missing id/cid/aid, pull again to refresh", yamlPath))
 	}
 	if err := ctx.bindToYAML(localApp.CID); err != nil {
-		return err
+		return errReturn(err)
 	}
 
-	jsonOutput, _ := cmd.Flags().GetBool("json")
 	svc := ctx.svc
 
 	report, err := apps.BuildDiffReport(svc, localApp, yamlPath, ctx.cfg.AccountID, ctx.cid)
 	if err != nil {
-		return err
+		return errReturn(err)
 	}
 
 	showSecrets, _ := cmd.Flags().GetBool("show-secrets")
 	if showSecrets && report.SecretFiles.Status != apps.StatusInSync {
 		if err := apps.EnrichSecretFileDiffsWithContent(svc, localApp.ID, &report.SecretFiles); err != nil {
-			return fmt.Errorf("fetch secret content: %w", err)
+			return errReturn(fmt.Errorf("fetch secret content: %w", err))
 		}
 	}
 
+	// I4-H: a piped/redirected stdout (CI pipelines, log capture, MCP
+	// shell-out) is functionally the same context as the documented
+	// MCP surface — output flows somewhere persistent — so the safer
+	// default there is to redact. shouldAutoRedact encodes the
+	// decision in pure logic for testability; the caller injects the
+	// TTY signal so tests don't need to mock fd state.
+	redact, _ := cmd.Flags().GetBool("redact-secrets")
+	stdoutIsTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	if shouldAutoRedact(redact, showSecrets, stdoutIsTTY) {
+		redact = true
+	}
 	// Mutually exclusive: --show-secrets is a deliberate user opt-in;
 	// --redact-secrets is the MCP-driven safe default. If both are set
 	// the redaction wins (we never want to leak values into an LLM
 	// context just because the wrapper happened to also set show-secrets).
-	if redact, _ := cmd.Flags().GetBool("redact-secrets"); redact {
+	if redact {
 		// Only the secret env section is sensitive. Plain env vars are
 		// committed to VCS by definition, so they never get redacted.
 		if report.SecretEnv.UnifiedDiff != "" {
@@ -133,6 +166,34 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// shouldAutoRedact returns true when secret values in the diff
+// section should be replaced with `<redacted>` markers, given the
+// state of the redaction-related flags and whether stdout is going
+// to an interactive terminal.
+//
+// I4-H rule:
+//   - explicit `--redact-secrets` always wins (the MCP wrapper passes it).
+//   - explicit `--show-secrets` always wins the other way; the user
+//     opted in to plain output.
+//   - otherwise, auto-engage redaction when stdout is NOT a TTY.
+//     Pipes / redirects / CI runners are functionally the same
+//     persistent context the MCP path already redacts for, so
+//     plain values would land in build logs by default.
+//   - at an interactive terminal with neither flag set, plain values
+//     stay readable (CLAUDE.md "secrets allowed at the CLI surface").
+//
+// Pure helper so the decision tree is testable without spawning a
+// real cobra command + faking stdout fd state.
+func shouldAutoRedact(explicitRedact, explicitShow, stdoutIsTTY bool) bool {
+	if explicitRedact {
+		return true
+	}
+	if explicitShow {
+		return false
+	}
+	return !stdoutIsTTY
+}
+
 // sectionRuleWidth is the total visual width of a section-divider line.
 // Box-drawing runes render at 1 column each, so rune count == column count.
 const sectionRuleWidth = 64
@@ -169,7 +230,13 @@ func printDiffReport(r *apps.DiffReport) {
 		printSection("env", r.Env)
 	}
 	if r.SecretFiles.Status == apps.StatusInSync {
-		inSync = append(inSync, "secretFiles")
+		// I10-J: the bare "secretFiles" label was ambiguous when the
+		// yaml-drift section also references secretFiles entries (the
+		// yaml carries declared metadata; this section is the actual
+		// file content). Qualify to "secretFiles content" so the user
+		// reads it as "the bytes on disk match the server", distinct
+		// from any metadata drift surfaced in the yaml section above.
+		inSync = append(inSync, "secretFiles content")
 	} else {
 		printSecretFilesSection(r.SecretFiles)
 	}

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/deploy"
+	"github.com/runos-official/cli/internal/dynacmd"
 )
 
 // fakeConductorForDeploy answers the endpoints BuildDiffReport / syncAppState
@@ -65,6 +68,95 @@ func fakeConductorForDeploy(t *testing.T, raw map[string]any, env map[string]str
 // ---------------------------------------------------------------------------
 // syncAppState — localMissingServerHas tracking
 // ---------------------------------------------------------------------------
+
+// TestAutoDetectDeployYAML pins the I15-A fix: a multi-yaml directory
+// now surfaces the candidate list mirroring `apps diff`'s auto-detect
+// instead of the legacy "runos.yaml not found at <path>" dead-end.
+// Single-candidate dirs auto-pick (valid OR partial), and empty dirs
+// return `("", nil)` so the caller falls back to LoadConfig's own
+// not-found message.
+func TestAutoDetectDeployYAML(t *testing.T) {
+	writeYAML := func(t *testing.T, dir, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	pulledYAML := func(app, id, cid, aid string) string {
+		return fmt.Sprintf("app: %q\nid: %q\ncid: %q\naid: %q\n", app, id, cid, aid)
+	}
+	freshYAML := func(app string) string {
+		return fmt.Sprintf("app: %q\n", app)
+	}
+
+	t.Run("empty dir returns empty + nil error (caller falls back)", func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := autoDetectDeployYAML(dir)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("single valid yaml is auto-picked", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "runos.c1.a1.yaml", pulledYAML("app1", "a1", "c1", "acc1"))
+		got, err := autoDetectDeployYAML(dir)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if filepath.Base(got) != "runos.c1.a1.yaml" {
+			t.Errorf("got %q, want runos.c1.a1.yaml", got)
+		}
+	})
+
+	t.Run("single partial (fresh) yaml is auto-picked too", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "runos.yaml", freshYAML("myapp"))
+		got, err := autoDetectDeployYAML(dir)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if filepath.Base(got) != "runos.yaml" {
+			t.Errorf("got %q, want runos.yaml", got)
+		}
+	})
+
+	t.Run("two pulled yamls surface candidate list", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "runos.c1.a1.yaml", pulledYAML("app1", "a1", "c1", "acc1"))
+		writeYAML(t, dir, "runos.c2.a2.yaml", pulledYAML("app2", "a2", "c2", "acc1"))
+		_, err := autoDetectDeployYAML(dir)
+		if err == nil {
+			t.Fatal("expected multi-candidate error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "multiple runos yaml candidates") {
+			t.Errorf("error %q missing multi-candidate phrase", msg)
+		}
+		if !strings.Contains(msg, "runos.c1.a1.yaml") || !strings.Contains(msg, "runos.c2.a2.yaml") {
+			t.Errorf("error %q missing candidate filenames", msg)
+		}
+		if !strings.Contains(msg, "-c <path>") {
+			t.Errorf("error %q missing actionable `-c <path>` hint", msg)
+		}
+	})
+
+	t.Run("valid + partial mix also surfaces candidate list", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "runos.c1.a1.yaml", pulledYAML("app1", "a1", "c1", "acc1"))
+		writeYAML(t, dir, "runos.yaml", freshYAML("fresh"))
+		_, err := autoDetectDeployYAML(dir)
+		if err == nil {
+			t.Fatal("expected multi-candidate error, got nil")
+		}
+		if !strings.Contains(err.Error(), "multiple runos yaml candidates") {
+			t.Errorf("error %q missing multi-candidate phrase", err.Error())
+		}
+	})
+}
 
 func TestSyncAppState_LocalMissingServerHas_FlagsKeysServerHasButLocalDoesNot(t *testing.T) {
 	// Reproduces the user-deletes-key-from-.env, deploy-silently-re-adds
@@ -143,6 +235,46 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// I3-D regression: syncAppState must swallow 404s on the three GETs
+// against /apps/:id/{dependencies,secret-env-vars,env-vars} silently.
+// On first deploy the AppDocument hasn't been minted yet (the upcoming
+// PrepareDeployment will mint it), so 404 there is the happy path; the
+// pre-fix surface emitted three "Warning: failed to fetch ..." lines
+// that the user reads as a deploy failure. We assert the function
+// returns no error and the result is the zero-value triple, so all
+// three branches landed in the suppress path.
+func TestSyncAppState_Suppresses404WarningsOnFirstDeploy(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	if err := os.WriteFile(yamlPath, []byte("app: smoke\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	// Server returns 404 for every /apps/:id/... endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"App 'nrdhg' not found"}`, http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
+	cfg := &deploy.DeployConfig{ID: "nrdhg", App: "smoke", SecretEnv: ".smoke.env"}
+	res, err := syncAppState(svc, cfg, yamlPath, "mycluster3")
+	if err != nil {
+		t.Fatalf("syncAppState should not propagate 404: %v", err)
+	}
+	if res == nil {
+		t.Fatal("res unexpectedly nil")
+	}
+	if res.deps != nil {
+		t.Errorf("deps should be nil on 404, got %v", res.deps)
+	}
+	if res.secretEnvVars != nil {
+		t.Errorf("secretEnvVars should be nil on 404, got %v", res.secretEnvVars)
+	}
+	if res.envVars != nil {
+		t.Errorf("envVars should be nil on 404, got %v", res.envVars)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -276,10 +408,12 @@ func TestPreDeployDriftCheck_LocalSupersetPassesThrough(t *testing.T) {
 	}
 }
 
-func TestPreDeployDriftCheck_ForceServerOnlyEnumeratesAtRiskFields(t *testing.T) {
-	// User passes --force when server has fields local doesn't. The
-	// warning must enumerate which fields, so the user (and any LLM
-	// driving the deploy) sees what's at risk before proceeding.
+// I2-4c regression: the warning splits server-only fields by
+// clear-on-omit semantics. clusterDomainId is preserve-on-omit, so
+// listing it must NOT trigger the "WILL be cleared" copy or the
+// "apps pull --force" recovery hint. Both belong to the clear case.
+// The field still gets enumerated under the preserve bucket.
+func TestPreDeployDriftCheck_ForceServerOnly_PreserveOnly(t *testing.T) {
 	dir := t.TempDir()
 	yamlPath := writePulledYaml(t, dir, map[string]any{
 		"id":       "ab12c",
@@ -301,14 +435,57 @@ func TestPreDeployDriftCheck_ForceServerOnlyEnumeratesAtRiskFields(t *testing.T)
 		}
 	})
 
-	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, "CLEARED") {
-		t.Errorf("expected warning explaining the omit-equals-clear rule; got:\n%s", stderr)
+	if !strings.Contains(stderr, "Note: the server has fields your local yaml doesn't") {
+		t.Errorf("expected the note header; got:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, `clusterDomainId ("elpfn")`) {
 		t.Errorf("expected enumeration of clusterDomainId; got:\n%s", stderr)
 	}
+	if !strings.Contains(stderr, "Preserved server-side") {
+		t.Errorf("expected preserve bucket header; got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "WILL be cleared") {
+		t.Errorf("preserve-only fields must NOT trigger the cleared-banner; got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "runos apps pull") {
+		t.Errorf("apps-pull recovery hint should only appear when clear fields are at risk; got:\n%s", stderr)
+	}
+}
+
+// I2-4c partner: when an actual clear-on-omit field (healthCheckPath)
+// drifts server-only, the CLEARED bucket fires AND the apps-pull
+// recovery hint shows up. Pre-fix, the same warning text fired
+// regardless of which fields were in scope; this test pins both halves.
+func TestPreDeployDriftCheck_ForceServerOnly_ClearFieldFires(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writePulledYaml(t, dir, map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(1),
+	}, "k1", "acc-1")
+	srv := fakeConductorForDeploy(t, map[string]any{
+		"id":              "ab12c",
+		"name":            "web",
+		"replicas":        float64(1),
+		"healthCheckPath": "/healthz",
+	}, nil, nil, nil)
+	t.Setenv("RUNOS_API_URL", srv.URL)
+
+	stderr := captureStderr(t, func() {
+		cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
+		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
+			t.Errorf("expected nil with --force, got: %v", err)
+		}
+	})
+
+	if !strings.Contains(stderr, "WILL be cleared") {
+		t.Errorf("expected cleared-banner for healthCheckPath; got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, `healthCheckPath ("/healthz")`) {
+		t.Errorf("expected enumeration of healthCheckPath; got:\n%s", stderr)
+	}
 	if !strings.Contains(stderr, "runos apps pull") {
-		t.Errorf("expected stderr to recommend 'runos apps pull'; got:\n%s", stderr)
+		t.Errorf("expected apps-pull recovery hint; got:\n%s", stderr)
 	}
 }
 
@@ -366,9 +543,14 @@ func TestPreDeployDriftCheck_LegacyEmitsMigrationHint(t *testing.T) {
 		}
 	})
 
-	// Must mention deprecated fields and the apps-pull migration command.
-	if !strings.Contains(out, "deprecated field names") {
-		t.Errorf("expected output to mention 'deprecated field names'; got:\n%s", out)
+	// I2-4d regression: must mention top-level shorthand fields (NOT
+	// "deprecated", which contradicted the docs for `domain:`) and the
+	// apps-pull migration command.
+	if !strings.Contains(out, "top-level shorthand fields") {
+		t.Errorf("expected output to mention 'top-level shorthand fields'; got:\n%s", out)
+	}
+	if strings.Contains(out, "deprecated field names") {
+		t.Errorf("output must not call the shorthand 'deprecated' (I2-4d regression); got:\n%s", out)
 	}
 	if !strings.Contains(out, "runos apps pull") {
 		t.Errorf("expected output to recommend 'runos apps pull'; got:\n%s", out)
@@ -521,7 +703,14 @@ func fakeArchivesEndpoint(t *testing.T, archives []apps.CliArchive) *httptest.Se
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		if strings.HasSuffix(r.URL.Path, "/cli-archives") {
-			_ = json.NewEncoder(w).Encode(archives)
+			// Match the conductor's 9.0.0+ envelope shape that
+			// ListCliArchives now expects (I8-K).
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"cid":      "test-cid",
+				"appId":    "test-id",
+				"appName":  "test",
+				"archives": archives,
+			})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{})
@@ -969,6 +1158,200 @@ func TestMergeServerEnvIntoLocalFile_NoOpWhenLocalMatchesServer(t *testing.T) {
 	}
 	if !statAfter.ModTime().Equal(mtimeBefore) {
 		t.Errorf("file mtime changed despite no-op merge (would create spurious git diffs)")
+	}
+}
+
+// Regression test for I2-4e' / I2-4e''' (TEST_LOG.md): the
+// destructive-removal WARNING block must print whenever a custom-
+// domain removal is detected, regardless of --force / --yes / non-tty.
+// Round-6 also pins the source endpoint as /:aid/domains rather than
+// /:aid/:cid/apps/:id/network-access (round-5 regression).
+func TestPreDeployDomainRemovalGate_ForceStillSurfacesWarning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]deploy.Domain{
+			{
+				ID:               "d1",
+				Fqdn:             "going.example.com",
+				TargetIngressURL: "http://app-abc12.app-abc12.svc.cluster.local:3000",
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := deploy.NewService(srv.URL, "tok", "mycluster2", "aid")
+	c := &deploy.DeployConfig{ID: "abc12"}
+
+	stderr := captureStderr(t, func() {
+		// Force=true, skipPrompt=true: we must still see the warning,
+		// not get a silent skip.
+		if err := preDeployDomainRemovalGate(svc, c, true, true); err != nil {
+			t.Fatalf("expected nil with --force, got: %v", err)
+		}
+	})
+
+	for _, want := range []string{
+		"WARNING: this deploy will REMOVE",
+		"going.example.com",
+		"--force passed; proceeding without prompt.",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q, got:\n%s", want, stderr)
+		}
+	}
+}
+
+// I2-4e' partner: when no removal is detected, the gate stays silent
+// regardless of flags.
+func TestPreDeployDomainRemovalGate_NoRemovalNoOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Server has the same domain the local yaml declares.
+		_ = json.NewEncoder(w).Encode([]deploy.Domain{
+			{
+				ID:               "d1",
+				Fqdn:             "kept.example.com",
+				TargetIngressURL: "http://app-abc12.app-abc12.svc.cluster.local:3000",
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := deploy.NewService(srv.URL, "tok", "mycluster2", "aid")
+	c := &deploy.DeployConfig{
+		ID:     "abc12",
+		Domain: deploy.StringOrSlice{"kept.example.com"},
+	}
+
+	stderr := captureStderr(t, func() {
+		if err := preDeployDomainRemovalGate(svc, c, true, false); err != nil {
+			t.Fatalf("got: %v", err)
+		}
+	})
+	if strings.Contains(stderr, "WARNING") {
+		t.Errorf("no removal but WARNING surfaced:\n%s", stderr)
+	}
+}
+
+// Regression test for I2-1b (TEST_LOG.md): writeProvisionedServiceYAMLs
+// must route a 404 from services.Pull into the deferred bucket, not
+// failed. The 404 happens on first-deploy of a brand-new
+// requires.<alias>.class service because conductor's create work runs
+// async; the show endpoint becomes 200 only after the deploy job
+// progresses. The retry hook (--follow path) covers the actual write.
+// Here we pin the classification logic so a future refactor can't
+// regress it back to the alarming "Warning: write service yamls (some
+// failed)" surface for the very common first-deploy path.
+func TestIsAPINotFound_Typed404(t *testing.T) {
+	apiErr := &dynacmd.APIError{StatusCode: http.StatusNotFound, Body: []byte(`{"error":"Service not found"}`)}
+	if !isAPINotFound(apiErr) {
+		t.Fatalf("expected isAPINotFound to be true for typed 404")
+	}
+	wrapped := fmt.Errorf("fetch mysql/pug3s: %w", apiErr)
+	if !isAPINotFound(wrapped) {
+		t.Fatalf("expected isAPINotFound to unwrap and detect 404")
+	}
+}
+
+func TestIsAPINotFound_Other(t *testing.T) {
+	cases := []error{
+		nil,
+		errors.New("plain error"),
+		&dynacmd.APIError{StatusCode: http.StatusInternalServerError, Body: []byte(`x`)},
+		&dynacmd.APIError{StatusCode: http.StatusUnauthorized, Body: []byte(`x`)},
+	}
+	for _, e := range cases {
+		if isAPINotFound(e) {
+			t.Errorf("isAPINotFound(%v) = true, want false", e)
+		}
+	}
+}
+
+// I3-D regression: syncAppState (env-vars / secret-env-vars /
+// dependencies) and stampSynthesizedResources (synthesized RRC) all
+// fetch via the deploy.Service GET methods. On first deploy the
+// AppDocument hasn't been minted yet so the conductor returns 404 +
+// "App 'xxx' not found". The classifier must recognise both error
+// shapes (deploy.APIError and dynacmd.APIError) so the suppressing
+// branch fires and the user doesn't see three scary warnings on what
+// is actually the happy path. Without this, the deploy looks like it's
+// failing.
+func TestIsAPINotFound_DeployAPIError(t *testing.T) {
+	deployErr := &deploy.APIError{StatusCode: http.StatusNotFound, Body: []byte(`{"error":"App 'xxx' not found"}`)}
+	if !isAPINotFound(deployErr) {
+		t.Fatalf("expected isAPINotFound to recognise deploy.APIError 404")
+	}
+	wrapped := fmt.Errorf("fetch app: %w", deployErr)
+	if !isAPINotFound(wrapped) {
+		t.Fatalf("expected isAPINotFound to unwrap deploy.APIError")
+	}
+	other := &deploy.APIError{StatusCode: http.StatusInternalServerError, Body: []byte(`x`)}
+	if isAPINotFound(other) {
+		t.Fatalf("non-404 deploy.APIError must not classify as 404")
+	}
+}
+
+// I3-A regression: writeDeployIaCArtifacts must honour the resolved
+// envFilename. A user with explicit `env: plain.env` in their yaml
+// already has plain.env on disk; the placeholder must NOT land at the
+// canonical `runos.<cid>.<id>.config.env` path because the dead file
+// would forever mismatch the user's actual env file and conductor
+// would never pick it up.
+func TestWriteDeployIaCArtifacts_HonoursExplicitEnvFilename(t *testing.T) {
+	dir := t.TempDir()
+	// User's explicit env file already on disk.
+	explicitPath := filepath.Join(dir, "plain.env")
+	if err := os.WriteFile(explicitPath, []byte("FOO=bar\n"), 0644); err != nil {
+		t.Fatalf("seed plain.env: %v", err)
+	}
+	writeDeployIaCArtifacts(dir, "plain.env")
+	// Explicit file untouched (existence-check skipped the write).
+	body, err := os.ReadFile(explicitPath)
+	if err != nil {
+		t.Fatalf("read plain.env: %v", err)
+	}
+	if string(body) != "FOO=bar\n" {
+		t.Errorf("explicit env file mutated: %q", string(body))
+	}
+	// Dead canonical placeholder must NOT exist.
+	canonical := filepath.Join(dir, "runos.k1.ab12c.config.env")
+	if _, err := os.Stat(canonical); !os.IsNotExist(err) {
+		t.Errorf("canonical placeholder should not be written when user has explicit env path: stat err=%v", err)
+	}
+}
+
+// I3-A complement: when the user has no explicit `env:` field, the
+// canonical placeholder is written as before. This is the fresh-deploy
+// happy path; the function passes the canonical filename in directly.
+func TestWriteDeployIaCArtifacts_WritesCanonicalWhenNoExplicit(t *testing.T) {
+	dir := t.TempDir()
+	canonicalLeaf := "runos.k1.ab12c.config.env"
+	writeDeployIaCArtifacts(dir, canonicalLeaf)
+	canonical := filepath.Join(dir, canonicalLeaf)
+	body, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatalf("expected canonical placeholder to be written: %v", err)
+	}
+	if !strings.Contains(string(body), "ConfigMap-backed env vars") {
+		t.Errorf("placeholder header missing from canonical placeholder: %q", string(body))
+	}
+}
+
+// I3-A complement: empty envFilename short-circuits the placeholder
+// write entirely (still writes .dockerignore). Catches a regression
+// where the function would join "" and create a plain `configDir`
+// path, mis-stat it, and emit a confusing warning.
+func TestWriteDeployIaCArtifacts_EmptyEnvFilenameSkipsPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	writeDeployIaCArtifacts(dir, "")
+	// .dockerignore should still appear (separate from env placeholder).
+	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); err != nil {
+		t.Errorf(".dockerignore should be written even when envFilename is empty: %v", err)
+	}
+	// No env file should appear at any name.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".env") || strings.HasSuffix(e.Name(), ".config.env") {
+			t.Errorf("unexpected env file written: %s", e.Name())
+		}
 	}
 }
 

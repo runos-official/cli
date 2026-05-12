@@ -1,8 +1,12 @@
 package deploy
 
 import (
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -154,6 +158,23 @@ type DeployConfig struct {
 	Dockerfile    string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
 	StorageMb     *int                          `yaml:"storageMb,omitempty" json:"storageMb,omitempty"`
 	Requires      map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// SecretFiles is the round-tripped declaration block from a pulled
+	// yaml AND the wire-side payload sent to prepare-cli-deployment.
+	// Each entry is `{filename, mountPath, local, md5?}` on disk; the
+	// actual file bytes live at `local`. Before marshalling for the
+	// wire, `LoadSecretFileContents` reads each `local` path, base64-
+	// encodes the bytes, and writes them into the entry's `Content`
+	// field. The wire shape is `{filename, mountPath, content}`; the
+	// `local` / `md5` fields stay on the yaml side only (json:"-").
+	//
+	// Conductor R2 wires the receive + process side end-to-end via a
+	// new "Apply user secret files" orchestration step (update-only;
+	// first-deploy users still need apps_secret-files_update because
+	// the K8s namespace doesn't exist yet at orchestration slot 2.5).
+	// Pre-fix (I10-K CLI half) this field was both absent from the
+	// struct AND suppressed on the wire (`json:"-"`); the post-deploy
+	// SaveConfig stripped user-authored entries silently.
+	SecretFiles   []SecretFile                  `yaml:"secretFiles,omitempty" json:"secretFiles,omitempty"`
 	// CustomSecretEnvVars holds the parsed contents of SecretEnv (sensitive,
 	// Secret-backed). Sent in the prepare-cli-deployment body and lands in
 	// the {osid}-user-secret-env-vars Secret on the cluster.
@@ -165,6 +186,36 @@ type DeployConfig struct {
 	// --- Legacy shorthand (normalized server-side into ServicePortMappings) ---
 	Port          int   `yaml:"port,omitempty" json:"port,omitempty"`
 	StandardHttps *bool `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
+}
+
+// SecretFile is the on-disk declaration of one secret file mounted into
+// the app container. Lives in the local yaml's `secretFiles:` list,
+// alongside the actual file bytes referenced by `local`.
+//
+// Two shapes share the same struct:
+//   - **yaml** (on disk): `filename`, `mountPath`, `local`, `md5?`.
+//     `Content` stays empty; `Local` points at the bytes.
+//   - **wire** (sent to prepare-cli-deployment): `filename`, `mountPath`,
+//     `content` (base64). `Local` + `md5` are suppressed from JSON.
+//     `LoadSecretFileContents` populates `Content` from `Local` right
+//     before PrepareDeployment marshals.
+//
+// Conductor R2 ships an orchestration step "Apply user secret files"
+// (update-only, slot 2.5) that consumes the wire shape and creates K8s
+// Secrets via `createSecretFile`; the existing buildSecretVolumes step
+// picks them up on the next rollout. Regression target: I10-K CLI half.
+//
+// Field shape mirrors apps.SecretFile on the yaml side; duplicated
+// rather than imported to avoid an apps → deploy import cycle.
+type SecretFile struct {
+	Filename  string `yaml:"filename" json:"filename"`
+	MountPath string `yaml:"mountPath" json:"mountPath"`
+	Local     string `yaml:"local" json:"-"`
+	MD5       string `yaml:"md5,omitempty" json:"-"`
+	// Content holds the base64-encoded file bytes for the wire body.
+	// Empty on disk (`yaml:"-"`) so it never round-trips through the
+	// local yaml; populated by LoadSecretFileContents at deploy time.
+	Content string `yaml:"-" json:"content,omitempty"`
 }
 
 // ServiceRequirement defines a dependent service (e.g., PostgreSQL, Valkey)
@@ -226,6 +277,72 @@ func (c *DeployConfig) Validate() error {
 	return nil
 }
 
+// maxSecretFileBytes is the per-file size cap before base64 encoding.
+// 100KiB is the conductor's hard limit on `apps_secret-files_update.add`
+// entries; mirror it client-side so a too-large local file is caught
+// here rather than via a server 400 after the marshal.
+const maxSecretFileBytes = 100 * 1024
+
+// LoadSecretFileContents reads each entry's `local` file path (resolved
+// relative to configDir for relative paths), reads up to
+// maxSecretFileBytes, base64-encodes the bytes, and writes the result
+// to the entry's `Content` field. Called before PrepareDeployment
+// marshals the config so the wire body carries `{filename, mountPath,
+// content}` (the conductor's expected shape). Local + md5 stay
+// suppressed from JSON.
+//
+// A nil receiver or empty SecretFiles slice is a no-op. Individual
+// entries with an empty Local are skipped (no Content populated; the
+// server will refuse the entry, but the rest of the deploy proceeds).
+// Returns the first I/O error encountered; the caller bubbles it as
+// "failed to load secret file" so the deploy aborts cleanly.
+//
+// Regression target: I10-K CLI half (the wire-side flip).
+func (c *DeployConfig) LoadSecretFileContents(configDir string) error {
+	if c == nil || len(c.SecretFiles) == 0 {
+		return nil
+	}
+	for i := range c.SecretFiles {
+		entry := &c.SecretFiles[i]
+		if entry.Local == "" {
+			// No file path to read; leave Content empty so the server
+			// sees the entry as malformed (per validateSecretFilesShape)
+			// and refuses with a clear message rather than us guessing
+			// here.
+			continue
+		}
+		localPath := entry.Local
+		if !filepath.IsAbs(localPath) {
+			localPath = filepath.Join(configDir, localPath)
+		}
+		f, err := os.Open(localPath)
+		if err != nil {
+			return fmt.Errorf("read secret file %q for entry %q: %w", entry.Local, entry.Filename, err)
+		}
+		// Cap at maxSecretFileBytes+1 so we can detect overflow with a
+		// single read without buffering the whole file in memory twice.
+		data, err := io.ReadAll(io.LimitReader(f, maxSecretFileBytes+1))
+		_ = f.Close()
+		if err != nil {
+			return fmt.Errorf("read secret file %q for entry %q: %w", entry.Local, entry.Filename, err)
+		}
+		if len(data) > maxSecretFileBytes {
+			return fmt.Errorf("secret file %q exceeds the %d-byte cap (got at least %d bytes)", entry.Local, maxSecretFileBytes, len(data))
+		}
+		entry.Content = base64.StdEncoding.EncodeToString(data)
+		// I10-Q: refresh the md5 sidecar so the local yaml mirrors the
+		// just-pushed bytes. Without this, the yaml's `md5:` field keeps
+		// whatever stale digest was written by the last `apps pull` (or
+		// nothing on a first-deploy yaml authored by hand), and
+		// `apps diff` reports spurious drift on the next read. Computed
+		// from the raw bytes (not base64) so it matches the server-side
+		// digest that conductor stores in the Secret annotation.
+		digest := md5.Sum(data)
+		entry.MD5 = hex.EncodeToString(digest[:])
+	}
+	return nil
+}
+
 // SaveConfig writes the config back to the file
 func SaveConfig(path string, config *DeployConfig) error {
 	data, err := yaml.Marshal(config)
@@ -249,6 +366,31 @@ func ValidateAID(configAID, sessionAID string) error {
 		return nil // AIDs match, allow
 	}
 	return fmt.Errorf("config file AID (%s) does not match session AID (%s). Ensure you're logged into the correct account", configAID, sessionAID)
+}
+
+// ReconcileCID resolves a single cluster id from the two possible sources
+// during a deploy: the flag-or-config value the user supplied (callerCID)
+// and the cid: field embedded in the loaded yaml (yamlCID). Both empty
+// returns ("", nil) so the caller can decide whether the resulting absence
+// is acceptable (e.g. apps_diff allows empty when neither is set; the
+// deploy verbs require non-empty post-reconcile). Mismatch when both are
+// set is the cross-cluster-push guard — pre-fix, runos deploy silently
+// used the caller's cid and ignored the yaml, so a stale --cid plus a
+// directory-per-app yaml could push to the wrong cluster. apps_diff
+// (cmd/apps.go:bindToYAML) already has the equivalent check; this lifts
+// it into a shared helper so the deploy verbs can adopt it without
+// duplicating the message. Regression target: I18-B.
+func ReconcileCID(callerCID, yamlCID string) (string, error) {
+	switch {
+	case yamlCID == "":
+		return callerCID, nil
+	case callerCID == "":
+		return yamlCID, nil
+	case callerCID != yamlCID:
+		return "", fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q, refusing to deploy to a different cluster than expected", yamlCID, callerCID)
+	default:
+		return callerCID, nil
+	}
 }
 
 // ResolvedEnvFiles holds the resolved absolute paths of the two env-var
@@ -383,17 +525,58 @@ func DefaultEnvFilename(cid, appID string) string {
 	return fmt.Sprintf("runos.%s.%s.config.env", cid, appID)
 }
 
+// LocalDomainFqdns returns the deduplicated set of fqdns the local
+// yaml declares, drawing from both the legacy top-level `domain:` slice
+// AND each `servicePortMappings[].domains[].fqdn`. Used by the pre-
+// deploy domain-removal gate (I2-4e) to compare against the server's
+// per-app custom-domain list and surface any fqdn that the next deploy
+// would silently remove.
+//
+// Returned slice is in declaration order with duplicates collapsed:
+// a user who lists the same fqdn at top-level AND under a port mapping
+// gets a single entry. Empty input → empty output.
+func LocalDomainFqdns(c *DeployConfig) []string {
+	if c == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(s string) {
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, fqdn := range c.Domain {
+		add(fqdn)
+	}
+	for _, mapping := range c.ServicePortMappings {
+		for _, d := range mapping.Domains {
+			add(d.Fqdn)
+		}
+	}
+	return out
+}
+
 // HasLegacyFields reports whether the loaded config uses any of the
-// deprecated top-level fields that have been superseded by
-// servicePortMappings:
-//   - port            (use servicePortMappings[].port)
-//   - standardHttps   (use servicePortMappings[].standardHttps)
-//   - domain          (use servicePortMappings[].domains[].fqdn)
+// top-level shorthand fields that conflict with servicePortMappings on
+// the server side:
+//   - port            (duplicates servicePortMappings[].port)
+//   - standardHttps   (duplicates servicePortMappings[].standardHttps)
+//
+// Top-level `domain:` is intentionally NOT flagged here: it remains the
+// documented form in the `domain` topic and the conductor folds it into
+// the first mapping's `domains` cleanly. Calling it deprecated when
+// every doc example uses it is a signal-quality regression for the LLM
+// driving the deploy (and a UX papercut for humans).
 //
 // Used by the pre-deploy gate to surface a tailored "migrate via
 // `runos apps pull --force`" message instead of the generic drift
-// refusal — the LLM driving the deploy then knows to recommend the
-// migration path rather than `--force`.
+// refusal, but only for the truly conflicting shorthands.
 func HasLegacyFields(c *DeployConfig) bool {
 	if c == nil {
 		return false
@@ -402,9 +585,6 @@ func HasLegacyFields(c *DeployConfig) bool {
 		return true
 	}
 	if c.StandardHttps != nil {
-		return true
-	}
-	if len(c.Domain) > 0 {
 		return true
 	}
 	return false

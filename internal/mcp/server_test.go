@@ -3,8 +3,11 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/runos-official/cli/internal/manifest"
 )
@@ -227,4 +230,179 @@ func TestBootstrapGate_BootstrapFailureDoesNotSetFlag(t *testing.T) {
 	if srv.bootstrapped {
 		t.Fatal("expected bootstrapped to remain false after failed mcp_bootstrap call")
 	}
+}
+
+// Regression target for I6-H: array fields with itemType="object" +
+// itemFields must project to a JSON Schema `items` shape that names the
+// object's properties (not the legacy `items.type=string` fallback), so
+// MCP clients that strict-validate the tool schema send the right
+// element shape to conductor instead of stringly-typed values that
+// trigger a 400 on the apps/secret-files/update.add path.
+func TestProjectArrayItems(t *testing.T) {
+	s := &Server{}
+
+	t.Run("no itemType falls back to string", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{Name: "remove", Type: "array"})
+		if got == nil || got.Type != "string" {
+			t.Fatalf("legacy []string field: got %+v, want {Type: string}", got)
+		}
+		if got.Properties != nil || got.Required != nil {
+			t.Errorf("legacy field should have nil Properties/Required, got %+v", got)
+		}
+	})
+
+	t.Run("itemType string emits scalar items", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{
+			Name:     "remove",
+			Type:     "array",
+			ItemType: "string",
+		})
+		if got == nil || got.Type != "string" {
+			t.Fatalf("got %+v, want Type=string", got)
+		}
+	})
+
+	t.Run("itemType object with itemFields emits properties + required", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{
+			Name:     "add",
+			Type:     "array",
+			ItemType: "object",
+			ItemFields: []manifest.Field{
+				{Name: "filename", Type: "string", Description: "key in the Secret", Required: true},
+				{Name: "mountPath", Type: "string", Required: true},
+				{Name: "content", Type: "string", Description: "base64", Required: true},
+				{Name: "note", Type: "string", Description: "optional"},
+			},
+		})
+		if got == nil || got.Type != "object" {
+			t.Fatalf("got %+v, want Type=object", got)
+		}
+		if len(got.Properties) != 4 {
+			t.Errorf("want 4 properties, got %d: %+v", len(got.Properties), got.Properties)
+		}
+		if got.Properties["filename"].Type != "string" || got.Properties["filename"].Description != "key in the Secret" {
+			t.Errorf("filename prop: %+v", got.Properties["filename"])
+		}
+		// Required is built in declaration order from the required sub-fields.
+		wantRequired := []string{"filename", "mountPath", "content"}
+		if len(got.Required) != len(wantRequired) {
+			t.Fatalf("required len: got %v, want %v", got.Required, wantRequired)
+		}
+		for i, w := range wantRequired {
+			if got.Required[i] != w {
+				t.Errorf("required[%d] = %q, want %q", i, got.Required[i], w)
+			}
+		}
+	})
+
+	t.Run("itemType object without itemFields emits bare object", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{
+			Name:     "providerOptions",
+			Type:     "array",
+			ItemType: "object",
+		})
+		if got == nil || got.Type != "object" {
+			t.Fatalf("got %+v, want Type=object", got)
+		}
+		if got.Properties != nil || got.Required != nil {
+			t.Errorf("bare object items should have nil Properties/Required, got %+v", got)
+		}
+	})
+
+	t.Run("itemType integer maps through mapType", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{
+			Name:     "ports",
+			Type:     "array",
+			ItemType: "integer",
+		})
+		if got == nil || got.Type != "number" {
+			t.Fatalf("integer maps to number per mapType; got %+v", got)
+		}
+	})
+
+	t.Run("required sub-field with enum + default", func(t *testing.T) {
+		got := s.projectArrayItems(manifest.Field{
+			Name:     "rules",
+			Type:     "array",
+			ItemType: "object",
+			ItemFields: []manifest.Field{
+				{Name: "method", Type: "string", Enum: []string{"GET", "POST"}, Default: "GET", Required: true},
+			},
+		})
+		methodProp := got.Properties["method"]
+		if methodProp.Type != "string" {
+			t.Errorf("method type: %s", methodProp.Type)
+		}
+		if len(methodProp.Enum) != 2 || methodProp.Enum[0] != "GET" {
+			t.Errorf("method enum: %v", methodProp.Enum)
+		}
+		if methodProp.Default != "GET" {
+			t.Errorf("method default: %v", methodProp.Default)
+		}
+	})
+}
+
+// TestCheckStaleBinary pins the I13-A detection: the server records
+// the running binary's mtime at startup, and checkStaleBinary flips
+// sticky-true once the on-disk mtime advances past that. Three cases
+// matter: clean (mtime unchanged), rebuilt (mtime advanced), and
+// missing-baseline (startupBinaryPath was never captured — checkStaleBinary
+// must NOT trip in that case, since we can't tell).
+func TestCheckStaleBinary(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fake-runos")
+	if err := os.WriteFile(binPath, []byte("v1"), 0o755); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	info, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	startMtime := info.ModTime()
+
+	t.Run("clean (no rebuild)", func(t *testing.T) {
+		s := &Server{startupBinaryPath: binPath, startupBinaryMtime: startMtime}
+		if s.checkStaleBinary() {
+			t.Error("expected false on clean check, got true")
+		}
+		if s.staleBinaryDetected {
+			t.Error("sticky flag should not be set on clean check")
+		}
+	})
+
+	t.Run("rebuilt (mtime advanced)", func(t *testing.T) {
+		s := &Server{startupBinaryPath: binPath, startupBinaryMtime: startMtime}
+		future := startMtime.Add(2 * time.Second)
+		if err := os.Chtimes(binPath, future, future); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+		if !s.checkStaleBinary() {
+			t.Error("expected true after rebuild, got false")
+		}
+		if !s.staleBinaryDetected {
+			t.Error("sticky flag should be set")
+		}
+		// Second call returns true even if mtime walks backwards (sticky).
+		if err := os.Chtimes(binPath, startMtime, startMtime); err != nil {
+			t.Fatalf("chtimes revert: %v", err)
+		}
+		if !s.checkStaleBinary() {
+			t.Error("sticky flag must not reset on mtime regression")
+		}
+	})
+
+	t.Run("missing-baseline (path never captured)", func(t *testing.T) {
+		s := &Server{} // startupBinaryPath empty, mtime zero
+		if s.checkStaleBinary() {
+			t.Error("expected false when baseline missing")
+		}
+	})
+
+	t.Run("stat error (binary deleted)", func(t *testing.T) {
+		gonePath := filepath.Join(dir, "gone-runos")
+		s := &Server{startupBinaryPath: gonePath, startupBinaryMtime: startMtime}
+		if s.checkStaleBinary() {
+			t.Error("expected false when stat fails")
+		}
+	})
 }

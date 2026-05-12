@@ -137,6 +137,36 @@ func resolveYamlArg(args []string, cmdName string) (string, error) {
 	return "", fmt.Errorf("no runos*.yaml found in current directory. Pass a yaml file as the argument to %q, or cd into a per-app directory", cmdName)
 }
 
+// autoDetectDeployYAML scans dir for runos*.yaml candidates and returns
+// the unique one if exactly one exists (valid or partial — `runos deploy`
+// works on both fresh and pulled yamls, so we don't discriminate).
+//
+// Multi-candidate dirs return a self-documenting error mirroring the
+// shape `apps diff` emits via resolveYamlArg, so a user with multiple
+// `runos.<cid>.<id>.yaml` files in the same directory sees the list
+// instead of the misleading "runos.yaml not found at <path>". The empty
+// `("", nil)` result means caller should fall back to its own error
+// path (no yaml files at all in dir). Regression target: I15-A.
+func autoDetectDeployYAML(cwd string) (string, error) {
+	scan, err := apps.FindPulledYAMLs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("scan cwd for yaml: %w", err)
+	}
+	all := append([]string{}, scan.Valid...)
+	all = append(all, scan.Partial...)
+	switch len(all) {
+	case 0:
+		return "", nil
+	case 1:
+		return all[0], nil
+	default:
+		return "", fmt.Errorf(
+			"multiple runos yaml candidates in current directory: %s, pass one explicitly with -c <path>",
+			strings.Join(relativisePaths(cwd, all), ", "),
+		)
+	}
+}
+
 // relativisePaths formats absolute paths relative to base for display.
 // Falls back to the basename when relative resolution fails.
 func relativisePaths(base string, paths []string) []string {

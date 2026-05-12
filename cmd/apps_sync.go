@@ -70,7 +70,19 @@ func init() {
 	appsSyncCmd.Flags().BoolP("json", "j", false, "emit the plan as JSON instead of formatted text (only valid with --dry-run)")
 }
 
-func runAppsSync(cmd *cobra.Command, args []string) error {
+func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
+	jsonOut, _ := cmd.Flags().GetBool("json")
+	// I4-G: when --json is set, errors must come back through the
+	// same JSON envelope `--json` consumers parse for the success
+	// path. Defer routes any returned error through emitJSONError so
+	// the caller's `jq`-on-stdout pipeline doesn't break on the
+	// failure case.
+	defer func() {
+		if jsonOut && rerr != nil {
+			rerr = emitJSONError(cmd, rerr)
+		}
+	}()
+
 	ctx, err := prepareAppsCmd(cmd)
 	if err != nil {
 		return err
@@ -80,7 +92,6 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
 	follow, _ := cmd.Flags().GetBool("follow")
-	jsonOut, _ := cmd.Flags().GetBool("json")
 	// --json is plan-only: it doesn't make sense alongside an apply step
 	// (the plan is structured + the post-apply jobIDs aren't), so refuse
 	// the combination up-front rather than print JSON and silently skip
@@ -262,8 +273,15 @@ func runAppsSync(cmd *cobra.Command, args []string) error {
 	// pipelines can gate on yaml/env/secretFile/override changes without
 	// parsing the formatted plan output. The plan struct already has
 	// json tags for every section. emitJSON writes to stdout and the
-	// caller's `if dryRun { return }` exits cleanly.
+	// caller's `if dryRun { return }` exits cleanly. Honour
+	// --redact-secrets at this layer too: the text renderer redacts in
+	// printEnvChange, but the JSON path bypassed it pre-fix, leaking
+	// ADMIN_TOKEN / JWT_SECRET / DATABASE_URL etc. when an LLM driver
+	// invoked `apps sync --dry-run --json --redact-secrets` (I10-M).
 	if jsonOut {
+		if redactSecrets {
+			plan.RedactSecrets()
+		}
 		if err := emitJSON(plan); err != nil {
 			return err
 		}
@@ -550,7 +568,12 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 	}
 
 	if len(plan.YAMLPatch) > 0 {
-		jobID, err := svc.UpdateApp(plan.AppID, plan.YAMLPatch)
+		// merge=false: apps_sync sends the full local yaml as the
+		// intended state. Omitted fields are intentional: 5 of them
+		// (healthCheck*, metrics*) clear server-side, the rest
+		// preserve. That convergence is what users on the same
+		// committed yaml share, and it predates I4-K's merge param.
+		jobID, err := svc.UpdateApp(plan.AppID, plan.YAMLPatch, false)
 		if err != nil {
 			return fmt.Errorf("yaml patch: %w", err)
 		}

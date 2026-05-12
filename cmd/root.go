@@ -167,7 +167,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, configCmd, deployCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, configCmd, deployCmd, mcpCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)
