@@ -406,3 +406,90 @@ func TestCheckStaleBinary(t *testing.T) {
 		}
 	})
 }
+
+// TestProjectObjectValue pins the I26-N fix: MCP tool schemas now emit
+// structured `additionalProperties` for object-typed map fields, not
+// the legacy `{type: "string"}` that forced clients to stringify their
+// payload.
+func TestProjectObjectValue(t *testing.T) {
+	s := &Server{}
+
+	t.Run("providerOptions drops constraint entirely (existing carve-out)", func(t *testing.T) {
+		got := s.projectObjectValue(manifest.Field{Name: "providerOptions", Type: "object"})
+		if got != nil {
+			t.Errorf("providerOptions should return nil to drop the constraint, got %+v", got)
+		}
+	})
+
+	t.Run("manifest valueType=object + valueFields wins", func(t *testing.T) {
+		got := s.projectObjectValue(manifest.Field{
+			Name:      "custom",
+			Type:      "object",
+			ValueType: "object",
+			ValueFields: []manifest.Field{
+				{Name: "id", Type: "string", Required: true},
+				{Name: "weight", Type: "integer"},
+			},
+		})
+		if got == nil || got.Type != "object" {
+			t.Fatalf("expected object value schema, got %+v", got)
+		}
+		if got.Properties["id"].Type != "string" {
+			t.Errorf("id property type = %q, want string", got.Properties["id"].Type)
+		}
+		if got.Properties["weight"].Type != "number" {
+			t.Errorf("weight (integer→number) type = %q, want number", got.Properties["weight"].Type)
+		}
+		if len(got.Required) != 1 || got.Required[0] != "id" {
+			t.Errorf("Required = %v, want [id]", got.Required)
+		}
+	})
+
+	t.Run("requires falls back to hardcoded shape when manifest doesn't declare valueType", func(t *testing.T) {
+		got := s.projectObjectValue(manifest.Field{Name: "requires", Type: "object"})
+		if got == nil || got.Type != "object" {
+			t.Fatalf("expected object schema for requires, got %+v", got)
+		}
+		for _, want := range []string{"id", "type", "config", "env"} {
+			if _, ok := got.Properties[want]; !ok {
+				t.Errorf("requires schema missing property %q", want)
+			}
+		}
+		// id + type required; config + env optional.
+		gotRequired := map[string]bool{}
+		for _, r := range got.Required {
+			gotRequired[r] = true
+		}
+		if !gotRequired["id"] || !gotRequired["type"] {
+			t.Errorf("Required should include id + type, got %v", got.Required)
+		}
+		if gotRequired["config"] || gotRequired["env"] {
+			t.Errorf("Required should NOT include config/env, got %v", got.Required)
+		}
+		// config + env are themselves maps of string→string.
+		if got.Properties["config"].AdditionalProperties == nil || got.Properties["config"].AdditionalProperties.Type != "string" {
+			t.Errorf("config.additionalProperties = %+v, want string", got.Properties["config"].AdditionalProperties)
+		}
+	})
+
+	t.Run("manifest valueType wins over the requires hardcode", func(t *testing.T) {
+		// If the conductor manifest later declares the shape on the
+		// `requires` field directly, the manifest-driven branch takes
+		// over and the hardcoded fallback drops out.
+		got := s.projectObjectValue(manifest.Field{
+			Name:      "requires",
+			Type:      "object",
+			ValueType: "string", // hypothetical future "stringly typed requires"
+		})
+		if got == nil || got.Type != "string" {
+			t.Errorf("manifest valueType should win, got %+v", got)
+		}
+	})
+
+	t.Run("default falls back to string for unknown object fields", func(t *testing.T) {
+		got := s.projectObjectValue(manifest.Field{Name: "tagIds", Type: "object"})
+		if got == nil || got.Type != "string" {
+			t.Errorf("unknown object field should default to string, got %+v", got)
+		}
+	})
+}

@@ -54,6 +54,20 @@ type Field struct {
 	// to the legacy `items: {type: "string"}` shape.
 	ItemType   string  `yaml:"itemType,omitempty" json:"itemType,omitempty"`
 	ItemFields []Field `yaml:"itemFields,omitempty" json:"itemFields,omitempty"`
+	// ValueType + ValueFields describe MAP-VALUE shape for object-typed
+	// fields whose semantics are "map[<key>] → <value-shape>" rather
+	// than a fixed-property record. Canonical case: `requires` on
+	// apps/add / apps/update / deploy, which is `map[alias] →
+	// {id, type, config, env}`. When ValueType is set, the MCP tool-
+	// schema projection emits a richer `additionalProperties`
+	// definition than the default `{type: "string"}`. ValueFields
+	// declares object-value key shape (used when ValueType == "object").
+	// Manifest fields are optional; when absent the projection falls
+	// back to the legacy `additionalProperties: {type: "string"}`
+	// shape (with the providerOptions and requires carve-outs that
+	// already exist server-CLI-side). Regression target: I26-N.
+	ValueType   string  `yaml:"valueType,omitempty" json:"valueType,omitempty"`
+	ValueFields []Field `yaml:"valueFields,omitempty" json:"valueFields,omitempty"`
 }
 
 // Flag defines a boolean flag

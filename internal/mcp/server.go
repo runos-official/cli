@@ -739,22 +739,25 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 				}
 				// JSON Schema requires `additionalProperties` (for object) and
 				// `items` (for array) so clients know what to put inside the
-				// container. The manifest doesn't carry richer types yet, so
-				// we default to string values — every map[string]string and
-				// []string we currently expose works under that schema, and
-				// LLM libraries that strict-validate the schema (e.g. some
-				// versions of the Anthropic SDK's tool wrapper) accept it.
-				//
-				// providerOptions (domains_create / domains_update) is the
-				// known exception: it carries booleans (e.g. `proxy: true`)
-				// and the string-typed map forced LLMs to send "true" /
-				// "false" strings. The conductor's normalizeProviderOptions
-				// coerces those back, but the schema mismatch was visibly
-				// confusing — domains_list returns booleans, the LLM had to
-				// send strings. Drop the additionalProperties constraint
-				// here so booleans round-trip natively.
-				if prop.Type == "object" && field.Name != "providerOptions" {
-					prop.AdditionalProperties = &Property{Type: "string"}
+				// container. The manifest now carries optional `valueType` +
+				// `valueFields` for object fields (parallel to `itemType` +
+				// `itemFields` for arrays); when present, projectObjectValue
+				// emits the richer schema. Otherwise we fall back to a
+				// pre-existing carve-out table:
+				//   - providerOptions (domains_create / domains_update):
+				//     drop the additionalProperties constraint entirely
+				//     so booleans round-trip natively.
+				//   - requires (apps/add / apps/update / deploy): map of
+				//     alias → {id, type, config, env}; emit the structured
+				//     value schema so MCP clients don't have to stringify.
+				//     Regression target: I26-N.
+				//   - everything else: default to string values for
+				//     back-compat with existing map[string]string fields
+				//     whose manifest entries pre-date valueType. LLM libs
+				//     that strict-validate the schema (some versions of
+				//     the Anthropic SDK tool wrapper) accept it.
+				if prop.Type == "object" {
+					prop.AdditionalProperties = s.projectObjectValue(field)
 				}
 				if prop.Type == "array" {
 					prop.Items = s.projectArrayItems(field)
@@ -804,6 +807,77 @@ func (s *Server) mapType(t string) string {
 	default:
 		return "string"
 	}
+}
+
+// projectObjectValue builds the JSON Schema `additionalProperties`
+// descriptor for an object field. Priority order:
+//
+//  1. providerOptions (domains_create / domains_update): return nil so
+//     the constraint is dropped entirely and booleans round-trip
+//     natively. (Existing carve-out, preserved.)
+//  2. Manifest declares `valueType` (and optionally `valueFields` for
+//     object values): emit the rich schema so map values are typed.
+//  3. requires (apps/add / apps/update / deploy): hardcoded fallback
+//     for the map[alias] → {id, type, config, env} shape until the
+//     conductor manifest grows valueType/valueFields for it. Closes
+//     I26-N. Removable once the manifest entry ships.
+//  4. Default: legacy `{type: "string"}` for back-compat with every
+//     map[string]string field whose manifest entry pre-dates
+//     valueType.
+func (s *Server) projectObjectValue(field manifest.Field) *Property {
+	if field.Name == "providerOptions" {
+		return nil
+	}
+	if field.ValueType != "" {
+		mapped := s.mapType(field.ValueType)
+		value := &Property{Type: mapped}
+		if mapped == "object" && len(field.ValueFields) > 0 {
+			value.Properties = make(map[string]Property, len(field.ValueFields))
+			for _, sub := range field.ValueFields {
+				subProp := Property{
+					Type:        s.mapType(sub.Type),
+					Description: sub.Description,
+				}
+				if len(sub.Enum) > 0 {
+					subProp.Enum = sub.Enum
+				}
+				if sub.Default != nil {
+					subProp.Default = sub.Default
+				}
+				value.Properties[sub.Name] = subProp
+				if sub.Required {
+					value.Required = append(value.Required, sub.Name)
+				}
+			}
+		}
+		return value
+	}
+	if field.Name == "requires" {
+		// Hardcoded transition-window fallback for I26-N: map[alias] →
+		// {id, type, config?, env?}. Conductor's manifest doesn't carry
+		// valueType/valueFields for `requires` yet; this entry can be
+		// dropped once it does (the `ValueType != ""` branch above
+		// will take over automatically).
+		return &Property{
+			Type: "object",
+			Properties: map[string]Property{
+				"id":   {Type: "string", Description: "The 5-char osid of an existing service to link to. Required."},
+				"type": {Type: "string", Description: "Service type slug (postgresql, valkey, mysql, ...). Required; must match the linked service's type."},
+				"config": {
+					Type:                 "object",
+					AdditionalProperties: &Property{Type: "string"},
+					Description:          "Optional config-map keyed env vars injected into the app pod (read from the service's stored config; e.g. DATABASE → DATABASE_NAME).",
+				},
+				"env": {
+					Type:                 "object",
+					AdditionalProperties: &Property{Type: "string"},
+					Description:          "Optional secret-map keyed env vars injected into the app pod (read from the service's generated secrets; e.g. URL → DATABASE_URL).",
+				},
+			},
+			Required: []string{"id", "type"},
+		}
+	}
+	return &Property{Type: "string"}
 }
 
 // projectArrayItems builds the JSON Schema `items` descriptor for an
