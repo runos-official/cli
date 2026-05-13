@@ -421,40 +421,17 @@ func TestFlagTypeOverride(t *testing.T) {
 // should be temporary — once the field lands in the manifest the
 // generic field-flag path takes over and the entry can be removed.
 func TestExtraFieldsFor(t *testing.T) {
-	t.Run("apps/add carries provisionCiVariables (I24-U)", func(t *testing.T) {
-		got := extraFieldsFor("apps/add")
-		if len(got) != 1 {
-			t.Fatalf("apps/add should carry exactly one extra field (provisionCiVariables); got %d: %+v", len(got), got)
+	// Conductor 15.0.0 rolled back the auto-provision CI flow that
+	// I24-U's `apps_add --provision-ci-variables` opted into; the entry
+	// was removed. The hook is intentionally empty at rest. The
+	// invariant covered here: extraFieldsFor returns nil for every
+	// command path so the manifest stays the single source of truth
+	// for the body-field surface.
+	for _, cmd := range []string{"apps/add", "apps/logs", "apps/update", "services/postgresql/{id}/logs", "clusters/list", ""} {
+		if got := extraFieldsFor(cmd); got != nil {
+			t.Errorf("extraFieldsFor(%q) = %+v, want nil (default-no-extras invariant)", cmd, got)
 		}
-		if got[0].Name != "provisionCiVariables" {
-			t.Errorf("extra field name = %q, want %q", got[0].Name, "provisionCiVariables")
-		}
-		if got[0].Type != "boolean" {
-			t.Errorf("extra field type = %q, want %q", got[0].Type, "boolean")
-		}
-		if got[0].Description == "" {
-			t.Errorf("extra field must carry a non-empty description (help-text users hit `--help` to discover the flag)")
-		}
-	})
-
-	t.Run("commands without extras return nil", func(t *testing.T) {
-		for _, cmd := range []string{"apps/logs", "apps/update", "services/postgresql/{id}/logs", "clusters/list", ""} {
-			if got := extraFieldsFor(cmd); got != nil {
-				t.Errorf("extraFieldsFor(%q) = %+v, want nil (default-no-extras invariant)", cmd, got)
-			}
-		}
-	})
-
-	t.Run("kebab form matches the registered flag name", func(t *testing.T) {
-		// The CLI registers the kebab-cased flag via flagNameFor. Spot-
-		// check that the conversion produces the expected user-facing
-		// shape so the test report's `--provision-ci-variables` form
-		// stays in sync with what addFieldFlags would emit.
-		got := flagNameFor("provisionCiVariables")
-		if got != "provision-ci-variables" {
-			t.Errorf("flagNameFor(provisionCiVariables) = %q, want %q", got, "provision-ci-variables")
-		}
-	})
+	}
 }
 
 // TestIsPodLogsCommand pins the I17-F allow-list that gates --follow,

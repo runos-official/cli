@@ -585,3 +585,57 @@ func TestValidateDownloadURL(t *testing.T) {
 		}
 	})
 }
+
+// TestService_UpdateAppFull_NoOpResponse covers the conductor 14.9.0
+// short-circuit: when the PATCH body equals the stored AppDocument,
+// conductor responds with `{ osid, noOp: true, message }` HTTP 200
+// instead of `{ jobId }` HTTP 202. UpdateAppFull surfaces both the
+// noOp flag and the human message so apps_sync can render a "no
+// changes" line instead of a phantom jobId.
+func TestService_UpdateAppFull_NoOpResponse(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		writeJSON(t, w, 200, map[string]any{
+			"osid":    "ab12c-acc-1",
+			"noOp":    true,
+			"message": "no changes detected",
+		})
+	})
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	jobID, info, err := svc.UpdateAppFull("ab12c", map[string]any{"replicas": 2}, false)
+	if err != nil {
+		t.Fatalf("UpdateAppFull: %v", err)
+	}
+	if jobID != "" {
+		t.Errorf("expected empty jobID on no-op, got %q", jobID)
+	}
+	if !info.NoOp {
+		t.Error("expected NoOp=true")
+	}
+	if info.Message != "no changes detected" {
+		t.Errorf("Message = %q, want %q", info.Message, "no changes detected")
+	}
+}
+
+// TestService_UpdateAppFull_QueuedJob covers the regular 14.9.0 path:
+// when the PATCH actually changes state, conductor returns the
+// classic `{ jobId }` shape and UpdateAppFull surfaces it via the
+// first return value, with NoOp=false.
+func TestService_UpdateAppFull_QueuedJob(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, 202, map[string]any{"jobId": "job-123"})
+	})
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	jobID, info, err := svc.UpdateAppFull("ab12c", map[string]any{"replicas": 2}, false)
+	if err != nil {
+		t.Fatalf("UpdateAppFull: %v", err)
+	}
+	if jobID != "job-123" {
+		t.Errorf("jobID = %q, want job-123", jobID)
+	}
+	if info.NoOp {
+		t.Error("expected NoOp=false on queued job")
+	}
+}

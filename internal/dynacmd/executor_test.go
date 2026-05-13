@@ -321,13 +321,25 @@ func TestFormatAuthError(t *testing.T) {
 			}
 		}
 	})
-	t.Run("401 with revokedAt surfaces the timestamp distinctly", func(t *testing.T) {
-		body := []byte(`{"error":"API key revoked","code":"REVOKED","revokedAt":"2026-05-12T10:11:12Z"}`)
+	t.Run("401 with reason=revoked surfaces the timestamp distinctly", func(t *testing.T) {
+		body := []byte(`{"error":"Invalid token","reason":"revoked","revokedAt":"2026-05-12T10:11:12Z"}`)
 		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body})
 		if !ok {
 			t.Fatal("expected ok=true on 401")
 		}
-		for _, want := range []string{"REVOKED", "revoked at 2026-05-12T10:11:12Z"} {
+		for _, want := range []string{"revoked at 2026-05-12T10:11:12Z"} {
+			if !contains(msg, want) {
+				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
+			}
+		}
+	})
+	t.Run("401 with reason=expired surfaces the timestamp distinctly", func(t *testing.T) {
+		body := []byte(`{"error":"Invalid token","reason":"expired","expiredAt":"2026-05-12T10:11:12Z"}`)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body})
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		for _, want := range []string{"expired at 2026-05-12T10:11:12Z"} {
 			if !contains(msg, want) {
 				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
 			}

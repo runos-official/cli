@@ -548,11 +548,14 @@ func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []st
 // auth refusal from conductor and returns a friendly multi-line
 // rendering plus true; (_, false) for any other error. I25-H / I25-I:
 // pre-fix, every 401 surfaced as a bare `API error (401):
-// {"error":"Invalid token"}` with no actionable hint. The fix appends
-// the canonical first-thing-to-check steps and, when the conductor
-// supplies a `code` (e.g. "REVOKED" / "EXPIRED" — server-side
-// extension point), surfaces that distinctly so CI logs spell out
-// "your PAT was revoked at <ts>" vs "the token doesn't parse".
+// {"error":"Invalid token"}` with no actionable hint.
+//
+// Conductor 14.9.0 added a `reason: 'revoked' | 'expired'` field plus
+// the matching `revokedAt` / `expiredAt` timestamp when conductor has
+// the data AND the bearer parses as a known PAT. The `error: "Invalid
+// token"` string stays for backwards compatibility. We render the
+// reason + timestamp distinctly so CI logs spell out "revoked at <ts>"
+// vs "token doesn't parse" without the user having to dig.
 func formatAuthError(err error) (string, bool) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
@@ -560,8 +563,9 @@ func formatAuthError(err error) (string, bool) {
 	}
 	var body struct {
 		Error     string `json:"error"`
-		Code      string `json:"code"`
+		Reason    string `json:"reason"`
 		RevokedAt string `json:"revokedAt"`
+		ExpiredAt string `json:"expiredAt"`
 	}
 	_ = json.Unmarshal(apiErr.Body, &body)
 	msg := body.Error
@@ -571,15 +575,27 @@ func formatAuthError(err error) (string, bool) {
 	var sb strings.Builder
 	sb.WriteString("authentication refused (401): ")
 	sb.WriteString(msg)
-	if body.Code != "" {
-		sb.WriteString(" [")
-		sb.WriteString(body.Code)
+	switch body.Reason {
+	case "revoked":
+		sb.WriteString(" [revoked")
+		if body.RevokedAt != "" {
+			sb.WriteString(" at ")
+			sb.WriteString(body.RevokedAt)
+		}
 		sb.WriteString("]")
-	}
-	if body.RevokedAt != "" {
-		sb.WriteString(" (revoked at ")
-		sb.WriteString(body.RevokedAt)
-		sb.WriteString(")")
+	case "expired":
+		sb.WriteString(" [expired")
+		if body.ExpiredAt != "" {
+			sb.WriteString(" at ")
+			sb.WriteString(body.ExpiredAt)
+		}
+		sb.WriteString("]")
+	case "":
+		// no structured signal; nothing extra
+	default:
+		sb.WriteString(" [")
+		sb.WriteString(body.Reason)
+		sb.WriteString("]")
 	}
 	sb.WriteString("\n")
 	sb.WriteString("Check:\n")

@@ -289,8 +289,17 @@ func (s *Service) GetAppRequires(appID string) (map[string]ServiceRequirement, e
 
 // jobAck is the common shape of a write response, every mutating endpoint
 // the CLI uses returns at least a jobId so the caller can poll progress.
+//
+// Conductor 14.9.0 extended the apps-update path with a no-op short-
+// circuit: when the PATCH body equals the stored AppDocument, conductor
+// skips queuing a redeploy and returns `{ osid, noOp: true, message }`
+// HTTP 200 instead of `{ jobId }` HTTP 202. The CLI surfaces this as a
+// "no changes" line so users running `apps_sync` in tight loops aren't
+// misled by phantom job IDs that never produced an actual rollout.
 type jobAck struct {
-	JobID string `json:"jobId,omitempty"`
+	JobID   string `json:"jobId,omitempty"`
+	NoOp    bool   `json:"noOp,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // writeJSON sends a JSON request body and decodes the response into out.
@@ -357,15 +366,35 @@ func (s *Service) writeJSON(method, reqURL string, body any, out any) (*jobAck, 
 // settings. I4-K conductor fix added the `?merge=true` query param;
 // CLI partial-PATCH callers must opt in.
 func (s *Service) UpdateApp(appID string, fields map[string]any, merge bool) (string, error) {
+	jobID, _, err := s.UpdateAppFull(appID, fields, merge)
+	return jobID, err
+}
+
+// UpdateAppResult carries the conductor 14.9.0 no-op signal alongside
+// the legacy jobId. NoOp=true means the request body equalled the
+// stored AppDocument and conductor short-circuited the redeploy;
+// Message is the conductor-supplied human description (e.g. "no
+// changes detected"). When NoOp=false, JobID is the queued redeploy id
+// the caller can pass to `runos follow`.
+type UpdateAppResult struct {
+	NoOp    bool
+	Message string
+}
+
+// UpdateAppFull is the structured variant of UpdateApp. Callers that
+// branch on the conductor 14.9.0 no-op short-circuit (apps_sync's
+// apply path) consume this directly; everywhere else, UpdateApp
+// returns just the jobID for backwards compatibility.
+func (s *Service) UpdateAppFull(appID string, fields map[string]any, merge bool) (string, UpdateAppResult, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 	if merge {
 		reqURL += "?merge=true"
 	}
 	ack, err := s.writeJSON(http.MethodPatch, reqURL, fields, nil)
 	if err != nil {
-		return "", err
+		return "", UpdateAppResult{}, err
 	}
-	return ack.JobID, nil
+	return ack.JobID, UpdateAppResult{NoOp: ack.NoOp, Message: ack.Message}, nil
 }
 
 // ReplaceSecretEnvVars replaces every secret (Secret-backed) env var on the

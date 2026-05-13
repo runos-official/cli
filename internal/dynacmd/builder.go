@@ -810,22 +810,14 @@ func flagTypeOverride(cmdPath, fieldName string) string {
 // the entry can be removed (the generic path will pick the field up
 // for free).
 //
-// Regression target: I24-U — `apps_add --provision-ci-variables`
-// returned `unknown flag` because conductor 14.5.0 accepts the body
-// field but doesn't list it under `apps/add`'s input.fields. Without
-// the flag, the opt-in auto-provision flow was only reachable via
-// `-f body.yaml` or the MCP wrapper.
-func extraFieldsFor(cmdPath string) []manifest.Field {
-	switch cmdPath {
-	case "apps/add":
-		return []manifest.Field{
-			{
-				Name:        "provisionCiVariables",
-				Type:        "boolean",
-				Description: "Auto-provision RUNOS_API_KEY + RUNOS_ACCOUNT_ID as masked CI/CD variables on the linked VCS project (mints a per-app PAT). Opt-in; the manual setup path is unchanged when omitted.",
-			},
-		}
-	}
+// Empty by default: every conductor-accepted body field should land
+// in the manifest schema instead of being maintained here. The I24-U
+// entry for `apps_add --provision-ci-variables` was removed in
+// conductor 15.0.0 (the auto-provision flow itself was rolled back as
+// a design decision; PAT setup is now a one-time manual step). Leave
+// the hook in place so the next field that arrives ahead of its
+// manifest entry has a documented home.
+func extraFieldsFor(_ string) []manifest.Field {
 	return nil
 }
 

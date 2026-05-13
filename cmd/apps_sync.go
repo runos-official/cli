@@ -616,13 +616,25 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 		// (healthCheck*, metrics*) clear server-side, the rest
 		// preserve. That convergence is what users on the same
 		// committed yaml share, and it predates I4-K's merge param.
-		jobID, err := svc.UpdateApp(plan.AppID, plan.YAMLPatch, false)
+		jobID, info, err := svc.UpdateAppFull(plan.AppID, plan.YAMLPatch, false)
 		if err != nil {
 			return fmt.Errorf("yaml patch: %w", err)
 		}
-		track(jobID)
-		if err := finishStep("yaml: PATCH", jobID); err != nil {
-			return fmt.Errorf("yaml patch: %w", err)
+		// I25-AD: conductor 14.9.0 short-circuits the redeploy on a
+		// no-op patch (spec equals stored AppDocument). Render the
+		// signal as "no changes" so hot apps_sync loops don't appear
+		// to queue phantom jobs.
+		if info.NoOp {
+			msg := info.Message
+			if msg == "" {
+				msg = "no changes detected"
+			}
+			fprintf("  yaml: PATCH no-op (%s)\n", msg)
+		} else {
+			track(jobID)
+			if err := finishStep("yaml: PATCH", jobID); err != nil {
+				return fmt.Errorf("yaml patch: %w", err)
+			}
 		}
 	}
 
