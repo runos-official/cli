@@ -84,27 +84,10 @@ func NewService(baseURL, token, cid, aid string) *Service {
 }
 
 func (s *Service) get(reqURL string, out any) error {
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	body, err := s.getRaw(reqURL)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.token)
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		return &APIError{StatusCode: resp.StatusCode, Body: body}
-	}
-
 	if out == nil {
 		return nil
 	}
@@ -112,6 +95,80 @@ func (s *Service) get(reqURL string, out any) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	return nil
+}
+
+// getRaw fetches a URL and returns the raw response body. Callers that
+// need to branch on response shape (e.g. forward-compat envelope vs
+// bare-map for env-var endpoints, I26-O) consume this directly rather
+// than handing a typed `out` to get(). 4xx/5xx surface as *APIError.
+func (s *Service) getRaw(reqURL string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
+	}
+	return body, nil
+}
+
+// parseEnvVarsResponse decodes either the new `{envVars: {...}}` envelope
+// (conductor 16.0.0+ direction, per the response-shape bump signaled by
+// the 15.0.0 → 16.0.0 manifest version) or the legacy bare
+// `{KEY: value, ...}` map shape. Forward-compat so the CLI round-trips
+// the transition window while sibling endpoints migrate. Regression
+// target: I26-O — pre-fix, `apps_pull` / `apps_diff` / `apps_sync` all
+// failed with `cannot unmarshal object into Go value of type string`
+// when conductor's secret-env-vars route flipped to the envelope shape
+// but the CLI's struct still expected the bare map.
+//
+// Detection rule: when the response body is a single-key object whose
+// key is `envVars` and whose value is itself an object, the envelope is
+// in play. Anything else parses as the bare map (including the
+// legitimate empty `{}` response, since the bare-map path returns nil
+// without error on empty input).
+func parseEnvVarsResponse(data []byte) (map[string]string, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var envelope struct {
+		EnvVars map[string]string `json:"envVars"`
+	}
+	if err := json.Unmarshal(data, &envelope); err == nil {
+		// Distinguish "envelope with envVars" from "bare map that happens
+		// to be empty": probe the raw top-level keys before claiming the
+		// envelope wins. A bare-map response with a real `KEY=value` would
+		// also Unmarshal cleanly into the envelope struct with envVars=nil
+		// (the unknown KEY is dropped silently), so we must NOT short-
+		// circuit on the envelope-decode succeeding alone.
+		var probe map[string]json.RawMessage
+		if perr := json.Unmarshal(data, &probe); perr == nil {
+			if _, hasEnvelope := probe["envVars"]; hasEnvelope && len(probe) == 1 {
+				if envelope.EnvVars == nil {
+					return map[string]string{}, nil
+				}
+				return envelope.EnvVars, nil
+			}
+		}
+	}
+	var bare map[string]string
+	if err := json.Unmarshal(data, &bare); err != nil {
+		return nil, fmt.Errorf("failed to parse env-vars response: %w", err)
+	}
+	return bare, nil
 }
 
 // ListApps returns all apps in the current cluster.
@@ -242,26 +299,35 @@ func (s *Service) ListOverrides(appID string) ([]OverrideSummary, error) {
 // GetAppSecretEnvVars fetches the sensitive (Secret-backed) env vars for an
 // app. Backed by the {osid}-user-secret-env-vars Kubernetes Secret.
 // Endpoint: GET /:aid/:cid/apps/:id/secret-env-vars (sensitive_read)
+//
+// Conductor 15.x → 16.0.0 wrapped this endpoint's response in the
+// `{envVars: {...}}` envelope (the broader response-shape direction
+// signaled by the 16.0.0 manifest bump). Older conductors still emit
+// the bare `{KEY: value, ...}` map. parseEnvVarsResponse accepts both
+// shapes so the CLI round-trips the transition window. Regression
+// target: I26-O.
 func (s *Service) GetAppSecretEnvVars(appID string) (map[string]string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secret-env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
-	var out map[string]string
-	if err := s.get(reqURL, &out); err != nil {
+	raw, err := s.getRaw(reqURL)
+	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return parseEnvVarsResponse(raw)
 }
 
 // GetAppEnvVars fetches the plain (ConfigMap-backed) env vars for an app.
 // Backed by the {osid}-user-env-vars Kubernetes ConfigMap. Non-sensitive —
 // these are the values committed to VCS in runos.{cid}.{id}.config.env.
 // Endpoint: GET /:aid/:cid/apps/:id/env-vars (read)
+//
+// Same dual-shape acceptance as GetAppSecretEnvVars (see I26-O notes).
 func (s *Service) GetAppEnvVars(appID string) (map[string]string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
-	var out map[string]string
-	if err := s.get(reqURL, &out); err != nil {
+	raw, err := s.getRaw(reqURL)
+	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return parseEnvVarsResponse(raw)
 }
 
 // GetAppRequires returns the runos.yaml-shaped requires map for this

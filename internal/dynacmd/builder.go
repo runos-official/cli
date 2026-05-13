@@ -20,6 +20,72 @@ import (
 // so the regression test can assert the exact derivation.
 const defaultAPIKeyExpiryDays = 90
 
+// buildLongDescription extends cobra's Long-help with a discoverability
+// note for body fields the manifest declares but the builder doesn't
+// register a flag for (object-typed fields, currently). Pre-fix
+// (I26-P), `runos apps update --requires <...>` was the user's
+// natural reach for setting service dependencies — but `requires` is
+// object-typed, has no flag form, and the only valid surface is
+// `-f body.yaml`. With no flag visible in --help and no missing-
+// required error firing on optional PATCH endpoints, the body-file
+// path was effectively undiscoverable. The Long block now lists each
+// object-typed body field with a one-line "must be supplied via -f"
+// hint so `runos <verb> --help` surfaces the full input surface.
+func buildLongDescription(cmdDef manifest.Command) string {
+	if cmdDef.Input == nil {
+		return ""
+	}
+	var objectFields []manifest.Field
+	for _, field := range cmdDef.Input.Fields {
+		if field.Type == "object" && !field.Positional {
+			objectFields = append(objectFields, field)
+		}
+	}
+	if len(objectFields) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	if cmdDef.Description != "" {
+		sb.WriteString(cmdDef.Description)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("Body fields without a flag form (pass via -f body.yaml):\n")
+	for _, field := range objectFields {
+		sb.WriteString("  ")
+		sb.WriteString(field.Name)
+		if field.Required {
+			sb.WriteString(" (required)")
+		}
+		if field.Description != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(field.Description)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// formatMissingFieldHint renders the per-field entry in the
+// "missing required argument" error so the suggested recovery path
+// matches the flag surface actually registered for the command.
+//
+// I26-S: pre-fix, the generic message was `pass --<flag>, or include
+// <field>: in -f file` regardless of whether the flag had been
+// registered. Object-typed fields like `envVars` on
+// `apps/env-vars/set` have no good flag form (the builder skips the
+// type switch), so the message suggested a `--env-vars` flag that
+// cobra then rejected as unknown. The user landed in a loop:
+// error → suggested flag → unknown-flag error → look at --help →
+// neither the field nor its flag show up. Fix: probe cobra's
+// registered flags before naming the flag form; when no flag exists,
+// suggest the body-file path only.
+func formatMissingFieldHint(c *cobra.Command, field manifest.Field, flagName string) string {
+	if c.Flags().Lookup(flagName) == nil {
+		return fmt.Sprintf("%s (include %s: in -f file; this field accepts no flag form, pass `-f body.yaml` with `%s: <value>`)", field.Name, field.Name, field.Name)
+	}
+	return fmt.Sprintf("%s (pass --%s, or include %s: in -f file)", field.Name, flagName, field.Name)
+}
+
 // applyCLIDefaults injects CLI-side fallback values into the cobra
 // command before the missing-required-arg gate runs. Each entry is a
 // targeted carve-out for a specific (command, field) pair where the
@@ -192,6 +258,7 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	cmd := &cobra.Command{
 		Use:   b.buildUseLine(name, cmdDef),
 		Short: cmdDef.Description,
+		Long:  buildLongDescription(cmdDef),
 		// SilenceUsage on runtime errors: the user got far enough to dispatch,
 		// so the long usage block is noise. Without this, every API error
 		// (404, 409 dependents refusal, etc.) printed the full --help text
@@ -349,7 +416,7 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 					if conveniencePositionalSatisfies(field.Name, conveniencePos, args, convenienceStart) {
 						continue
 					}
-					missing = append(missing, fmt.Sprintf("%s (pass --%s, or include %s: in -f file)", field.Name, flagName, field.Name))
+					missing = append(missing, formatMissingFieldHint(c, field, flagName))
 				}
 				if len(missing) > 0 {
 					if enumField != nil && len(missing) == 1 {

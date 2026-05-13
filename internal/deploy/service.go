@@ -522,6 +522,14 @@ type AppDependency struct {
 // fetchEnvVarMap is the shared implementation for GET /env-vars and
 // /secret-env-vars: an authenticated GET that decodes the response into a
 // flat string map.
+//
+// I26-O: conductor 16.0.0 wrapped the env-vars responses in an
+// `{envVars: {...}}` envelope. The CLI accepts both shapes so the
+// `runos deploy` pre-sync env merge survives the transition window
+// where older clusters still emit the bare map. Mirrors
+// `apps.parseEnvVarsResponse`. Duplicating the parser here (rather
+// than importing the apps package) keeps the internal/deploy ↔
+// internal/apps dependency boundary one-way.
 func (s *Service) fetchEnvVarMap(reqURL string) (map[string]string, error) {
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -545,12 +553,36 @@ func (s *Service) fetchEnvVarMap(reqURL string) (map[string]string, error) {
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
-	var envVars map[string]string
-	if err := json.Unmarshal(body, &envVars); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
+	return parseEnvVarsResponse(body)
+}
 
-	return envVars, nil
+// parseEnvVarsResponse mirrors apps.parseEnvVarsResponse: accepts the
+// new `{envVars: {...}}` envelope (conductor 16.0.0+) and the legacy
+// bare `{KEY: value, ...}` map. See the apps-package copy for the full
+// rationale and detection rule. Regression target: I26-O.
+func parseEnvVarsResponse(data []byte) (map[string]string, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var envelope struct {
+		EnvVars map[string]string `json:"envVars"`
+	}
+	if err := json.Unmarshal(data, &envelope); err == nil {
+		var probe map[string]json.RawMessage
+		if perr := json.Unmarshal(data, &probe); perr == nil {
+			if _, hasEnvelope := probe["envVars"]; hasEnvelope && len(probe) == 1 {
+				if envelope.EnvVars == nil {
+					return map[string]string{}, nil
+				}
+				return envelope.EnvVars, nil
+			}
+		}
+	}
+	var bare map[string]string
+	if err := json.Unmarshal(data, &bare); err != nil {
+		return nil, fmt.Errorf("failed to parse env-vars response: %w", err)
+	}
+	return bare, nil
 }
 
 // GetAppSecretEnvVars fetches the sensitive (Secret-backed) env vars for an

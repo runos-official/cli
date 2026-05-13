@@ -598,3 +598,103 @@ func TestApplyCLIDefaults_APIKeysAddExpiresAt(t *testing.T) {
 		}
 	})
 }
+
+// TestFormatMissingFieldHint pins the I26-S contract: when a required
+// field has no registered flag (canonical case: object-typed `envVars`
+// on `apps/env-vars/set`), the missing-argument hint must NOT suggest
+// a `--<field>` flag that doesn't exist. The user lands on the body-
+// file path verbatim and `--help` is consistent with the error.
+func TestFormatMissingFieldHint(t *testing.T) {
+	t.Run("flag registered → suggest both flag and -f file", func(t *testing.T) {
+		c := &cobra.Command{Use: "set"}
+		c.Flags().String("name", "", "")
+		got := formatMissingFieldHint(c, manifest.Field{Name: "name"}, "name")
+		if got != "name (pass --name, or include name: in -f file)" {
+			t.Errorf("flag-registered hint = %q, want flag + -f form", got)
+		}
+	})
+
+	t.Run("flag not registered → suggest -f file only", func(t *testing.T) {
+		c := &cobra.Command{Use: "set"}
+		// no flag registration for envVars (object-typed); builder skips
+		// the type switch for object, so no flag exists.
+		got := formatMissingFieldHint(c, manifest.Field{Name: "envVars", Type: "object"}, "env-vars")
+		if got == "envVars (pass --env-vars, or include envVars: in -f file)" {
+			t.Errorf("hint must NOT recommend the unregistered --env-vars flag, got: %s", got)
+		}
+		// Must reference -f file form and include the field name.
+		for _, want := range []string{"-f", "envVars"} {
+			if !contains(got, want) {
+				t.Errorf("hint should mention %q, got: %s", want, got)
+			}
+		}
+	})
+}
+
+// TestBuildLongDescription pins the I26-P discoverability fix: object-
+// typed body fields (no flag form) get listed in the Long help so
+// `runos <verb> --help` surfaces the full input surface, including
+// fields only reachable via -f body.yaml.
+func TestBuildLongDescription(t *testing.T) {
+	t.Run("no object fields → empty Long", func(t *testing.T) {
+		cmdDef := manifest.Command{
+			Description: "Update an app's metadata.",
+			Input: &manifest.Input{Fields: []manifest.Field{
+				{Name: "name", Type: "string"},
+				{Name: "replicas", Type: "integer"},
+			}},
+		}
+		got := buildLongDescription(cmdDef)
+		if got != "" {
+			t.Errorf("expected empty Long when no object fields, got: %s", got)
+		}
+	})
+
+	t.Run("requires field listed with -f hint", func(t *testing.T) {
+		cmdDef := manifest.Command{
+			Description: "Update an app.",
+			Input: &manifest.Input{Fields: []manifest.Field{
+				{Name: "name", Type: "string"},
+				{Name: "requires", Type: "object", Description: "Service dependencies (alias → {id, type, config, env})."},
+			}},
+		}
+		got := buildLongDescription(cmdDef)
+		for _, want := range []string{"Update an app.", "Body fields without a flag form", "-f body.yaml", "requires", "Service dependencies"} {
+			if !contains(got, want) {
+				t.Errorf("expected %q in Long, got:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("required object field is flagged", func(t *testing.T) {
+		cmdDef := manifest.Command{
+			Description: "Set env vars on an app.",
+			Input: &manifest.Input{Fields: []manifest.Field{
+				{Name: "envVars", Type: "object", Required: true},
+			}},
+		}
+		got := buildLongDescription(cmdDef)
+		if !contains(got, "envVars (required)") {
+			t.Errorf("expected envVars marked (required), got:\n%s", got)
+		}
+	})
+
+	t.Run("nil input returns empty", func(t *testing.T) {
+		if got := buildLongDescription(manifest.Command{}); got != "" {
+			t.Errorf("expected empty for nil Input, got: %s", got)
+		}
+	})
+
+	t.Run("positional object skipped (none exist in practice, but be safe)", func(t *testing.T) {
+		cmdDef := manifest.Command{
+			Description: "weird",
+			Input: &manifest.Input{Fields: []manifest.Field{
+				{Name: "data", Type: "object", Positional: true},
+			}},
+		}
+		got := buildLongDescription(cmdDef)
+		if got != "" {
+			t.Errorf("expected positional object to be skipped, got:\n%s", got)
+		}
+	})
+}

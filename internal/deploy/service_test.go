@@ -142,3 +142,37 @@ func TestTargetIngressMatchesOSID(t *testing.T) {
 		})
 	}
 }
+
+// TestParseEnvVarsResponse_DeployCopy mirrors the apps-package test:
+// the deploy package keeps its own copy of the parser so the
+// internal/deploy → internal/apps dependency boundary stays one-way.
+// Regression target: I26-O.
+func TestParseEnvVarsResponse_DeployCopy(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want map[string]string
+	}{
+		{"envelope", `{"envVars":{"K":"v"}}`, map[string]string{"K": "v"}},
+		{"envelope empty", `{"envVars":{}}`, map[string]string{}},
+		{"envelope null inner", `{"envVars":null}`, map[string]string{}},
+		{"legacy bare", `{"K":"v"}`, map[string]string{"K": "v"}},
+		{"legacy empty", `{}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEnvVarsResponse([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("parseEnvVarsResponse: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (got=%v)", len(got), len(tc.want), got)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("got[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}

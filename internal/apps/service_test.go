@@ -639,3 +639,82 @@ func TestService_UpdateAppFull_QueuedJob(t *testing.T) {
 		t.Error("expected NoOp=false on queued job")
 	}
 }
+
+// TestParseEnvVarsResponse pins the I26-O dual-shape acceptance:
+// conductor 16.0.0 wraps the secret-env-vars / env-vars responses in
+// an `{envVars: {...}}` envelope; older conductors emit a bare
+// `{KEY: value, ...}` map. The CLI accepts both during the rollout
+// window so pull/diff/sync don't break the moment the server flips.
+func TestParseEnvVarsResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want map[string]string
+	}{
+		{"new envelope shape", `{"envVars":{"DATABASE_URL":"postgres://x","API_KEY":"sk"}}`, map[string]string{"DATABASE_URL": "postgres://x", "API_KEY": "sk"}},
+		{"empty envelope", `{"envVars":{}}`, map[string]string{}},
+		{"envelope with null inner", `{"envVars":null}`, map[string]string{}},
+		{"legacy bare map", `{"DATABASE_URL":"postgres://x","API_KEY":"sk"}`, map[string]string{"DATABASE_URL": "postgres://x", "API_KEY": "sk"}},
+		{"legacy empty bare map", `{}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEnvVarsResponse([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("parseEnvVarsResponse: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d keys, want %d: got=%v want=%v", len(got), len(tc.want), got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("got[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestParseEnvVarsResponse_RejectsMalformed ensures a truly broken
+// payload still surfaces a parse error (e.g. a top-level array, which
+// matches neither shape).
+func TestParseEnvVarsResponse_RejectsMalformed(t *testing.T) {
+	if _, err := parseEnvVarsResponse([]byte(`["not", "a", "map"]`)); err == nil {
+		t.Fatal("expected error on top-level array, got nil")
+	}
+}
+
+// TestService_GetAppSecretEnvVars_AcceptsEnvelope and the bare-map
+// variant exercise the full Service.get → parseEnvVarsResponse chain
+// against a fake conductor that returns each shape. Pins the I26-O
+// regression so a future refactor that drops back to direct
+// json.Unmarshal fails loudly.
+func TestService_GetAppSecretEnvVars_AcceptsEnvelope(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, 200, map[string]any{
+			"envVars": map[string]any{"DATABASE_URL": "postgres://test"},
+		})
+	})
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	got, err := svc.GetAppSecretEnvVars("ab12c")
+	if err != nil {
+		t.Fatalf("GetAppSecretEnvVars: %v", err)
+	}
+	if got["DATABASE_URL"] != "postgres://test" {
+		t.Errorf("got = %v, want DATABASE_URL=postgres://test", got)
+	}
+}
+
+func TestService_GetAppSecretEnvVars_AcceptsBareMap(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, 200, map[string]any{"DATABASE_URL": "postgres://legacy"})
+	})
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	got, err := svc.GetAppSecretEnvVars("ab12c")
+	if err != nil {
+		t.Fatalf("GetAppSecretEnvVars: %v", err)
+	}
+	if got["DATABASE_URL"] != "postgres://legacy" {
+		t.Errorf("got = %v, want DATABASE_URL=postgres://legacy", got)
+	}
+}
