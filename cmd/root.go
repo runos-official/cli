@@ -167,6 +167,16 @@ func init() {
 		fmt.Fprintf(os.Stderr, "Unable to load manifest: %v\n", err)
 		fmt.Fprintln(os.Stderr, "  Dynamic commands (apps show / services list / integrations * / account * ...) are unavailable in this invocation.")
 		fmt.Fprintln(os.Stderr, "  Recovery: 'runos manifest update' (interactive) or verify RUNOS_API_URL + RUNOS_API_KEY are correct for the target environment.")
+		// Suppress cobra's downstream "unknown flag: --cid" +
+		// 16-line Usage block when the user invokes a vanished
+		// dynacmd subcommand. The manifest-load diagnostic above is
+		// the actionable signal; cobra's flag-parsing fallout is
+		// noise that previously buried the diagnostic three screens
+		// back. SilenceErrors leaves cobra's "Error: ..." line off,
+		// SilenceUsage strips the Usage block; the non-zero exit
+		// code is preserved so CI gates still trip.
+		rootCmd.SilenceUsage = true
+		rootCmd.SilenceErrors = true
 	}
 }
 

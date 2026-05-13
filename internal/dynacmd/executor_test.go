@@ -296,6 +296,82 @@ func TestParseKeyValueTags(t *testing.T) {
 	}
 }
 
+// TestCoerceArrayFlagValue pins the I25-B contract: pflag's StringArray
+// collects each --flag invocation verbatim (no CSV splitting), then the
+// executor JSON-coerces the result so single-invocation JSON arrays
+// land on the wire as real arrays of objects.
+func TestCoerceArrayFlagValue(t *testing.T) {
+	t.Parallel()
+	t.Run("single JSON array unwraps", func(t *testing.T) {
+		got := coerceArrayFlagValue([]string{`[{"port":3000,"standardHttps":true}]`})
+		arr, ok := got.([]any)
+		if !ok {
+			t.Fatalf("expected []any, got %T", got)
+		}
+		if len(arr) != 1 {
+			t.Fatalf("expected 1 element, got %d", len(arr))
+		}
+		m, ok := arr[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected element to be object, got %T", arr[0])
+		}
+		if m["port"].(float64) != 3000 {
+			t.Errorf("port = %v, want 3000", m["port"])
+		}
+		if m["standardHttps"] != true {
+			t.Errorf("standardHttps = %v, want true", m["standardHttps"])
+		}
+	})
+
+	t.Run("multiple JSON objects via repeated flag", func(t *testing.T) {
+		got := coerceArrayFlagValue([]string{`{"port":3000}`, `{"port":9090}`})
+		arr, ok := got.([]any)
+		if !ok {
+			t.Fatalf("expected []any, got %T", got)
+		}
+		if len(arr) != 2 {
+			t.Fatalf("expected 2 elements, got %d", len(arr))
+		}
+		first := arr[0].(map[string]any)
+		if first["port"].(float64) != 3000 {
+			t.Errorf("first port = %v, want 3000", first["port"])
+		}
+	})
+
+	t.Run("bare string list passes through", func(t *testing.T) {
+		got := coerceArrayFlagValue([]string{"one", "two"})
+		strs, ok := got.([]string)
+		if !ok {
+			t.Fatalf("expected []string passthrough, got %T", got)
+		}
+		if strs[0] != "one" || strs[1] != "two" {
+			t.Errorf("expected [one two], got %v", strs)
+		}
+	})
+
+	t.Run("empty list passes through", func(t *testing.T) {
+		got := coerceArrayFlagValue([]string{})
+		strs, ok := got.([]string)
+		if !ok {
+			t.Fatalf("expected []string passthrough, got %T", got)
+		}
+		if len(strs) != 0 {
+			t.Errorf("expected empty slice, got %v", strs)
+		}
+	})
+
+	t.Run("mixed JSON + bare string falls back to []string", func(t *testing.T) {
+		got := coerceArrayFlagValue([]string{`{"a":1}`, "bare"})
+		strs, ok := got.([]string)
+		if !ok {
+			t.Fatalf("expected []string fallback on heterogeneous input, got %T", got)
+		}
+		if strs[0] != `{"a":1}` || strs[1] != "bare" {
+			t.Errorf("expected verbatim passthrough, got %v", strs)
+		}
+	})
+}
+
 func TestFormatAuthError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-401 returns false", func(t *testing.T) {

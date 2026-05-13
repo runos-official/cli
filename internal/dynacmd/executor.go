@@ -544,6 +544,49 @@ func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []st
 	return e.dispatch(cmdDef, positionalArgs, input, cid, cfg, token)
 }
 
+// coerceArrayFlagValue interprets the raw `[]string` collected from a
+// repeatable --flag (pflag's StringArray) and returns either:
+//
+//   - a `[]any` of decoded objects/arrays when every element parses as
+//     JSON (handles `--flag '[{...},{...}]'` as well as
+//     `--flag '{"a":1}' --flag '{"b":2}'`),
+//   - the original `[]string` when no element parses as JSON (handles
+//     bare string lists like `--tags one --tags two`).
+//
+// Single-invocation JSON arrays — `--service-port-mappings
+// '[{"port":3000,"standardHttps":true}]'` — get the array unwrapped so
+// the wire body carries a real `[]object`, not a one-element array of
+// strings. This is the I25-B regression target: pflag's StringSlice
+// previously split the value on commas inside the JSON and rejected it
+// with `parse error on line 1, column 2: bare " in non-quoted-field`.
+// Mirrors the MCP executor's `coerceJSONString` so CLI and MCP behave
+// identically when the user (or LLM) hands over an object/array
+// payload as a string.
+func coerceArrayFlagValue(raw []string) any {
+	if len(raw) == 0 {
+		return raw
+	}
+	// Single invocation that itself parses as a JSON array: unwrap it.
+	if len(raw) == 1 {
+		var arr []any
+		if err := json.Unmarshal([]byte(raw[0]), &arr); err == nil {
+			return arr
+		}
+	}
+	// Element-wise: try parsing each as JSON. Mixed results (some JSON,
+	// some bare strings) stay as `[]string` to preserve the caller's
+	// intent rather than silently producing a heterogeneous list.
+	decoded := make([]any, len(raw))
+	for i, elem := range raw {
+		var v any
+		if err := json.Unmarshal([]byte(elem), &v); err != nil {
+			return raw
+		}
+		decoded[i] = v
+	}
+	return decoded
+}
+
 // formatAuthError checks whether err is an *APIError carrying a 401
 // auth refusal from conductor and returns a friendly multi-line
 // rendering plus true; (_, false) for any other error. I25-H / I25-I:
@@ -986,11 +1029,11 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 				val, _ := cmd.Flags().GetInt(flagName)
 				result[field.Name] = val
 			case "array":
-				val, _ := cmd.Flags().GetStringSlice(flagName)
+				val, _ := cmd.Flags().GetStringArray(flagName)
 				if field.Format == "key_value" {
 					result[field.Name] = parseKeyValueTags(val)
 				} else {
-					result[field.Name] = val
+					result[field.Name] = coerceArrayFlagValue(val)
 				}
 			case "boolean":
 				val, _ := cmd.Flags().GetBool(flagName)

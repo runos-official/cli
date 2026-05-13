@@ -912,7 +912,15 @@ func addFieldFlags(cmd *cobra.Command, fields []manifest.Field, cmdPath string) 
 			cmd.Flags().Int(flagName, defaultVal, description)
 
 		case "array":
-			cmd.Flags().StringSlice(flagName, nil, description)
+			// I25-B: pflag's StringSlice splits on commas inside the value,
+			// so `--service-port-mappings '[{"port":3000,"standardHttps":true}]'`
+			// failed with `parse error on line 1, column 2: bare " in
+			// non-quoted-field`. StringArray takes each `--flag <value>`
+			// invocation verbatim (no CSV splitting). The executor then
+			// JSON-coerces the elements so a single `--flag '[{...},{...}]'`
+			// expands to the full array on the wire, while
+			// `--flag a --flag b` stays a string list as before.
+			cmd.Flags().StringArray(flagName, nil, description)
 
 		case "boolean":
 			defaultVal := false
