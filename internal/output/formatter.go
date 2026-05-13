@@ -2,6 +2,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -13,6 +14,39 @@ import (
 // Formatter formats command output
 type Formatter struct {
 	jsonOutput bool
+}
+
+// unwrapArrayEnvelope returns the inner array bytes when `data` is a
+// single-key JSON object whose value is itself an array; otherwise
+// returns `data` unchanged. Pure shape detection: the envelope key
+// doesn't need to be known in advance, so the helper stays correct
+// for any list endpoint conductor wraps without a CLI release.
+//
+// I26-U / I26-O follow-up: list-style endpoints (apps_list, jobs_list,
+// services_postgresql_users, ...) migrated to envelope responses
+// (`{apps: [...]}`, `{jobs: [...]}`, `{users: [...]}`) while the
+// manifest still declares `output.type: "array"`. Without this hook
+// the text-mode formatter fell back to dumping raw JSON because
+// `json.Unmarshal(envelope, &[]map[string]any)` failed.
+func unwrapArrayEnvelope(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return data
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return data
+	}
+	if len(probe) != 1 {
+		return data
+	}
+	for _, inner := range probe {
+		innerTrim := bytes.TrimSpace(inner)
+		if len(innerTrim) > 0 && innerTrim[0] == '[' {
+			return inner
+		}
+	}
+	return data
 }
 
 // NewFormatter creates a new output formatter
@@ -60,6 +94,15 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 }
 
 func (f *Formatter) formatArray(data []byte, fields []string) error {
+	// I26-U follow-up: conductor 16.0.0 wrapped list-style endpoints in
+	// envelope objects (`{apps: [...]}`, `{jobs: [...]}`, etc.). The
+	// manifest's `output.type: "array"` declaration didn't change in
+	// the same release, so the bytes the formatter sees are an object
+	// even though the schema says array. When the response is a
+	// single-key object whose value is itself an array, unwrap it
+	// before decoding. Pure shape detection so it stays correct for
+	// any envelope key the conductor introduces without a CLI release.
+	data = unwrapArrayEnvelope(data)
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
 		fmt.Println(string(data))

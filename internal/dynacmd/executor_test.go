@@ -300,6 +300,63 @@ func TestParseKeyValueTags(t *testing.T) {
 // collects each --flag invocation verbatim (no CSV splitting), then the
 // executor JSON-coerces the result so single-invocation JSON arrays
 // land on the wire as real arrays of objects.
+// TestRefuseAmbiguousKeyValueArray pins the I26-E CLI-side gate: users
+// passing `--service-port-mappings 'port=3000'` (the obsolete I25-B
+// workaround) now hit a pre-network error pointing at the JSON shape
+// instead of letting conductor refuse with "must be an object".
+func TestRefuseAmbiguousKeyValueArray(t *testing.T) {
+	t.Parallel()
+	t.Run("bare key=value element refused", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("service-port-mappings", []string{"port=3000"})
+		if err == nil {
+			t.Fatal("expected pre-network refusal")
+		}
+		for _, want := range []string{"--service-port-mappings", "port=3000", "JSON", "standardHttps"} {
+			if !contains(err.Error(), want) {
+				t.Errorf("expected %q in error, got: %s", want, err.Error())
+			}
+		}
+	})
+	t.Run("multiple comma-separated k=v elements refused", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("foo", []string{"port=3000,standardHttps=true"})
+		if err == nil {
+			t.Fatal("expected pre-network refusal")
+		}
+	})
+	t.Run("JSON object element passes", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000,"standardHttps":true}`})
+		if err != nil {
+			t.Errorf("JSON should pass, got: %v", err)
+		}
+	})
+	t.Run("JSON array element passes", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("foo", []string{`[{"port":3000}]`})
+		if err != nil {
+			t.Errorf("JSON array should pass, got: %v", err)
+		}
+	})
+	t.Run("bare string list with no = passes", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("tags", []string{"one", "two"})
+		if err != nil {
+			t.Errorf("bare strings should pass, got: %v", err)
+		}
+	})
+	t.Run("empty slice passes", func(t *testing.T) {
+		if err := refuseAmbiguousKeyValueArray("foo", nil); err != nil {
+			t.Errorf("nil should pass, got: %v", err)
+		}
+	})
+	t.Run("mixed JSON + k=v refused on the k=v element", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000}`, "port=9090"})
+		if err == nil {
+			t.Fatal("expected refusal for mixed input")
+		}
+		if !contains(err.Error(), "port=9090") {
+			t.Errorf("error should name the offending element, got: %s", err.Error())
+		}
+	})
+}
+
 func TestCoerceArrayFlagValue(t *testing.T) {
 	t.Parallel()
 	t.Run("single JSON array unwraps", func(t *testing.T) {

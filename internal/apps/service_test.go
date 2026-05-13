@@ -427,8 +427,12 @@ func TestService_RejectsInvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error, got nil")
 	}
-	if !strings.Contains(err.Error(), "parse") {
-		t.Errorf("error should mention parse failure, got %q", err.Error())
+	// Post I26-O envelope-aware refactor, ListApps wraps the underlying
+	// JSON decode error as `failed to list apps: <json error>`. Assert on
+	// the operational prefix instead of the inner library wording so the
+	// test stays stable across stdlib JSON message tweaks.
+	if !strings.Contains(err.Error(), "failed to list apps") {
+		t.Errorf("error should mention ListApps failure, got %q", err.Error())
 	}
 }
 
@@ -716,5 +720,87 @@ func TestService_GetAppSecretEnvVars_AcceptsBareMap(t *testing.T) {
 	}
 	if got["DATABASE_URL"] != "postgres://legacy" {
 		t.Errorf("got = %v, want DATABASE_URL=postgres://legacy", got)
+	}
+}
+
+// TestUnmarshalListResponse pins the I26-O / I26-U follow-up: the
+// generic list parser accepts both the legacy bare top-level array and
+// the new envelope shape. Used by ListApps + ListOverrides + any
+// future list endpoint conductor wraps.
+func TestUnmarshalListResponse(t *testing.T) {
+	t.Run("envelope unwraps", func(t *testing.T) {
+		var got []AppSummary
+		err := unmarshalListResponse([]byte(`{"apps":[{"id":"a","name":"web"},{"id":"b","name":"api"}]}`), "apps", &got)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got) != 2 || got[0].ID != "a" || got[1].Name != "api" {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("legacy bare array", func(t *testing.T) {
+		var got []AppSummary
+		err := unmarshalListResponse([]byte(`[{"id":"a","name":"web"}]`), "apps", &got)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "a" {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("envelope empty inner", func(t *testing.T) {
+		var got []AppSummary
+		err := unmarshalListResponse([]byte(`{"apps":[]}`), "apps", &got)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty, got %+v", got)
+		}
+	})
+	t.Run("legacy empty array", func(t *testing.T) {
+		var got []AppSummary
+		err := unmarshalListResponse([]byte(`[]`), "apps", &got)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty, got %+v", got)
+		}
+	})
+	t.Run("wrong envelope key falls through to bare", func(t *testing.T) {
+		var got []AppSummary
+		// {"other": [...]} — key mismatch + the bare-array path would error too,
+		// so the helper surfaces a decode failure. Pin that we don't silently
+		// swallow it.
+		err := unmarshalListResponse([]byte(`{"other":[{"id":"a"}]}`), "apps", &got)
+		if err == nil {
+			t.Error("expected error when envelope key doesn't match and bare unmarshal fails")
+		}
+	})
+	t.Run("empty data is nil-safe", func(t *testing.T) {
+		var got []AppSummary
+		if err := unmarshalListResponse(nil, "apps", &got); err != nil {
+			t.Errorf("unexpected error on empty: %v", err)
+		}
+	})
+}
+
+// TestService_ListApps_AcceptsEnvelope and the bare-array variant
+// exercise the full Service.ListApps path against fake conductors that
+// return each shape.
+func TestService_ListApps_AcceptsEnvelope(t *testing.T) {
+	srv, _ := newFakeConductor(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, 200, map[string]any{
+			"apps": []map[string]any{{"id": "ab12c", "name": "web"}},
+		})
+	})
+	svc := NewService(srv.URL, "tok", "k1", "acc-1")
+	got, err := svc.ListApps()
+	if err != nil {
+		t.Fatalf("ListApps: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "ab12c" {
+		t.Errorf("got %+v", got)
 	}
 }

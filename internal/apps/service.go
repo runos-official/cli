@@ -125,6 +125,37 @@ func (s *Service) getRaw(reqURL string) ([]byte, error) {
 	return body, nil
 }
 
+// unmarshalListResponse decodes a list-style endpoint response into the
+// caller's `out` slice, accepting both the new `{<key>: [...]}` envelope
+// (conductor 16.0.0+ "envelope-everywhere" direction) and the legacy
+// bare top-level array. The `key` argument names the envelope key for
+// this endpoint (e.g. "apps" for /:aid/:cid/apps, "jobs" for jobs/list,
+// "users" for postgresql/users). Forward-compat so the CLI continues to
+// round-trip the transition window while sibling list endpoints migrate.
+// Regression target: I26-O follow-up — conductor flipped apps_list to
+// envelope per I26-U; pre-fix, every apps_pull / apps_diff / apps_sync
+// failed with `cannot unmarshal object into Go value of type
+// []apps.AppSummary` because the CLI struct expected the legacy bare
+// array.
+//
+// Detection rule: when the response body is a single-key object whose
+// key matches `key` and whose value is itself an array, the envelope is
+// in play and we decode the inner array. Anything else parses as the
+// bare array; legitimate empty responses (`[]`, `{}`) round-trip via
+// the bare-array path (an empty `{}` produces a zero-length slice).
+func unmarshalListResponse(data []byte, key string, out any) error {
+	if len(data) == 0 {
+		return nil
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err == nil {
+		if inner, hasEnvelope := probe[key]; hasEnvelope && len(probe) == 1 {
+			return json.Unmarshal(inner, out)
+		}
+	}
+	return json.Unmarshal(data, out)
+}
+
 // parseEnvVarsResponse decodes either the new `{envVars: {...}}` envelope
 // (conductor 16.0.0+ direction, per the response-shape bump signaled by
 // the 15.0.0 → 16.0.0 manifest version) or the legacy bare
@@ -173,11 +204,21 @@ func parseEnvVarsResponse(data []byte) (map[string]string, error) {
 
 // ListApps returns all apps in the current cluster.
 // Endpoint: GET /:aid/:cid/apps
+//
+// I26-O follow-up: conductor 16.0.0 / iter-26-R1 wrapped this endpoint
+// in the `{apps: [...]}` envelope (the "envelope-everywhere" direction
+// completing for list endpoints). The CLI accepts both the new
+// envelope and the legacy bare top-level array so apps_pull /
+// apps_diff / apps_sync round-trip the transition window.
 func (s *Service) ListApps() ([]AppSummary, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid))
-	var out []AppSummary
-	if err := s.get(reqURL, &out); err != nil {
+	raw, err := s.getRaw(reqURL)
+	if err != nil {
 		return nil, err
+	}
+	var out []AppSummary
+	if err := unmarshalListResponse(raw, "apps", &out); err != nil {
+		return nil, fmt.Errorf("failed to list apps: %w", err)
 	}
 	return out, nil
 }
@@ -287,11 +328,19 @@ func (o *OverrideSummary) UnmarshalJSON(data []byte) error {
 
 // ListOverrides returns every manifest override configured for an app.
 // Endpoint: GET /:aid/:cid/apps/:id/overrides
+//
+// I26-U follow-up: accepts both the `{overrides: [...]}` envelope
+// (conductor 16.0.0+) and the legacy bare array via
+// unmarshalListResponse.
 func (s *Service) ListOverrides(appID string) ([]OverrideSummary, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/overrides", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
-	var out []OverrideSummary
-	if err := s.get(reqURL, &out); err != nil {
+	raw, err := s.getRaw(reqURL)
+	if err != nil {
 		return nil, err
+	}
+	var out []OverrideSummary
+	if err := unmarshalListResponse(raw, "overrides", &out); err != nil {
+		return nil, fmt.Errorf("failed to list overrides: %w", err)
 	}
 	return out, nil
 }

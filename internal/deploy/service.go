@@ -498,6 +498,10 @@ func (s *Service) FindAppByName(appName string) (*AppInfo, error) {
 		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
 	}
 
+	// I26-O / I26-U: conductor 16.0.0 wrapped /apps in an `{apps: [...]}`
+	// envelope. Accept both the new envelope and the legacy bare array
+	// during the rollout window.
+	body = unwrapArrayEnvelopeDeploy(body)
 	var apps []AppInfo
 	if err := json.Unmarshal(body, &apps); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -510,6 +514,32 @@ func (s *Service) FindAppByName(appName string) (*AppInfo, error) {
 	}
 
 	return nil, nil // Not found
+}
+
+// unwrapArrayEnvelopeDeploy mirrors apps.unmarshalListResponse / the
+// output-package and dynacmd-package unwrap helpers. Returns the inner
+// array bytes when `data` is a single-key object whose value is an
+// array; otherwise returns `data` unchanged. Duplicated locally so the
+// internal/deploy package doesn't import internal/apps just for this.
+func unwrapArrayEnvelopeDeploy(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return data
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return data
+	}
+	if len(probe) != 1 {
+		return data
+	}
+	for _, inner := range probe {
+		innerTrim := bytes.TrimSpace(inner)
+		if len(innerTrim) > 0 && innerTrim[0] == '[' {
+			return inner
+		}
+	}
+	return data
 }
 
 // AppDependency represents a dependency of an app

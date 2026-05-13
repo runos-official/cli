@@ -263,3 +263,50 @@ func TestFormatValue(t *testing.T) {
 		})
 	}
 }
+
+// TestUnwrapArrayEnvelope pins the I26-U follow-up: list-style
+// endpoints wrapped in single-key envelope objects unwrap cleanly so
+// the text-mode formatter renders rows instead of dumping raw JSON.
+func TestUnwrapArrayEnvelope(t *testing.T) {
+	t.Run("envelope unwraps to inner array", func(t *testing.T) {
+		got := string(unwrapArrayEnvelope([]byte(`{"apps":[{"id":"a"}]}`)))
+		if got != `[{"id":"a"}]` {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("bare array unchanged", func(t *testing.T) {
+		in := `[{"id":"a"}]`
+		if string(unwrapArrayEnvelope([]byte(in))) != in {
+			t.Errorf("bare array modified")
+		}
+	})
+	t.Run("multi-key object unchanged", func(t *testing.T) {
+		in := `{"apps":[],"total":0}`
+		if string(unwrapArrayEnvelope([]byte(in))) != in {
+			t.Errorf("multi-key object modified")
+		}
+	})
+	t.Run("single-key object with non-array value unchanged", func(t *testing.T) {
+		in := `{"app":{"id":"a"}}`
+		if string(unwrapArrayEnvelope([]byte(in))) != in {
+			t.Errorf("single-key non-array modified")
+		}
+	})
+	t.Run("malformed JSON unchanged", func(t *testing.T) {
+		in := `not json`
+		if string(unwrapArrayEnvelope([]byte(in))) != in {
+			t.Errorf("malformed input modified")
+		}
+	})
+	t.Run("empty input unchanged", func(t *testing.T) {
+		if string(unwrapArrayEnvelope([]byte(``))) != `` {
+			t.Errorf("empty input modified")
+		}
+	})
+	t.Run("whitespace tolerated", func(t *testing.T) {
+		got := string(unwrapArrayEnvelope([]byte(`  { "jobs" : [ 1 , 2 ] }  `)))
+		if got != `[ 1 , 2 ]` {
+			t.Errorf("got %q", got)
+		}
+	})
+}

@@ -562,6 +562,35 @@ func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []st
 // Mirrors the MCP executor's `coerceJSONString` so CLI and MCP behave
 // identically when the user (or LLM) hands over an object/array
 // payload as a string.
+// refuseAmbiguousKeyValueArray surfaces a pre-network error when the
+// user passes `--<flag> key=value[,key2=value2]` to a non-`key_value`
+// array field. Such fields (canonical case: `--service-port-mappings`)
+// expect structured objects on the wire; bare strings reach conductor
+// as `["port=3000"]` and get rejected with `must be an object (got
+// string)`. The k=v form was the I25-B workaround when CSV parsing
+// broke JSON; that workaround is obsolete now that StringArray +
+// coerceArrayFlagValue accept JSON natively. Steer users to the JSON
+// shape before the wire-level refusal so the error names the field and
+// the canonical form.
+//
+// Detection: any element containing `=` that doesn't parse as JSON
+// trips the gate. Pure heuristic; legitimate bare-string lists
+// (`--tags one --tags two`) and JSON elements (`--flag '{"a":1}'`)
+// both pass.
+func refuseAmbiguousKeyValueArray(flagName string, raw []string) error {
+	for _, elem := range raw {
+		if !strings.Contains(elem, "=") {
+			continue
+		}
+		var probe any
+		if err := json.Unmarshal([]byte(elem), &probe); err == nil {
+			continue
+		}
+		return fmt.Errorf("--%s: element %q looks like `key=value` shape, but this field expects structured objects. Pass JSON instead, e.g. --%s '{\"port\":3000,\"standardHttps\":true}' (single object) or --%s '[{...},{...}]' (array). Repeat the flag to add multiple elements.", flagName, elem, flagName, flagName)
+	}
+	return nil
+}
+
 func coerceArrayFlagValue(raw []string) any {
 	if len(raw) == 0 {
 		return raw
@@ -862,11 +891,42 @@ func (e *Executor) followPodLogs(cmd *cobra.Command, cmdDef manifest.Command, ar
 	}
 }
 
+// unwrapArrayEnvelope mirrors output.unwrapArrayEnvelope: returns the
+// inner array bytes when `data` is a single-key JSON object whose
+// value is itself an array, else returns `data` unchanged. Duplicated
+// here (rather than importing from internal/output) so internal/output
+// doesn't pull internal/dynacmd as a transitive dependency in the
+// reverse direction. I26-O / I26-U: apps_logs and the rest of the
+// list-style endpoints moved to envelope responses
+// (`{entries: [...]}`); the follow loop's direct json.Unmarshal into
+// `[]map[string]any` now reads through this helper.
+func unwrapArrayEnvelope(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return data
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return data
+	}
+	if len(probe) != 1 {
+		return data
+	}
+	for _, inner := range probe {
+		innerTrim := bytes.TrimSpace(inner)
+		if len(innerTrim) > 0 && innerTrim[0] == '[' {
+			return inner
+		}
+	}
+	return data
+}
+
 // seedSeenSet records each log entry's dedup key in `seen` so the
 // follow loop's first poll doesn't re-emit lines from the initial
 // batch. Silently skips malformed bodies — at worst the first poll
 // double-prints, which is recoverable.
 func seedSeenSet(respBody []byte, seen map[string]struct{}) {
+	respBody = unwrapArrayEnvelope(respBody)
 	var items []map[string]any
 	if err := json.Unmarshal(respBody, &items); err != nil {
 		return
@@ -881,6 +941,7 @@ func seedSeenSet(respBody []byte, seen map[string]struct{}) {
 // Order is preserved. Used by followPodLogs's poll loop. Robust to
 // malformed bodies: returns an empty slice rather than erroring.
 func filterUnseenLogEntries(respBody []byte, seen map[string]struct{}) []map[string]any {
+	respBody = unwrapArrayEnvelope(respBody)
 	var items []map[string]any
 	if err := json.Unmarshal(respBody, &items); err != nil {
 		return nil
@@ -1033,6 +1094,9 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 				if field.Format == "key_value" {
 					result[field.Name] = parseKeyValueTags(val)
 				} else {
+					if err := refuseAmbiguousKeyValueArray(flagName, val); err != nil {
+						return nil, err
+					}
 					result[field.Name] = coerceArrayFlagValue(val)
 				}
 			case "boolean":
