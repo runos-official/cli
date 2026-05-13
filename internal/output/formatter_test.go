@@ -309,4 +309,19 @@ func TestUnwrapArrayEnvelope(t *testing.T) {
 			t.Errorf("got %q", got)
 		}
 	})
+	// I27-T: Conductor 17.7.0 finished the envelope-everywhere migration
+	// by wrapping domains / cluster-domains / integrations / nodes /
+	// services_<type>_list responses. The helper is shape-keyed not
+	// key-keyed, so it works for every new envelope key without a CLI
+	// release; this sub-test pins that promise to the specific keys the
+	// I26-U follow-up shipped.
+	t.Run("iter-27 envelope keys all unwrap", func(t *testing.T) {
+		for _, key := range []string{"domains", "clusterDomains", "integrations", "nodes", "services"} {
+			in := `{"` + key + `":[{"id":"x"}]}`
+			got := string(unwrapArrayEnvelope([]byte(in)))
+			if got != `[{"id":"x"}]` {
+				t.Errorf("envelope key %q: got %q", key, got)
+			}
+		}
+	})
 }

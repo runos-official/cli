@@ -52,7 +52,7 @@ func printVCSDeployBanner(human io.Writer, appID, sha, configPath string) {
 	if configPath != "" {
 		fmt.Fprintf(human, "  configPath: %s\n", configPath)
 	} else {
-		fmt.Fprintln(human, "  configPath: <not sent> — using whatever the AppDocument has stored")
+		fmt.Fprintln(human, "  configPath: (using AppDocument default)")
 	}
 }
 

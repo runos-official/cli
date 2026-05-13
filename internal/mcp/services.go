@@ -214,8 +214,12 @@ func buildServicesPullArgs(args map[string]any) []string {
 	if t, ok := stringArg(args, "type"); ok {
 		out = append(out, "--type", t)
 	}
+	// I27-L: MCP schema field is `service_id` for clarity (so the LLM
+	// doesn't confuse it with cid/aid/etc) but the CLI flag is `--id`.
+	// The earlier `--service-id` translation didn't match a registered
+	// flag and `services pull` errored with `unknown flag: --service-id`.
 	if sid, ok := stringArg(args, "service_id"); ok {
-		out = append(out, "--service-id", sid)
+		out = append(out, "--id", sid)
 	}
 	if dir, ok := stringArg(args, "out"); ok {
 		out = append(out, "--out", dir)

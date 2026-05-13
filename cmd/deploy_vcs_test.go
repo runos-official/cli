@@ -52,17 +52,22 @@ func TestPrintVCSDeployBanner(t *testing.T) {
 				"Deploying app rjiqh @ 943037f...\n",
 				"  configPath: apps/billing/runos.yaml\n",
 			},
-			wantNot: []string{"<not sent>"},
+			wantNot: []string{"<not sent>", "(using AppDocument default)"},
 		},
 		{
+			// I27-H: fallback line uses calm "using AppDocument default"
+			// phrasing instead of the alarmist "<not sent> — using
+			// whatever the AppDocument has stored" wording that read
+			// like a warning for a totally normal code path.
 			name:       "empty configPath renders fallback",
 			appID:      "rjiqh",
 			sha:        "deadbeefcafe1234",
 			configPath: "",
 			want: []string{
 				"Deploying app rjiqh @ deadbee...\n",
-				"  configPath: <not sent>",
+				"  configPath: (using AppDocument default)\n",
 			},
+			wantNot: []string{"<not sent>"},
 		},
 		{
 			name:       "short sha (<7 chars) renders verbatim",
