@@ -844,6 +844,17 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 	// 2. Load from file if -f provided
 	filePath, _ := cmd.Flags().GetString("file")
 	if filePath != "" {
+		// I24-G: when the command has no body input (only positional path
+		// params, e.g. `apps replace-manifest` takes just the app id),
+		// refuse the file flag with a typed error rather than silently
+		// merging fields that won't reach the wire. The CLI registers
+		// `-f`/`--file` uniformly on every command (per I24-G), so this
+		// gate replaces I11-U's prior strategy of skipping registration
+		// entirely; the error now reads as "this command has no body
+		// input" instead of cobra's misleading "unknown flag --file".
+		if !hasNonPositionalInput(cmdDef) {
+			return nil, fmt.Errorf("command %q has no body input; the -f / --file flag is inert here. Pass arguments via the documented positional / flag form instead (run with --help to see them)", cmdDef.Command)
+		}
 		fileData, err := loadYAMLFile(filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load file: %w", err)

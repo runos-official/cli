@@ -189,6 +189,15 @@ type pulledAppEntry struct {
 	// with ConfigPathUpdated. MCP wrappers pass this through so LLM flows
 	// can distinguish a failed PATCH from a successful no-op pull.
 	ConfigPathUpdateError *configPathUpdateError `json:"configPathUpdateError,omitempty"`
+	// SourceHint is the conductor's per-app guidance line for where the
+	// build source lives. Populated for VCS apps as of conductor 14.2.0
+	// (canonical case: `"VCS app — code lives at <repoUrl>@<branch>. Run
+	// 'git clone <repoUrl>' to edit locally; the cloned tree is the build
+	// source."`). Empty for CLI-deploy apps and conductors that pre-date
+	// the field. Surfaced in text mode after the per-app file list so the
+	// user sees the git-clone pointer without having to remember it
+	// belongs on a VCS app. Regression target: I24b-C.
+	SourceHint string `json:"sourceHint,omitempty"`
 }
 
 // configPathUpdate is the structured shape of the auto-update event
@@ -729,12 +738,26 @@ func resolvePullTargets(svc *apps.Service, appID string) ([]apps.AppSummary, err
 // the yaml. Priority: local yaml (re-pulls don't clobber user edits) >
 // server (V13: AppDocument round-trips sourceDir so fresh checkouts get
 // a complete yaml) > caller's default.
-func pickSourceDir(yamlPath, serverSourceDir, defaultSourceDir string) string {
+//
+// I24-H: for VCS-deploy apps, sourceDir is a CLI-deploy concept (the
+// local build-context root for tarball uploads and `apps_pull --code`).
+// It has no meaning at deploy time for VCS apps — conductor pulls source
+// from the linked git integration at <sha>. The id-subdir mode default
+// of ".." (intended for the multi-cluster directory-per-app shape on
+// CLI-deploy projects) leaks into VCS yamls and points the field at the
+// pull's parent directory, which on `--out /tmp` is arbitrary tmp
+// content. For VCS apps, override the caller default to "" so the field
+// stays omitempty unless the user (or server) has an explicit non-empty
+// value. CLI-deploy apps keep the historical default.
+func pickSourceDir(yamlPath, serverSourceDir, defaultSourceDir, deployType string) string {
 	if existing, err := apps.LoadLocalApp(yamlPath); err == nil && existing.SourceDir != "" {
 		return existing.SourceDir
 	}
 	if serverSourceDir != "" {
 		return serverSourceDir
+	}
+	if deployType == "vcs" {
+		return ""
 	}
 	return defaultSourceDir
 }
@@ -980,7 +1003,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// local yaml win (re-pulls don't clobber user edits) and fall back
 	// to the caller-specified default (".." for subdir modes, "" for
 	// flat modes) only when both local and server are empty.
-	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, defaultSourceDir)
+	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, defaultSourceDir, serverState.DeployType)
 	serverState.Dockerfile = pickDockerfile(yamlPath, serverState.Dockerfile)
 
 	// V1: id-flat mode goes through SaveYAMLSuffixed so concurrent pulls
@@ -1019,6 +1042,12 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		SecretEnvVarsPlatformInjected: len(injected),
 		SecretFilesTotal:              len(serverState.SecretFiles),
 		OverridesTotal:                len(serverState.Overrides),
+	}
+	// I24b-C: surface conductor's per-app build-source guidance when
+	// present (populated for VCS apps as of conductor 14.2.0). Empty
+	// for CLI-deploy apps and conductors that pre-date the field.
+	if hint, ok := raw["sourceHint"].(string); ok {
+		entry.SourceHint = hint
 	}
 
 	// V14 / long-term V2: auto-update server-side configPath when a VCS
@@ -1448,6 +1477,13 @@ func printUpdatedApp(a pulledAppEntry) {
 	}
 	if note := codeStaleNote(a.CodeVersion); note != "" {
 		fmt.Printf("    %s\n", note)
+	}
+	// I24b-C: print the conductor-supplied build-source hint for VCS apps
+	// so the user sees the git-clone pointer (or whatever future per-app
+	// guidance conductor wants to surface) without leaving the pull's
+	// stdout. Empty for CLI-deploy apps.
+	if a.SourceHint != "" {
+		fmt.Printf("    %s\n", a.SourceHint)
 	}
 }
 

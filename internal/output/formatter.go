@@ -149,6 +149,30 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 			fields = append(fields, k)
 		}
 		sort.Strings(fields)
+	} else {
+		// I24-D: forward-compat for server-side response extensions.
+		// When the manifest declared fields but the live response carries
+		// MORE top-level keys than the manifest knows about (canonical
+		// case: conductor 14.2.0 added `gitlabRunner: {...}` to
+		// `integrations/gitlab-runner/status` without a CLI release),
+		// append the new keys at the end instead of silently dropping
+		// them. The manifest's declared order still drives the primary
+		// column layout; unknown keys land alphabetically after. Pairs
+		// with the I15-C error-envelope pass-through doctrine.
+		declared := make(map[string]bool, len(fields))
+		for _, f := range fields {
+			declared[strings.SplitN(f, ".", 2)[0]] = true
+		}
+		var unknown []string
+		for k := range item {
+			if !declared[k] {
+				unknown = append(unknown, k)
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			fields = append(fields, unknown...)
+		}
 	}
 
 	// Find max key length for alignment (use display name without dots)
@@ -181,6 +205,17 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 			printIndentedSubTable(rows, "  ")
 			continue
 		}
+		// I24-D: nested-object values render as `<header>:\n  k: v\n  k: v\n`
+		// (one inner key per line, alphabetised) instead of the single-line
+		// `{key: value, key: value}` mash. Canonical case: the new
+		// `gitlabRunner` block on `integrations/gitlab-runner/status`,
+		// which carries 5-7 keys that should each be visible. Primitives,
+		// arrays, and empty objects keep their one-line rendering.
+		if obj, ok := raw.(map[string]any); ok && len(obj) > 0 {
+			fmt.Printf("%-*s:\n", maxLen, displayNames[i])
+			printIndentedObject(obj, "  ")
+			continue
+		}
 		val := formatValue(raw)
 		fmt.Printf("%-*s: %s\n", maxLen, displayNames[i], val)
 	}
@@ -211,6 +246,44 @@ func arrayOfObjects(v any) ([]map[string]any, bool) {
 // table prefixed with `indent` on every line. Column order is the union
 // of keys across all rows, sorted alphabetically. Used by formatObject
 // to render array-of-objects fields without semicolon-mashing.
+// printIndentedObject renders a single-level map as `<indent>k: v` per
+// key, alphabetised. Nested objects recurse with deeper indent; nested
+// arrays render via formatValue (one-line); arrays-of-objects fall
+// through to the existing array sub-table renderer. Used by formatObject
+// when a top-level field's value is itself a map so the user sees the
+// inner keys instead of a one-line mash. Regression target: I24-D.
+func printIndentedObject(obj map[string]any, indent string) {
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	maxKey := 0
+	for _, k := range keys {
+		if len(k) > maxKey {
+			maxKey = len(k)
+		}
+	}
+	for _, k := range keys {
+		v := obj[k]
+		if nested, ok := v.(map[string]any); ok && len(nested) > 0 {
+			fmt.Printf("%s%-*s:\n", indent, maxKey, k)
+			printIndentedObject(nested, indent+"  ")
+			continue
+		}
+		if rows, ok := arrayOfObjects(v); ok && len(rows) > 0 {
+			label := "entries"
+			if len(rows) == 1 {
+				label = "entry"
+			}
+			fmt.Printf("%s%-*s: %d %s\n", indent, maxKey, k, len(rows), label)
+			printIndentedSubTable(rows, indent+"  ")
+			continue
+		}
+		fmt.Printf("%s%-*s: %s\n", indent, maxKey, k, formatValue(v))
+	}
+}
+
 func printIndentedSubTable(rows []map[string]any, indent string) {
 	keys := map[string]bool{}
 	for _, r := range rows {

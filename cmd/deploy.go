@@ -179,7 +179,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
 		// Conductor falls back to whatever the AppDocument has stored
 		// (typically set by an earlier laptop deploy that DID send it).
-		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow, flagYes)
+		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow, flagYes, jsonOutput)
 	}
 
 	// Load deploy config
@@ -255,7 +255,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if deployType == "vcs" {
 		cmd.SilenceUsage = true
 		configPathForServer := resolveVcsConfigPath(deployConfig, configPath)
-		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow, flagYes)
+		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow, flagYes, jsonOutput)
 	}
 
 	// CLI-deploy guard: the VCS-only flags must not silently no-op here.

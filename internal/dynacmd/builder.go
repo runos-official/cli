@@ -322,13 +322,18 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 		addBoolFlags(cmd, cmdDef.Input.Flags)
 	}
 
-	// Add -f flag for file input. Only register when the command has at
-	// least one non-positional input field (i.e. a body or query
-	// parameter the file could supply). Commands whose only fields are
-	// positional path params (e.g. `apps replace-manifest` takes just
-	// the app id) accepted `-f` silently and ignored the file content,
-	// hiding user typos. Regression target: I11-U.
-	if cmdDef.Input != nil && hasNonPositionalInput(cmdDef) {
+	// Register -f / --file on every dynacmd command for uniform surface.
+	// Pre-I24-G the flag was gated on `hasNonPositionalInput` to avoid
+	// silently ignoring file content on body-less commands (I11-U), but
+	// the side effect was that `apps replace-manifest -f /tmp/x.json`
+	// (a natural shape: the verb name "replace-manifest" reads like it
+	// takes a manifest body) errored with "unknown flag: --file" which
+	// reads as "this CLI doesn't support body files" rather than the
+	// true state ("this specific command has no body input"). The flag
+	// is now always present; the I11-U doctrine is preserved by
+	// rejecting non-empty file values in the executor when the command
+	// has no body fields, with a typed error naming the alternative.
+	if cmdDef.Input != nil {
 		cmd.Flags().StringP("file", "f", "", "YAML file with input values")
 	}
 

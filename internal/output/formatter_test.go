@@ -1,6 +1,86 @@
 package output
 
-import "testing"
+import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/runos-official/cli/internal/manifest"
+)
+
+// I24-D regression: when the manifest declared output fields but the
+// live response carries MORE top-level keys (canonical case: conductor
+// 14.2.0 added a `gitlabRunner` block to the gitlab-runner status
+// endpoint without a CLI release), the new keys must surface in text
+// mode instead of being silently dropped.
+func TestFormatObject_ForwardCompatAppendsUnknownFields(t *testing.T) {
+	body := []byte(`{
+		"activated": true,
+		"status": "active",
+		"runnerId": 53134687,
+		"gitlabRunner": {
+			"online": true,
+			"contactedAt": "2026-05-13T01:00:00Z",
+			"tagList": ["runos", "mycluster2"]
+		},
+		"surpriseField": "future-extension"
+	}`)
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{
+		{Name: "activated"},
+		{Name: "status"},
+		{Name: "runnerId"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	// Declared fields render in declared order (key may have trailing
+	// padding before the colon for column alignment, so match the
+	// `<key>` substring rather than `<key>:`).
+	for _, want := range []string{"activated", "status", "runnerId"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("declared field %q missing from output:\n%s", want, out)
+		}
+	}
+	// Unknown top-level fields surface too (forward-compat).
+	for _, want := range []string{"gitlabRunner", "surpriseField", "online", "contactedAt", "tagList"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("forward-compat field %q missing from output:\n%s", want, out)
+		}
+	}
+	// gitlabRunner rendered as nested block, not single-line mash.
+	if strings.Contains(out, "gitlabRunner: {") || strings.Contains(out, "gitlabRunner: map[") {
+		t.Errorf("nested map rendered as single-line mash:\n%s", out)
+	}
+}
+
+// captureStdout swaps os.Stdout for a pipe, runs fn, restores stdout,
+// and returns whatever fn printed. Helper for testing print-based
+// formatters without refactoring them to take an io.Writer.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+	fn()
+	_ = w.Close()
+	<-done
+	os.Stdout = orig
+	return buf.String()
+}
 
 func TestGetNestedValue(t *testing.T) {
 	tests := []struct {

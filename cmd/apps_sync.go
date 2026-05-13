@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,13 +93,12 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 	skipPrompt, _ := cmd.Flags().GetBool("yes")
 	allowEmptySecretEnv, _ := cmd.Flags().GetBool("allow-empty-secret-env")
 	follow, _ := cmd.Flags().GetBool("follow")
-	// --json is plan-only: it doesn't make sense alongside an apply step
-	// (the plan is structured + the post-apply jobIDs aren't), so refuse
-	// the combination up-front rather than print JSON and silently skip
-	// the apply phase.
-	if jsonOut && !dryRun {
-		return fmt.Errorf("--json is only valid with --dry-run")
-	}
+	// I24-M: apply mode + --json was previously refused up-front. CI gates
+	// running `runos apps sync --json` to capture jobIDs for downstream
+	// observability had no way to get a parseable envelope. Now both modes
+	// emit JSON to stdout when --json is set; dry-run emits the structured
+	// plan, apply emits the per-step jobID envelope at the end. Apply-mode
+	// progress lines route to stderr so stdout stays pure JSON.
 
 	yamlPath, err := resolveYamlArg(args, "sync")
 	if err != nil {
@@ -348,7 +348,7 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 	// issued here would race the Firestore write. The local yaml stays
 	// the source of truth; the user runs apps_pull when they want the
 	// server-applied normalisation on disk.
-	return applySyncPlan(svc, plan, yamlDir, follow)
+	return applySyncPlan(svc, plan, yamlDir, follow, jsonOut)
 }
 
 // printSyncPlan renders the plan in the same visual style as diff: section
@@ -512,9 +512,22 @@ func printOverrideOps(ops []apps.OverrideOp) {
 // side failures. Pre-V12, every "ok" line printed regardless of the
 // underlying job's outcome — the follow flag now lets users opt into
 // observing the actual outcome.
-func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follow bool) error {
-	fmt.Println()
-	fmt.Println("Applying...")
+func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follow, jsonOut bool) error {
+	// I24-M: under --json the user's stdout is reserved for the final
+	// JSON envelope (per-step jobIDs + appId + cid). Route the
+	// "Applying...", per-step "ok (job N)", and the rollout-hint footer
+	// to stderr so stdout stays pure JSON for jq/CI gates. Same shape
+	// as runos deploy --json's stderr-for-progress pattern.
+	stdoutFile := os.Stdout
+	human := os.Stdout
+	if jsonOut {
+		human = os.Stderr
+	}
+	fprintln := func(args ...any) { fmt.Fprintln(human, args...) }
+	fprintf := func(format string, args ...any) { fmt.Fprintf(human, format, args...) }
+
+	fprintln()
+	fprintln("Applying...")
 
 	// Build a jobs.Service once (it loads config + auth) so per-step waits
 	// share the same client. Constructed lazily because some plans don't
@@ -548,22 +561,30 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 	// verbatim on terminal `failed`.
 	finishStep := func(label, jobID string) error {
 		if !follow || jobID == "" {
-			fmt.Printf("  %s ok%s\n", label, jobIDSuffix(jobID))
+			fprintf("  %s ok%s\n", label, jobIDSuffix(jobID))
 			return nil
 		}
-		fmt.Printf("  %s queued (job %s)...\n", label, jobID)
+		fprintf("  %s queued (job %s)...\n", label, jobID)
 		js, err := getJobsSvc()
 		if err != nil {
-			fmt.Printf("  %s FAILED to attach to job-progress stream: %v\n", label, err)
+			fprintf("  %s FAILED to attach to job-progress stream: %v\n", label, err)
 			return err
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		if waitErr := jobs.FollowJobWithService(ctx, js, jobID); waitErr != nil {
-			fmt.Printf("  %s FAILED: %v\n", label, waitErr)
+		// Under --json route the per-state-change progress to stderr so
+		// stdout stays pure JSON; otherwise stream to stdout as before.
+		var waitErr error
+		if jsonOut {
+			waitErr = jobs.FollowJobWithServiceToWriter(ctx, js, jobID, os.Stderr)
+		} else {
+			waitErr = jobs.FollowJobWithService(ctx, js, jobID)
+		}
+		if waitErr != nil {
+			fprintf("  %s FAILED: %v\n", label, waitErr)
 			return waitErr
 		}
-		fmt.Printf("  %s ok\n", label)
+		fprintf("  %s ok\n", label)
 		return nil
 	}
 
@@ -688,7 +709,7 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 		}
 	}
 
-	fmt.Println("\nSync complete.")
+	fprintln("\nSync complete.")
 
 	// Rollout-confidence hint. The API calls succeeded, but the actual
 	// K8s rollout (rolling restart, image patch, replica re-readiness) is
@@ -697,15 +718,37 @@ func applySyncPlan(svc *apps.Service, plan *apps.SyncPlan, yamlDir string, follo
 	// redundant and just adds noise. Shown on --no-follow as before.
 	if !follow {
 		if len(queuedJobIDs) == 1 {
-			fmt.Println()
-			fmt.Printf("Follow rollout: runos follow %s\n", queuedJobIDs[0])
+			fprintln()
+			fprintf("Follow rollout: runos follow %s\n", queuedJobIDs[0])
 		} else if len(queuedJobIDs) > 1 {
-			fmt.Println()
-			fmt.Println("Follow rollout (each job is a separate orchestration):")
+			fprintln()
+			fprintln("Follow rollout (each job is a separate orchestration):")
 			for _, id := range queuedJobIDs {
-				fmt.Printf("  runos follow %s\n", id)
+				fprintf("  runos follow %s\n", id)
 			}
 		}
+	}
+
+	// I24-M: emit the JSON envelope on stdout when --json is set in
+	// apply mode. Shape mirrors the existing fire-and-forget hint
+	// (appId, cid, jobIds[]) plus a flag indicating whether each job
+	// was followed to terminal status. CI gates can read .jobIds[] for
+	// downstream observability without parsing the human-readable
+	// per-step lines.
+	if jsonOut {
+		envelope := map[string]any{
+			"appId":     plan.AppID,
+			"appName":   plan.AppName,
+			"cid":       plan.CID,
+			"jobIds":    queuedJobIDs,
+			"followed":  follow,
+			"completed": true,
+		}
+		out, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal apply envelope: %w", err)
+		}
+		fmt.Fprintln(stdoutFile, string(out))
 	}
 	return nil
 }

@@ -456,9 +456,9 @@ func TestPullPlan_DefaultSourceDir(t *testing.T) {
 // V13-aware servers pick up the AppDocument's stored sourceDir; missing
 // both falls through to the caller's default.
 func TestPickSourceDir(t *testing.T) {
-	t.Run("no local yaml + no server falls through to default", func(t *testing.T) {
+	t.Run("no local yaml + no server falls through to default (CLI app)", func(t *testing.T) {
 		dir := t.TempDir()
-		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "..")
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "..", "cli")
 		if got != ".." {
 			t.Errorf("got %q, want %q", got, "..")
 		}
@@ -466,7 +466,7 @@ func TestPickSourceDir(t *testing.T) {
 
 	t.Run("default empty stays empty when no local + no server", func(t *testing.T) {
 		dir := t.TempDir()
-		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "")
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "", "cli")
 		if got != "" {
 			t.Errorf("got %q, want \"\"", got)
 		}
@@ -487,7 +487,7 @@ sourceDir: ../shared
 		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		got := pickSourceDir(yamlPath, "../from-server", "..")
+		got := pickSourceDir(yamlPath, "../from-server", "..", "cli")
 		if got != "../shared" {
 			t.Errorf("re-pull must preserve existing sourceDir; got %q, want %q", got, "../shared")
 		}
@@ -497,13 +497,13 @@ sourceDir: ../shared
 		// Fresh checkout: no local yaml on disk, but the AppDocument
 		// stores sourceDir, so the pull writes it back.
 		dir := t.TempDir()
-		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "../../../apps/backend", "..")
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "../../../apps/backend", "..", "cli")
 		if got != "../../../apps/backend" {
 			t.Errorf("server value should win over default on fresh checkout; got %q, want %q", got, "../../../apps/backend")
 		}
 	})
 
-	t.Run("empty existing sourceDir + empty server falls through to default", func(t *testing.T) {
+	t.Run("empty existing sourceDir + empty server falls through to default (CLI app)", func(t *testing.T) {
 		// Local yaml exists but doesn't pin sourceDir. Default fills it.
 		dir := t.TempDir()
 		body := `app: web
@@ -516,9 +516,46 @@ aid: myacct
 		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		got := pickSourceDir(yamlPath, "", "..")
+		got := pickSourceDir(yamlPath, "", "..", "cli")
 		if got != ".." {
 			t.Errorf("got %q, want %q (empty existing + no server should accept default)", got, "..")
+		}
+	})
+
+	// I24-H: VCS apps override the caller default to "" so the field stays
+	// omitempty unless the user or server has an explicit value.
+	t.Run("I24-H VCS app + empty local + empty server returns empty even when default is '..'", func(t *testing.T) {
+		dir := t.TempDir()
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "", "..", "vcs")
+		if got != "" {
+			t.Errorf("VCS app default must be empty regardless of caller default; got %q, want \"\"", got)
+		}
+	})
+
+	t.Run("I24-H VCS app + non-empty server value still wins (monorepo opt-in)", func(t *testing.T) {
+		dir := t.TempDir()
+		got := pickSourceDir(filepath.Join(dir, "runos.yaml"), "../../../apps/api", "..", "vcs")
+		if got != "../../../apps/api" {
+			t.Errorf("server-stored sourceDir must round-trip on VCS apps; got %q", got)
+		}
+	})
+
+	t.Run("I24-H VCS app + existing local sourceDir still wins", func(t *testing.T) {
+		dir := t.TempDir()
+		body := `app: web
+deployType: vcs
+id: appid4
+cid: mycluster3
+aid: myacct
+sourceDir: services/web
+`
+		yamlPath := filepath.Join(dir, "runos.yaml")
+		if err := os.WriteFile(yamlPath, []byte(body), 0644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		got := pickSourceDir(yamlPath, "", "..", "vcs")
+		if got != "services/web" {
+			t.Errorf("user-pinned local sourceDir must survive re-pull on VCS apps; got %q", got)
 		}
 	})
 }

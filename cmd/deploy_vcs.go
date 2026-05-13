@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,21 @@ import (
 	"github.com/runos-official/cli/internal/git"
 	"github.com/runos-official/cli/internal/jobs"
 )
+
+// vcsDeployJSONResponse is the on-success stdout shape for
+// `runos deploy --json` on a VCS-deploy app. Mirrors the CLI-deploy
+// branch's response (which marshals `deploy.PrepareCliDeploymentResponse`)
+// well enough that CI gates can read `.jobId` / `.appId` across both
+// deployTypes without branching. publicURL is populated only when
+// `--follow` succeeded and the conductor returned a `RUNOS_PUBLIC*`
+// network access entry. Regression target: I24b-A.
+type vcsDeployJSONResponse struct {
+	JobID      string `json:"jobId"`
+	AppID      string `json:"appId"`
+	SHA        string `json:"sha"`
+	ConfigPath string `json:"configPath,omitempty"`
+	PublicURL  string `json:"publicUrl,omitempty"`
+}
 
 // resolveVcsConfigPath returns the repo-relative path of the local yaml
 // to send on a VCS deploy request, so the cluster agent reads the right
@@ -67,7 +83,20 @@ func resolveVcsConfigPath(cfg *deploy.DeployConfig, configFileAbs string) string
 // Sibling to the CLI-deploy code in deploy.go: the two share the verb name
 // but no downstream logic. runDeployVCS is dispatched from runDeploy when
 // the resolved app's deployType is 'vcs'.
-func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt bool) error {
+func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput bool) error {
+	// Under --json, every human-readable line (preamble, configPath note,
+	// "Deployment initiated", follow progress, network-access tail) goes
+	// to stderr so stdout stays pure JSON for `jq` / MCP consumers. The
+	// CLI-deploy branch (runDeploy in cmd/deploy.go) does the same via
+	// its `progress` shim; this mirrors that contract for VCS deploys so
+	// `runos deploy --json` returns a parseable envelope on both
+	// deployTypes. Regression target: I24b-A.
+	stdout := os.Stdout
+	human := os.Stdout
+	if jsonOutput {
+		human = os.Stderr
+	}
+
 	// Resolve the SHA. Explicit --sha wins; otherwise default to HEAD when
 	// we're inside a git repo. CI checkouts always produce a repo so this
 	// works without special-casing CI vs laptop.
@@ -103,20 +132,11 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		return err
 	}
 
-	fmt.Printf("Deploying app %s @ %s...\n", appID, shortSHA(sha))
-
-	// Surface the resolved configPath so a missed auto-derive is visible
-	// instead of silently falling back to whatever the AppDocument has
-	// (which usually means the cluster agent's runos.yaml-at-repo-root
-	// default, and a confusing "yaml not found" error). Empty means we
-	// couldn't derive it: either the cwd isn't a git checkout, or the
-	// yaml lives outside the repo, or --app skipped the yaml load.
-	if configPath != "" {
-		fmt.Printf("  configPath: %s\n", configPath)
-	} else {
-		fmt.Println("  configPath: <not sent> — using whatever the AppDocument has stored")
-	}
-
+	// I24-I: defer the "Deploying ..." banner so a submit-time API
+	// rejection (malformed sha, missing app, etc.) isn't preceded by a
+	// banner that misleadingly suggests the deploy is in progress. Banner
+	// now prints AFTER the API 2xx. (Under --json it routes to stderr
+	// regardless so stdout stays pure JSON.)
 	resp, err := svc.DeployVCS(appID, sha, configPath)
 	if err != nil {
 		if inGitHubActions {
@@ -125,12 +145,24 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		return fmt.Errorf("failed to trigger VCS deploy: %w", err)
 	}
 
-	fmt.Printf("\nDeployment initiated:\n")
-	fmt.Printf("  Job ID: %s\n", resp.JobID)
-	fmt.Printf("  App ID: %s\n", appID)
-	fmt.Printf("  SHA:    %s\n", sha)
+	fmt.Fprintf(human, "Deploying app %s @ %s...\n", appID, shortSHA(sha))
+	if configPath != "" {
+		fmt.Fprintf(human, "  configPath: %s\n", configPath)
+	} else {
+		fmt.Fprintln(human, "  configPath: <not sent> — using whatever the AppDocument has stored")
+	}
 
 	if !follow {
+		if jsonOutput {
+			envelope := vcsDeployJSONResponse{
+				JobID: resp.JobID, AppID: appID, SHA: sha, ConfigPath: configPath,
+			}
+			return writeJSON(stdout, envelope)
+		}
+		fmt.Fprintf(human, "\nDeployment initiated:\n")
+		fmt.Fprintf(human, "  Job ID: %s\n", resp.JobID)
+		fmt.Fprintf(human, "  App ID: %s\n", appID)
+		fmt.Fprintf(human, "  SHA:    %s\n", sha)
 		return nil
 	}
 
@@ -138,13 +170,13 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	// (verbose) build output collapses by default in the run UI. Outside CI
 	// the markers are inert lines that look fine in a terminal.
 	if inGitHubActions {
-		fmt.Println("\n::group::Deploy progress")
+		fmt.Fprintln(human, "\n::group::Deploy progress")
 	} else {
-		fmt.Println("\nFollowing job progress...")
+		fmt.Fprintln(human, "\nFollowing job progress...")
 	}
-	jobErr := jobs.FollowJob(resp.JobID)
+	jobErr := jobs.FollowJobToWriter(resp.JobID, human)
 	if inGitHubActions {
-		fmt.Println("::endgroup::")
+		fmt.Fprintln(human, "::endgroup::")
 	}
 	if jobErr != nil {
 		if inGitHubActions {
@@ -152,16 +184,18 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		}
 		return fmt.Errorf("deployment failed: %w", jobErr)
 	}
-	fmt.Println("\nDeployment completed successfully!")
+	fmt.Fprintln(human, "\nDeployment completed successfully!")
 
 	// Network-access tail (mirror the CLI-deploy success path). The public
 	// URL also goes into a `::notice::` so it appears in the GitHub Actions
 	// run summary panel, not just buried in the log.
+	publicURL := ""
 	networkAccess, err := svc.GetNetworkAccess(appID)
 	if err == nil {
 		for _, access := range networkAccess {
 			if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
-				fmt.Printf("\nApp available at: %s\n", access.Link)
+				publicURL = access.Link
+				fmt.Fprintf(human, "\nApp available at: %s\n", access.Link)
 				if inGitHubActions {
 					fmt.Printf("::notice::App available at %s\n", access.Link)
 				}
@@ -170,6 +204,26 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		}
 	}
 
+	if jsonOutput {
+		envelope := vcsDeployJSONResponse{
+			JobID: resp.JobID, AppID: appID, SHA: sha, ConfigPath: configPath, PublicURL: publicURL,
+		}
+		return writeJSON(stdout, envelope)
+	}
+	return nil
+}
+
+// writeJSON marshals v as pretty JSON and writes it to w with a trailing
+// newline. Used by runDeployVCS for the --json success-path envelope so
+// CI gates parsing `.jobId` get a clean parseable response.
+func writeJSON(w *os.File, v any) error {
+	out, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal response: %w", err)
+	}
+	if _, err := fmt.Fprintln(w, string(out)); err != nil {
+		return err
+	}
 	return nil
 }
 

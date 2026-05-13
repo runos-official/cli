@@ -115,6 +115,14 @@ func Execute() {
 }
 
 func init() {
+	// I24-Q: align cobra's auto-generated `runos --version` / `runos -v`
+	// output with the bare format the explicit `runos version` subcommand
+	// emits. Pre-fix cobra rendered "runos version <X>" while the
+	// subcommand printed just "<X>"; CI gates piping through one shape
+	// stripped a prefix that the other shape didn't have. Both forms now
+	// emit the bare version string + trailing newline.
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
+
 	// Static commands - always available
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(logoutCmd)
