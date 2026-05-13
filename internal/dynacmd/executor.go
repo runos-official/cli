@@ -942,6 +942,31 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 		}
 	}
 
+	// I24-U: per-command extra body fields the conductor accepts but
+	// the manifest doesn't advertise (currently `apps/add`'s
+	// `provisionCiVariables`). When the user sets the corresponding
+	// kebab flag, copy the value into the body under the camelCase
+	// field name the conductor expects. Mirrors the generic
+	// addFieldFlags + collectInput pair scoped to fields registered
+	// via extraFieldsFor.
+	for _, field := range extraFieldsFor(cmdDef.Command) {
+		flagName := flagNameFor(field.Name)
+		if !cmd.Flags().Changed(flagName) {
+			continue
+		}
+		switch field.Type {
+		case "string":
+			val, _ := cmd.Flags().GetString(flagName)
+			result[field.Name] = val
+		case "integer":
+			val, _ := cmd.Flags().GetInt(flagName)
+			result[field.Name] = val
+		case "boolean":
+			val, _ := cmd.Flags().GetBool(flagName)
+			result[field.Name] = val
+		}
+	}
+
 	// Convenience-positional mappings (I13-H): commands like
 	// `tools/domain-check` accept their primary required string field
 	// (`domain`) as a trailing positional too, even though the manifest

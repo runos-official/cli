@@ -322,6 +322,14 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 		addBoolFlags(cmd, cmdDef.Input.Flags)
 	}
 
+	// Add per-command extra fields the conductor accepts on the wire but
+	// hasn't advertised in the manifest yet (I24-U). Re-uses
+	// addFieldFlags so the registered flag behaves identically to a
+	// manifest-declared field — kebab-casing, type-aware default, etc.
+	if extras := extraFieldsFor(cmdDef.Command); len(extras) > 0 {
+		addFieldFlags(cmd, extras, cmdDef.Command)
+	}
+
 	// Register -f / --file on every dynacmd command for uniform surface.
 	// Pre-I24-G the flag was gated on `hasNonPositionalInput` to avoid
 	// silently ignoring file content on body-less commands (I11-U), but
@@ -786,6 +794,39 @@ func flagTypeOverride(cmdPath, fieldName string) string {
 		return "string"
 	}
 	return ""
+}
+
+// extraFieldsFor returns CLI-side body fields the manifest doesn't
+// declare but the conductor still accepts on the wire. These get
+// registered as kebab-cased flags + copied into the request body when
+// set, mirroring the generic addFieldFlags / collectInput path so a
+// flag form is available alongside the existing `-f body.yaml` path.
+//
+// Use sparingly. The default invariant is that the manifest is the
+// source of truth for both the wire body and the flag surface; this
+// hook exists only for fields the conductor accepts but hasn't yet
+// advertised in the manifest schema. Each entry should have a
+// matching follow-up to land the field in the manifest, after which
+// the entry can be removed (the generic path will pick the field up
+// for free).
+//
+// Regression target: I24-U — `apps_add --provision-ci-variables`
+// returned `unknown flag` because conductor 14.5.0 accepts the body
+// field but doesn't list it under `apps/add`'s input.fields. Without
+// the flag, the opt-in auto-provision flow was only reachable via
+// `-f body.yaml` or the MCP wrapper.
+func extraFieldsFor(cmdPath string) []manifest.Field {
+	switch cmdPath {
+	case "apps/add":
+		return []manifest.Field{
+			{
+				Name:        "provisionCiVariables",
+				Type:        "boolean",
+				Description: "Auto-provision RUNOS_API_KEY + RUNOS_ACCOUNT_ID as masked CI/CD variables on the linked VCS project (mints a per-app PAT). Opt-in; the manual setup path is unchanged when omitted.",
+			},
+		}
+	}
+	return nil
 }
 
 // descriptionSuffixFor appends CLI-side context to specific manifest-driven
