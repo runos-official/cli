@@ -49,6 +49,36 @@ func TestResolveToken_NilCfgWithoutEnvErrors(t *testing.T) {
 	}
 }
 
+func TestValidateAuthEnvVars(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		wantError bool
+	}{
+		{"both unset", map[string]string{}, false},
+		{"both set", map[string]string{"RUNOS_API_KEY": "pat", "RUNOS_ACCOUNT_ID": "acct"}, false},
+		{"key set, account unset", map[string]string{"RUNOS_API_KEY": "pat"}, false},
+		{"key explicit empty", map[string]string{"RUNOS_API_KEY": ""}, true},
+		{"account explicit empty", map[string]string{"RUNOS_ACCOUNT_ID": ""}, true},
+		{"both explicit empty", map[string]string{"RUNOS_API_KEY": "", "RUNOS_ACCOUNT_ID": ""}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(k string) (string, bool) {
+				v, ok := tc.env[k]
+				return v, ok
+			}
+			err := ValidateAuthEnvVars(lookup)
+			if tc.wantError && err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !tc.wantError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestUsingAPIKey(t *testing.T) {
 	t.Setenv(APIKeyEnvVar, "")
 	if UsingAPIKey() {

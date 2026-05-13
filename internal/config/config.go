@@ -93,7 +93,13 @@ func configPath() (string, error) {
 // ErrConfigNotFound is returned when the config file doesn't exist AND
 // no env-var fallback is in play. CI runners using RUNOS_API_KEY +
 // RUNOS_ACCOUNT_ID + RUNOS_API_URL won't trip this.
-var ErrConfigNotFound = fmt.Errorf("config not found - run 'runos config env <environment>' to set up")
+// ErrConfigNotFound carries two recovery paths. The interactive path
+// (`runos config env <environment>` then `runos login`) is for human
+// developers. The CI / PAT path (RUNOS_API_URL + RUNOS_API_KEY +
+// RUNOS_ACCOUNT_ID) is for runners with no on-disk config. I25-F:
+// pre-fix only the interactive path was named, so PAT-driven CI users
+// got pushed toward a Firebase login they didn't need.
+var ErrConfigNotFound = fmt.Errorf("config not found. Interactive: run 'runos config env <environment>' then 'runos login'. CI / PAT: set RUNOS_API_URL + RUNOS_API_KEY + RUNOS_ACCOUNT_ID and re-run")
 
 // Load reads and parses the config file from disk. When the file is
 // missing AND CI-style env vars (RUNOS_API_KEY) are set, returns an

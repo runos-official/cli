@@ -357,9 +357,10 @@ func (s *Service) GetNetworkAccess(appID string) ([]NetworkAccess, error) {
 
 // AppInfo represents an application from the apps list
 type AppInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Port int    `json:"port"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Port       int    `json:"port"`
+	DeployType string `json:"deployType"`
 }
 
 // AppShow is the subset of GET /apps/:id the deploy command branches on. The

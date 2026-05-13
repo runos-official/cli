@@ -276,6 +276,11 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if msg, ok := formatDependentsError(err); ok {
 			err = fmt.Errorf("%s", msg)
 		}
+		// I25-H / I25-I: 401s get an actionable hint with revoked-vs-malformed
+		// distinction when the conductor's body carries the structured signal.
+		if msg, ok := formatAuthError(err); ok {
+			err = fmt.Errorf("%s", msg)
+		}
 		// I4-G: with --json set, errors must be machine-parseable
 		// stdout output too — pre-fix the error went to cobra's
 		// default plain-text "Error: ..." stderr path, breaking CI
@@ -537,6 +542,51 @@ func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []st
 		cid = cfg.GetDefaultClusterID()
 	}
 	return e.dispatch(cmdDef, positionalArgs, input, cid, cfg, token)
+}
+
+// formatAuthError checks whether err is an *APIError carrying a 401
+// auth refusal from conductor and returns a friendly multi-line
+// rendering plus true; (_, false) for any other error. I25-H / I25-I:
+// pre-fix, every 401 surfaced as a bare `API error (401):
+// {"error":"Invalid token"}` with no actionable hint. The fix appends
+// the canonical first-thing-to-check steps and, when the conductor
+// supplies a `code` (e.g. "REVOKED" / "EXPIRED" — server-side
+// extension point), surfaces that distinctly so CI logs spell out
+// "your PAT was revoked at <ts>" vs "the token doesn't parse".
+func formatAuthError(err error) (string, bool) {
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
+		return "", false
+	}
+	var body struct {
+		Error     string `json:"error"`
+		Code      string `json:"code"`
+		RevokedAt string `json:"revokedAt"`
+	}
+	_ = json.Unmarshal(apiErr.Body, &body)
+	msg := body.Error
+	if msg == "" {
+		msg = "unauthorized"
+	}
+	var sb strings.Builder
+	sb.WriteString("authentication refused (401): ")
+	sb.WriteString(msg)
+	if body.Code != "" {
+		sb.WriteString(" [")
+		sb.WriteString(body.Code)
+		sb.WriteString("]")
+	}
+	if body.RevokedAt != "" {
+		sb.WriteString(" (revoked at ")
+		sb.WriteString(body.RevokedAt)
+		sb.WriteString(")")
+	}
+	sb.WriteString("\n")
+	sb.WriteString("Check:\n")
+	sb.WriteString("  - is RUNOS_API_KEY pointing at a current PAT? `runos account api-keys list`\n")
+	sb.WriteString("  - is RUNOS_API_URL pointing at the same environment the PAT was minted on?\n")
+	sb.WriteString("  - was the PAT revoked or rotated? mint a new one via `runos account api-keys add`")
+	return sb.String(), true
 }
 
 // formatDependentsError checks whether err is an *APIError carrying a

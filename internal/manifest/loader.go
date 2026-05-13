@@ -58,7 +58,20 @@ func (l *Loader) Load() (*Manifest, error) {
 		if localErr == nil {
 			return localManifest, nil
 		}
-		return nil, fmt.Errorf("no manifest available: %w", localErr)
+		// I25-D: fresh install (no local manifest) AND version-check
+		// failed. Don't give up here — the version endpoint can fail
+		// for reasons unrelated to the manifest endpoint (older
+		// conductor without /cli/manifest-version, intermittent gateway
+		// errors). Try fetching the full manifest directly before
+		// declaring nothing is available.
+		rawJSON, fetchErr := l.fetchManifestRaw()
+		if fetchErr != nil {
+			return nil, fmt.Errorf("no manifest available: %w (manifest fetch also failed: %v)", localErr, fetchErr)
+		}
+		if err := l.saveLocalRaw(rawJSON); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to cache manifest: %v\n", err)
+		}
+		return parseManifest(rawJSON)
 	}
 
 	// Update cache timestamp for version check

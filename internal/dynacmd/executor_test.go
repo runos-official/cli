@@ -296,6 +296,54 @@ func TestParseKeyValueTags(t *testing.T) {
 	}
 }
 
+func TestFormatAuthError(t *testing.T) {
+	t.Parallel()
+	t.Run("non-401 returns false", func(t *testing.T) {
+		_, ok := formatAuthError(&APIError{StatusCode: 500, Body: []byte(`{"error":"boom"}`)})
+		if ok {
+			t.Error("expected false for non-401")
+		}
+	})
+	t.Run("non-APIError returns false", func(t *testing.T) {
+		_, ok := formatAuthError(errString("transport: connection refused"))
+		if ok {
+			t.Error("expected false for non-APIError")
+		}
+	})
+	t.Run("401 with bare Invalid token surfaces hints", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)})
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		for _, want := range []string{"authentication refused", "Invalid token", "RUNOS_API_KEY", "RUNOS_API_URL", "api-keys list"} {
+			if !contains(msg, want) {
+				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
+			}
+		}
+	})
+	t.Run("401 with revokedAt surfaces the timestamp distinctly", func(t *testing.T) {
+		body := []byte(`{"error":"API key revoked","code":"REVOKED","revokedAt":"2026-05-12T10:11:12Z"}`)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body})
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		for _, want := range []string{"REVOKED", "revoked at 2026-05-12T10:11:12Z"} {
+			if !contains(msg, want) {
+				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
+			}
+		}
+	})
+	t.Run("401 with unparseable body still gets hints", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`not-json`)})
+		if !ok {
+			t.Fatal("expected ok=true on 401 even when body is not JSON")
+		}
+		if !contains(msg, "unauthorized") {
+			t.Errorf("expected fallback message, got: %s", msg)
+		}
+	})
+}
+
 func TestFormatDependentsError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-409 returns false", func(t *testing.T) {

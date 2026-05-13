@@ -18,8 +18,9 @@ To get a list of job IDs, use:
 
 Example:
   runos follow abc123-def456-...`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runFollow,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runFollow,
 }
 
 func runFollow(cmd *cobra.Command, args []string) error {
@@ -35,5 +36,8 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	}
 
 	jobID := args[0]
+	if !jobs.ValidateJobID(jobID) {
+		return fmt.Errorf("invalid job id %q: expected UUID shape (8-4-4-4-12 hex). Use 'runos jobs list' to find the id you want", jobID)
+	}
 	return jobs.FollowJob(jobID)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/runos-official/cli/internal/jobs"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var appsSyncCmd = &cobra.Command{
@@ -57,8 +58,9 @@ Examples:
   runos apps sync runos.mycluster3.appid4/runos.yaml              # explicit path
   runos apps sync <yaml> --dry-run                         # plan only
   runos apps sync <yaml> --yes                             # skip the confirm`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runAppsSync,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runAppsSync,
 }
 
 func init() {
@@ -68,7 +70,7 @@ func init() {
 	appsSyncCmd.Flags().Bool("allow-empty-secret-env", false, "allow apps_sync to wipe ALL server-side secret env vars when the local secret-env file is empty or missing (otherwise refused as a footgun)")
 	appsSyncCmd.Flags().Bool("redact-secrets", false, "replace ALL env values (secret AND plain) in the plan output with <redacted> markers (used by the MCP wrapper to keep values out of LLM context, even if a non-secret config.env mistakenly carries an API key)")
 	appsSyncCmd.Flags().BoolP("follow", "f", false, "wait for each emitted job to reach a terminal status before printing 'ok'; without it, prints the job ID and continues (failures land silently on the cluster)")
-	appsSyncCmd.Flags().BoolP("json", "j", false, "emit the plan as JSON instead of formatted text (only valid with --dry-run)")
+	appsSyncCmd.Flags().BoolP("json", "j", false, "emit JSON to stdout instead of formatted text. With --dry-run, emits the structured plan; in apply mode, emits the per-step jobId envelope. Progress lines route to stderr.")
 }
 
 func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
@@ -345,7 +347,14 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 		}
 	}
 
-	if !skipPrompt {
+	// I25-AE: mirror deploy / services_sync. When --yes is set, skip
+	// the prompt. When stdin is not a terminal (CI / piped input), also
+	// skip: prompting EOF on a closed pipe used to surface as
+	// `Error: read confirmation: EOF` plus the full cobra Usage block.
+	// The user authored the change in the yaml on disk; running sync
+	// against it from a non-interactive shell implies intent. The
+	// empty-secret-env wipe gate and other refusals are unaffected.
+	if !skipPrompt && term.IsTerminal(int(os.Stdin.Fd())) {
 		ok, err := confirm(fmt.Sprintf("\nApply changes to %s (%s) on cluster %s? [y/N] ", plan.AppName, plan.AppID, plan.CID))
 		if err != nil {
 			return err

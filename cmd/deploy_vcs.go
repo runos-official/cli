@@ -125,6 +125,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	// Resolve the SHA. Explicit --sha wins; otherwise default to HEAD when
 	// we're inside a git repo. CI checkouts always produce a repo so this
 	// works without special-casing CI vs laptop.
+	shaProvided := sha != ""
 	if sha == "" {
 		if !git.IsRepo() {
 			return fmt.Errorf("--sha is required when not running from inside a git checkout")
@@ -136,7 +137,13 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		sha = head
 	}
 
-	if git.IsRepo() {
+	// I25-Y: the dirty-tree gate is only meaningful when sha was
+	// auto-derived from HEAD. When --sha is explicit (canonical case:
+	// `runos deploy --app X --sha Y --cid Z`), the build runs against
+	// the committed source at <sha> on the git host and the local
+	// working tree's state is by definition orthogonal. Firing the gate
+	// in that case is noise; skip it.
+	if !shaProvided && git.IsRepo() {
 		dirty, err := git.IsDirty()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not check git status: %v\n", err)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
@@ -62,6 +63,15 @@ var rootCmd = &cobra.Command{
 		// Also skip for parent commands that have their own subcommands
 		if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
 			return nil
+		}
+
+		// I25-G / I25-J: refuse explicitly-empty PAT-shape env vars before
+		// any auth path falls through to cached Firebase credentials or
+		// the on-disk config.json AccountID. Set-but-empty almost always
+		// indicates a CI secret-store expansion typo; surfacing it here
+		// beats unexpected success using the developer's stored token.
+		if err := auth.ValidateAuthEnvVars(os.LookupEnv); err != nil {
+			return err
 		}
 
 		if !config.Exists() {
@@ -144,7 +154,19 @@ func init() {
 
 	// Dynamic commands from manifest
 	if err := registerDynamicCommands(); err != nil {
+		// I25-E: when the manifest can't load at init time, dynacmd-
+		// driven commands (apps show, services list, integrations *,
+		// account *, etc.) silently vanish from cobra's tree. The
+		// downstream user-visible failure is then a misleading
+		// "unknown flag: --cid". Surface the root cause loudly here
+		// AND name the recovery commands so the user doesn't chase the
+		// cobra error. PersistentPreRunE retries the manifest fetch on
+		// every invocation (see V6), so the next run picks up dynamic
+		// commands once the underlying issue (network, PAT scope,
+		// wrong RUNOS_API_URL) is resolved.
 		fmt.Fprintf(os.Stderr, "Unable to load manifest: %v\n", err)
+		fmt.Fprintln(os.Stderr, "  Dynamic commands (apps show / services list / integrations * / account * ...) are unavailable in this invocation.")
+		fmt.Fprintln(os.Stderr, "  Recovery: 'runos manifest update' (interactive) or verify RUNOS_API_URL + RUNOS_API_KEY are correct for the target environment.")
 	}
 }
 

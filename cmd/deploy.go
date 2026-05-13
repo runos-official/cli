@@ -272,6 +272,20 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if deployConfig.ID == "" {
 		existingApp, err := svc.FindAppByName(deployConfig.App)
 		if err == nil && existingApp != nil {
+			// I25-M: a hand-authored yaml with only `app: <name>` and no
+			// `id:` / `deployType:` routes here. When the matching server
+			// app is VCS-shaped, the legacy "Run 'runos deploy sync' to
+			// link" hint is wrong (deploy sync is a CLI-deploy verb).
+			// Steer the user to either add the VCS fields to the yaml or
+			// drop into the laptop-vcs flow directly.
+			if existingApp.DeployType == "vcs" {
+				fmt.Printf("An app named '%s' already exists on this cluster as a VCS-deployed app (ID: %s).\n", deployConfig.App, existingApp.ID)
+				fmt.Println("Hand-authored yaml is missing the VCS shape. Either:")
+				fmt.Printf("  1. Pull the canonical yaml: `runos apps pull --id %s`\n", existingApp.ID)
+				fmt.Printf("  2. Or add `id: %s` and `deployType: vcs` to runos.yaml and re-run\n", existingApp.ID)
+				fmt.Printf("  3. Or deploy directly: `runos deploy --app %s --sha <sha>`\n", existingApp.ID)
+				return fmt.Errorf("app already exists as VCS-deployed; yaml is missing id + deployType")
+			}
 			fmt.Printf("An app named '%s' already exists (ID: %s).\n", deployConfig.App, existingApp.ID)
 			fmt.Println("Run 'runos deploy sync' to link to existing app, or rename the app in runos.yaml.")
 			return fmt.Errorf("app already exists - sync or rename required")

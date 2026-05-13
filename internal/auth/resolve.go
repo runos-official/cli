@@ -13,6 +13,29 @@ import (
 // and the CLI authenticates against conductor without any local config.
 const APIKeyEnvVar = "RUNOS_API_KEY"
 
+// AccountIDEnvVar is the env var the CLI reads to address an account
+// without a local config (CI/CD shape, paired with RUNOS_API_KEY).
+const AccountIDEnvVar = "RUNOS_ACCOUNT_ID"
+
+// ValidateAuthEnvVars refuses early when RUNOS_API_KEY or
+// RUNOS_ACCOUNT_ID is *explicitly* set to empty (`export FOO=` rather
+// than leaving it unset). I25-G / I25-J: pre-fix, set-but-empty fell
+// through to the cached Firebase token / config.json AccountID
+// silently, so a CI runner that intended to use a PAT but typo'd the
+// secret-store reference (`$VAR_THAT_DOES_NOT_EXIST` expanded to empty)
+// got unexpected success using the developer's stored credentials.
+// Distinguishes "unset" (fine; falls back to Firebase) from
+// "explicitly empty" (refuse, since intent was clearly a PAT path).
+func ValidateAuthEnvVars(lookup func(string) (string, bool)) error {
+	for _, name := range []string{APIKeyEnvVar, AccountIDEnvVar} {
+		v, ok := lookup(name)
+		if ok && v == "" {
+			return fmt.Errorf("%s is set but empty; either unset it to fall back to interactive auth, or set it to a real value", name)
+		}
+	}
+	return nil
+}
+
 // ResolveToken returns the bearer token to send in Authorization headers.
 // Two paths, in priority order:
 //
