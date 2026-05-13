@@ -272,13 +272,19 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 	// JSON dry-run: emit the full plan as a single JSON object so CI
 	// pipelines can gate on yaml/env/secretFile/override changes without
 	// parsing the formatted plan output. The plan struct already has
-	// json tags for every section. emitJSON writes to stdout and the
-	// caller's `if dryRun { return }` exits cleanly. Honour
+	// Dry-run + --json: emit the plan struct as JSON and exit. Honours
 	// --redact-secrets at this layer too: the text renderer redacts in
 	// printEnvChange, but the JSON path bypassed it pre-fix, leaking
 	// ADMIN_TOKEN / JWT_SECRET / DATABASE_URL etc. when an LLM driver
 	// invoked `apps sync --dry-run --json --redact-secrets` (I10-M).
-	if jsonOut {
+	//
+	// I24-M follow-up: this branch used to fire for apply mode too,
+	// which caused `apps sync --json` (without --dry-run) to emit the
+	// dry-run shape and return before applying. The dry-run shape was
+	// the wrong contract for apply mode (no jobIds, sync didn't run).
+	// Now gated on dryRun; apply mode falls through to applySyncPlan
+	// which emits its own `{appId, jobIds[], ...}` envelope.
+	if jsonOut && dryRun {
 		if redactSecrets {
 			plan.RedactSecrets()
 		}
@@ -288,7 +294,14 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 		return nil
 	}
 
-	printSyncPlan(plan, redactSecrets)
+	// Apply mode preview text. Under --json the preview is suppressed
+	// (stdout reserved for the final envelope; the per-step "ok (job X)"
+	// lines from applySyncPlan + the rollout footer already route to
+	// stderr and cover the visibility need). The historical apply-mode
+	// text path is unchanged.
+	if !jsonOut {
+		printSyncPlan(plan, redactSecrets)
+	}
 
 	if !plan.HasChanges() {
 		fmt.Println("\nNothing to sync.")

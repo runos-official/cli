@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,34 @@ type vcsDeployJSONResponse struct {
 	SHA        string `json:"sha"`
 	ConfigPath string `json:"configPath,omitempty"`
 	PublicURL  string `json:"publicUrl,omitempty"`
+}
+
+// vcsDeployStreams returns the (stdout, human) writer pair runDeployVCS
+// uses to keep the JSON envelope on stdout and route the human-readable
+// banner/progress to stderr when `--json` is set. Extracted as a pure
+// helper so the routing contract has a unit-test pin (the runDeployVCS
+// integration path requires a live deploy.Service and can't be exercised
+// without a real cluster). Regression target: I24b-A.
+func vcsDeployStreams(jsonOutput bool) (stdout, human io.Writer) {
+	stdout = os.Stdout
+	human = os.Stdout
+	if jsonOutput {
+		human = os.Stderr
+	}
+	return stdout, human
+}
+
+// printVCSDeployBanner writes the post-API-2xx VCS-deploy preamble
+// ("Deploying app X @ Y..." + configPath line) to `human`. Callers
+// pass the result of vcsDeployStreams; under `--json` `human` is
+// os.Stderr so stdout stays parseable. Regression target: I24b-A.
+func printVCSDeployBanner(human io.Writer, appID, sha, configPath string) {
+	fmt.Fprintf(human, "Deploying app %s @ %s...\n", appID, shortSHA(sha))
+	if configPath != "" {
+		fmt.Fprintf(human, "  configPath: %s\n", configPath)
+	} else {
+		fmt.Fprintln(human, "  configPath: <not sent> — using whatever the AppDocument has stored")
+	}
 }
 
 // resolveVcsConfigPath returns the repo-relative path of the local yaml
@@ -91,11 +120,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	// its `progress` shim; this mirrors that contract for VCS deploys so
 	// `runos deploy --json` returns a parseable envelope on both
 	// deployTypes. Regression target: I24b-A.
-	stdout := os.Stdout
-	human := os.Stdout
-	if jsonOutput {
-		human = os.Stderr
-	}
+	stdout, human := vcsDeployStreams(jsonOutput)
 
 	// Resolve the SHA. Explicit --sha wins; otherwise default to HEAD when
 	// we're inside a git repo. CI checkouts always produce a repo so this
@@ -145,12 +170,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		return fmt.Errorf("failed to trigger VCS deploy: %w", err)
 	}
 
-	fmt.Fprintf(human, "Deploying app %s @ %s...\n", appID, shortSHA(sha))
-	if configPath != "" {
-		fmt.Fprintf(human, "  configPath: %s\n", configPath)
-	} else {
-		fmt.Fprintln(human, "  configPath: <not sent> — using whatever the AppDocument has stored")
-	}
+	printVCSDeployBanner(human, appID, sha, configPath)
 
 	if !follow {
 		if jsonOutput {
@@ -216,7 +236,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 // writeJSON marshals v as pretty JSON and writes it to w with a trailing
 // newline. Used by runDeployVCS for the --json success-path envelope so
 // CI gates parsing `.jobId` get a clean parseable response.
-func writeJSON(w *os.File, v any) error {
+func writeJSON(w io.Writer, v any) error {
 	out, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal response: %w", err)
