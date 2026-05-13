@@ -2,8 +2,10 @@ package dynacmd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/runos-official/cli/internal/manifest"
+	"github.com/spf13/cobra"
 )
 
 // Regression test for I2-3c (TEST_LOG.md): manifest field names that
@@ -531,4 +533,68 @@ func TestAliasPathsFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyCLIDefaults_APIKeysAddExpiresAt pins the I25-AP fix: when
+// the user copy-pastes conductor's `createPatCommand` shape (which
+// omits --expires-at because expiry is caller-policy), the CLI now
+// defaults to 90 days. Explicit user input wins.
+func TestApplyCLIDefaults_APIKeysAddExpiresAt(t *testing.T) {
+	makeCmd := func() *cobra.Command {
+		c := &cobra.Command{Use: "add"}
+		c.Flags().String("name", "", "")
+		c.Flags().String("expires-at", "", "")
+		c.Flags().String("file", "", "")
+		return c
+	}
+	cmdDef := manifest.Command{Command: "account/api-keys/add"}
+
+	t.Run("injects default when flag omitted", func(t *testing.T) {
+		c := makeCmd()
+		if err := applyCLIDefaults(c, cmdDef); err != nil {
+			t.Fatalf("applyCLIDefaults: %v", err)
+		}
+		got, _ := c.Flags().GetString("expires-at")
+		if got == "" {
+			t.Fatal("expected --expires-at to be set to a default value, got empty")
+		}
+		// Parse as RFC3339 and assert it lands ~90 days in the future.
+		parsed, err := time.Parse(time.RFC3339, got)
+		if err != nil {
+			t.Fatalf("default value %q does not parse as RFC3339: %v", got, err)
+		}
+		delta := time.Until(parsed)
+		// Allow 1-day slop on either side for test-execution / clock drift.
+		minDelta := time.Duration(defaultAPIKeyExpiryDays-1) * 24 * time.Hour
+		maxDelta := time.Duration(defaultAPIKeyExpiryDays+1) * 24 * time.Hour
+		if delta < minDelta || delta > maxDelta {
+			t.Errorf("default expiry %v not within [%v, %v] of now", delta, minDelta, maxDelta)
+		}
+	})
+
+	t.Run("explicit --expires-at wins over default", func(t *testing.T) {
+		c := makeCmd()
+		if err := c.Flags().Set("expires-at", "2099-12-31T00:00:00Z"); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if err := applyCLIDefaults(c, cmdDef); err != nil {
+			t.Fatalf("applyCLIDefaults: %v", err)
+		}
+		got, _ := c.Flags().GetString("expires-at")
+		if got != "2099-12-31T00:00:00Z" {
+			t.Errorf("expected user value preserved, got %q", got)
+		}
+	})
+
+	t.Run("other commands untouched", func(t *testing.T) {
+		c := makeCmd()
+		other := manifest.Command{Command: "apps/add"}
+		if err := applyCLIDefaults(c, other); err != nil {
+			t.Fatalf("applyCLIDefaults: %v", err)
+		}
+		got, _ := c.Flags().GetString("expires-at")
+		if got != "" {
+			t.Errorf("expected --expires-at left empty for non-api-keys-add command, got %q", got)
+		}
+	})
 }

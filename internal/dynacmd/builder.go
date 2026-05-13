@@ -5,12 +5,46 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/spf13/pflag"
 
 	"github.com/spf13/cobra"
 )
+
+// defaultAPIKeyExpiryDays is the CLI-side fallback for the `expiresAt`
+// field on `account/api-keys/add` when the user omits `--expires-at`.
+// Matches the api-keys topic's recommended rotation cadence and the
+// conductor's documented 90d default for `limited` keys. Pure constant
+// so the regression test can assert the exact derivation.
+const defaultAPIKeyExpiryDays = 90
+
+// applyCLIDefaults injects CLI-side fallback values into the cobra
+// command before the missing-required-arg gate runs. Each entry is a
+// targeted carve-out for a specific (command, field) pair where the
+// conductor's `createPatCommand` / setupInstructions shape omits a
+// required field for usability reasons. Currently scoped to
+// `account/api-keys/add.expiresAt` (I25-AP). Explicit user input
+// (positional, flag, or `-f` file) wins over any default applied here.
+func applyCLIDefaults(c *cobra.Command, cmdDef manifest.Command) error {
+	if cmdDef.Command != "account/api-keys/add" {
+		return nil
+	}
+	const flagName = "expires-at"
+	if c.Flags().Changed(flagName) {
+		return nil
+	}
+	bodyFilePath, _ := c.Flags().GetString("file")
+	if bodyFilePath != "" && bodyFilePresentsField(bodyFilePath, "expiresAt") {
+		return nil
+	}
+	value := time.Now().UTC().Add(time.Duration(defaultAPIKeyExpiryDays) * 24 * time.Hour).Format(time.RFC3339)
+	if err := c.Flags().Set(flagName, value); err != nil {
+		return fmt.Errorf("apply default --%s: %w", flagName, err)
+	}
+	return nil
+}
 
 // placeholderRegex matches {name} patterns in command paths
 var placeholderRegex = regexp.MustCompile(`^\{(\w+)\}$`)
@@ -189,6 +223,21 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 					return emitJSONErrorAndSilence(c, err)
 				}
 				return err
+			}
+
+			// I25-AP: when conductor's apps_add response surfaces a
+			// `createPatCommand` to copy-paste, it bakes the command
+			// shape but omits `--expires-at` because PAT expiry is
+			// caller-policy, not server-policy. A verbatim copy-paste
+			// of `runos account api-keys add --name <X>` previously
+			// failed at the missing-required gate. The api-keys topic
+			// recommends 90 days as the rotation cadence; default the
+			// flag to that value when the user doesn't pass one and
+			// no `-f` file supplies it. Explicit `--expires-at` and
+			// `-f body.yaml` carrying `expiresAt:` both win, so the
+			// default is a fallback, not a clobber.
+			if err := applyCLIDefaults(c, cmdDef); err != nil {
+				return wrapJSONIfSet(err)
 			}
 
 			// Check if required positional args are missing.
