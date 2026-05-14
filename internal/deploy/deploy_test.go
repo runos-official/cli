@@ -714,6 +714,104 @@ func TestResolveArchiveRoot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ResolveDockerfilePath() — I27-Y pre-flight
+// ---------------------------------------------------------------------------
+
+func TestResolveDockerfilePath(t *testing.T) {
+	t.Run("empty defaults to Dockerfile at archive root", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM scratch\n")
+		got, err := ResolveDockerfilePath(dir, "")
+		if err != nil {
+			t.Fatalf("ResolveDockerfilePath: %v", err)
+		}
+		if got != filepath.Clean(filepath.Join(dir, "Dockerfile")) {
+			t.Errorf("got %q, want <root>/Dockerfile", got)
+		}
+	})
+
+	t.Run("monorepo: dockerfile under apps/api resolves cleanly", func(t *testing.T) {
+		// I27-Y canonical layout: yaml in apps/api/infra/, sourceDir=../../..,
+		// dockerfile=apps/api/Dockerfile. After ResolveArchiveRoot returns
+		// the monorepo root, ResolveDockerfilePath must find the file at
+		// <root>/apps/api/Dockerfile.
+		root := t.TempDir()
+		nested := filepath.Join(root, "apps", "api")
+		mkdirAll(t, nested)
+		writeFile(t, filepath.Join(nested, "Dockerfile"), "FROM alpine\n")
+
+		got, err := ResolveDockerfilePath(root, "apps/api/Dockerfile")
+		if err != nil {
+			t.Fatalf("ResolveDockerfilePath: %v", err)
+		}
+		want := filepath.Clean(filepath.Join(nested, "Dockerfile"))
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing dockerfile rejected with clear error", func(t *testing.T) {
+		root := t.TempDir()
+		_, err := ResolveDockerfilePath(root, "apps/api/Dockerfile")
+		if err == nil {
+			t.Fatal("expected error for missing dockerfile")
+		}
+		if !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("error should mention 'does not exist'; got %q", err.Error())
+		}
+	})
+
+	t.Run("absolute dockerfile path is rejected", func(t *testing.T) {
+		root := t.TempDir()
+		_, err := ResolveDockerfilePath(root, "/etc/Dockerfile")
+		if err == nil {
+			t.Fatal("expected error for absolute dockerfile")
+		}
+		if !strings.Contains(err.Error(), "relative") {
+			t.Errorf("error should explain relative requirement; got %q", err.Error())
+		}
+	})
+
+	t.Run("dockerfile escaping archive root is rejected", func(t *testing.T) {
+		// `../foo/Dockerfile` would leave the build context and the build
+		// server can't find it inside the uploaded tarball.
+		root := t.TempDir()
+		_, err := ResolveDockerfilePath(root, "../escapes/Dockerfile")
+		if err == nil {
+			t.Fatal("expected error for escaping dockerfile")
+		}
+		if !strings.Contains(err.Error(), "escapes the build context") {
+			t.Errorf("error should mention 'escapes the build context'; got %q", err.Error())
+		}
+	})
+
+	t.Run("variant filename like Dockerfile.prod is accepted", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "Dockerfile.prod"), "FROM scratch\n")
+		got, err := ResolveDockerfilePath(root, "Dockerfile.prod")
+		if err != nil {
+			t.Fatalf("ResolveDockerfilePath: %v", err)
+		}
+		if got != filepath.Clean(filepath.Join(root, "Dockerfile.prod")) {
+			t.Errorf("got %q, want <root>/Dockerfile.prod", got)
+		}
+	})
+
+	t.Run("dockerfile pointing at a directory is rejected", func(t *testing.T) {
+		root := t.TempDir()
+		nested := filepath.Join(root, "apps", "api", "Dockerfile")
+		mkdirAll(t, nested) // Dockerfile is somehow a directory
+		_, err := ResolveDockerfilePath(root, "apps/api/Dockerfile")
+		if err == nil {
+			t.Fatal("expected error for non-regular file")
+		}
+		if !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("error should mention 'not a regular file'; got %q", err.Error())
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // WarnLegacyEnv()
 // ---------------------------------------------------------------------------
 

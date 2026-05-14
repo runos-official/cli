@@ -490,6 +490,54 @@ func ResolveArchiveRoot(configDir, sourceDir string) (string, error) {
 	return resolved, nil
 }
 
+// ResolveDockerfilePath returns the absolute path to the Dockerfile
+// inside an already-resolved archive root, validating that the file
+// exists before the upload starts. The yaml's `dockerfile:` field is
+// relative to `sourceDir` (mirroring Docker's own convention: the
+// Dockerfile path is relative to the build context). Empty defaults
+// to "Dockerfile" at the archive root.
+//
+// Rejects:
+//   - absolute dockerfile path (would lock the yaml to one machine).
+//   - paths that escape the archive root (`../`, etc.) — the resolved
+//     path must stay within archiveRoot or buildctl on the build
+//     server can't find it in the uploaded tarball.
+//   - dockerfile resolving to a non-existent path or a non-regular file.
+//
+// I27-Y pre-flight: pre-fix, a misconfigured `dockerfile:` field (typo,
+// or wrong-relative path) silently uploaded the tarball, and the build
+// server failed late with `failed to read dockerfile: open <name>: no
+// such file or directory` after the user had already burned the
+// archive-upload round-trip. Validating at this layer surfaces the
+// mistake before any network call. Symmetric in shape with
+// ResolveArchiveRoot.
+func ResolveDockerfilePath(archiveRoot, dockerfile string) (string, error) {
+	trimmed := strings.TrimSpace(dockerfile)
+	if trimmed == "" {
+		trimmed = "Dockerfile"
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", fmt.Errorf("dockerfile must be relative to sourceDir (got absolute path %q); relative paths keep the yaml portable across machines", trimmed)
+	}
+	resolved := filepath.Clean(filepath.Join(archiveRoot, trimmed))
+	cleanRoot := filepath.Clean(archiveRoot)
+	rel, err := filepath.Rel(cleanRoot, resolved)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("dockerfile %q escapes the build context (resolved to %q, outside %q); set sourceDir so the Dockerfile lives inside it", trimmed, resolved, cleanRoot)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("dockerfile %q (resolved to %q) does not exist; check the path is relative to sourceDir (=%q)", trimmed, resolved, cleanRoot)
+		}
+		return "", fmt.Errorf("stat dockerfile %q: %w", resolved, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("dockerfile %q (resolved to %q) is not a regular file", trimmed, resolved)
+	}
+	return resolved, nil
+}
+
 // WarnLegacyEnv prints a one-line stderr hint when configDir contains a
 // pre-multi-yaml env file (.runos.{CID}.env, no app id) and the loaded
 // yaml doesn't pin an explicit secret-env path. Non-blocking: deploy

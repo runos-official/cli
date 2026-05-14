@@ -443,6 +443,15 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if err != nil {
 		return fmt.Errorf("invalid sourceDir: %w", err)
 	}
+	// I27-Y pre-flight: the dockerfile lives at <archiveRoot>/<dockerfile>
+	// on the build server (BuildKit's --opt filename is relative to the
+	// archive root). A misconfigured field (typo, or path relative to the
+	// yaml's own dir instead of sourceDir) used to silently upload and
+	// fail server-side with `failed to read dockerfile: open <name>: no
+	// such file or directory`. Validate locally before any network call.
+	if _, err := deploy.ResolveDockerfilePath(archiveRoot, deployConfig.Dockerfile); err != nil {
+		return fmt.Errorf("invalid dockerfile: %w", err)
+	}
 
 	// Confirmation gate: shows the user what's about to be deployed and
 	// requires explicit y/yes before any work begins. Auto-skipped when
