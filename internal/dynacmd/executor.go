@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -292,6 +293,17 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 		return err
 	}
+
+	// I27-AE residual: raw `exec-sql --read-write` with destructive DDL
+	// (DROP ROLE / DROP USER / CREATE ROLE / ALTER ROLE / etc.) bypasses
+	// the per-verb cache-invalidation hooks conductor 17.13.0 added to
+	// grant-database / revoke-database / create-user. The query goes
+	// straight to the live database, succeeds, but conductor's stored
+	// user/role list (read by `services_<db>_users`) still reflects
+	// pre-DDL state until something else triggers a refresh. The CLI
+	// can't fix the cache from here, but it can warn the user that
+	// they're about to see a stale listing if they query right after.
+	warnIfRawDDLBypassedCache(cmd, cmdDef, body)
 
 	// Handle --follow flag for commands that return jobs (detected by jobId in output)
 	if hasJobIdOutput(cmdDef) {
@@ -1891,4 +1903,55 @@ func markDefaultCluster(data []byte, defaultCID string) []byte {
 func isEmptyString(v any) bool {
 	s, ok := v.(string)
 	return ok && s == ""
+}
+
+// rawDDLPattern matches the destructive USER / ROLE / DATABASE DDL
+// statements that bypass conductor's per-verb cache-invalidation hooks
+// (added in 17.13.0 to grant-database / revoke-database / create-user
+// etc.). When a user runs raw `exec-sql --read-write` carrying one of
+// these, the SQL hits the live database but conductor's stored user /
+// role list (read by `services_<db>_users`) still reflects pre-DDL
+// state until something else triggers a refresh. We don't try to be
+// exhaustive — false positives are a minor stderr nag, false negatives
+// drop the warning silently. Both are recoverable. Regex is permissive
+// (any-leading-whitespace, case-insensitive, single-statement only).
+var rawDDLPattern = regexp.MustCompile(`(?is)^\s*(?:--[^\n]*\n\s*)*(DROP|CREATE|ALTER)\s+(ROLE|USER|DATABASE)\b`)
+
+// queryHasRawUserRoleDDL reports whether a SQL query carries the
+// destructive USER / ROLE / DATABASE DDL that bypasses conductor's
+// per-verb cache-invalidation hooks. Pure helper, unit-testable.
+func queryHasRawUserRoleDDL(query string) bool {
+	return rawDDLPattern.MatchString(query)
+}
+
+// warnIfRawDDLBypassedCache emits a stderr hint after a successful
+// `services/<db>/{id}/exec-sql --read-write` whose query carries
+// destructive USER / ROLE / DATABASE DDL. Conductor's cached user
+// listing won't reflect the change until something else nudges the
+// cache, so a follow-up `services_<db>_users` call may misleadingly
+// still show the role/user as present.
+//
+// No-op unless the command path matches the exec-sql endpoint pattern
+// AND the body's `readWrite` flag is true (read-only queries can't
+// mutate state, so the warning would be noise). I27-AE residual.
+func warnIfRawDDLBypassedCache(cmd *cobra.Command, cmdDef manifest.Command, body map[string]any) {
+	if !strings.HasSuffix(cmdDef.Command, "/exec-sql") {
+		return
+	}
+	rw, ok := body["readWrite"].(bool)
+	if !ok || !rw {
+		return
+	}
+	query, _ := body["query"].(string)
+	if query == "" {
+		return
+	}
+	if !queryHasRawUserRoleDDL(query) {
+		return
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(),
+		"Warning: raw role/user/database DDL bypasses conductor's user-list cache. "+
+			"`services_<db>_users` may show stale state until a managed verb (grant-database, "+
+			"revoke-database, create-user, etc.) is called and refreshes the listing.",
+	)
 }

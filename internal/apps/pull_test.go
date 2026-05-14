@@ -534,6 +534,75 @@ func TestBuildPulledApp_VcsIntegration_PassesThroughIntegrationType(t *testing.T
 	}
 }
 
+// I27-M/N regression: pulled VCS yaml must surface the three
+// build-metadata fields (configPath / sourceDir / dockerfile) so a fresh
+// `git clone && runos apps pull` produces a yaml that carries every
+// breadcrumb the user needs for a subsequent `runos deploy --sha <sha>`
+// from any path. Conductor 17.7.0+ stores all three on the AppDocument;
+// the CLI's reader has to surface them through BuildPulledApp.
+func TestBuildPulledApp_VcsBuildMetadataRoundTrip(t *testing.T) {
+	raw := map[string]any{
+		"id":                         "ultbd",
+		"name":                       "iter27-api",
+		"replicas":                   float64(1),
+		"clusterDomainId":            "elpfn",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"deployType":                 "vcs",
+		"integrationType":            "gitlab-runner",
+		"vcsIntegrationId":           "tr6mj",
+		"repoId":                     8.2177108e+07,
+		"repoName":                   "runos-tests/iter27-monorepo",
+		"branchName":                 "main",
+		// I27-M/N canonical monorepo shape: yaml lives in apps/api/infra/
+		// and sourceDir traverses up to the repo root.
+		"configPath":  "apps/api/infra/runos-prod.yaml",
+		"sourceDir":   "../../..",
+		"dockerfile":  "apps/api/Dockerfile",
+		"healthCheck": "standard",
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(8080), "standardHttps": true},
+		},
+	}
+
+	p := BuildPulledApp(raw, "mycluster2", "myacct")
+
+	if p.ConfigPath != "apps/api/infra/runos-prod.yaml" {
+		t.Errorf("ConfigPath = %q, want %q", p.ConfigPath, "apps/api/infra/runos-prod.yaml")
+	}
+	if p.SourceDir != "../../.." {
+		t.Errorf("SourceDir = %q, want %q", p.SourceDir, "../../..")
+	}
+	if p.Dockerfile != "apps/api/Dockerfile" {
+		t.Errorf("Dockerfile = %q, want %q", p.Dockerfile, "apps/api/Dockerfile")
+	}
+}
+
+// I27-M/N partner: CLI-deploy apps (no configPath stored server-side)
+// pull a yaml that omits configPath entirely (omitempty drops the key
+// rather than emitting `configPath: ""`). Mirrors the existing
+// sourceDir / dockerfile omitempty behaviour for the same reason: a
+// CLI-deploy app's yaml should stay uncluttered when no build-metadata
+// is set.
+func TestBuildPulledApp_CliDeployOmitsConfigPath(t *testing.T) {
+	raw := map[string]any{
+		"id":                         "y2w1y",
+		"name":                       "urlshort",
+		"replicas":                   float64(1),
+		"clusterDomainId":            "elpfn",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"deployType":                 "cli",
+		"healthCheck":                "none",
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(8080), "standardHttps": false},
+		},
+	}
+
+	p := BuildPulledApp(raw, "mycluster2", "myacct")
+	if p.ConfigPath != "" {
+		t.Errorf("CLI-deploy app should have empty ConfigPath; got %q", p.ConfigPath)
+	}
+}
+
 func TestBuildPulledApp_CustomResources_EmitsAllFourFieldsEvenWhenZero(t *testing.T) {
 	tests := []struct {
 		name           string

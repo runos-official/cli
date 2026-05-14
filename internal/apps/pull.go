@@ -41,6 +41,24 @@ type PulledApp struct {
 	// Empty defaults to "Dockerfile". Same round-trip semantics as
 	// SourceDir.
 	Dockerfile string `yaml:"dockerfile,omitempty"`
+	// ConfigPath is the repo-relative path where THIS yaml lives in the
+	// source repo (e.g. `apps/api/infra/runos-prod.yaml` in a monorepo).
+	// Stored on the AppDocument by `apps_add` and persisted by every
+	// VCS deploy that sends a non-empty value. Round-tripping it through
+	// `apps_pull` lets a fresh `git clone && runos apps pull` produce a
+	// pulled yaml that carries the same canonical metadata as the
+	// committed yaml. I27-M/N: pre-fix the pulled file omitted this so
+	// the user had no breadcrumb to where the canonical yaml lives in
+	// their monorepo.
+	//
+	// Note: deploy auto-derives configPath from the yaml's actual
+	// filesystem position relative to `git rev-parse --show-toplevel`
+	// when this field is empty (see cmd/deploy_vcs.go:resolveVcsConfigPath).
+	// When the yaml IS at the canonical path on disk, the round-trip is
+	// a no-op (auto-derive == stored). When the user has vendored the
+	// yaml under a different path, the explicit field wins so deploy
+	// still targets the committed source location.
+	ConfigPath string `yaml:"configPath,omitempty"`
 	Replicas   int    `yaml:"replicas"`
 
 	ClusterDomainID string `yaml:"clusterDomainId,omitempty"`
@@ -285,6 +303,13 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 	// uncluttered via omitempty.
 	p.SourceDir = stringOr(raw, "sourceDir")
 	p.Dockerfile = stringOr(raw, "dockerfile")
+	// I27-M/N: configPath round-trips on VCS apps so a fresh
+	// `git clone && runos apps pull` produces a yaml that carries every
+	// build-metadata field needed for a subsequent VCS deploy from a
+	// non-canonical path. Conductor sets it from apps_add and persists
+	// it on each VCS deploy. Empty on CLI-deploy apps (omitempty drops
+	// the field for them).
+	p.ConfigPath = stringOr(raw, "configPath")
 
 	// Resources: preset wins when it's a real class, otherwise emit all
 	// four custom fields (including zeros, so the user knows they must set them).

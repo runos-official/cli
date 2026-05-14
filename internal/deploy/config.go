@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -536,6 +537,53 @@ func ResolveDockerfilePath(archiveRoot, dockerfile string) (string, error) {
 		return "", fmt.Errorf("dockerfile %q (resolved to %q) is not a regular file", trimmed, resolved)
 	}
 	return resolved, nil
+}
+
+// nginxRootBaseImagePattern matches Dockerfile `FROM nginx:<tag>`
+// lines that pull the upstream image (which binds port 80 and requires
+// root). The unprivileged variants (`nginxinc/nginx-unprivileged`,
+// `nginx/nginx-unprivileged`) are explicitly excluded — they're the
+// recommended drop-in for RunOS clusters where containers can't run
+// as root. Case-insensitive, allows comments after the FROM line,
+// tolerates `--platform=` flags. I27-G regression target.
+var nginxRootBaseImagePattern = regexp.MustCompile(`(?im)^\s*FROM(?:\s+--\S+)*\s+(nginx)(?::[^\s]+)?(?:\s|$)`)
+
+// NginxDockerfileHint scans a Dockerfile and returns a one-line stderr
+// hint when the base image is a bare `nginx:<tag>` (which can't bind
+// port 80 as a non-root user — every RunOS cluster rejects root
+// containers, so the pod CrashLoopBackOffs at startup). The hint names
+// the `nginxinc/nginx-unprivileged` drop-in (binds 8080 as non-root).
+// Empty return value when the Dockerfile is unreadable, uses a
+// different base image, or already uses the unprivileged variant.
+//
+// Non-blocking: deploy proceeds either way. Some users patch the
+// upstream image themselves (`USER`, `RUN sed -i ...port-80...`), so
+// the false-positive cost of a refusal would be high. A stderr nag
+// is the right tradeoff.
+//
+// I27-G regression target: docs (`applications.md`) already cover
+// the constraint in the topic surface; this hint surfaces the same
+// guidance at deploy time so users who didn't read the doc still get
+// the breadcrumb before the cluster rejects the pod.
+func NginxDockerfileHint(dockerfilePath string) string {
+	data, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		return ""
+	}
+	matches := nginxRootBaseImagePattern.FindAllSubmatch(data, -1)
+	for _, m := range matches {
+		// m[0] is the full match, m[1] is the captured `nginx` token.
+		// Confirm the captured token starts a base image that isn't
+		// the unprivileged variant. (The regex only matches `nginx:...`
+		// directly, not `nginxinc/...`, so any match is a root variant.)
+		if len(m) >= 2 && string(m[1]) == "nginx" {
+			return "Hint: this Dockerfile uses the upstream `nginx:` image. " +
+				"RunOS clusters reject containers running as root, and `nginx:` binds port 80 (requires root). " +
+				"Static sites crash with CrashLoopBackOff at startup. " +
+				"Use `nginxinc/nginx-unprivileged:<tag>` instead (listens on port 8080 as non-root, drop-in for static content)."
+		}
+	}
+	return ""
 }
 
 // WarnLegacyEnv prints a one-line stderr hint when configDir contains a

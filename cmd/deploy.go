@@ -449,8 +449,18 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// yaml's own dir instead of sourceDir) used to silently upload and
 	// fail server-side with `failed to read dockerfile: open <name>: no
 	// such file or directory`. Validate locally before any network call.
-	if _, err := deploy.ResolveDockerfilePath(archiveRoot, deployConfig.Dockerfile); err != nil {
+	dockerfileAbs, err := deploy.ResolveDockerfilePath(archiveRoot, deployConfig.Dockerfile)
+	if err != nil {
 		return fmt.Errorf("invalid dockerfile: %w", err)
+	}
+	// I27-G: peek at the Dockerfile's base image. RunOS clusters reject
+	// containers running as root, so the bare `nginx:alpine` image (binds
+	// port 80, requires root) lands in CrashLoopBackOff after every deploy.
+	// Emit a stderr advisory naming the unprivileged variant as the drop-in
+	// fix; non-blocking so the deploy still proceeds (some users have
+	// patched the base image themselves to drop root, no need to refuse).
+	if hint := deploy.NginxDockerfileHint(dockerfileAbs); hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
 	}
 
 	// Confirmation gate: shows the user what's about to be deployed and

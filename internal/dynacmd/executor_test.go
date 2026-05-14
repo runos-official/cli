@@ -1879,3 +1879,48 @@ func TestLoadYAMLFileStdin(t *testing.T) {
 	})
 }
 
+
+// I27-AE residual: queryHasRawUserRoleDDL matches the destructive
+// USER / ROLE / DATABASE DDL that bypasses conductor 17.13.0's
+// per-verb cache-invalidation hooks. Permissive on purpose (false
+// positives = a small stderr nag, false negatives = silent miss; both
+// recoverable). Pin the canonical cases here so a tightening of the
+// pattern can't silently regress the warning surface.
+func TestQueryHasRawUserRoleDDL(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"DROP ROLE bare", "DROP ROLE newuser", true},
+		{"drop role lowercase", "drop role newuser", true},
+		{"DROP USER bare", "DROP USER newuser", true},
+		{"DROP DATABASE bare", "DROP DATABASE foo", true},
+		{"CREATE ROLE", "CREATE ROLE admin WITH LOGIN PASSWORD 'x'", true},
+		{"ALTER USER", "ALTER USER newuser SET search_path TO public", true},
+		{"with leading whitespace", "   \n\t  DROP ROLE foo", true},
+		{"DROP ROLE IF EXISTS", "DROP ROLE IF EXISTS foo", true},
+		{"with leading SQL comment", "-- cleanup\nDROP ROLE foo", true},
+		// Non-DDL queries (should NOT trigger the warning).
+		{"SELECT", "SELECT * FROM pg_roles", false},
+		{"INSERT", "INSERT INTO users VALUES (1, 'foo')", false},
+		{"GRANT (managed by per-verb hooks)", "GRANT SELECT ON foo TO bar", false},
+		{"REVOKE", "REVOKE SELECT ON foo FROM bar", false},
+		{"DROP TABLE (not user/role/database)", "DROP TABLE foo", false},
+		{"empty", "", false},
+		// Defensive: tokens contained in larger identifiers shouldn't trip.
+		{"identifier ROLE-prefix in SELECT", "SELECT * FROM role_history", false},
+		// Currently the pattern is single-statement; a leading SELECT
+		// followed by a DROP ROLE is a false negative, which is fine
+		// (silent miss is recoverable; we'd rather under-warn than
+		// nag on every multi-statement query).
+		{"DROP ROLE after SELECT (false negative, intentional)", "SELECT 1; DROP ROLE foo", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := queryHasRawUserRoleDDL(tc.query); got != tc.want {
+				t.Errorf("queryHasRawUserRoleDDL(%q) = %v, want %v", tc.query, got, tc.want)
+			}
+		})
+	}
+}

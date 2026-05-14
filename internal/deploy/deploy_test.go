@@ -714,6 +714,96 @@ func TestResolveArchiveRoot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// NginxDockerfileHint() — I27-G static-site deploy advisory
+// ---------------------------------------------------------------------------
+
+func TestNginxDockerfileHint(t *testing.T) {
+	cases := []struct {
+		name        string
+		dockerfile  string
+		expectHint  bool
+		hintMustSay string
+	}{
+		{
+			name:        "bare nginx:alpine triggers hint",
+			dockerfile:  "FROM nginx:alpine\nCOPY dist /usr/share/nginx/html\n",
+			expectHint:  true,
+			hintMustSay: "nginxinc/nginx-unprivileged",
+		},
+		{
+			name:       "nginx:1.27-alpine triggers hint",
+			dockerfile: "FROM nginx:1.27-alpine\n",
+			expectHint: true,
+		},
+		{
+			name:       "nginxinc/nginx-unprivileged does NOT trigger hint",
+			dockerfile: "FROM nginxinc/nginx-unprivileged:1.27-alpine\nEXPOSE 8080\n",
+			expectHint: false,
+		},
+		{
+			name:       "no FROM line triggers nothing",
+			dockerfile: "# this isn't a real Dockerfile\n",
+			expectHint: false,
+		},
+		{
+			name:       "non-nginx base image does NOT trigger",
+			dockerfile: "FROM node:20-alpine\nWORKDIR /app\n",
+			expectHint: false,
+		},
+		{
+			name:       "FROM nginx without tag (just `nginx`) triggers hint",
+			dockerfile: "FROM nginx\n",
+			expectHint: true,
+		},
+		{
+			name:       "FROM --platform=linux/amd64 nginx:alpine triggers hint",
+			dockerfile: "FROM --platform=linux/amd64 nginx:alpine\n",
+			expectHint: true,
+		},
+		{
+			name:       "multi-stage with intermediate nginx does trigger hint",
+			dockerfile: "FROM node:20 AS build\nRUN echo hi\n\nFROM nginx:alpine\nCOPY --from=build /dist /usr/share/nginx/html\n",
+			expectHint: true,
+		},
+		{
+			name: "FROM mynginxfork doesn't trigger (token boundary)",
+			// `mynginxfork` contains `nginx` substring but isn't the
+			// official image. Pattern anchored at word boundary.
+			dockerfile: "FROM mynginxfork:1.0\n",
+			expectHint: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "Dockerfile")
+			if err := os.WriteFile(path, []byte(tc.dockerfile), 0o600); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			got := NginxDockerfileHint(path)
+			if tc.expectHint && got == "" {
+				t.Errorf("expected hint for %q, got empty", tc.dockerfile)
+			}
+			if !tc.expectHint && got != "" {
+				t.Errorf("expected no hint for %q, got: %s", tc.dockerfile, got)
+			}
+			if tc.hintMustSay != "" && !strings.Contains(got, tc.hintMustSay) {
+				t.Errorf("hint should mention %q; got: %s", tc.hintMustSay, got)
+			}
+		})
+	}
+}
+
+func TestNginxDockerfileHint_UnreadableFile(t *testing.T) {
+	// Missing file: helper returns "" rather than erroring (non-blocking
+	// advisory; deploy proceeds even if we can't read the Dockerfile).
+	got := NginxDockerfileHint("/does/not/exist")
+	if got != "" {
+		t.Errorf("expected empty hint for missing file; got: %s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ResolveDockerfilePath() — I27-Y pre-flight
 // ---------------------------------------------------------------------------
 
