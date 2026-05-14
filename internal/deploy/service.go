@@ -660,6 +660,16 @@ func (s *Service) GetAppDependencies(appID string) ([]AppDependency, error) {
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
+	// I27-AG: conductor 17.7.0's envelope-everywhere migration wrapped
+	// `apps/:id/dependencies` in `{dependencies: [...]}` (sibling of the
+	// I27-AA / I27-T list-endpoint sweep). Pre-fix the decoder rejected
+	// every response with `cannot unmarshal object into Go value of type
+	// []deploy.AppDependency`, taking the laptop-deploy dependency-check
+	// path offline. Reuse the existing shape-keyed unwrapper so both the
+	// legacy bare-array shape and the new envelope round-trip cleanly
+	// during the migration window.
+	body = unwrapArrayEnvelopeDeploy(body)
+
 	var deps []AppDependency
 	if err := json.Unmarshal(body, &deps); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)

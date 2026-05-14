@@ -188,6 +188,72 @@ func TestDeployVCS_ReturnsTypedAPIErrorOn4xx(t *testing.T) {
 	}
 }
 
+// I27-AG regression: conductor 17.7.0's envelope-everywhere migration
+// wrapped `apps/:id/dependencies` in `{dependencies: [...]}`. The CLI's
+// `GetAppDependencies` decoder used to unmarshal the body directly into
+// a `[]AppDependency`, which rejected the new shape with `cannot
+// unmarshal object into Go value of type []deploy.AppDependency`.
+// Pre-flight through `unwrapArrayEnvelopeDeploy` lets both shapes
+// round-trip during the migration window. Same fix pattern as iter-26
+// I26-O env-vars envelope handling.
+func TestGetAppDependencies_AcceptsEnvelope(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "conductor 17.7.0 envelope",
+			body: `{"dependencies":[{"alias":"api-db","id":"mysvc","type":"postgresql"},{"alias":"shared-cache","id":"mysvc2","type":"valkey"}]}`,
+			want: 2,
+		},
+		{
+			name: "legacy bare array (migration window back-compat)",
+			body: `[{"alias":"api-db","id":"mysvc","type":"postgresql"}]`,
+			want: 1,
+		},
+		{
+			name: "envelope with empty array",
+			body: `{"dependencies":[]}`,
+			want: 0,
+		},
+		{
+			name: "legacy empty bare array",
+			body: `[]`,
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/apps/ultbd/dependencies") {
+					http.Error(w, "wrong endpoint: "+r.URL.Path, http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			svc := &Service{
+				baseURL:    srv.URL,
+				httpClient: &http.Client{Timeout: 5 * time.Second},
+				token:      "t",
+				aid:        "aid",
+				cid:        "cid",
+			}
+
+			deps, err := svc.GetAppDependencies("ultbd")
+			if err != nil {
+				t.Fatalf("GetAppDependencies: %v", err)
+			}
+			if len(deps) != tc.want {
+				t.Errorf("got %d deps, want %d (body: %s)", len(deps), tc.want, tc.body)
+			}
+		})
+	}
+}
+
 // TestParseEnvVarsResponse_DeployCopy mirrors the apps-package test:
 // the deploy package keeps its own copy of the parser so the
 // internal/deploy → internal/apps dependency boundary stays one-way.
