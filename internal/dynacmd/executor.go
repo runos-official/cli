@@ -1349,12 +1349,36 @@ var (
 	stdinYAMLErr  error
 )
 
+// isStdinPath reports whether path is one of the conventional aliases
+// for "read from stdin": the kubectl-style `-` sentinel, or the
+// platform-specific filesystem links `/dev/stdin` / `/dev/fd/0` /
+// `/proc/self/fd/0`. I27-S/X root cause: pre-fix the cache was keyed
+// on `-` only, so a caller passing `-f /dev/stdin` (the obvious
+// kubectl-equivalent literal path) bypassed it. The missing-required
+// gate calls bodyFileProvidesField (loadYAMLFile internally) BEFORE
+// collectInput does, and the first read drained the herestring/pipe,
+// so collectInput's read got an empty file and the wire body sent
+// `null`. Conductor (correctly) returned a structured 400 on a real
+// empty body, but on a `null` body fell through to its internal-error
+// path and returned a bare 500. Aliasing every stdin shape to the
+// cached `-` branch closes the gap for every reasonable CI invocation.
+func isStdinPath(path string) bool {
+	switch path {
+	case "-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0":
+		return true
+	}
+	return false
+}
+
 // loadYAMLFile parses the YAML body at path. The conventional `-`
-// path reads from stdin (kubectl-style), enabling `runos <cmd> -f - <<EOF`
-// pipes in CI without an intermediate temp file. Repeated reads of `-`
-// return cached content so PreRunE checks see the same body as RunE.
+// path (and its filesystem aliases /dev/stdin, /dev/fd/0,
+// /proc/self/fd/0) reads from stdin (kubectl-style), enabling
+// `runos <cmd> -f - <<EOF` (or `-f /dev/stdin <<<`) pipes in CI
+// without an intermediate temp file. Repeated reads of any stdin
+// alias return cached content so PreRunE checks see the same body
+// as RunE (I27-S/X regression).
 func loadYAMLFile(path string) (map[string]any, error) {
-	if path == "-" {
+	if isStdinPath(path) {
 		stdinYAMLOnce.Do(func() {
 			data, err := io.ReadAll(io.LimitReader(os.Stdin, stdinYAMLBodyCap+1))
 			if err != nil {

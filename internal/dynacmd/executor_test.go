@@ -1814,5 +1814,68 @@ func TestLoadYAMLFileStdin(t *testing.T) {
 			t.Errorf("got %v, want a=1", got)
 		}
 	})
+
+	// I27-S/X root cause: `-f /dev/stdin <<< 'envVars: {}'` used to drain
+	// stdin during the missing-required pre-flight (which calls
+	// bodyFileProvidesField → loadYAMLFile internally) before
+	// collectInput's read, so the second read got 0 bytes and the wire
+	// body sent `null`. Conductor responded with a bare 500 instead of
+	// the structured 400 the proper empty body produces. Aliasing
+	// /dev/stdin (and /dev/fd/0, /proc/self/fd/0) into the same
+	// sync.Once-cached stdin branch as `-` keeps both reads consistent.
+	t.Run("stdin alias /dev/stdin caches like dash sentinel (I27-S/X)", func(t *testing.T) {
+		resetStdinYAMLCache(t)
+		origStdin := os.Stdin
+		t.Cleanup(func() { os.Stdin = origStdin; resetStdinYAMLCache(t) })
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		os.Stdin = r
+		if _, err := w.Write([]byte("envVars: {}\n")); err != nil {
+			t.Fatalf("write pipe: %v", err)
+		}
+		_ = w.Close()
+
+		first, err := loadYAMLFile("/dev/stdin")
+		if err != nil {
+			t.Fatalf("first /dev/stdin load: %v", err)
+		}
+		second, err := loadYAMLFile("/dev/stdin")
+		if err != nil {
+			t.Fatalf("second /dev/stdin load: %v", err)
+		}
+		// Both reads must return the same parsed body (envVars: {}).
+		// Empty inner map round-trips as map[string]interface{}{} (len 0).
+		for label, body := range map[string]map[string]any{"first": first, "second": second} {
+			v, ok := body["envVars"]
+			if !ok {
+				t.Errorf("%s read missing envVars key: %+v", label, body)
+				continue
+			}
+			m, ok := v.(map[string]any)
+			if !ok {
+				t.Errorf("%s read envVars type = %T, want map[string]any", label, v)
+				continue
+			}
+			if len(m) != 0 {
+				t.Errorf("%s read envVars = %v, want empty map", label, m)
+			}
+		}
+	})
+
+	t.Run("isStdinPath enumerates every stdin alias", func(t *testing.T) {
+		for _, p := range []string{"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"} {
+			if !isStdinPath(p) {
+				t.Errorf("isStdinPath(%q) = false, want true", p)
+			}
+		}
+		for _, p := range []string{"", "/tmp/body.yaml", "stdin", "/dev/stderr", "/dev/fd/1"} {
+			if isStdinPath(p) {
+				t.Errorf("isStdinPath(%q) = true, want false", p)
+			}
+		}
+	})
 }
 
