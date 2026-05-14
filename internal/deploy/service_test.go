@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -140,6 +141,50 @@ func TestTargetIngressMatchesOSID(t *testing.T) {
 				t.Errorf("targetIngressMatchesOSID(%q, %q) = %v, want %v", c.target, c.osid, got, c.want)
 			}
 		})
+	}
+}
+
+// I27-Z regression: DeployVCS must return a typed *APIError (not a plain
+// fmt.Errorf) on conductor 4xx so cmd/apps_pull.go:emitJSONError can
+// flatten the conductor body into the outer --json envelope. Pre-fix,
+// the bad-SHA error came back as a fmt.Errorf wrapping "API error (400):
+// {\"error\":\"...\"}" and the CLI's outer JSON ended up doubly-nested:
+// `{"error":"failed to trigger VCS deploy: API error (400): {\"error\":..."}`.
+// Now: errors.As resolves to *APIError with the raw body intact, so the
+// flattener writes `{"error":"<inner msg>", "statusCode": 400}`.
+func TestDeployVCS_ReturnsTypedAPIErrorOn4xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/apps/ultbd/deploy") {
+			http.Error(w, "wrong endpoint: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Commit 'aaaa' not found in repo@main"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := &Service{
+		baseURL:    srv.URL,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		token:      "t",
+		aid:        "aid",
+		cid:        "cid",
+	}
+
+	_, err := svc.DeployVCS("ultbd", "aaaa", "")
+	if err == nil {
+		t.Fatalf("expected error on 400")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected errors.As to match *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want 400", apiErr.StatusCode)
+	}
+	if !strings.Contains(string(apiErr.Body), "Commit 'aaaa' not found") {
+		t.Errorf("Body lost inner error message: %q", apiErr.Body)
 	}
 }
 

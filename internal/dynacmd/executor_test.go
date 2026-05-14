@@ -777,7 +777,10 @@ func TestValidateInputValues(t *testing.T) {
 	}{
 		{name: "negative tail (int)", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": -5}, wantErr: "--tail must be non-negative, got -5"},
 		{name: "negative since (int)", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": 1, "since": -10}, wantErr: "--since must be non-negative, got -10"},
-		{name: "zero tail OK", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": 0}},
+		// I27-AB: --tail 0 on pod-logs commands is refused client-side
+		// because kubelet treats it as "use default" (returns ~1 entry),
+		// not "no entries", which surprises every caller.
+		{name: "zero tail refused on pod-logs (I27-AB)", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": 0}, wantErr: "--tail 0 is ambiguous"},
 		{name: "positive tail OK", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": 100}},
 		{name: "negative float64 yaml-decoded", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": float64(-3)}, wantErr: "--tail must be non-negative, got -3"},
 		{name: "empty positional id (I9-E)", cmd: cmdLogs, args: []string{""}, body: map[string]any{"id": ""}, wantErr: "id is required: pass as positional <id> or --id; got empty value"},
@@ -1035,6 +1038,21 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 		},
 	}
 	cmdNoInput := manifest.Command{Command: "apps/list"}
+	// I27-AC: the boolean-flag space-form footgun reproduces against
+	// `apps overrides update --id ultbd --enabled false` because
+	// `--enabled` is no-value boolean and `false` lands in the
+	// positional slot.
+	cmdOverrideUpdate := manifest.Command{
+		Command: "apps/overrides/update",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "id", Type: "string", Positional: true, Required: true},
+			},
+			Flags: []manifest.Flag{
+				{Name: "enabled"},
+			},
+		},
+	}
 
 	cases := []struct {
 		name    string
@@ -1093,6 +1111,27 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 			args: []string{"appid1"},
 			cmd:  cmdNoInput,
 			body: map[string]any{"id": "zzzzz"},
+		},
+		{
+			// I27-AC: boolean flag space-form (`--enabled false`) lands
+			// the literal "false" in the next positional slot; the
+			// disagreement error gains a pointer at `--<flag>=false`
+			// (equals-form) so the user isn't chasing the wrong end.
+			name: "bool flag space-form lands false in positional (I27-AC)",
+			args: []string{"false"},
+			cmd:  cmdOverrideUpdate,
+			body: map[string]any{"id": "ultbd", "enabled": true},
+			wantErr: `If you meant a boolean flag, use --<flag>=false`,
+		},
+		{
+			// I27-AC partner: same as above but the literal positional
+			// is "true" (matching `--enabled true` cobra-parses where
+			// --enabled is already true-by-presence).
+			name: "bool flag space-form lands true in positional (I27-AC)",
+			args: []string{"true"},
+			cmd:  cmdOverrideUpdate,
+			body: map[string]any{"id": "ultbd"},
+			wantErr: `If you meant a boolean flag, use --<flag>=true`,
 		},
 		{
 			name: "positional absent but flag set is fine",

@@ -460,8 +460,12 @@ func (s *Service) DeployVCS(appID, sha, configPath string) (*VCSDeployResponse, 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// I27-Z: return a typed *APIError so callers' --json error path
+	// (cmd/apps_pull.go:emitJSONError) can flatten the conductor body
+	// into the outer envelope instead of double-encoding it as a
+	// quoted string inside `{error: "...API error (400): {\"error\":..."}`.
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	var result VCSDeployResponse

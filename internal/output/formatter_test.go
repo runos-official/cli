@@ -324,4 +324,18 @@ func TestUnwrapArrayEnvelope(t *testing.T) {
 			}
 		}
 	})
+	// I27-AA: Conductor 17.10.0 wrapped the three remaining bare-array
+	// readers the I27-T sweep missed: services_dependents,
+	// apps/:id/dependencies, services/:type/:id/dependencies. The CLI's
+	// shape-keyed unwrapper already handles them; this sub-test pins
+	// the closure.
+	t.Run("iter-27 R2 dependents / dependencies envelopes unwrap", func(t *testing.T) {
+		for _, key := range []string{"dependents", "dependencies"} {
+			in := `{"` + key + `":[{"alias":"shared-cache","id":"fjd9r"}]}`
+			got := string(unwrapArrayEnvelope([]byte(in)))
+			if got != `[{"alias":"shared-cache","id":"fjd9r"}]` {
+				t.Errorf("envelope key %q: got %q", key, got)
+			}
+		}
+	})
 }

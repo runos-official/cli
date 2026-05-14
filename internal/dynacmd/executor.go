@@ -1506,6 +1506,30 @@ func validateInputValues(args []string, cmdDef manifest.Command, body map[string
 				return fmt.Errorf("--since %d seconds exceeds the %d-second (90-day) cap; pod log retention rotates well before that. Pass a smaller window or omit --since for the default", since, podLogsSinceCapSeconds)
 			}
 		}
+		// I27-AB: refuse `--tail 0` on pod-logs verbs. Kubelet's `--tail=0`
+		// is "use default" rather than "no entries", so a CLI caller asking
+		// for zero entries gets exactly one entry back, which surprises
+		// every reasonable consumer. The negative-int gate above already
+		// catches < 0; this gate plugs the only remaining ambiguous slot.
+		// Bound is pod-logs-only so non-logs integer fields (replicas: 0
+		// for scale-to-zero, since: 0 meaning "from the start") are
+		// untouched.
+		if isPodLogsCommand(cmdDef.Command) && field.Name == "tail" {
+			if v, ok := body[field.Name]; ok {
+				zero := false
+				switch n := v.(type) {
+				case int:
+					zero = n == 0
+				case int64:
+					zero = n == 0
+				case float64:
+					zero = n == 0
+				}
+				if zero {
+					return fmt.Errorf("--tail 0 is ambiguous (kubelet treats it as 'use default', returning ~1 entry). Pass --tail >= 1 to limit the slice, or omit --tail for the default")
+				}
+			}
+		}
 		// Empty-required rule for positional fields. Resolve the
 		// effective value: positional slot first, then body (flag).
 		// Integer- and boolean-typed positional flags (I12-I — e.g.
@@ -1680,10 +1704,40 @@ func validatePositionalFlagAgreement(args []string, cmdDef manifest.Command, bod
 			continue
 		}
 		if flagStr != posVal {
+			// I27-AC: a positional value of literal `true`/`false` almost
+			// always means the user wrote a boolean flag in space-form
+			// (e.g. `--enabled false`). Cobra parses `--enabled` as
+			// no-value (true by presence) and the next token lands in the
+			// positional slot, which then collides with whatever the
+			// caller actually intended for the positional. Append a
+			// pointer at the equals-form so the user isn't chasing the
+			// wrong end of the diagnostic.
+			if (posVal == "true" || posVal == "false") && hasBoolFlag(cmdDef) {
+				return fmt.Errorf("ambiguous %s: positional %q and --%s=%q disagree; pass only one. If you meant a boolean flag, use --<flag>=%s (equals-form); space-separated values land in the next positional slot", field.Name, posVal, flagNameFor(field.Name), flagStr, posVal)
+			}
 			return fmt.Errorf("ambiguous %s: positional %q and --%s=%q disagree; pass only one", field.Name, posVal, flagNameFor(field.Name), flagStr)
 		}
 	}
 	return nil
+}
+
+// hasBoolFlag reports whether cmdDef declares any boolean Flag, which is
+// the precondition for the I27-AC "did you mean --flag=value?" hint.
+// Object/string fields don't trigger the hint because their space-form
+// works fine; the surprise is specific to no-value cobra booleans.
+func hasBoolFlag(cmdDef manifest.Command) bool {
+	if cmdDef.Input == nil {
+		return false
+	}
+	if len(cmdDef.Input.Flags) > 0 {
+		return true
+	}
+	for _, f := range cmdDef.Input.Fields {
+		if f.Type == "boolean" {
+			return true
+		}
+	}
+	return false
 }
 
 // positionalArgForField returns the value passed at the positional slot
