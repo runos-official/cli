@@ -74,8 +74,9 @@ Examples:
   runos apps pull --app-id appid4 --cid mycluster3                       # first-time pull (creates runos.mycluster3.appid4/)
   runos apps pull --app-id appid4 --out . --code                  # first-time, flat into cwd
   runos apps pull <yaml> --code-version 9e2c1f0b --force         # restore a specific source version`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runAppsPull,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runAppsPull,
 }
 
 func init() {
@@ -316,7 +317,7 @@ func runAppsPull(cmd *cobra.Command, args []string) (rerr error) {
 		}
 	}
 
-	plan, err := resolvePullPlan(args, all, appIDFlag, outFlag, ctx.cid, ctx.cfg.AccountID)
+	plan, err := resolvePullPlan(args, all, appIDFlag, outFlag, ctx.cid, ctx.cidExplicit, ctx.cfg.AccountID)
 	if err != nil {
 		return err
 	}
@@ -523,7 +524,7 @@ func (p pullPlan) forceSuffixedYaml() bool {
 // as the cross-check value for yaml-positional / auto-detect modes
 // (when non-empty). Pass "" to skip the cross-check; the caller binds
 // to plan.yamlCID afterwards.
-func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, expectedAID string) (pullPlan, error) {
+func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID string, cidExplicit bool, expectedAID string) (pullPlan, error) {
 	if all && len(args) > 0 {
 		return pullPlan{}, fmt.Errorf("--all and a positional yaml file are mutually exclusive")
 	}
@@ -609,8 +610,8 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID, e
 		if localApp.AID != expectedAID {
 			return pullPlan{}, fmt.Errorf("yaml is for account %q but you're logged in as %q", localApp.AID, expectedAID)
 		}
-		if expectedCID != "" && localApp.CID != expectedCID {
-			return pullPlan{}, fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q", localApp.CID, expectedCID)
+		if cidExplicit && expectedCID != "" && localApp.CID != expectedCID {
+			return pullPlan{}, fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid is %q", localApp.CID, expectedCID)
 		}
 		if appIDFlag != "" && appIDFlag != localApp.ID {
 			return pullPlan{}, fmt.Errorf("--app-id %q doesn't match the yaml's id %q", appIDFlag, localApp.ID)

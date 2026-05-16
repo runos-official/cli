@@ -17,6 +17,20 @@ var appsCmd = &cobra.Command{
 	Use:   "apps",
 	Short: "Manage applications",
 	Long:  `Manage RunOS applications. Dynamic subcommands (list, show, logs, etc.) come from the manifest; "pull" is a static subcommand that downloads running app config to local YAML.`,
+	// Reject unknown subcommands with a non-zero exit so typos like
+	// `runos apps typoo` fail CI gates instead of silently printing help
+	// and exiting 0. Cobra's default legacyArgs validator only fires the
+	// "unknown command" error on the root (`!HasParent()`), leaving every
+	// intermediate parent silently permissive. Setting Args alone is not
+	// enough: cobra short-circuits non-runnable commands to help BEFORE
+	// ValidateArgs (command.go:955), so the parent must also have a RunE
+	// for the Args check to fire. The RunE only runs when args=[] (Args
+	// rejects everything else first), in which case we replicate cobra's
+	// default no-args behaviour by printing help with exit 0.
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	},
 }
 
 func init() {
@@ -28,12 +42,19 @@ func init() {
 
 // appsCmdContext is the request setup shared by every apps subcommand:
 // loaded config, an auth token, the resolved cluster id, and a Service
-// configured against them.
+// configured against them. cidExplicit records whether `cid` came from
+// the user-supplied --cid flag (true) or fell back to the default
+// cluster (false). bindToYAML / resolvePullPlan use it to decide
+// whether a yaml whose `cid:` doesn't match should refuse (explicit
+// mismatch is a real user error) or silently adopt the yaml's cid
+// (implicit default + yaml-positional means "use the yaml's cluster",
+// per `apps pull --help`). Issue 83.
 type appsCmdContext struct {
-	cfg   *config.Config
-	token string
-	cid   string
-	svc   *apps.Service
+	cfg         *config.Config
+	token       string
+	cid         string
+	cidExplicit bool
+	svc         *apps.Service
 }
 
 // prepareAppsCmd loads config, fetches a fresh ID token, and reads --cid
@@ -58,14 +79,16 @@ func prepareAppsCmd(cmd *cobra.Command) (*appsCmdContext, error) {
 		return nil, fmt.Errorf("authentication required: run 'runos login' or set RUNOS_API_KEY (%w)", err)
 	}
 	cid, _ := cmd.Flags().GetString("cid")
+	cidExplicit := cmd.Flags().Changed("cid") && cid != ""
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
 	}
 	cfg.AccountID = aid
 	ctx := &appsCmdContext{
-		cfg:   cfg,
-		token: token,
-		cid:   cid,
+		cfg:         cfg,
+		token:       token,
+		cid:         cid,
+		cidExplicit: cidExplicit,
 	}
 	if cid != "" {
 		ctx.svc = apps.NewService(cfg.GetAPIURL(), token, cid, aid)
@@ -73,24 +96,48 @@ func prepareAppsCmd(cmd *cobra.Command) (*appsCmdContext, error) {
 	return ctx, nil
 }
 
-// bindToYAML adopts the cid declared in a loaded yaml. When the user
-// also passed --cid (or had a default set), the two must match — this
-// is the cross-cluster-push guard. When no cid was set at all, the yaml
-// is treated as the source of truth so users can run sync/diff against
-// any committed yaml without redundantly naming the cluster.
-//
-// On success the Service is constructed (or kept) and ctx.cid is final.
+// bindToYAML adopts the cid declared in a loaded yaml. Resolution
+// rules are in reconcileCIDWithYAML; this method also rebuilds the
+// Service if the cid changed.
 func (c *appsCmdContext) bindToYAML(yamlCID string) error {
-	switch {
-	case c.cid == "":
-		c.cid = yamlCID
-	case c.cid != yamlCID:
-		return fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid (or default) is %q, refusing to push to a different cluster than expected", yamlCID, c.cid)
+	resolved, err := reconcileCIDWithYAML(c.cid, c.cidExplicit, yamlCID)
+	if err != nil {
+		return err
+	}
+	if resolved != c.cid {
+		c.cid = resolved
+		c.svc = nil
 	}
 	if c.svc == nil {
 		c.svc = apps.NewService(c.cfg.GetAPIURL(), c.token, c.cid, c.cfg.AccountID)
 	}
 	return nil
+}
+
+// reconcileCIDWithYAML decides which cluster id to use given a loaded
+// yaml's cid and the user-supplied --cid. Rules:
+//   - ctxCID empty: yaml's cid wins (no cluster context yet).
+//   - ctxCID set, matches yaml: keep it.
+//   - ctxCID set, mismatches yaml, explicit --cid: refuse (cross-
+//     cluster-push guard against typos).
+//   - ctxCID set, mismatches yaml, NOT explicit (came from the default
+//     cluster config): silently adopt the yaml's cid so multi-cluster
+//     users can run pull/sync/diff against any committed yaml without
+//     re-pointing the default cluster. Issue 83.
+//
+// Pure helper so the regression test exercises every branch without a
+// real Service / Config dance.
+func reconcileCIDWithYAML(ctxCID string, cidExplicit bool, yamlCID string) (string, error) {
+	switch {
+	case ctxCID == "":
+		return yamlCID, nil
+	case ctxCID == yamlCID:
+		return ctxCID, nil
+	case !cidExplicit:
+		return yamlCID, nil
+	default:
+		return "", fmt.Errorf("cluster mismatch: yaml is for cluster %q but --cid is %q, refusing to push to a different cluster than expected", yamlCID, ctxCID)
+	}
 }
 
 // requireCID errors when no cid was resolved. Used by commands without

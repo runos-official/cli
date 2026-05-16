@@ -32,11 +32,12 @@ func init() {
 // manifest-driven path the dynamic commands use, so adding a new
 // service type to the manifest lights up automatically here.
 type servicesCmdContext struct {
-	cfg      *config.Config
-	token    string
-	cid      string
-	exec     *dynacmd.Executor
-	manifest *manifest.Manifest
+	cfg         *config.Config
+	token       string
+	cid         string
+	cidExplicit bool
+	exec        *dynacmd.Executor
+	manifest    *manifest.Manifest
 }
 
 // prepareServicesCmd loads config, fetches a fresh ID token, reads
@@ -67,6 +68,7 @@ func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 		return nil, fmt.Errorf("authentication required: run 'runos login' or set RUNOS_API_KEY (%w)", err)
 	}
 	cid, _ := cmd.Flags().GetString("cid")
+	cidExplicit := cmd.Flags().Changed("cid") && cid != ""
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
 	}
@@ -84,26 +86,24 @@ func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 		return nil, fmt.Errorf("load manifest (run 'runos manifest update'?): %w", err)
 	}
 	return &servicesCmdContext{
-		cfg:      cfg,
-		token:    token,
-		cid:      cid,
-		exec:     dynacmd.NewExecutor(cfg.GetAPIURL()),
-		manifest: m,
+		cfg:         cfg,
+		token:       token,
+		cid:         cid,
+		cidExplicit: cidExplicit,
+		exec:        dynacmd.NewExecutor(cfg.GetAPIURL()),
+		manifest:    m,
 	}, nil
 }
 
-// bindToYAML adopts the cid declared in a loaded service yaml. When
-// the user also passed --cid (or had a default set), the two must
-// match. When neither was set, the yaml is the source of truth so
-// users can run sync/diff against any committed yaml without naming
-// the cluster again.
+// bindToYAML adopts the cid declared in a loaded service yaml.
+// Resolution rules in reconcileCIDWithYAML (shared with appsCmdContext).
+// Issue 83.
 func (c *servicesCmdContext) bindToYAML(yamlCID string) error {
-	switch {
-	case c.cid == "":
-		c.cid = yamlCID
-	case c.cid != yamlCID:
-		return fmt.Errorf("cluster mismatch: yaml is for %q but --cid (or default) is %q", yamlCID, c.cid)
+	resolved, err := reconcileCIDWithYAML(c.cid, c.cidExplicit, yamlCID)
+	if err != nil {
+		return err
 	}
+	c.cid = resolved
 	return nil
 }
 

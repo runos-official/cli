@@ -194,7 +194,7 @@ servicePortMappings:
 			wantErr:     "doesn't match the yaml",
 		},
 		{
-			name:        "yaml on wrong cluster → error",
+			name:        "yaml on wrong cluster (explicit --cid) → error",
 			args:        []string{yamlPath},
 			expectedCID: "k1",
 			expectedAID: "myacct",
@@ -229,7 +229,7 @@ servicePortMappings:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolvePullPlan(tt.args, tt.all, tt.appIDFlag, tt.outFlag, tt.expectedCID, tt.expectedAID)
+			got, err := resolvePullPlan(tt.args, tt.all, tt.appIDFlag, tt.outFlag, tt.expectedCID, true, tt.expectedAID)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -258,6 +258,50 @@ servicePortMappings:
 	}
 }
 
+// Regression for issue 83: when --cid wasn't explicitly passed (cidExplicit
+// is false) and the user's default cluster differs from the yaml's cid,
+// `apps pull <yaml>` used to refuse with a "cluster mismatch" error
+// instead of honouring its own --help promise that the yaml's cid is
+// authoritative. The fix lifts the mismatch refusal when cidExplicit is
+// false; the yaml's cid wins silently for the duration of the command.
+func TestResolvePullPlan_Issue83_ImplicitCidUsesYamlCID(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "runos.yaml")
+	yaml := []byte(`app: greenfingers
+deployType: cli
+id: appid4
+cid: mycluster3
+aid: myacct
+replicas: 1
+servicePortMappings:
+    - port: 8080
+      standardHttps: true
+`)
+	if err := os.WriteFile(yamlPath, yaml, 0644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	// cidExplicit=false simulates the user having `mycluster2` as their
+	// default cluster while running `runos apps pull <yaml-for-mycluster3>`.
+	plan, err := resolvePullPlan([]string{yamlPath}, false, "", "", "mycluster2", false, "myacct")
+	if err != nil {
+		t.Fatalf("expected the yaml's cid to win silently, got %v", err)
+	}
+	if plan.yamlCID != "mycluster3" {
+		t.Errorf("plan.yamlCID = %q, want mycluster3 (the yaml's cid)", plan.yamlCID)
+	}
+
+	// cidExplicit=true must still refuse so the cross-cluster-push
+	// guard catches the user who actually typed the wrong --cid.
+	_, err = resolvePullPlan([]string{yamlPath}, false, "", "", "mycluster2", true, "myacct")
+	if err == nil {
+		t.Fatal("explicit --cid mismatch should still error")
+	}
+	if !strings.Contains(err.Error(), "cluster mismatch") {
+		t.Errorf("explicit-mismatch error %q should say 'cluster mismatch'", err)
+	}
+}
+
 func TestResolvePullPlan_AutoDetectFromCwd(t *testing.T) {
 	dir := t.TempDir()
 	// Single valid candidate.
@@ -283,7 +327,7 @@ replicas: 1
 	// chdir'd cwd byte-for-byte).
 	resolvedCwd, _ := os.Getwd()
 
-	plan, err := resolvePullPlan(nil, false, "", "", "mycluster3", "myacct")
+	plan, err := resolvePullPlan(nil, false, "", "", "mycluster3", true, "myacct")
 	if err != nil {
 		t.Fatalf("auto-detect with single candidate failed: %v", err)
 	}
@@ -311,7 +355,7 @@ replicas: 1
 
 	t.Chdir(dir)
 
-	_, err := resolvePullPlan(nil, false, "", "", "mycluster3", "myacct")
+	_, err := resolvePullPlan(nil, false, "", "", "mycluster3", true, "myacct")
 	if err == nil {
 		t.Fatal("expected ambiguity error")
 	}
@@ -341,7 +385,7 @@ replicas: 1
 	t.Chdir(dir)
 	resolvedCwd, _ := os.Getwd()
 
-	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", true, "myacct")
 	if err != nil {
 		t.Fatalf("resolvePullPlan with matching cwd yaml: %v", err)
 	}
@@ -371,7 +415,7 @@ replicas: 1
 	t.Chdir(dir)
 	resolvedCwd, _ := os.Getwd()
 
-	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", true, "myacct")
 	if err != nil {
 		t.Fatalf("resolvePullPlan: %v", err)
 	}
@@ -388,7 +432,7 @@ func TestResolvePullPlan_AppIDCreatesSubdirWhenCwdEmpty(t *testing.T) {
 	t.Chdir(dir)
 	resolvedCwd, _ := os.Getwd()
 
-	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", "myacct")
+	plan, err := resolvePullPlan(nil, false, "appid1", "", "mycluster2", true, "myacct")
 	if err != nil {
 		t.Fatalf("resolvePullPlan: %v", err)
 	}
@@ -402,7 +446,7 @@ func TestResolvePullPlan_AutoDetectNoCandidates(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	_, err := resolvePullPlan(nil, false, "", "", "mycluster3", "myacct")
+	_, err := resolvePullPlan(nil, false, "", "", "mycluster3", true, "myacct")
 	if err == nil {
 		t.Fatal("expected error for no candidates")
 	}
