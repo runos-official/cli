@@ -58,6 +58,117 @@ func TestFormatObject_ForwardCompatAppendsUnknownFields(t *testing.T) {
 	}
 }
 
+// Regression: `runos jobs show <id>` rendered blank `createdAt :` and
+// `error :` rows when the API response omitted those keys, while --json
+// (correctly) omitted them entirely. The text formatter now skips
+// declared top-level fields that aren't present in the response so the
+// two surfaces report the same field set.
+func TestFormatObject_SkipsDeclaredTopLevelFieldsAbsentFromResponse(t *testing.T) {
+	body := []byte(`{
+		"id": "19ebbdcd-e8a1-437c-8a62-363a5ac81dbc",
+		"name": "deploy.cli",
+		"type": "deploy",
+		"status": "succeeded",
+		"progress": 100,
+		"currentStep": "rollout"
+	}`)
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{
+		{Name: "id"},
+		{Name: "name"},
+		{Name: "type"},
+		{Name: "status"},
+		{Name: "progress"},
+		{Name: "currentStep"},
+		{Name: "error"},
+		{Name: "createdAt"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	for _, want := range []string{"id", "name", "type", "status", "progress", "currentStep"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("present field %q missing from output:\n%s", want, out)
+		}
+	}
+	for _, absent := range []string{"error", "createdAt"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("absent field %q should be skipped but appears in output:\n%s", absent, out)
+		}
+	}
+}
+
+// Guard: a top-level field that IS present (even with a falsy/empty
+// value) should still render so the user sees the value the API
+// returned. The skip rule keys on key presence, not value emptiness.
+func TestFormatObject_PresentFieldWithEmptyStringValueStillRenders(t *testing.T) {
+	body := []byte(`{
+		"id": "abc",
+		"error": ""
+	}`)
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{
+		{Name: "id"},
+		{Name: "error"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	if !strings.Contains(out, "error") {
+		t.Errorf("error key present with empty value should still render:\n%s", out)
+	}
+}
+
+// Regression: pre-fix, formatNestedObject's default branch iterated
+// `for k := range obj` which the Go spec leaves non-deterministic.
+// `agents list` rendered different field orders on consecutive runs
+// (`online=true, version=0.14.8, updateAvailable=false` vs.
+// `version=0.14.8, updateAvailable=false, online=true`), breaking
+// screenshot/diff comparisons. The default branch now sorts keys to
+// match JSON's alphabetical contract.
+func TestFormatNestedObject_DeterministicKeyOrder(t *testing.T) {
+	obj := map[string]any{
+		"online":          true,
+		"version":         "0.14.8",
+		"updateAvailable": false,
+		"createdAt":       "2026-05-13T01:00:00Z",
+	}
+	first := formatNestedObject(obj, 0)
+	// Repeat with the same input. A non-deterministic iteration would
+	// flip on at least one of these iterations in practice; with the
+	// fix every call returns the same string.
+	for i := 0; i < 200; i++ {
+		got := formatNestedObject(obj, 0)
+		if got != first {
+			t.Fatalf("non-deterministic output on iteration %d:\n  first: %s\n  got:   %s", i, first, got)
+		}
+	}
+	// Alphabetical order: createdAt, online, updateAvailable, version.
+	wantSubstrings := []string{
+		"createdAt=",
+		"online=true",
+		"updateAvailable=false",
+		"version=0.14.8",
+	}
+	for i, sub := range wantSubstrings {
+		idx := strings.Index(first, sub)
+		if idx < 0 {
+			t.Errorf("output %q missing %q", first, sub)
+			continue
+		}
+		if i > 0 {
+			prev := strings.Index(first, wantSubstrings[i-1])
+			if idx < prev {
+				t.Errorf("output %q has %q before %q (want alphabetical)", first, sub, wantSubstrings[i-1])
+			}
+		}
+	}
+}
+
 // captureStdout swaps os.Stdout for a pipe, runs fn, restores stdout,
 // and returns whatever fn printed. Helper for testing print-based
 // formatters without refactoring them to take an io.Writer.
@@ -175,6 +286,177 @@ func TestGetNestedValue_LegacyDocIDPresentInResponse(t *testing.T) {
 	item := map[string]any{"__docId": "legacy", "id": "abc12"}
 	if got := getNestedValue(item, "__docId"); got != "legacy" {
 		t.Errorf(`getNestedValue("__docId") = %v, want "legacy" (no alias when key exists)`, got)
+	}
+}
+
+// Regression test for the `runos apps list` empty PORT column bug.
+//
+// The apps_list / apps_show manifest entries declare a flat `port`
+// field, but conductor's response carries `servicePortMappings: [{port,
+// ...}]` instead, so a direct `port` lookup returned nil and the PORT
+// column rendered blank for every row. The formatter now derives the
+// printable value from the array when the flat lookup misses.
+func TestDerivePortFromServicePortMappings(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want any
+	}{
+		{
+			name: "missing servicePortMappings key returns nil so unrelated commands stay blank",
+			in:   map[string]any{"id": "x"},
+			want: nil,
+		},
+		{
+			name: "empty array returns nil (no usable port)",
+			in:   map[string]any{"servicePortMappings": []any{}},
+			want: nil,
+		},
+		{
+			name: "single mapping renders as bare port string",
+			in: map[string]any{"servicePortMappings": []any{
+				map[string]any{"port": float64(3000), "standardHttps": true},
+			}},
+			want: "3000",
+		},
+		{
+			name: "multiple mappings comma-join in declared order",
+			in: map[string]any{"servicePortMappings": []any{
+				map[string]any{"port": float64(3000)},
+				map[string]any{"port": float64(8080)},
+			}},
+			want: "3000,8080",
+		},
+		{
+			name: "entries without a port key are skipped",
+			in: map[string]any{"servicePortMappings": []any{
+				map[string]any{"standardHttps": true},
+				map[string]any{"port": float64(9090)},
+			}},
+			want: "9090",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := derivePortFromServicePortMappings(tc.in)
+			if got != tc.want {
+				t.Errorf("derivePortFromServicePortMappings = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Integration with getNestedValue: a `port` lookup that misses the flat
+// key but hits the servicePortMappings fallback returns the derived
+// value, while a `port` lookup on an item that has neither returns nil.
+func TestGetNestedValue_PortFallsBackToServicePortMappings(t *testing.T) {
+	item := map[string]any{
+		"id":   "d2eow",
+		"name": "iter14-app",
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(3000), "standardHttps": true},
+		},
+	}
+	if got := getNestedValue(item, "port"); got != "3000" {
+		t.Errorf(`getNestedValue("port") = %v, want "3000" (derived from servicePortMappings)`, got)
+	}
+	// When a flat `port` key is present, it wins; the fallback is only
+	// consulted on a nil result.
+	itemWithFlatPort := map[string]any{"port": float64(8080), "servicePortMappings": []any{
+		map[string]any{"port": float64(3000)},
+	}}
+	if got := getNestedValue(itemWithFlatPort, "port"); got != float64(8080) {
+		t.Errorf(`flat "port" should win over fallback, got %v`, got)
+	}
+}
+
+// Regression test for the long-NAME column blow-out bug: a single
+// ~250-char value (api-key NAME, in the wild) pushed every following
+// column hundreds of chars right. truncateCell caps at 40 visible
+// runes in text mode; --json keeps the full value (asserted in the
+// formatter integration test below).
+func TestTruncateCell(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"short string passes through", "abc", 40, "abc"},
+		{"exact-length passes through", "12345", 5, "12345"},
+		{"one over caps with ellipsis", "123456", 5, "12..."},
+		{"long ascii truncated", strings.Repeat("a", 250), 40, strings.Repeat("a", 37) + "..."},
+		{"empty string is empty", "", 40, ""},
+		{"max<=3 is a no-op (no room for ellipsis)", "abcdef", 3, "abcdef"},
+		// Multi-byte runes: cap by runes, not bytes, so the truncation
+		// boundary doesn't split a character mid-codepoint.
+		{"multi-byte rune string truncates by rune count", strings.Repeat("é", 50), 10, strings.Repeat("é", 7) + "..."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateCell(tc.in, tc.max)
+			if got != tc.want {
+				t.Errorf("truncateCell(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+		})
+	}
+}
+
+// Integration check on formatArray: a long NAME value in one row must
+// not push subsequent columns out of alignment. After truncation every
+// row's NAME column is exactly maxTextCellWidth wide, so column N
+// starts at the same x-offset on every row.
+func TestFormatArray_TruncatesOversizedCellsAndPreservesAlignment(t *testing.T) {
+	body := []byte(`[
+		{"id":"a1","name":"` + strings.Repeat("x", 250) + `","status":"active"},
+		{"id":"b2","name":"short-name","status":"revoked"}
+	]`)
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "array", Fields: []manifest.OutputField{
+		{Name: "id"}, {Name: "name"}, {Name: "status"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	if strings.Contains(out, strings.Repeat("x", 250)) {
+		t.Errorf("expected NAME truncation; full 250-char value still present in text output")
+	}
+	if !strings.Contains(out, strings.Repeat("x", 37)+"...") {
+		t.Errorf("expected truncated NAME ending in `...`; got:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected header + separator + 2 rows, got %d lines:\n%s", len(lines), out)
+	}
+	statusCol := strings.Index(lines[0], "STATUS")
+	if statusCol < 0 {
+		t.Fatalf("STATUS column missing from header: %q", lines[0])
+	}
+	for _, line := range lines[2:] {
+		if !strings.HasPrefix(line[statusCol:], "active") && !strings.HasPrefix(line[statusCol:], "revoked") {
+			t.Errorf("row %q: STATUS not at column %d", line, statusCol)
+		}
+	}
+}
+
+// --json output bypasses the truncation path so machine consumers get
+// the full untruncated value. Asserts the contract called out in the
+// fix: text mode truncates, JSON preserves.
+func TestFormat_JSONPreservesFullValueWhenTextWouldTruncate(t *testing.T) {
+	body := []byte(`[{"id":"a1","name":"` + strings.Repeat("x", 250) + `"}]`)
+	f := NewFormatter(true)
+	def := &manifest.Output{Type: "array", Fields: []manifest.OutputField{
+		{Name: "id"}, {Name: "name"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	if !strings.Contains(out, strings.Repeat("x", 250)) {
+		t.Errorf("expected full 250-char NAME in --json output; got truncated")
 	}
 }
 
@@ -338,4 +620,112 @@ func TestUnwrapArrayEnvelope(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Regression for issue 38: `services postgresql users <id>` returns a
+// two-key envelope (`{users:[...], orphanSecretsDetected:[]}`) so the
+// shape-keyed single-key unwrap can't pick the primary array. The
+// formatter's fallback printed the raw minified JSON to the terminal.
+// pickArrayFromMultiKeyEnvelope uses the manifest's declared fields to
+// pick the array whose elements carry at least one declared field name.
+func TestPickArrayFromMultiKeyEnvelope(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		fields []string
+		want   string
+	}{
+		{
+			name:   "postgresql users two-key envelope picks users array",
+			body:   `{"users":[{"username":"u","databases":["d"]}],"orphanSecretsDetected":[]}`,
+			fields: []string{"username", "databases"},
+			want:   `[{"username":"u","databases":["d"]}]`,
+		},
+		{
+			name:   "field match wins over array length",
+			body:   `{"users":[{"username":"u"}],"orphanSecretsDetected":[{"name":"a"},{"name":"b"},{"name":"c"}]}`,
+			fields: []string{"username", "databases"},
+			want:   `[{"username":"u"}]`,
+		},
+		{
+			name:   "empty arrays fall back to lexicographic order",
+			body:   `{"users":[],"orphanSecretsDetected":[]}`,
+			fields: []string{"username", "databases"},
+			want:   `[]`,
+		},
+		{
+			name:   "single-key envelope is left for unwrapArrayEnvelope",
+			body:   `{"users":[{"username":"u"}]}`,
+			fields: []string{"username", "databases"},
+			want:   `{"users":[{"username":"u"}]}`,
+		},
+		{
+			name:   "no fields hint returns input unchanged",
+			body:   `{"users":[{"username":"u"}],"orphanSecretsDetected":[]}`,
+			fields: nil,
+			want:   `{"users":[{"username":"u"}],"orphanSecretsDetected":[]}`,
+		},
+		{
+			name:   "bare array returns unchanged",
+			body:   `[{"username":"u"}]`,
+			fields: []string{"username"},
+			want:   `[{"username":"u"}]`,
+		},
+		{
+			name:   "no top-level array fields returns unchanged",
+			body:   `{"meta":{"count":1},"version":2}`,
+			fields: []string{"username"},
+			want:   `{"meta":{"count":1},"version":2}`,
+		},
+		{
+			name:   "dotted manifest fields match top-level segment",
+			body:   `{"items":[{"flags":{"systemInstance":true}}],"orphans":[]}`,
+			fields: []string{"flags.systemInstance"},
+			want:   `[{"flags":{"systemInstance":true}}]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(pickArrayFromMultiKeyEnvelope([]byte(tc.body), tc.fields))
+			if got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// End-to-end through the formatter: the postgresql users response renders
+// as a tabular text view (header + row), not raw JSON. This is the user-
+// visible promise from the bug report.
+func TestFormatArray_PostgresUsersMultiKeyEnvelope(t *testing.T) {
+	body := []byte(`{"users":[{"username":"harbor_kmb6g","databases":["harbor_kmb6g"]}],"orphanSecretsDetected":[]}`)
+	def := &manifest.Output{Type: "array", Fields: []manifest.OutputField{
+		{Name: "username"},
+		{Name: "databases"},
+	}}
+
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = stdout })
+
+	if err := NewFormatter(false).Format(body, def); err != nil {
+		w.Close()
+		t.Fatalf("Format returned err=%v", err)
+	}
+	w.Close()
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	got := buf.String()
+
+	if strings.Contains(got, "orphanSecretsDetected") {
+		t.Errorf("formatter leaked raw JSON envelope; got:\n%s", got)
+	}
+	if !strings.Contains(got, "USERNAME") {
+		t.Errorf("expected table header USERNAME, got:\n%s", got)
+	}
+	if !strings.Contains(got, "harbor_kmb6g") {
+		t.Errorf("expected row containing harbor_kmb6g, got:\n%s", got)
+	}
 }

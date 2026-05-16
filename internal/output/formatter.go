@@ -49,6 +49,87 @@ func unwrapArrayEnvelope(data []byte) []byte {
 	return data
 }
 
+// pickArrayFromMultiKeyEnvelope handles the multi-key sibling of
+// unwrapArrayEnvelope: when the response is `{primary:[...], aux:[...]}`
+// (e.g. `services/postgresql/{id}/users` returns
+// `{users:[{username, databases}], orphanSecretsDetected:[]}`), the
+// single-key unwrap leaves the data as an object and the formatter falls
+// back to raw JSON. This helper picks the array whose elements carry at
+// least one of the manifest's declared field names, since the manifest
+// declared `type: "array"` and named those fields specifically for that
+// list. Empty arrays cannot be disambiguated by field membership, so on
+// a tie the helper prefers the longest array, then breaks remaining ties
+// by lexicographic key order for determinism. Returns data unchanged
+// when the input is not an object, when no top-level field is an array,
+// or when no manifest fields are declared (in which case the legacy
+// single-key path is the only safe inference).
+func pickArrayFromMultiKeyEnvelope(data []byte, fields []string) []byte {
+	if len(fields) == 0 {
+		return data
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return data
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return data
+	}
+	if len(probe) < 2 {
+		return data
+	}
+
+	declared := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		// Manifest fields can be dotted (`flags.systemInstance`); match
+		// on the top-level segment for membership against an item's keys.
+		top := f
+		if dot := strings.IndexByte(top, '.'); dot >= 0 {
+			top = top[:dot]
+		}
+		declared[top] = struct{}{}
+	}
+
+	type candidate struct {
+		key     string
+		raw     json.RawMessage
+		items   []map[string]any
+		matches int
+	}
+	var arrays []candidate
+	for k, v := range probe {
+		vt := bytes.TrimSpace(v)
+		if len(vt) == 0 || vt[0] != '[' {
+			continue
+		}
+		c := candidate{key: k, raw: v}
+		if err := json.Unmarshal(v, &c.items); err == nil {
+			for _, it := range c.items {
+				for itemKey := range it {
+					if _, ok := declared[itemKey]; ok {
+						c.matches++
+					}
+				}
+			}
+		}
+		arrays = append(arrays, c)
+	}
+	if len(arrays) == 0 {
+		return data
+	}
+
+	sort.Slice(arrays, func(i, j int) bool {
+		if arrays[i].matches != arrays[j].matches {
+			return arrays[i].matches > arrays[j].matches
+		}
+		if len(arrays[i].items) != len(arrays[j].items) {
+			return len(arrays[i].items) > len(arrays[j].items)
+		}
+		return arrays[i].key < arrays[j].key
+	})
+	return arrays[0].raw
+}
+
 // NewFormatter creates a new output formatter
 func NewFormatter(jsonOutput bool) *Formatter {
 	return &Formatter{jsonOutput: jsonOutput}
@@ -105,8 +186,17 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	data = unwrapArrayEnvelope(data)
 	var items []map[string]any
 	if err := json.Unmarshal(data, &items); err != nil {
-		fmt.Println(string(data))
-		return nil
+		// Sibling path to unwrapArrayEnvelope: some list endpoints
+		// (services/postgresql/{id}/users, for example) return a
+		// multi-key envelope where the primary array sits beside an
+		// auxiliary diagnostic field. The shape-keyed single-key
+		// unwrap can't disambiguate, so the manifest's declared field
+		// list is used to pick the array whose elements match.
+		data = pickArrayFromMultiKeyEnvelope(data, fields)
+		if err2 := json.Unmarshal(data, &items); err2 != nil {
+			fmt.Println(string(data))
+			return nil
+		}
 	}
 
 	if len(items) == 0 {
@@ -149,13 +239,23 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 		headers[i] = headerLabel(displayNames[i])
 		widths[i] = len(headers[i])
 	}
-	for _, item := range items {
+	// Pre-truncate every cell so a single outsized value (e.g. a
+	// ~250-char api-key NAME) cannot push every other column hundreds
+	// of chars right. The cap applies in text mode only; --json still
+	// emits the full untruncated value so machine consumers keep the
+	// raw data. Truncated cells render as `<first N-3 chars>...` and
+	// the width calculation honours the truncated string.
+	cells := make([][]string, len(items))
+	for r, item := range items {
+		row := make([]string, len(fields))
 		for i, field := range fields {
-			val := formatCellValue(getNestedValue(item, field))
+			val := truncateCell(formatCellValue(getNestedValue(item, field)), maxTextCellWidth)
+			row[i] = val
 			if len(val) > widths[i] {
 				widths[i] = len(val)
 			}
 		}
+		cells[r] = row
 	}
 
 	// Print header
@@ -167,16 +267,41 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 	fmt.Println(strings.Repeat("-", len(header)))
 
 	// Print rows
-	for _, item := range items {
-		row := ""
-		for i, field := range fields {
-			val := formatCellValue(getNestedValue(item, field))
-			row += fmt.Sprintf("%-*s  ", widths[i], val)
+	for _, row := range cells {
+		line := ""
+		for i, val := range row {
+			line += fmt.Sprintf("%-*s  ", widths[i], val)
 		}
-		fmt.Println(row)
+		fmt.Println(line)
 	}
 
 	return nil
+}
+
+// maxTextCellWidth caps any single cell in a top-level array table at
+// 40 runes. Names, descriptions, and uid strings have surfaced in the
+// wild at 250+ chars and a single such cell pushes every subsequent
+// column hundreds of chars right, making the whole table unreadable
+// without scrolling. 40 is wide enough for typical resource names
+// (`prod-billing-worker-staging`) but narrow enough that a pathological
+// outlier can't dominate. Full values stay available via --json.
+const maxTextCellWidth = 40
+
+// truncateCell returns val unchanged when it fits within max display
+// runes, otherwise returns the first max-3 runes followed by `...`.
+// Counts runes (not bytes) so a string with multi-byte characters
+// truncates at a visible-character boundary instead of mid-rune. Pure
+// helper so the regression test can exercise short / exact / over /
+// multi-byte inputs without a Formatter dance.
+func truncateCell(val string, max int) string {
+	if max <= 3 {
+		return val
+	}
+	runes := []rune(val)
+	if len(runes) <= max {
+		return val
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 func (f *Formatter) formatObject(data []byte, fields []string) error {
@@ -238,6 +363,20 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 	// values and primitive arrays keep their old one-line rendering.
 	// Regression target: I12-E.
 	for i, field := range fields {
+		// Skip declared-but-absent top-level fields so text output
+		// matches --json (which omits keys the response didn't carry).
+		// Pre-fix, `runos jobs show <id>` rendered blank `createdAt :`
+		// and `error :` rows because the manifest declared those fields
+		// but the API response omitted them. Nested paths
+		// (`flags.systemInstance`) keep the prior render-as-blank
+		// behaviour: presence detection on a missing intermediate
+		// segment is ambiguous and the legacy rendering of an empty
+		// nested cell was rarely confusing in practice.
+		if !strings.Contains(field, ".") {
+			if _, present := item[field]; !present {
+				continue
+			}
+		}
 		raw := getNestedValue(item, field)
 		if rows, ok := arrayOfObjects(raw); ok && len(rows) > 0 {
 			label := "entries"
@@ -492,8 +631,64 @@ func getNestedValue(item map[string]any, field string) any {
 				return v
 			}
 		}
+		// `apps_list` / `apps_show` declare a flat `port` field in the
+		// manifest but the response carries `servicePortMappings: [{port,
+		// standardHttps, ...}]` instead, so the formatter previously
+		// rendered the PORT column blank for every row. Derive the
+		// displayed value from the array when the flat lookup misses: a
+		// single mapping renders as that port number, multiple as a
+		// comma-joined list (`3000,8080`). Returns nil if no usable
+		// values were found so unrelated commands that legitimately have
+		// no port surface keep their blank cell.
+		if parts[0] == "port" {
+			if derived := derivePortFromServicePortMappings(item); derived != nil {
+				return derived
+			}
+		}
 	}
 	return current
+}
+
+// derivePortFromServicePortMappings extracts a printable port value
+// from the `servicePortMappings` array on an apps_list / apps_show
+// response. Returns the bare port number when there's exactly one
+// mapping, a comma-joined string when there are several, or nil when
+// the array is absent / empty / carries no usable port values. Pure
+// helper so the regression test can exercise the shape variants
+// (missing key, empty array, single, multiple, non-numeric) without
+// going through getNestedValue.
+func derivePortFromServicePortMappings(item map[string]any) any {
+	raw, ok := item["servicePortMappings"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	var ports []string
+	for _, entry := range arr {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		val, ok := m["port"]
+		if !ok || val == nil {
+			continue
+		}
+		s := formatValueWithIndent(val, 0)
+		if s == "" {
+			continue
+		}
+		ports = append(ports, s)
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	if len(ports) == 1 {
+		return ports[0]
+	}
+	return strings.Join(ports, ",")
 }
 
 func formatValueWithIndent(v any, indent int) string {
@@ -594,10 +789,21 @@ func formatNestedObject(obj map[string]any, indent int) string {
 		}
 	}
 
-	// Default: show all keys as key=value pairs inline
-	var parts []string
-	for k, v := range obj {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, formatValueWithIndent(v, indent)))
+	// Default: show all keys as key=value pairs inline, alphabetised
+	// so the output is deterministic across runs. Pre-fix the default
+	// branch iterated `for k := range obj` which is Go-spec non-
+	// deterministic, making `agents list` render different field orders
+	// on consecutive invocations and breaking screenshot/diff-based
+	// comparisons. JSON output is already alphabetical, so text now
+	// matches that contract.
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, formatValueWithIndent(obj[k], indent)))
 	}
 	return strings.Join(parts, ", ")
 }
