@@ -7,9 +7,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
+	"github.com/runos-official/cli/internal/envfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1252,24 +1252,13 @@ func ResolveLocalEnvPath(appDir, authored, canonical string) (leaf, fullPath str
 	return
 }
 
-// RenderEnvBytes produces the canonical on-disk representation of a set of
-// environment variables: keys sorted alphabetically, KEY=VALUE per line,
-// trailing newline when non-empty. Exposed so the diff command can compare
-// local bytes against what SaveEnv would write without duplicating logic.
+// RenderEnvBytes produces the canonical on-disk representation of a set
+// of environment variables. Delegates to internal/envfile.Format so the
+// produced bytes are lossless under round-trip (newlines, leading and
+// trailing whitespace, and quote characters in values are preserved
+// across pull -> edit -> sync). Keys are emitted in sorted order for
+// stable diffs. Exposed so the diff command can compare local bytes
+// against what SaveEnv would write without duplicating logic. Issue 73.
 func RenderEnvBytes(envVars map[string]string) []byte {
-	keys := make([]string, 0, len(envVars))
-	for k := range envVars {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var lines []string
-	for _, k := range keys {
-		lines = append(lines, fmt.Sprintf("%s=%s", k, envVars[k]))
-	}
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n"
-	}
-	return []byte(content)
+	return envfile.Format(envVars)
 }

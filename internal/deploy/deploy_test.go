@@ -1658,6 +1658,97 @@ domain: example.com
 	})
 }
 
+// TestLoadConfig_RejectsUnknownTopLevelFields pins the strict-yaml fix
+// for issue 50: a typo like `replica` (vs `replicas`), `healtCheck`,
+// or `envVars` used to silently drop, so the deploy exited 0 with the
+// user's intended field never reaching the server. KnownFields(true)
+// in LoadConfig surfaces the typo immediately, naming the offending
+// key. The legitimate `integration:` and `overrides:` blocks written
+// by `runos apps pull` must still parse because the deploy verb
+// round-trips those yamls.
+func TestLoadConfig_RejectsUnknownTopLevelFields(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		mustName string
+	}{
+		{
+			name:     "typo replica vs replicas",
+			yaml:     "app: myapp\nport: 3000\nreplica: 3\n",
+			mustName: "replica",
+		},
+		{
+			name:     "typo healtCheck vs healthCheck",
+			yaml:     "app: myapp\nport: 3000\nhealtCheck: aggressive\n",
+			mustName: "healtCheck",
+		},
+		{
+			name:     "typo envVars (env vars come from a side file)",
+			yaml:     "app: myapp\nport: 3000\nenvVars:\n  FOO: bar\n",
+			mustName: "envVars",
+		},
+		{
+			name:     "wholly unknown field",
+			yaml:     "app: myapp\nport: 3000\nnonsenseField: x\n",
+			mustName: "nonsenseField",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "runos.yaml")
+			writeFile(t, path, tc.yaml)
+
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("expected refusal for yaml with unknown field %q", tc.mustName)
+			}
+			if !contains(err.Error(), tc.mustName) {
+				t.Errorf("error %q does not name the offending field %q", err.Error(), tc.mustName)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_AcceptsPulledYamlPassThroughFields guards the
+// other end of the strict-yaml fix: `runos apps pull` writes
+// `integration:` and `overrides:` blocks that `runos deploy` itself
+// doesn't act on but must accept so the pulled yaml round-trips
+// without hand-editing. Without the PulledIntegration / PulledOverride
+// pass-through types added alongside issue 50, KnownFields(true) would
+// reject every pulled-then-deployed yaml that has VCS integration
+// linked or kubectl overrides configured.
+func TestLoadConfig_AcceptsPulledYamlPassThroughFields(t *testing.T) {
+	const yamlBody = `app: myapp
+port: 3000
+integration:
+  id: gitlab-int-abc
+  repoId: 42
+  repoName: org/myapp
+  branchName: main
+overrides:
+  - id: ovr-1
+    name: extra-config
+    enabled: true
+    local: ./overrides/extra.yaml
+    md5: deadbeef
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	writeFile(t, path, yamlBody)
+
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("pulled-yaml pass-through unexpectedly rejected: %v", err)
+	}
+	if config.Integration == nil || config.Integration.ID != "gitlab-int-abc" {
+		t.Errorf("integration block lost on parse: %+v", config.Integration)
+	}
+	if len(config.Overrides) != 1 || config.Overrides[0].ID != "ovr-1" {
+		t.Errorf("overrides block lost on parse: %+v", config.Overrides)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

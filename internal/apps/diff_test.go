@@ -140,10 +140,10 @@ func TestComputeEnvDiff_DriftShowsChangedVar(t *testing.T) {
 	if got.Status != StatusDrift {
 		t.Errorf("status = %q, want drift", got.Status)
 	}
-	if !strings.Contains(got.UnifiedDiff, "-B=2") || !strings.Contains(got.UnifiedDiff, "+B=NEW") {
+	if !strings.Contains(got.UnifiedDiff, `-B="2"`) || !strings.Contains(got.UnifiedDiff, `+B="NEW"`) {
 		t.Errorf("diff missing changed B:\n%s", got.UnifiedDiff)
 	}
-	if !strings.Contains(got.UnifiedDiff, "+C=3") {
+	if !strings.Contains(got.UnifiedDiff, `+C="3"`) {
 		t.Errorf("diff missing added C:\n%s", got.UnifiedDiff)
 	}
 }

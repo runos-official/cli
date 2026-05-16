@@ -991,7 +991,11 @@ func TestSaveEnv_WritesSortedKeysWith0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env: %v", err)
 	}
-	want = "API_KEY=secret\nDATABASE_URL=postgres://...\nLOG_LEVEL=info\n"
+	// Issue 73: env values are now always written in lossless
+	// double-quoted form so newlines/quotes/leading whitespace round-
+	// trip cleanly through pull -> edit -> sync. The values here are
+	// plain ASCII so the quoting is the only on-disk change.
+	want = "API_KEY=\"secret\"\nDATABASE_URL=\"postgres://...\"\nLOG_LEVEL=\"info\"\n"
 	if string(data) != want {
 		t.Errorf("env content =\n%q\nwant\n%q", data, want)
 	}
@@ -1884,7 +1888,7 @@ func TestSaveEnv_OverwritesWithoutBackup(t *testing.T) {
 		t.Errorf("expected 1 env file, got %d: %v", len(entries), names)
 	}
 	current, _ := os.ReadFile(res.Path)
-	if !strings.Contains(string(current), "A=2") {
+	if !strings.Contains(string(current), `A="2"`) {
 		t.Errorf("current file missing updated content: %q", current)
 	}
 }

@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
+	"github.com/runos-official/cli/internal/envfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -187,6 +188,42 @@ type DeployConfig struct {
 	// --- Legacy shorthand (normalized server-side into ServicePortMappings) ---
 	Port          int   `yaml:"port,omitempty" json:"port,omitempty"`
 	StandardHttps *bool `yaml:"standardHttps,omitempty" json:"standardHttps,omitempty"`
+
+	// --- PulledApp pass-through (parsed-and-ignored by deploy) ---
+	// A yaml produced by `runos apps pull` carries an `integration:` block
+	// for VCS apps and an `overrides:` list when kubectl manifest
+	// overrides are configured. `runos deploy` itself doesn't act on
+	// either — the linked integration is resolved server-side at
+	// deploy time, and overrides are managed via `apps sync`. They're
+	// declared here only so KnownFields(true) yaml decoding (issue 50)
+	// doesn't reject a freshly pulled yaml. Both are suppressed from
+	// the wire body (`json:"-"`); the values stay client-side.
+	Integration *PulledIntegration `yaml:"integration,omitempty" json:"-"`
+	Overrides   []PulledOverride   `yaml:"overrides,omitempty" json:"-"`
+}
+
+// PulledIntegration mirrors apps.Integration as a yaml-only pass-through
+// inside the deploy package (deploy can't import apps without a cycle).
+// Used solely to let `runos deploy` parse a pulled yaml without
+// rejecting the `integration:` block under KnownFields(true). The fields
+// match apps.Integration so a pulled yaml round-trips byte-clean.
+type PulledIntegration struct {
+	ID         string `yaml:"id,omitempty"`
+	RepoID     int64  `yaml:"repoId,omitempty"`
+	RepoName   string `yaml:"repoName,omitempty"`
+	BranchName string `yaml:"branchName,omitempty"`
+}
+
+// PulledOverride mirrors apps.Override for the same yaml-only
+// pass-through reason as PulledIntegration. Kept local to deploy
+// because the deploy verb never inspects the contents — overrides are
+// managed through `runos apps sync` instead.
+type PulledOverride struct {
+	ID      string `yaml:"id"`
+	Name    string `yaml:"name,omitempty"`
+	Enabled bool   `yaml:"enabled"`
+	Local   string `yaml:"local"`
+	MD5     string `yaml:"md5,omitempty"`
 }
 
 // SecretFile is the on-disk declaration of one secret file mounted into
@@ -239,7 +276,19 @@ func LoadConfig(path string) (*DeployConfig, error) {
 	}
 
 	var config DeployConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	// KnownFields(true) makes the decoder fail with a typed error when
+	// the yaml carries a key that isn't on DeployConfig. Pre-fix
+	// (yaml.Unmarshal) silently dropped typos like `replica` (vs
+	// `replicas`), `healtCheck`, `envVars`, so the user saw a deploy
+	// exit 0 and a server that ignored half their config. The strict
+	// decoder names the offending field in the error so the user can
+	// fix the typo immediately. Issue 50.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&config); err != nil {
+		if err == io.EOF {
+			return nil, fmt.Errorf("runos.yaml at %s is empty", path)
+		}
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
@@ -686,8 +735,11 @@ func HasLegacyFields(c *DeployConfig) bool {
 	return false
 }
 
-// LoadEnvFile reads an env file at the given path and returns key-value pairs.
-// Returns nil, nil if the path is empty or the file does not exist.
+// LoadEnvFile reads an env file at the given path and returns key-value
+// pairs. Returns nil, nil if the path is empty or the file does not
+// exist. Uses the lossless dotenv parser in internal/envfile so values
+// with newlines, leading/trailing whitespace, or quote characters
+// round-trip cleanly. Issue 73.
 func LoadEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
@@ -701,43 +753,17 @@ func LoadEnvFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to read %s: %w", filepath.Base(path), err)
 	}
 
-	envVars := make(map[string]string)
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			value = strings.Trim(value, `"'`)
-			envVars[key] = value
-		}
-	}
-
-	return envVars, nil
+	return envfile.Parse(data), nil
 }
 
-// SaveEnvFile writes env vars to the given path.
+// SaveEnvFile writes env vars to the given path using the lossless
+// dotenv format from internal/envfile.
 func SaveEnvFile(path string, envVars map[string]string) error {
 	if path == "" {
 		return fmt.Errorf("env file path is required")
 	}
 
-	var lines []string
-	keys := make([]string, 0, len(envVars))
-	for k := range envVars {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		lines = append(lines, fmt.Sprintf("%s=%s", k, envVars[k]))
-	}
-
-	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(path, envfile.Format(envVars), 0600); err != nil {
 		return fmt.Errorf("failed to write %s: %w", filepath.Base(path), err)
 	}
 

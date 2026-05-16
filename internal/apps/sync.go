@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/runos-official/cli/internal/envfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1429,34 +1430,11 @@ func LoadLocalOverrides(yamlDir string, overrides []Override) ([]LocalOverride, 
 	return out, nil
 }
 
-// parseEnvBytes parses a dotenv-style payload into a map. Tolerant of:
-//   - blank lines
-//   - lines starting with `#` (comments)
-//   - leading/trailing whitespace around key and value
-//   - values wrapped in single or double quotes (stripped)
-//
-// Mirrors deploy.LoadEnvFile so the same `.env` file round-trips through
-// `runos deploy` and `runos apps_*` identically. The plain (config) env
-// file uses the same format and the same parser.
+// parseEnvBytes parses a dotenv-style payload into a map. Delegates to
+// internal/envfile.Parse so the same `.env` file round-trips losslessly
+// through `runos deploy`, `runos apps_pull`, and `runos apps_sync`
+// regardless of whether the values contain newlines, leading/trailing
+// whitespace, or quote characters. Issue 73.
 func parseEnvBytes(b []byte) map[string]string {
-	out := map[string]string{}
-	start := 0
-	for i := 0; i <= len(b); i++ {
-		if i == len(b) || b[i] == '\n' {
-			line := strings.TrimSpace(string(b[start:i]))
-			start = i + 1
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			eq := strings.IndexByte(line, '=')
-			if eq < 0 {
-				continue
-			}
-			key := strings.TrimSpace(line[:eq])
-			value := strings.TrimSpace(line[eq+1:])
-			value = strings.Trim(value, `"'`)
-			out[key] = value
-		}
-	}
-	return out
+	return envfile.Parse(b)
 }
