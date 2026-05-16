@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Parse reads a dotenv-style byte payload and returns the key-value map.
@@ -186,6 +187,51 @@ func Format(envVars map[string]string) []byte {
 		fmt.Fprintf(&b, "%s=%s\n", k, encodeValue(envVars[k]))
 	}
 	return []byte(b.String())
+}
+
+// Validate refuses env-var values that would break downstream YAML
+// serialisation in the cluster agent's kubectl apply path. Bytes that
+// kubectl flags as `yaml: control character` (any C0 control char
+// outside \n \r \t, plus 0x7f DEL) and bytes that don't form valid
+// UTF-8 are rejected with a per-key error so the user sees which
+// variable carries the bad bytes. Issue 87: a .secrets.env with
+// `\x01\x02...\xff\xfe\xfd` got through CLI + conductor intake and
+// failed mid-orchestration; the pre-flight catches it locally.
+//
+// Pure helper for test coverage; callers in deploy / apps sync run
+// this on the resolved env map before sending.
+func Validate(envVars map[string]string) error {
+	keys := make([]string, 0, len(envVars))
+	for k := range envVars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := validateValue(k, envVars[k]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateValue(key, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("env var %q value is not valid UTF-8; check the source file for binary or partial multi-byte content", key)
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		// Allow newline (\n), carriage return (\r), tab (\t). Everything
+		// else below 0x20 is a control char that kubectl YAML-marshal
+		// rejects with "yaml: control character". 0x7f (DEL) is in the
+		// same camp.
+		if c == '\n' || c == '\r' || c == '\t' {
+			continue
+		}
+		if c < 0x20 || c == 0x7f {
+			return fmt.Errorf("env var %q value contains control byte 0x%02x at position %d; allowed control chars are \\n, \\r, \\t only", key, c, i)
+		}
+	}
+	return nil
 }
 
 func encodeValue(v string) string {

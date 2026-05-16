@@ -15,6 +15,7 @@ import (
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
+	"github.com/runos-official/cli/internal/envfile"
 	"github.com/runos-official/cli/internal/git"
 	"github.com/runos-official/cli/internal/jobs"
 	"github.com/runos-official/cli/internal/services"
@@ -378,12 +379,18 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if err != nil {
 		return fmt.Errorf("failed to load secret env file: %w", err)
 	}
+	if err := envfile.Validate(customSecretEnvVars); err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(envPaths.Secret), err)
+	}
 	if customSecretEnvVars != nil {
 		deployConfig.CustomSecretEnvVars = customSecretEnvVars
 	}
 	customEnvVars, err := deploy.LoadEnvFile(envPaths.Plain)
 	if err != nil {
 		return fmt.Errorf("failed to load env file: %w", err)
+	}
+	if err := envfile.Validate(customEnvVars); err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(envPaths.Plain), err)
 	}
 	if customEnvVars != nil {
 		deployConfig.CustomEnvVars = customEnvVars

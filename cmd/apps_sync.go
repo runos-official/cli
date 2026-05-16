@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/runos-official/cli/internal/apps"
+	"github.com/runos-official/cli/internal/envfile"
 	"github.com/runos-official/cli/internal/jobs"
 
 	"github.com/spf13/cobra"
@@ -184,6 +185,17 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 				"Move each key to exactly one file before syncing.",
 			secretEnvName, envName, strings.Join(conflicts, ", "),
 		)
+	}
+
+	// Issue 87: reject control bytes / invalid UTF-8 in env values
+	// before the sync queues a job. Bad bytes pass conductor's intake
+	// and only surface mid-orchestration as "yaml: control character"
+	// from kubectl, leaving the user staring at exit-0-with-jobId.
+	if err := envfile.Validate(localSecretEnv); err != nil {
+		return fmt.Errorf("%s: %w", secretEnvName, err)
+	}
+	if err := envfile.Validate(localEnv); err != nil {
+		return fmt.Errorf("%s: %w", envName, err)
 	}
 
 	// Plain-side platform-claimed names: a hard refusal. Committing a

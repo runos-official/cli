@@ -111,6 +111,78 @@ func TestParse_DoubleQuotedSpansLines(t *testing.T) {
 	}
 }
 
+// Regression for issue 87: env values with stray C0 control bytes (or
+// invalid UTF-8) silently passed through the CLI + conductor intake and
+// blew up mid-orchestration at the kubectl apply step. Validate now
+// refuses these pre-network; \n / \r / \t are still allowed for
+// multi-line content (PEM blocks etc.).
+func TestValidate(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        map[string]string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "plain ASCII passes",
+			in:   map[string]string{"K": "value"},
+		},
+		{
+			name: "newlines tab CR allowed (PEM-style)",
+			in: map[string]string{
+				"PEM": "-----BEGIN-----\nline1\nline2\n-----END-----",
+				"TAB": "left\tright",
+				"CRLF": "a\r\nb",
+			},
+		},
+		{
+			name:      "C0 control byte refused (the issue 87 repro)",
+			in:        map[string]string{"BAD": "\x01\x02\x03\x04"},
+			wantErr:   true,
+			errSubstr: "control byte",
+		},
+		{
+			name:      "DEL (0x7f) refused",
+			in:        map[string]string{"BAD": "before\x7fafter"},
+			wantErr:   true,
+			errSubstr: "control byte",
+		},
+		{
+			name:      "invalid UTF-8 refused",
+			in:        map[string]string{"BAD": "\xff\xfe\xfd"},
+			wantErr:   true,
+			errSubstr: "UTF-8",
+		},
+		{
+			name: "unicode passes",
+			in:   map[string]string{"GREETING": "naïve café 🚀"},
+		},
+		{
+			name:      "error names the offending key",
+			in:        map[string]string{"GOOD": "ok", "BAD_KEY": "\x05nope"},
+			wantErr:   true,
+			errSubstr: "BAD_KEY",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("error %q missing substring %q", err, tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // Empty map round-trips to empty bytes (not `\n`).
 func TestFormat_EmptyMap(t *testing.T) {
 	if got := Format(nil); len(got) != 0 {
