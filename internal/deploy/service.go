@@ -203,11 +203,34 @@ func (s *Service) GetAccountDomains() ([]Domain, error) {
 		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
 	}
 
-	var result []Domain
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	result, err := parseAccountDomainsResponse(body)
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
+}
+
+// parseAccountDomainsResponse handles both the legacy bare-array
+// (`[{...}, ...]`) and the iter-27 envelope (`{domains: [...]}`) shapes
+// of the `/:aid/domains` response. Pre-fix the deploy domain-removal
+// gate hard-coded the bare-array branch and every deploy printed
+// "Warning: domain-removal gate skipped (fetch failed: ...)" because
+// conductor migrated to the envelope shape, silently disabling the
+// confirmation. Pure helper so the regression test exercises both
+// shapes plus the malformed-input case without spinning up a server.
+// Issue 70.
+func parseAccountDomainsResponse(body []byte) ([]Domain, error) {
+	var direct []Domain
+	if err := json.Unmarshal(body, &direct); err == nil {
+		return direct, nil
+	}
+	var envelope struct {
+		Domains []Domain `json:"domains"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return envelope.Domains, nil
 }
 
 // GetAppCustomDomains returns the deduplicated set of user-supplied

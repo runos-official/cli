@@ -254,6 +254,64 @@ func TestGetAppDependencies_AcceptsEnvelope(t *testing.T) {
 	}
 }
 
+// TestParseAccountDomainsResponse pins issue 70: every `runos deploy`
+// printed "Warning: domain-removal gate skipped (fetch failed: ...)"
+// because the parser hard-coded the legacy bare-array shape, but
+// conductor's `/:aid/domains` migrated to the envelope `{domains:[...]}`
+// in the iter-27 envelope sweep. The fix accepts both shapes so the
+// gate fires through the conductor migration window and beyond.
+func TestParseAccountDomainsResponse(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		want    int
+		wantErr bool
+	}{
+		{
+			name: "iter-27 envelope shape",
+			body: `{"domains":[{"id":"d1","fqdn":"a.example.com","targetIngressUrl":"app-cshpj"},{"id":"d2","fqdn":"b.example.com","targetIngressUrl":"app-cshpj"}]}`,
+			want: 2,
+		},
+		{
+			name: "legacy bare array",
+			body: `[{"id":"d1","fqdn":"a.example.com","targetIngressUrl":"app-cshpj"}]`,
+			want: 1,
+		},
+		{
+			name: "envelope with empty array",
+			body: `{"domains":[]}`,
+			want: 0,
+		},
+		{
+			name: "legacy empty bare array",
+			body: `[]`,
+			want: 0,
+		},
+		{
+			name:    "malformed json refused",
+			body:    `not json`,
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseAccountDomainsResponse([]byte(tc.body))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseAccountDomainsResponse: %v", err)
+			}
+			if len(got) != tc.want {
+				t.Errorf("got %d domains, want %d (body: %s)", len(got), tc.want, tc.body)
+			}
+		})
+	}
+}
+
 // TestParseEnvVarsResponse_DeployCopy mirrors the apps-package test:
 // the deploy package keeps its own copy of the parser so the
 // internal/deploy → internal/apps dependency boundary stays one-way.
