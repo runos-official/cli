@@ -304,11 +304,11 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// (port:, domain:, standardHttps:) that the server has migrated away from.
 	force, _ := cmd.Flags().GetBool("force")
 	hasLegacy := deploy.HasLegacyFields(deployConfig)
-	if err := preDeployDriftCheck(cfg, token, cid, configPath, force, hasLegacy); err != nil {
+	if err := preDeployDriftCheck(cfg, token, cid, configPath, force, hasLegacy, jsonOutput); err != nil {
 		// We've already printed the diff + reconcile/migrate hints to
-		// stdout. Cobra's default behaviour is to dump command usage on
-		// any returned error, which here is just visual noise on top of
-		// an already-rich refusal output.
+		// stdout (or stderr under --json). Cobra's default behaviour is
+		// to dump command usage on any returned error, which here is
+		// just visual noise on top of an already-rich refusal output.
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
 		return err
@@ -316,7 +316,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// Code drift gate: did anyone deploy via console / CI between this
 	// directory's last pull (or last deploy) and now? If so, refuse so
 	// the user can pull-and-rebase before overwriting upstream code.
-	if err := preDeployCodeDriftCheck(cfg, token, cid, configPath, force); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, token, cid, configPath, force, jsonOutput); err != nil {
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
 		return err
@@ -1183,7 +1183,17 @@ func sourceVersionFromPrepare(resp *deploy.PrepareResponse) string {
 // archives, so a fail-open here would silently let through the very
 // thing this gate exists to prevent (overwriting a teammate's deploy).
 // Pass --force to deploy anyway when the API is genuinely unavailable.
-func preDeployCodeDriftCheck(cfg *config.Config, token, cid, configPath string, force bool) error {
+func preDeployCodeDriftCheck(cfg *config.Config, token, cid, configPath string, force, jsonOutput bool) error {
+	// Issue 86: under --json the drift refusal report must not pollute
+	// stdout (CI consumers pipe stdout into jq). Redirect os.Stdout to
+	// os.Stderr for the duration so every existing fmt.Print* call here
+	// lands on stderr; the JSON error envelope still goes to stdout via
+	// the runDeploy defer'd emitJSONError path.
+	if jsonOutput {
+		origStdout := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() { os.Stdout = origStdout }()
+	}
 	localApp, err := apps.LoadLocalApp(configPath)
 	if err != nil || localApp.ID == "" {
 		// Yaml unparseable or fresh: same fail-open behaviour as
@@ -1258,7 +1268,16 @@ func preDeployCodeDriftCheck(cfg *config.Config, token, cid, configPath string, 
 // than real local edits. We surface a tailored "migrate via apps pull"
 // recommendation so the user (and any LLM driving the deploy) picks
 // the migration path instead of `--force`-ing onto the legacy shape.
-func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, force, hasLegacy bool) error {
+func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, force, hasLegacy, jsonOutput bool) error {
+	// Issue 86: under --json, redirect os.Stdout to os.Stderr so the
+	// drift refusal report (header + reconcile hints + printDiffReport)
+	// doesn't pollute the JSON stdout contract. The JSON error envelope
+	// still emits to stdout via runDeploy's defer'd emitJSONError.
+	if jsonOutput {
+		origStdout := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() { os.Stdout = origStdout }()
+	}
 	localApp, err := apps.LoadLocalApp(configPath)
 	if err != nil {
 		// Yaml didn't parse as a pulled-app manifest. Two cases:

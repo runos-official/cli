@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -306,7 +307,7 @@ func TestPreDeployDriftCheck_SkipsWhenYamlMissingIdCidAid(t *testing.T) {
 	}
 
 	cfg := &config.Config{AccountID: "acc-1"}
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false); err != nil {
 		t.Errorf("expected nil (gate skipped on fresh deploy yaml), got: %v", err)
 	}
 }
@@ -320,7 +321,7 @@ func TestPreDeployDriftCheck_SkipsWhenYamlUnparseable(t *testing.T) {
 	}
 
 	cfg := &config.Config{AccountID: "acc-1"}
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false); err != nil {
 		t.Errorf("expected nil (gate skipped on unparseable yaml), got: %v", err)
 	}
 }
@@ -338,7 +339,7 @@ func TestPreDeployDriftCheck_NoDriftReturnsNil(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false); err != nil {
 		t.Errorf("expected nil for in-sync state, got: %v", err)
 	}
 }
@@ -360,7 +361,7 @@ func TestPreDeployDriftCheck_RefusesOnDrift(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false)
+	err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false)
 	if err == nil {
 		t.Fatal("expected drift refusal")
 	}
@@ -369,6 +370,46 @@ func TestPreDeployDriftCheck_RefusesOnDrift(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("error should mention --force as the bypass; got: %v", err)
+	}
+}
+
+// Regression for issue 86: `runos deploy --json` on drift wrote the
+// human-readable drift report (boxes, --- local/+++ server, reconcile
+// hints) to stdout before the JSON envelope, breaking jq parsers. Under
+// --json the refusal output must land on stderr so stdout stays a clean
+// JSON stream. Validates by capturing stdout while the gate runs and
+// confirming nothing was written to it.
+func TestPreDeployDriftCheck_JsonMode_KeepsStdoutClean(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := writePulledYaml(t, dir, map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(1),
+	}, "k1", "acc-1")
+	srv := fakeConductorForDeploy(t, map[string]any{
+		"id":       "ab12c",
+		"name":     "web",
+		"replicas": float64(5),
+	}, nil, nil, nil)
+	t.Setenv("RUNOS_API_URL", srv.URL)
+
+	// Redirect os.Stdout to a pipe so we can read what the gate wrote.
+	r, w, _ := os.Pipe()
+	origStdout := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
+	err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, true /* jsonOutput */)
+	w.Close()
+	if err == nil {
+		t.Fatal("expected drift refusal")
+	}
+
+	var buf strings.Builder
+	io.Copy(&buf, r)
+	if buf.Len() != 0 {
+		t.Errorf("--json mode wrote %d bytes to stdout (should be silent):\n%s", buf.Len(), buf.String())
 	}
 }
 
@@ -403,7 +444,7 @@ func TestPreDeployDriftCheck_LocalSupersetPassesThrough(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false); err != nil {
 		t.Errorf("expected nil (local-superset is the user's intended push), got: %v", err)
 	}
 }
@@ -430,7 +471,7 @@ func TestPreDeployDriftCheck_ForceServerOnly_PreserveOnly(t *testing.T) {
 
 	stderr := captureStderr(t, func() {
 		cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
+		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false, false); err != nil {
 			t.Errorf("expected nil with --force, got: %v", err)
 		}
 	})
@@ -473,7 +514,7 @@ func TestPreDeployDriftCheck_ForceServerOnly_ClearFieldFires(t *testing.T) {
 
 	stderr := captureStderr(t, func() {
 		cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
+		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false, false); err != nil {
 			t.Errorf("expected nil with --force, got: %v", err)
 		}
 	})
@@ -538,7 +579,7 @@ func TestPreDeployDriftCheck_LegacyEmitsMigrationHint(t *testing.T) {
 	// refusal output when hasLegacy is true.
 	out := captureStdout(t, func() {
 		cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, true); err == nil {
+		if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, true, false); err == nil {
 			t.Error("expected gate to refuse on drift, got nil")
 		}
 	})
@@ -584,7 +625,7 @@ func TestPreDeployDriftCheck_NonLegacyKeepsStandardOutput(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-		_ = preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false)
+		_ = preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false)
 	})
 
 	// Standard refusal: no migration messaging.
@@ -643,7 +684,7 @@ func TestPreDeployDriftCheck_ForceBypassesGate(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, true, false, false); err != nil {
 		t.Errorf("expected nil with --force despite drift; got: %v", err)
 	}
 }
@@ -733,7 +774,7 @@ func TestPreDeployCodeDriftCheck_NoSidecarSkips(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
 		t.Errorf("expected nil (no baseline → skip), got: %v", err)
 	}
 }
@@ -756,7 +797,7 @@ func TestPreDeployCodeDriftCheck_NoNewerArchivesReturnsNil(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
 		t.Errorf("expected nil (no newer archives), got: %v", err)
 	}
 }
@@ -780,7 +821,7 @@ func TestPreDeployCodeDriftCheck_RefusesWhenNewerArchivesExist(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false)
+	err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false, false)
 	if err == nil {
 		t.Fatal("expected refusal when server has newer deploys")
 	}
@@ -810,7 +851,7 @@ func TestPreDeployCodeDriftCheck_ForceBypasses(t *testing.T) {
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
 		t.Errorf("expected nil with --force despite newer archives; got: %v", err)
 	}
 }
@@ -838,7 +879,7 @@ func TestPreDeployCodeDriftCheck_RecordedIdNotInListRefusesWithoutForce(t *testi
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false); err == nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err == nil {
 		t.Errorf("expected refusal when recorded id isn't in archive list (without --force)")
 	} else if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("refusal should mention --force, got: %v", err)
@@ -862,7 +903,7 @@ func TestPreDeployCodeDriftCheck_RecordedIdNotInListProceedsWithForce(t *testing
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
 		t.Errorf("expected --force to bypass the recorded-id-missing gate; got: %v", err)
 	}
 }
@@ -888,7 +929,7 @@ func TestPreDeployCodeDriftCheck_FetchFailureRefusesWithoutForce(t *testing.T) {
 	}
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false)
+	err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, false, false)
 	if err == nil {
 		t.Fatal("expected error when archive listing fails without --force")
 	}
@@ -915,7 +956,7 @@ func TestPreDeployCodeDriftCheck_FetchFailureProceedsWithForce(t *testing.T) {
 	}
 
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
-	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true); err != nil {
+	if err := preDeployCodeDriftCheck(cfg, "tok", "k1", yamlPath, true, false); err != nil {
 		t.Errorf("expected nil with --force on fetch failure, got: %v", err)
 	}
 }
@@ -938,7 +979,7 @@ func TestPreDeployDriftCheck_FetchFailureWarnsButProceeds(t *testing.T) {
 	cfg := &config.Config{AccountID: "acc-1", ConductorURL: srv.URL}
 	// Even though fetch fails, the gate should not block, the deploy
 	// will fail loudly later if the API is genuinely unreachable.
-	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false); err != nil {
+	if err := preDeployDriftCheck(cfg, "tok", "k1", yamlPath, false, false, false); err != nil {
 		t.Errorf("expected nil (warn-and-proceed on fetch failure), got: %v", err)
 	}
 }
