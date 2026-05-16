@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -136,72 +137,100 @@ func TestUnflattenBody(t *testing.T) {
 	}
 }
 
-func TestMarkDefaultCluster(t *testing.T) {
+func TestAnnotateDefaultCluster(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       string
-		defaultCID string
-		want       string
+		name            string
+		data            string
+		defaultCID      string
+		appendAsterisk  bool
+		want            string
 	}{
+		// Text mode: `*` appended to cid AND isDefault: true added.
 		{
-			name:       "marks the matching cluster",
-			data:       `[{"cid":"abc-123","name":"prod"},{"cid":"def-456","name":"staging"}]`,
-			defaultCID: "abc-123",
-			want:       `[{"cid":"abc-123*","name":"prod"},{"cid":"def-456","name":"staging"}]`,
+			name:           "text mode marks the matching cluster",
+			data:           `[{"cid":"abc-123","name":"prod"},{"cid":"def-456","name":"staging"}]`,
+			defaultCID:     "abc-123",
+			appendAsterisk: true,
+			want:           `[{"cid":"abc-123*","name":"prod","isDefault":true},{"cid":"def-456","name":"staging"}]`,
+		},
+		// JSON mode: cid stays clean, isDefault: true added so --json
+		// consumers can identify the default without re-querying config.
+		// Regression target: this is the bug the fix closes.
+		{
+			name:           "json mode adds isDefault without modifying cid",
+			data:           `[{"cid":"abc-123","name":"prod"},{"cid":"def-456","name":"staging"}]`,
+			defaultCID:     "abc-123",
+			appendAsterisk: false,
+			want:           `[{"cid":"abc-123","name":"prod","isDefault":true},{"cid":"def-456","name":"staging"}]`,
 		},
 		{
-			name:       "no match leaves data unchanged",
-			data:       `[{"cid":"abc-123","name":"prod"}]`,
-			defaultCID: "no-match",
-			want:       `[{"cid":"abc-123","name":"prod"}]`,
+			name:           "no match leaves data unchanged in both modes",
+			data:           `[{"cid":"abc-123","name":"prod"}]`,
+			defaultCID:     "no-match",
+			appendAsterisk: true,
+			want:           `[{"cid":"abc-123","name":"prod"}]`,
 		},
 		{
-			name:       "empty default CID returns data unchanged",
-			data:       `[{"cid":"abc-123","name":"prod"}]`,
-			defaultCID: "",
-			want:       `[{"cid":"abc-123","name":"prod"}]`,
+			name:           "no match leaves data unchanged in json mode too",
+			data:           `[{"cid":"abc-123","name":"prod"}]`,
+			defaultCID:     "no-match",
+			appendAsterisk: false,
+			want:           `[{"cid":"abc-123","name":"prod"}]`,
 		},
 		{
-			name:       "invalid JSON returns data unchanged",
-			data:       `this is not json`,
-			defaultCID: "abc-123",
-			want:       `this is not json`,
+			name:           "empty default CID returns data unchanged",
+			data:           `[{"cid":"abc-123","name":"prod"}]`,
+			defaultCID:     "",
+			appendAsterisk: true,
+			want:           `[{"cid":"abc-123","name":"prod"}]`,
 		},
 		{
-			name:       "empty array",
-			data:       `[]`,
-			defaultCID: "abc-123",
-			want:       `[]`,
+			name:           "invalid JSON returns data unchanged",
+			data:           `this is not json`,
+			defaultCID:     "abc-123",
+			appendAsterisk: true,
+			want:           `this is not json`,
 		},
 		{
-			name:       "multiple clusters with match in the middle",
-			data:       `[{"cid":"a","name":"one"},{"cid":"b","name":"two"},{"cid":"c","name":"three"}]`,
-			defaultCID: "b",
-			want:       `[{"cid":"a","name":"one"},{"cid":"b*","name":"two"},{"cid":"c","name":"three"}]`,
+			name:           "empty array",
+			data:           `[]`,
+			defaultCID:     "abc-123",
+			appendAsterisk: true,
+			want:           `[]`,
 		},
 		{
-			name:       "item without cid field is skipped",
-			data:       `[{"name":"no-cid"},{"cid":"abc","name":"has-cid"}]`,
-			defaultCID: "abc",
-			want:       `[{"name":"no-cid"},{"cid":"abc*","name":"has-cid"}]`,
+			name:           "text mode: match in middle gets both annotations",
+			data:           `[{"cid":"a","name":"one"},{"cid":"b","name":"two"},{"cid":"c","name":"three"}]`,
+			defaultCID:     "b",
+			appendAsterisk: true,
+			want:           `[{"cid":"a","name":"one"},{"cid":"b*","name":"two","isDefault":true},{"cid":"c","name":"three"}]`,
 		},
 		{
-			name:       "cid is not a string (number) is skipped",
-			data:       `[{"cid":123,"name":"numeric-cid"},{"cid":"abc","name":"string-cid"}]`,
-			defaultCID: "abc",
-			want:       `[{"cid":123,"name":"numeric-cid"},{"cid":"abc*","name":"string-cid"}]`,
+			name:           "item without cid field is skipped",
+			data:           `[{"name":"no-cid"},{"cid":"abc","name":"has-cid"}]`,
+			defaultCID:     "abc",
+			appendAsterisk: true,
+			want:           `[{"name":"no-cid"},{"cid":"abc*","name":"has-cid","isDefault":true}]`,
 		},
 		{
-			name:       "JSON object instead of array returns data unchanged",
-			data:       `{"cid":"abc-123","name":"prod"}`,
-			defaultCID: "abc-123",
-			want:       `{"cid":"abc-123","name":"prod"}`,
+			name:           "cid is not a string (number) is skipped",
+			data:           `[{"cid":123,"name":"numeric-cid"},{"cid":"abc","name":"string-cid"}]`,
+			defaultCID:     "abc",
+			appendAsterisk: true,
+			want:           `[{"cid":123,"name":"numeric-cid"},{"cid":"abc*","name":"string-cid","isDefault":true}]`,
+		},
+		{
+			name:           "JSON object instead of array returns data unchanged",
+			data:           `{"cid":"abc-123","name":"prod"}`,
+			defaultCID:     "abc-123",
+			appendAsterisk: true,
+			want:           `{"cid":"abc-123","name":"prod"}`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := markDefaultCluster([]byte(tt.data), tt.defaultCID)
+			got := annotateDefaultCluster([]byte(tt.data), tt.defaultCID, tt.appendAsterisk)
 
 			// For valid JSON, compare parsed structures to avoid key-ordering issues
 			var gotParsed, wantParsed any
@@ -210,12 +239,12 @@ func TestMarkDefaultCluster(t *testing.T) {
 
 			if gotIsJSON && wantIsJSON {
 				if !reflect.DeepEqual(gotParsed, wantParsed) {
-					t.Errorf("markDefaultCluster() = %s, want %s", string(got), tt.want)
+					t.Errorf("annotateDefaultCluster() = %s, want %s", string(got), tt.want)
 				}
 			} else {
 				// For non-JSON (invalid input), compare raw bytes
 				if string(got) != tt.want {
-					t.Errorf("markDefaultCluster() = %s, want %s", string(got), tt.want)
+					t.Errorf("annotateDefaultCluster() = %s, want %s", string(got), tt.want)
 				}
 			}
 		})
@@ -786,7 +815,16 @@ func TestValidateInputValues(t *testing.T) {
 		{name: "empty positional id (I9-E)", cmd: cmdLogs, args: []string{""}, body: map[string]any{"id": ""}, wantErr: "id is required: pass as positional <id> or --id; got empty value"},
 		{name: "empty flag id no positional", cmd: cmdLogs, args: []string{}, body: map[string]any{"id": ""}, wantErr: "id is required"},
 		{name: "non-empty id OK", cmd: cmdLogs, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "tail": 1}},
-		{name: "empty cid skipped (handled elsewhere)", cmd: cmdClustersShow, args: []string{""}, body: map[string]any{"cid": ""}},
+		// I27-... regression: explicit "" positional cid is a user error.
+		// Pre-fix, the cid carve-out skipped the empty-required gate so
+		// the four-source fallback silently resolved the default cluster
+		// and `runos clusters show ""` returned exit 0 against the wrong
+		// cluster.
+		{name: "empty cid explicit positional refused", cmd: cmdClustersShow, args: []string{""}, body: map[string]any{"cid": ""}, wantErr: "cid is required: pass as positional <cid> or --cid; got empty value"},
+		// Absence still falls through (covered by the cid four-source
+		// resolution in Execute) so `runos clusters show` shorthand
+		// against the configured default still works.
+		{name: "absent cid still falls through to four-source", cmd: cmdClustersShow, args: []string{}, body: map[string]any{}},
 		{name: "empty required flag (string)", cmd: cmdRequiredFlag, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "name": ""}, wantErr: "--name is required, got empty value"},
 		{name: "non-empty required flag OK", cmd: cmdRequiredFlag, args: []string{"appid1"}, body: map[string]any{"id": "appid1", "name": "x"}},
 		{name: "nil input section", cmd: manifest.Command{}, args: []string{"x"}, body: nil},
@@ -980,6 +1018,331 @@ func TestValidateInputValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateEnumValues pins the manifest-enum pre-flight for issue 60:
+// `services <type> add --resource-requirement-class-id fake.tier.x` used
+// to queue a doomed job before the per-type writer rejected the value.
+// The manifest already declares the valid set, so reading it at runtime
+// stays in sync with conductor and produces a fast local refusal that
+// names the offending value plus the allowed options. Positional slots
+// and flag/body slots both checked; arrays validate per-element.
+func TestValidateEnumValues(t *testing.T) {
+	addCmd := manifest.Command{
+		Command: "services/postgresql/add",
+		Method:  "POST",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "name", Type: "string"},
+				{Name: "resourceRequirementClassId", Type: "string", Enum: []string{"postgresql.c0.beff", "postgresql.c2.small", "custom"}},
+				{Name: "version", Type: "string", Enum: []string{"17.6"}},
+			},
+		},
+	}
+
+	t.Run("allowed value passes", func(t *testing.T) {
+		body := map[string]any{"name": "x", "resourceRequirementClassId": "postgresql.c2.small", "version": "17.6"}
+		if err := validateEnumValues(nil, addCmd, body); err != nil {
+			t.Errorf("allowed value returned %v, want nil", err)
+		}
+	})
+
+	t.Run("empty body skips check", func(t *testing.T) {
+		if err := validateEnumValues(nil, addCmd, nil); err != nil {
+			t.Errorf("empty body returned %v, want nil", err)
+		}
+		if err := validateEnumValues(nil, addCmd, map[string]any{}); err != nil {
+			t.Errorf("empty map returned %v, want nil", err)
+		}
+	})
+
+	t.Run("off-enum value refused with allowed list", func(t *testing.T) {
+		body := map[string]any{"resourceRequirementClassId": "fake.tier.x"}
+		err := validateEnumValues(nil, addCmd, body)
+		if err == nil {
+			t.Fatal("expected refusal for off-enum RRC")
+		}
+		msg := err.Error()
+		for _, want := range []string{"resource-requirement-class-id", "fake.tier.x", "postgresql.c0.beff", "custom"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q missing expected substring %q", msg, want)
+			}
+		}
+	})
+
+	t.Run("explicit empty string skips check (treated as unset)", func(t *testing.T) {
+		body := map[string]any{"resourceRequirementClassId": ""}
+		if err := validateEnumValues(nil, addCmd, body); err != nil {
+			t.Errorf("empty string should skip, got %v", err)
+		}
+	})
+
+	t.Run("positional enum field validated from args", func(t *testing.T) {
+		cmd := manifest.Command{
+			Command: "x/y",
+			Input: &manifest.Input{
+				Fields: []manifest.Field{
+					{Name: "mode", Type: "string", Positional: true, Enum: []string{"flushall", "flushdb"}},
+				},
+			},
+		}
+		if err := validateEnumValues([]string{"flushall"}, cmd, nil); err != nil {
+			t.Errorf("positional allowed value returned %v, want nil", err)
+		}
+		if err := validateEnumValues([]string{"nuke"}, cmd, nil); err == nil {
+			t.Error("positional off-enum should refuse")
+		}
+	})
+
+	t.Run("array field validates per-element", func(t *testing.T) {
+		cmd := manifest.Command{
+			Command: "x/y",
+			Input: &manifest.Input{
+				Fields: []manifest.Field{
+					{Name: "permissions", Type: "array", Enum: []string{"read", "write", "admin"}},
+				},
+			},
+		}
+		if err := validateEnumValues(nil, cmd, map[string]any{"permissions": []string{"read", "write"}}); err != nil {
+			t.Errorf("all-allowed array returned %v, want nil", err)
+		}
+		if err := validateEnumValues(nil, cmd, map[string]any{"permissions": []string{"read", "godmode"}}); err == nil {
+			t.Error("array with off-enum element should refuse")
+		}
+	})
+
+	t.Run("field without enum is untouched", func(t *testing.T) {
+		cmd := manifest.Command{
+			Command: "x/y",
+			Input: &manifest.Input{
+				Fields: []manifest.Field{
+					{Name: "name", Type: "string"},
+				},
+			},
+		}
+		if err := validateEnumValues(nil, cmd, map[string]any{"name": "anything"}); err != nil {
+			t.Errorf("non-enum field returned %v, want nil", err)
+		}
+	})
+}
+
+// TestRefuseUnknownBodyFileKeys pins the strict-yaml gate at the -f
+// load step for issue 53: `apps update <id> -f body.yaml` used to merge
+// every top-level yaml key into the body verbatim, so a typo like
+// `unknownFieldOne:` silently dropped server-side and the user saw a
+// rename succeed while half their config went missing. The helper
+// allowlists keys against the manifest's input.fields and input.flags
+// (plus any extraFieldsFor entry) and reports every unknown key in a
+// single error so the user can fix all the typos at once.
+func TestRefuseUnknownBodyFileKeys(t *testing.T) {
+	updateCmd := manifest.Command{
+		Command: "apps/update",
+		Method:  "PATCH",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "id", Type: "string", Positional: true, Required: true},
+				{Name: "name", Type: "string"},
+				{Name: "replicas", Type: "integer"},
+			},
+			Flags: []manifest.Flag{
+				{Name: "force", Default: false},
+			},
+		},
+	}
+
+	t.Run("known keys pass", func(t *testing.T) {
+		body := map[string]any{"name": "renamed", "replicas": 3, "force": true}
+		if err := refuseUnknownBodyFileKeys("body.yaml", body, updateCmd); err != nil {
+			t.Errorf("known keys returned %v, want nil", err)
+		}
+	})
+
+	t.Run("empty body passes", func(t *testing.T) {
+		if err := refuseUnknownBodyFileKeys("body.yaml", map[string]any{}, updateCmd); err != nil {
+			t.Errorf("empty body returned %v, want nil", err)
+		}
+		if err := refuseUnknownBodyFileKeys("body.yaml", nil, updateCmd); err != nil {
+			t.Errorf("nil body returned %v, want nil", err)
+		}
+	})
+
+	t.Run("unknown keys refused and named", func(t *testing.T) {
+		body := map[string]any{
+			"name":             "renamed",
+			"unknownFieldOne":  "should-error",
+			"anotherTypo":      map[string]any{"inner": "x"},
+		}
+		err := refuseUnknownBodyFileKeys("body.yaml", body, updateCmd)
+		if err == nil {
+			t.Fatal("expected refusal")
+		}
+		msg := err.Error()
+		for _, want := range []string{"unknownFieldOne", "anotherTypo", "body.yaml", "apps/update"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q missing expected substring %q", msg, want)
+			}
+		}
+	})
+
+	t.Run("unknown keys listed in stable lex order", func(t *testing.T) {
+		body := map[string]any{"zeta": 1, "alpha": 2, "mu": 3}
+		err := refuseUnknownBodyFileKeys("body.yaml", body, updateCmd)
+		if err == nil {
+			t.Fatal("expected refusal")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "alpha, mu, zeta") {
+			t.Errorf("expected sorted listing `alpha, mu, zeta` in %q", msg)
+		}
+	})
+
+	t.Run("command with no input declaration refuses any keys", func(t *testing.T) {
+		bareCmd := manifest.Command{Command: "x/y", Method: "POST"}
+		err := refuseUnknownBodyFileKeys("body.yaml", map[string]any{"foo": 1}, bareCmd)
+		if err == nil {
+			t.Fatal("expected refusal: command has no body input but file did")
+		}
+	})
+}
+
+// TestValidatePatchHasBody pins the pre-network gate for issue 48:
+// `services <type> update <id>` with no field flags would emit a PATCH
+// with an empty body, which crashes 16+ of conductor's services update
+// handlers with a 500 instead of the clean 400 that `apps update`
+// returns. The CLI-side check refuses locally instead, with --json
+// envelope shape preserved.
+func TestValidatePatchHasBody(t *testing.T) {
+	updateCmd := manifest.Command{
+		Command:  "services/postgresql/{id}/update",
+		Method:   "PATCH",
+		Endpoint: "/:aid/:cid/services/postgresql/:id",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "id", Type: "string", Positional: true, Required: true},
+				{Name: "name", Type: "string"},
+				{Name: "replicas", Type: "integer"},
+			},
+		},
+	}
+
+	t.Run("empty PATCH body refused", func(t *testing.T) {
+		body := map[string]any{"id": "ewc0z"}
+		err := validatePatchHasBody(updateCmd, body)
+		if err == nil {
+			t.Fatal("expected refusal for empty PATCH body")
+		}
+		if !strings.Contains(err.Error(), "field") {
+			t.Errorf("error %q does not mention `field`", err)
+		}
+	})
+
+	t.Run("PATCH with at least one body field passes", func(t *testing.T) {
+		body := map[string]any{"id": "ewc0z", "replicas": 3}
+		if err := validatePatchHasBody(updateCmd, body); err != nil {
+			t.Errorf("expected nil err, got %v", err)
+		}
+	})
+
+	t.Run("non-PATCH methods skip the check", func(t *testing.T) {
+		for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
+			cp := updateCmd
+			cp.Method = method
+			body := map[string]any{"id": "ewc0z"}
+			if err := validatePatchHasBody(cp, body); err != nil {
+				t.Errorf("method=%s returned %v, want nil (non-PATCH)", method, err)
+			}
+		}
+	})
+
+	t.Run("method casing tolerated", func(t *testing.T) {
+		cp := updateCmd
+		cp.Method = "patch"
+		body := map[string]any{"id": "ewc0z"}
+		if err := validatePatchHasBody(cp, body); err == nil {
+			t.Errorf("lowercase 'patch' should still trigger the gate")
+		}
+	})
+
+	t.Run("pure-trigger PATCH (no body fields declared) passes", func(t *testing.T) {
+		// Regression for #69: kafka/ollama/vllm restart endpoints
+		// declare a PATCH with only the `id` positional. They're
+		// triggers, not updates, so an empty body is the right shape
+		// and the gate must not refuse them.
+		restartCmd := manifest.Command{
+			Command:  "services/kafka/{id}/restart",
+			Method:   "PATCH",
+			Endpoint: "/:aid/:cid/services/kafka/:id/restart",
+			Input: &manifest.Input{
+				Fields: []manifest.Field{
+					{Name: "id", Type: "string", Positional: true, Required: true},
+				},
+			},
+		}
+		body := map[string]any{"id": "kfk01"}
+		if err := validatePatchHasBody(restartCmd, body); err != nil {
+			t.Errorf("pure-trigger PATCH returned %v, want nil", err)
+		}
+	})
+}
+
+// TestValidateClusterIDShape pins the pre-network --cid gate for
+// issue 47: conductor 500s on a cid that breaks the path-segment shape
+// (slash, control char, runaway length) instead of returning a clean
+// 400, which LLM/CI consumers misread as transient and retry. The
+// CLI-side refusal turns the 5xx into a clear local error and keeps the
+// request off the wire.
+func TestValidateClusterIDShape(t *testing.T) {
+	t.Run("empty cid passes (endpoint may be account-scoped)", func(t *testing.T) {
+		if err := validateClusterIDShape(""); err != nil {
+			t.Errorf("validateClusterIDShape(\"\") returned %v, want nil", err)
+		}
+	})
+
+	t.Run("conductor identifier alphabet accepted", func(t *testing.T) {
+		for _, in := range []string{"mycluster2", "mycluster3", "1kf", "ABC123", "a", "abc-def", "abc_def"} {
+			if err := validateClusterIDShape(in); err != nil {
+				t.Errorf("validateClusterIDShape(%q) returned %v, want nil", in, err)
+			}
+		}
+	})
+
+	t.Run("path-segment violations rejected", func(t *testing.T) {
+		for _, in := range []string{
+			"/etc/passwd",
+			"mycluster3/foo",
+			"mycluster3 foo",
+			"mycluster3.foo",
+			"mycluster3;rm",
+			"mycluster3..",
+			"mycluster3%20",
+			"../bad",
+		} {
+			if err := validateClusterIDShape(in); err == nil {
+				t.Errorf("validateClusterIDShape(%q) returned nil, want refusal", in)
+			}
+		}
+	})
+
+	t.Run("runaway length rejected before charset check", func(t *testing.T) {
+		err := validateClusterIDShape(strings.Repeat("a", 10_000))
+		if err == nil {
+			t.Fatal("validateClusterIDShape(10000-char) returned nil, want refusal")
+		}
+		if !strings.Contains(err.Error(), "max") {
+			t.Errorf("error %q does not name the cap; want mention of `max`", err)
+		}
+	})
+
+	t.Run("boundary cases around cidMaxLength", func(t *testing.T) {
+		atCap := strings.Repeat("a", cidMaxLength)
+		if err := validateClusterIDShape(atCap); err != nil {
+			t.Errorf("at-cap cid (%d chars) returned %v, want nil", len(atCap), err)
+		}
+		overCap := strings.Repeat("a", cidMaxLength+1)
+		if err := validateClusterIDShape(overCap); err == nil {
+			t.Errorf("over-cap cid (%d chars) returned nil, want refusal", len(overCap))
+		}
+	})
 }
 
 // TestNormalizeCamelToKebab pins the pflag NormalizeFunc that lets MCP
@@ -1347,6 +1710,53 @@ func TestPositionalArgForField(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := positionalArgForField(tt.args, tt.cmd, tt.want_field); got != tt.want {
 				t.Errorf("positionalArgForField(%v, %s, %q) = %q, want %q", tt.args, tt.cmd.Command, tt.want_field, got, tt.want)
+			}
+		})
+	}
+}
+
+// Regression: `-f /nonexistent.yaml` used to fall through the
+// missing-required gate silently because bodyFileProvidesField returned
+// false on every loadYAMLFile error. The pre-validation surfaces ENOENT
+// / parse errors / directory paths with a clear, typed diagnostic so
+// the user doesn't see a misleading "missing required argument: <field>"
+// for what is actually a typoed -f path.
+func TestValidateBodyFilePath(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.yaml")
+	if err := os.WriteFile(good, []byte("id: abc12\n"), 0o644); err != nil {
+		t.Fatalf("write good: %v", err)
+	}
+	bad := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(bad, []byte("not: valid: yaml: here:\n"), 0o644); err != nil {
+		t.Fatalf("write bad: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		path      string
+		wantErr   string
+	}{
+		{"valid file no error", good, ""},
+		{"missing file", filepath.Join(dir, "nope.yaml"), "-f file not found"},
+		{"directory path", dir, "is a directory"},
+		{"malformed yaml", bad, "yaml:"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBodyFilePath(tt.path)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("validateBodyFilePath(%q) returned unexpected err: %v", tt.path, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateBodyFilePath(%q) = nil, want err containing %q", tt.path, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("validateBodyFilePath(%q) err %q does not contain %q", tt.path, err.Error(), tt.wantErr)
 			}
 		})
 	}

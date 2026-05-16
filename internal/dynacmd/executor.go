@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +22,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/jobs"
@@ -239,6 +244,39 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return wrapPreNetwork(err)
 	}
 
+	// Refuse `--cid` values that break the path-segment shape (slash,
+	// other punctuation, runaway length) before the request hits the
+	// wire. Conductor 500s on these inputs instead of returning a clean
+	// 400, which trips LLM/CI retries on what is really a typo. Empty
+	// cid is the account-scoped case and is checked separately by
+	// buildEndpoint when the endpoint declares `:cid`.
+	if err := validateClusterIDShape(cid); err != nil {
+		return wrapPreNetwork(err)
+	}
+
+	// Refuse a PATCH whose body carries nothing but path-param fields.
+	// Sixteen-plus `services <type> update` commands have all-optional
+	// body fields, so `services postgresql update <id>` with no flags
+	// produces an empty PATCH body that conductor crashes on (500),
+	// trips LLM/CI retries, and looks transient. The sibling
+	// `apps update` already returns a clean 400; this gate matches that
+	// shape pre-network for the remaining service types.
+	if err := validatePatchHasBody(cmdDef, body); err != nil {
+		return wrapPreNetwork(err)
+	}
+
+	// Refuse off-enum values for any manifest field that declares an
+	// enum. Issue 60: `services <type> add --resource-requirement-class-id
+	// fake.tier.x` got accepted, queued a job, and burned cluster-agent
+	// cycles before the per-type writer caught the bad RRC. The manifest
+	// already declares the valid set; reading it at runtime keeps the
+	// CLI in sync with conductor whenever a new preset is added, so
+	// there's no drift risk. Strings, integers, and string-array fields
+	// all participate; positional and flag slots both honoured.
+	if err := validateEnumValues(args, cmdDef, body); err != nil {
+		return wrapPreNetwork(err)
+	}
+
 	// `cluster-domains show --id runos` targets the synthetic per-cluster
 	// runos row, which is ambiguous without a cluster scope (the same id
 	// exists once per cluster in the account). The endpoint is global
@@ -313,9 +351,13 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
-	// Add default indicator for clusters/list (only for plain text output)
-	if cmdDef.Command == "clusters/list" && !jsonOutput {
-		respBody = markDefaultCluster(respBody, cfg.DefaultClusterID)
+	// Tag the default cluster entry in both text and JSON modes so
+	// `--json` consumers can identify the local default without a
+	// second roundtrip. Text mode also appends `*` to the cid string
+	// for the table renderer; JSON mode adds the structured
+	// `isDefault: true` field only.
+	if cmdDef.Command == "clusters/list" {
+		respBody = annotateDefaultCluster(respBody, cfg.DefaultClusterID, !jsonOutput)
 	}
 
 	// Pod-logs readers (apps/logs and services/<type>/{id}/logs) with
@@ -1041,6 +1083,9 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 		if err != nil {
 			return nil, fmt.Errorf("failed to load file: %w", err)
 		}
+		if err := refuseUnknownBodyFileKeys(filePath, fileData, cmdDef); err != nil {
+			return nil, err
+		}
 		for k, v := range fileData {
 			result[k] = v
 		}
@@ -1502,6 +1547,202 @@ func podLogsSinceSeconds(body map[string]any) (int64, bool) {
 // string. Resolved value = the positional arg slot if supplied, else
 // body[field.Name] (set by the flag).
 //
+// validateEnumValues refuses any field whose effective value (positional
+// arg or body[fieldName]) is outside the manifest's declared `enum`. The
+// manifest is the authoritative source: the CLI reads the allow-list at
+// runtime so a new preset added on the server side automatically becomes
+// valid after `runos manifest update`. Issue 60.
+//
+// Positional slots and body fields are both checked. Empty values pass
+// through (the missing-required gate elsewhere owns absence). Array
+// fields validate each element. The error names the offending field,
+// the offending value, and the valid options so the user can pick a
+// replacement without re-running --help.
+func validateEnumValues(args []string, cmdDef manifest.Command, body map[string]any) error {
+	if cmdDef.Input == nil {
+		return nil
+	}
+	posIndex := 0
+	for _, field := range cmdDef.Input.Fields {
+		var resolved any
+		if field.Positional {
+			if posIndex < len(args) {
+				resolved = args[posIndex]
+			}
+			posIndex++
+		}
+		if resolved == nil || resolved == "" {
+			if v, ok := body[field.Name]; ok {
+				resolved = v
+			}
+		}
+		if resolved == nil {
+			continue
+		}
+		if len(field.Enum) == 0 {
+			continue
+		}
+		if err := checkEnumValue(field, resolved); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkEnumValue validates a single field's value against its manifest
+// enum. Splits the array case out so validateEnumValues can iterate
+// without rebuilding the option list per element.
+func checkEnumValue(field manifest.Field, value any) error {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return enumMember(field, v)
+	case []string:
+		for _, s := range v {
+			if s == "" {
+				continue
+			}
+			if err := enumMember(field, s); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		for _, raw := range v {
+			s, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			if s == "" {
+				continue
+			}
+			if err := enumMember(field, s); err != nil {
+				return err
+			}
+		}
+		return nil
+	case int, int64, float64, bool:
+		return enumMember(field, fmt.Sprintf("%v", v))
+	default:
+		return nil
+	}
+}
+
+func enumMember(field manifest.Field, value string) error {
+	if slices.Contains(field.Enum, value) {
+		return nil
+	}
+	return fmt.Errorf("--%s %q is not a valid value (allowed: %s)", flagNameFor(field.Name), value, strings.Join(field.Enum, ", "))
+}
+
+// refuseUnknownBodyFileKeys refuses a -f body.yaml that carries top-level
+// keys outside the command's manifest (input.fields + input.flags +
+// extraFieldsFor). Closes issue 53: update endpoints silently dropped
+// typo'd fields on disk, so a misspelled body key never reached the
+// server. Matches the strict-yaml stance the deploy verb adopted in
+// issue 50, but at the dynacmd file-load step so every -f-accepting
+// command gates uniformly. Pure helper for test coverage; returns nil
+// when the file is well-formed.
+func refuseUnknownBodyFileKeys(filePath string, fileData map[string]any, cmdDef manifest.Command) error {
+	if len(fileData) == 0 {
+		return nil
+	}
+	known := map[string]struct{}{}
+	if cmdDef.Input != nil {
+		for _, f := range cmdDef.Input.Fields {
+			known[f.Name] = struct{}{}
+		}
+		for _, f := range cmdDef.Input.Flags {
+			known[f.Name] = struct{}{}
+		}
+	}
+	for _, f := range extraFieldsFor(cmdDef.Command) {
+		known[f.Name] = struct{}{}
+	}
+	var unknown []string
+	for k := range fileData {
+		if _, ok := known[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("body file %s carries fields not accepted by %s: %s (run with --help to see valid fields)", filePath, cmdDef.Command, strings.Join(unknown, ", "))
+}
+
+// validatePatchHasBody refuses a PATCH whose body — after stripping the
+// fields that buildEndpoint substitutes into the URL path — carries no
+// fields. Many of conductor's services update handlers crash with a 500
+// on an empty PATCH instead of returning the clean 400 that
+// `apps update` does (issue 48). The pre-flight delivers the right
+// shape locally and keeps the request off the wire. Non-PATCH methods
+// pass through, so POST/PUT/DELETE/GET semantics are unchanged.
+//
+// Pure-trigger PATCH endpoints (services {kafka,ollama,vllm} restart)
+// declare a PATCH with no non-positional fields in the manifest — they
+// are deliberately empty-body triggers, not updates. The gate skips
+// commands whose manifest declares zero body fields (issue 69
+// regression of #48); the gate is meaningful only for PATCHes whose
+// manifest declares at least one body field that the user is
+// supposed to fill in.
+func validatePatchHasBody(cmdDef manifest.Command, body map[string]any) error {
+	if !strings.EqualFold(cmdDef.Method, "PATCH") {
+		return nil
+	}
+	if !patchDeclaresBodyFields(cmdDef) {
+		return nil
+	}
+	if len(filterPathParamsFromBody(body, cmdDef)) > 0 {
+		return nil
+	}
+	return fmt.Errorf("%s requires at least one field flag (run with --help to see the available flags)", cmdDef.Command)
+}
+
+// patchDeclaresBodyFields reports whether a manifest command has at
+// least one non-positional input field — i.e. whether it is actually a
+// body-bearing PATCH that the user can fill in. Pure trigger PATCHes
+// (no body fields declared, just a positional id path param) return
+// false. Pure helper so the regression test can exercise it without a
+// full Execute dance.
+func patchDeclaresBodyFields(cmdDef manifest.Command) bool {
+	if cmdDef.Input == nil {
+		return false
+	}
+	for _, f := range cmdDef.Input.Fields {
+		if !f.Positional {
+			return true
+		}
+	}
+	return len(cmdDef.Input.Flags) > 0
+}
+
+// cidMaxLength caps the cluster id at 64 runes. Conductor mints 3-5
+// character ids today; 64 leaves plenty of headroom for any future
+// scheme while still rejecting the runaway-cid case (issue 47) that
+// crashes conductor with a 500 instead of a clean 400.
+const cidMaxLength = 64
+
+// validateClusterIDShape refuses a `--cid` (or default-cluster) value
+// that breaks the path-segment shape before the request hits the wire.
+// Issue 47: conductor returns 500 on a cid with a slash, control char,
+// or absurd length, which LLM/CI consumers misread as a transient
+// 5xx and retry. The pre-flight delivers a 4xx-style local refusal
+// instead. Empty cid is fine here — buildEndpoint produces the
+// "cluster ID required" error separately for endpoints that need one.
+func validateClusterIDShape(cid string) error {
+	if cid == "" {
+		return nil
+	}
+	if len(cid) > cidMaxLength {
+		return fmt.Errorf("cluster id is %d characters long (max %d): check --cid or `runos config get cid`", len(cid), cidMaxLength)
+	}
+	return apps.ValidateIdentifier("cluster id", cid)
+}
+
 // Regression targets: I9-A, I9-E (client half).
 func validateInputValues(args []string, cmdDef manifest.Command, body map[string]any) error {
 	if cmdDef.Input == nil {
@@ -1609,12 +1850,26 @@ func validateInputValues(args []string, cmdDef manifest.Command, body map[string
 			posIndex++
 			if field.AllowEmpty && explicitlyEmpty {
 				present = true
+				explicitlyEmpty = false
 			}
-			if field.Required && !present && field.Name != "cid" {
-				// `cid` is handled by the existing four-source
-				// resolution path in Execute and has its own
-				// "cluster ID required" error there; skip here.
-				return fmt.Errorf("%s is required: pass as positional <%s> or --%s; got empty value", field.Name, field.Name, flagNameFor(field.Name))
+			if field.Required {
+				// Explicit "" positional is always a user error,
+				// even for `cid` where Execute's four-source
+				// fallback otherwise resolves the default cluster.
+				// Pre-fix, `runos clusters show ""` silently
+				// targeted the configured default; CI scripts
+				// doing `runos clusters show "$CID"` with an
+				// unset CID masqueraded as a successful query
+				// against the wrong cluster. Absence (positional
+				// slot omitted entirely) still falls through to
+				// the default for `cid` to preserve the
+				// `runos clusters show` shorthand.
+				if explicitlyEmpty {
+					return fmt.Errorf("%s is required: pass as positional <%s> or --%s; got empty value", field.Name, field.Name, flagNameFor(field.Name))
+				}
+				if !present && field.Name != "cid" {
+					return fmt.Errorf("%s is required: pass as positional <%s> or --%s; got empty value", field.Name, field.Name, flagNameFor(field.Name))
+				}
 			}
 			_ = resolved
 			continue
@@ -1805,6 +2060,31 @@ func positionalArgForField(args []string, cmdDef manifest.Command, name string) 
 	return ""
 }
 
+// validateBodyFilePath surfaces a clear, typed error when the user
+// passed `-f <path>` but the file is missing, unreadable, or parses to
+// invalid YAML. Pre-fix, bodyFileProvidesField silently treated every
+// loadYAMLFile error as "field absent" and let the missing-required
+// gate fire the misleading "missing required argument: <field>"
+// diagnostic, masking a typoed path as a real missing-field problem.
+// Now the gate calls this helper first so ENOENT / parse errors land
+// in the user's lap with the offending path quoted.
+func validateBodyFilePath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("-f file not found: %s", path)
+		}
+		return fmt.Errorf("-f file %q is unreadable: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("-f path %q is a directory; pass a YAML file", path)
+	}
+	if _, err := loadYAMLFile(path); err != nil {
+		return fmt.Errorf("-f file %q: %w", path, err)
+	}
+	return nil
+}
+
 // bodyFileProvidesField reports whether the YAML file at path parses
 // successfully and contains a non-empty value for fieldName at the top
 // level. Used by the pre-execution required-arg check so a `-f body.yaml`
@@ -1873,7 +2153,18 @@ func parseKeyValueTags(tags []string) []map[string]string {
 	return result
 }
 
-func markDefaultCluster(data []byte, defaultCID string) []byte {
+// annotateDefaultCluster tags the cluster entry whose cid matches the
+// caller's local default with `isDefault: true` so JSON consumers can
+// identify the default without a second roundtrip to
+// `runos config get cid`. In text mode (appendAsterisk=true) the cid
+// also picks up a trailing `*` for the table renderer and a footer
+// note explains the marker, but the `isDefault` field is set in both
+// modes so the JSON contract is uniform.
+//
+// Pre-fix the helper only appended `*` to cid and ran exclusively in
+// text mode, leaving --json users blind to which cluster was the
+// configured default.
+func annotateDefaultCluster(data []byte, defaultCID string, appendAsterisk bool) []byte {
 	if defaultCID == "" {
 		return data
 	}
@@ -1885,7 +2176,11 @@ func markDefaultCluster(data []byte, defaultCID string) []byte {
 
 	for _, item := range items {
 		cid, ok := item["cid"].(string)
-		if ok && cid == defaultCID {
+		if !ok || cid != defaultCID {
+			continue
+		}
+		item["isDefault"] = true
+		if appendAsterisk {
 			item["cid"] = cid + "*"
 		}
 	}
