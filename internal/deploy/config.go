@@ -275,6 +275,16 @@ func LoadConfig(path string) (*DeployConfig, error) {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 
+	// Issue 91: yaml.v3 silently truncates float literals to int when
+	// the target field is int-typed (e.g. `cpuRequestMc: 0.5` decodes
+	// to int(0)), and k8s treats limit=0 as UNLIMITED — the user
+	// thinks they capped at 0.5mc/0.5MB; the pod actually has no
+	// limits. Pre-decode the yaml as a generic map and refuse the
+	// fractional case before the typed decode silently rounds it.
+	if err := refuseFractionalResourceFields(data); err != nil {
+		return nil, err
+	}
+
 	var config DeployConfig
 	// KnownFields(true) makes the decoder fail with a typed error when
 	// the yaml carries a key that isn't on DeployConfig. Pre-fix
@@ -335,6 +345,53 @@ func (c *DeployConfig) Validate() error {
 	for i, m := range c.ServicePortMappings {
 		if m.Port <= 0 || m.Port > 65535 {
 			return fmt.Errorf("servicePortMappings[%d].port must be 1-65535", i)
+		}
+	}
+	return nil
+}
+
+// resourceIntegerFields lists the top-level yaml keys whose value must
+// be a non-negative integer literal (no float syntax). yaml.v3 silently
+// coerces `0.5` to int(0) when the target struct field is int-typed,
+// which on k8s means "no limit" rather than "half a millicore". The
+// validator below refuses the float-literal case before the typed
+// decode runs.
+var resourceIntegerFields = []string{
+	"cpuRequestMc",
+	"cpuLimitMc",
+	"memoryRequestMb",
+	"memoryLimitMb",
+	"replicas",
+	"storageMb",
+	"healthCheckPort",
+	"metricsPort",
+	"port",
+}
+
+// refuseFractionalResourceFields decodes the yaml into a generic
+// map[string]any and inspects the resource-integer fields. If any are
+// present with a non-integer literal (float), it refuses with a clear
+// error naming the field. Issue 91.
+func refuseFractionalResourceFields(data []byte) error {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Will be caught by the strict decode downstream; don't double-
+		// report parse errors here.
+		return nil
+	}
+	for _, field := range resourceIntegerFields {
+		v, ok := raw[field]
+		if !ok {
+			continue
+		}
+		switch n := v.(type) {
+		case int, int64, uint, uint64:
+			// Already an integer literal, fine.
+		case float32, float64:
+			return fmt.Errorf("%s must be an integer, got fractional value %v (k8s resource limit of 0 means UNLIMITED; check that you wrote a whole number)", field, n)
+		default:
+			// String, bool, etc. — the typed decode will fail with a
+			// better message than we can construct here.
 		}
 	}
 	return nil

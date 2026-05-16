@@ -1749,6 +1749,83 @@ overrides:
 	}
 }
 
+// TestRefuseFractionalResourceFields pins issue 91: yaml.v3 silently
+// truncates `cpuRequestMc: 0.5` to int(0), and k8s reads limit=0 as
+// "unlimited". So the user thinks they capped resources; the pod
+// actually runs uncapped. The pre-decode generic-map check refuses
+// fractional values for every resource-integer field with an error
+// naming the field.
+func TestRefuseFractionalResourceFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+		errName string
+	}{
+		{
+			name:    "fractional cpuRequestMc refused (the issue 91 repro)",
+			yaml:    "app: x\nport: 3000\ncpuRequestMc: 0.5\n",
+			wantErr: true,
+			errName: "cpuRequestMc",
+		},
+		{
+			name:    "fractional memoryLimitMb refused",
+			yaml:    "app: x\nport: 3000\nmemoryLimitMb: 0.5\n",
+			wantErr: true,
+			errName: "memoryLimitMb",
+		},
+		{
+			name:    "fractional replicas refused",
+			yaml:    "app: x\nport: 3000\nreplicas: 1.5\n",
+			wantErr: true,
+			errName: "replicas",
+		},
+		{
+			name:    "integer values pass",
+			yaml:    "app: x\nport: 3000\ncpuRequestMc: 500\nmemoryLimitMb: 128\n",
+			wantErr: false,
+		},
+		{
+			name:    "missing fields pass",
+			yaml:    "app: x\nport: 3000\n",
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := refuseFractionalResourceFields([]byte(tc.yaml))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected refusal mentioning %q", tc.errName)
+				}
+				if !contains(err.Error(), tc.errName) {
+					t.Errorf("error %q should name %q", err, tc.errName)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// End-to-end: LoadConfig must refuse a yaml with fractional cpu before
+// the typed decode silently rounds the value to zero.
+func TestLoadConfig_RefusesFractionalCpuMc(t *testing.T) {
+	const yaml = "app: x\nport: 3000\ncpuRequestMc: 0.5\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	writeFile(t, path, yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected refusal for fractional cpuRequestMc")
+	}
+	if !contains(err.Error(), "cpuRequestMc") {
+		t.Errorf("error should name cpuRequestMc, got: %v", err)
+	}
+}
+
 // TestValidateHTTPPath pins issue 88: a yaml block-scalar like
 //
 //	healthCheckPath: |
