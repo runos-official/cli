@@ -30,6 +30,17 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	currentVersion := updater.CurrentVersion()
 	fmt.Printf("Current version: %s\n", currentVersion)
 
+	// Dev builds aren't semver-comparable. Mirrors the cli/version-check
+	// endpoint's dev-build guard so the local `runos update` path doesn't
+	// recommend installing a release on top of a fresh local build
+	// (which would be a silent downgrade).
+	if update.IsDevBuild() {
+		fmt.Println("\nLocal version is a dev build (built via `make local`).")
+		fmt.Println("Skipping update check; `runos update` would downgrade to the latest release.")
+		fmt.Println("To switch to a release build, install via the published installer.")
+		return nil
+	}
+
 	fmt.Println("Checking for updates...")
 	latestVersion, err := updater.FetchLatestVersion()
 	if err != nil {

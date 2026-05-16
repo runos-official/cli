@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/runos-official/cli/internal/config"
 
@@ -26,12 +27,11 @@ This fetches the environment configuration from the RunOS CDN and applies
 the specified environment preset. You will need to login again after switching.
 
 To use custom URLs (e.g. for local development), use:
-  runos config set conductor-url http://localhost:3025
+  runos config set api-url http://localhost:3025
   runos config set console-url http://localhost:5177
 
-Examples:
-  runos config env beta
-  runos config env dev`,
+Example:
+  runos config env beta`,
 	Args: cobra.ExactArgs(1),
 	RunE: runConfigEnv,
 }
@@ -40,9 +40,9 @@ var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a configuration value",
 	Long: `Set a configuration value. Available keys:
-  cid            Default cluster ID for commands
-  console-url    Console URL for browser authentication
-  conductor-url  Conductor API URL`,
+  cid          Default cluster ID for commands
+  console-url  Console URL for browser authentication
+  api-url      Conductor API URL`,
 	Args: cobra.ExactArgs(2),
 	RunE: runConfigSet,
 }
@@ -95,6 +95,21 @@ var configKeyAliases = map[string]string{
 	"api_url":            "api-url",
 }
 
+// configSettableKeys is the canonical list of keys `runos config set`
+// accepts, in display order. Used both by the "unknown config key"
+// error message and by tests so they can't drift apart. The actual
+// switch in runConfigSet stays the source of truth for which keys are
+// implemented; this slice mirrors it. `env` and `account-id` are
+// deliberately omitted: they're populated by `runos config env <name>`
+// and the auth flow respectively, not by direct set.
+var configSettableKeys = []string{"cid", "console-url", "api-url"}
+
+// configGettableKeys lists every key `runos config get` knows about.
+// Includes the two read-only keys (`env`, `account-id`) the setter
+// doesn't accept, so the error message for an unknown key shows the
+// user the full surface they can read.
+var configGettableKeys = []string{"env", "account-id", "cid", "console-url", "api-url"}
+
 // normalizeConfigKey applies configKeyAliases and returns the canonical
 // CLI key. Unknown keys are returned unchanged so the caller can emit
 // the "unknown config key" error with the original spelling for clarity.
@@ -141,6 +156,22 @@ func validateConfigSet(key, value string) error {
 	return nil
 }
 
+// configSetUnknownKeyError builds the diagnostic for a `config set
+// <key> <value>` call whose key isn't one of the settable keys.
+// Distinguishes read-only keys (env, account-id) from genuinely unknown
+// keys so the error redirects the user to the canonical setter instead
+// of misleadingly claiming the key doesn't exist. Pure helper so the
+// regression test pins each branch by string match.
+func configSetUnknownKeyError(rawKey, normalizedKey string) error {
+	switch normalizedKey {
+	case "env":
+		return fmt.Errorf("config key 'env' is read-only via 'config set'; use 'runos config env <environment>' to change the target environment")
+	case "account-id":
+		return fmt.Errorf("config key 'account-id' is set by the auth flow; run 'runos login' to refresh it")
+	}
+	return fmt.Errorf("unknown config key: %s\nValid keys: %s", rawKey, strings.Join(configSettableKeys, ", "))
+}
+
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	key := normalizeConfigKey(args[0])
@@ -168,7 +199,12 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		}
 		cfg.ConductorURL = value
 	default:
-		return fmt.Errorf("unknown config key: %s\nValid keys: cid, console-url, api-url", args[0])
+		// Read-only keys appear in `config get` (configGettableKeys) but
+		// can't be mutated directly via `config set`. Pre-fix the catch-
+		// all path said "unknown config key: env" which actively misled
+		// users since `config get env` returns a real value. Distinguish
+		// the two cases and surface the canonical setter.
+		return configSetUnknownKeyError(args[0], key)
 	}
 
 	if err := cfg.Save(); err != nil {
@@ -191,7 +227,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return configErr(cmd, fmt.Errorf("failed to load config: %w", err))
 	}
 
 	all := map[string]string{
@@ -217,13 +253,26 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	key := normalizeConfigKey(args[0])
 	value, ok := all[key]
 	if !ok {
-		return fmt.Errorf("unknown config key: %s\nValid keys: env, account-id, cid, console-url, api-url", args[0])
+		return configErr(cmd, fmt.Errorf("unknown config key: %s\nValid keys: %s", args[0], strings.Join(configGettableKeys, ", ")))
 	}
 	if configGetJSON {
 		return emitConfigJSON(cmd, map[string]string{key: value})
 	}
 	fmt.Println(value)
 	return nil
+}
+
+// configErr routes runConfigGet errors through the I4-G JSON envelope
+// when `--json` is set, so MCP wrappers and CI consumers parsing the
+// stdout JSON don't trip on a plain-text "Error: ..." line that the
+// other --json-aware commands (apps/clusters/deploy) consistently
+// envelope. Without this, `runos config get nonexistent --json` was the
+// only --json command in the surface to violate the envelope contract.
+func configErr(cmd *cobra.Command, err error) error {
+	if configGetJSON {
+		return emitJSONError(cmd, err)
+	}
+	return err
 }
 
 func emitConfigJSON(cmd *cobra.Command, payload map[string]string) error {

@@ -141,6 +141,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(followCmd)
 	rootCmd.AddCommand(deployCmd)
+	rootCmd.AddCommand(pullCmd)
 	rootCmd.AddCommand(manifestCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(updateCmd)
@@ -178,6 +179,12 @@ func init() {
 		rootCmd.SilenceUsage = true
 		rootCmd.SilenceErrors = true
 	}
+
+	// Apply after every static and dynamic AddCommand so the silent-help
+	// exit 0 bug is closed for the whole tree (issue #11). Must run last
+	// because dynacmd creates intermediate parents (nodes, jobs, account,
+	// integrations, services/<type>, ...) inline during BuildCommands.
+	strictenParentExitCodes(rootCmd)
 }
 
 func registerDynamicCommands() error {

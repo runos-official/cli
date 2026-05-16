@@ -122,8 +122,26 @@ func CurrentVersion() string {
 	return version.Version
 }
 
+// IsDevBuild reports whether the running binary was built locally (the
+// bare "dev" sentinel from version.Version's default, or any
+// "dev-<timestamp>" build emitted by `make local`). Mirrors the
+// dev-build guard conductor's `cli/version-check` endpoint already
+// applies; used by `runos update` to refuse running a release binary
+// fetch on top of a fresh local build (`isNewerVersion` parses
+// non-semver strings to 0.0.0, so without this guard every dev build
+// thinks every release is newer and would silently downgrade itself).
+func IsDevBuild() bool {
+	v := version.Version
+	return v == "dev" || strings.HasPrefix(v, "dev-")
+}
+
 // NeedsUpdate reports whether the given latest version is newer than the current version.
+// Dev builds always report false: the version string isn't semver-comparable and
+// installing a release on top would be a downgrade.
 func (u *Updater) NeedsUpdate(latest string) bool {
+	if IsDevBuild() {
+		return false
+	}
 	current := u.CurrentVersion()
 	return isNewerVersion(latest, current)
 }
@@ -473,7 +491,13 @@ func replaceBinary(newBinary, currentBinary string) error {
 // CheckForUpdate checks if a CLI update is available (with caching to avoid frequent checks).
 // Returns the latest version if an update is available, empty string if up to date or on error.
 // This is meant to be called on every command to notify users of available updates.
+// Dev builds short-circuit: the version string isn't semver-comparable, so any release
+// would look "newer" and trip the notice on every command. The proactive notice should
+// never fire on a locally-built binary.
 func CheckForUpdate() string {
+	if IsDevBuild() {
+		return ""
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return ""

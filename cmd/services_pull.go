@@ -30,8 +30,9 @@ upgraded conductor.
 Examples:
   runos services pull --type postgresql --id mjn1d --cid mycluster3
   runos services pull runos.service.mycluster3.mjn1d.yaml`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runServicesPull,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runServicesPull,
 }
 
 func init() {
@@ -78,6 +79,9 @@ func runServicesPull(cmd *cobra.Command, args []string) error {
 		}
 		existing, err := services.Load(yamlPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("yaml file %q not found", yamlPath)
+			}
 			return fmt.Errorf("read yaml: %w", err)
 		}
 		if existing.AID != ctx.cfg.AccountID {

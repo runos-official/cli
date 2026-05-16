@@ -47,8 +47,9 @@ Examples:
   runos apps diff runos.mycluster3.appid4/runos.yaml              # explicit path
   runos apps diff <yaml> --json                            # machine-readable
   runos apps diff <yaml> --show-secrets                    # decoded diff for drifted secrets`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runAppsDiff,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runAppsDiff,
 }
 
 func init() {

@@ -114,9 +114,9 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 
 	// Default cluster
 	if cid, ok := status["defaultClusterId"].(string); ok {
-		fmt.Printf("Default Cluster: %s (change with 'runos config set default-cluster <id>')\n", cid)
+		fmt.Printf("Default Cluster: %s (change with 'runos config set cid <id>')\n", cid)
 	} else {
-		fmt.Println("Default Cluster: (not set, use 'runos config set default-cluster <id>')")
+		fmt.Println("Default Cluster: (not set, use 'runos config set cid <id>')")
 	}
 
 	// Session info (only show if authenticated)

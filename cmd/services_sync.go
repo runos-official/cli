@@ -100,6 +100,9 @@ func runServicesSync(cmd *cobra.Command, args []string) (rerr error) {
 
 	local, err := services.Load(yamlPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("yaml file %q not found", yamlPath)
+		}
 		return fmt.Errorf("read yaml: %w", err)
 	}
 	if local.AID != ctx.cfg.AccountID {

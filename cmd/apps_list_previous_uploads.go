@@ -29,8 +29,9 @@ Restore previous code:
 Examples:
   runos apps list-previous-uploads runos.mycluster3.appid4/runos.yaml
   runos apps list-previous-uploads runos.mycluster3.appid4/runos.yaml --json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runAppsListPreviousUploads,
+	Args:         cobra.ExactArgs(1),
+	SilenceUsage: true,
+	RunE:         runAppsListPreviousUploads,
 }
 
 func init() {

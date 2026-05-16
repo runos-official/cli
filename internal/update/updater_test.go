@@ -3,7 +3,65 @@ package update
 import (
 	"runtime"
 	"testing"
+
+	"github.com/runos-official/cli/version"
 )
+
+// Regression: `runos update --check` on a dev build used to recommend
+// installing the published release ("Update available. Run 'runos update'
+// to install.") because isNewerVersion parses any non-semver string to
+// 0.0.0 and every release looked newer. IsDevBuild centralises the
+// signal so update --check, the install path, and the proactive
+// CheckForUpdate notice all agree (and match conductor's
+// cli/version-check guard).
+func TestIsDevBuild(t *testing.T) {
+	saved := version.Version
+	t.Cleanup(func() { version.Version = saved })
+
+	cases := []struct {
+		name string
+		v    string
+		want bool
+	}{
+		{"bare dev sentinel", "dev", true},
+		{"timestamped dev build", "dev-2026-05-15T17:22:03Z", true},
+		{"semver release is not dev", "0.3.9", false},
+		{"v-prefixed release is not dev", "v0.3.9", false},
+		{"pre-release release is not dev", "0.3.9-beta", false},
+		{"empty is not dev (defensive)", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			version.Version = tc.v
+			if got := IsDevBuild(); got != tc.want {
+				t.Errorf("IsDevBuild() with version=%q = %v, want %v", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// NeedsUpdate must short-circuit on a dev build regardless of what the
+// server's latest version is — otherwise the dev binary tries to
+// downgrade itself to the latest release.
+func TestUpdater_NeedsUpdate_DevBuildSkips(t *testing.T) {
+	saved := version.Version
+	t.Cleanup(func() { version.Version = saved })
+
+	version.Version = "dev-2026-05-15T17:22:03Z"
+	u := &Updater{}
+	if u.NeedsUpdate("0.3.9") {
+		t.Errorf("NeedsUpdate(0.3.9) on dev build = true, want false")
+	}
+	if u.NeedsUpdate("99.99.99") {
+		t.Errorf("NeedsUpdate(99.99.99) on dev build = true, want false")
+	}
+
+	// Non-dev: the regular semver path still wins.
+	version.Version = "0.3.8"
+	if !u.NeedsUpdate("0.3.9") {
+		t.Errorf("NeedsUpdate(0.3.9) on 0.3.8 = false, want true")
+	}
+}
 
 func TestIsNewerVersion(t *testing.T) {
 	tests := []struct {

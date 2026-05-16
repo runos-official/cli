@@ -103,6 +103,100 @@ func TestSanitizeFlagDescription(t *testing.T) {
 // helpers driving I11-X (cap positional args at the manifest count to
 // refuse typos) and I11-U (don't register `-f` for commands whose only
 // input is a path-param positional like `apps replace-manifest <id>`).
+// Regression: pre-fix, conductor's manifest spelling controlled whether
+// a URL-path field rendered as a positional. apps/{id}/show declared
+// id positional; services/<type>/{id}/show didn't, and the CLI's usage
+// line read `services postgresql show [flags]` while `apps show <id>
+// [flags]` worked. The builder now promotes any field whose name
+// matches a `{<name>}` placeholder in the command path so the surface
+// is uniform across resource-id commands.
+func TestPromoteURLPlaceholderFieldsToPositional(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     manifest.Command
+		want   map[string]bool
+	}{
+		{
+			"services/<type>/{id}/show promotes id",
+			manifest.Command{
+				Command: "services/postgresql/{id}/show",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "id", Type: "string", Required: true, Positional: false},
+				}},
+			},
+			map[string]bool{"id": true},
+		},
+		{
+			"apps/{id}/show stays positional (idempotent)",
+			manifest.Command{
+				Command: "apps/{id}/show",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "id", Type: "string", Required: true, Positional: true},
+				}},
+			},
+			map[string]bool{"id": true},
+		},
+		{
+			"non-placeholder fields untouched",
+			manifest.Command{
+				Command: "services/postgresql/{id}/logs",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "id", Type: "string", Positional: false},
+					{Name: "tail", Type: "integer", Positional: false},
+					{Name: "since", Type: "string", Positional: false},
+				}},
+			},
+			map[string]bool{"id": true, "tail": false, "since": false},
+		},
+		{
+			"multi-placeholder path promotes each match",
+			manifest.Command{
+				Command: "jobs/{jobId}/workitems/{workItemId}/logs",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "jobId", Type: "string"},
+					{Name: "workItemId", Type: "string"},
+				}},
+			},
+			map[string]bool{"jobId": true, "workItemId": true},
+		},
+		{
+			"command with no placeholders is a no-op",
+			manifest.Command{
+				Command: "apps/list",
+				Input: &manifest.Input{Fields: []manifest.Field{
+					{Name: "filter", Positional: false},
+				}},
+			},
+			map[string]bool{"filter": false},
+		},
+		{
+			"placeholder with no matching field is harmless",
+			manifest.Command{
+				Command: "services/postgresql/{id}/show",
+				Input:   &manifest.Input{Fields: []manifest.Field{}},
+			},
+			map[string]bool{},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			cmdDef := tt.in
+			promoteURLPlaceholderFieldsToPositional(&cmdDef)
+			for _, f := range cmdDef.Input.Fields {
+				got := f.Positional
+				want, ok := tt.want[f.Name]
+				if !ok {
+					t.Errorf("unexpected field %q in result", f.Name)
+					continue
+				}
+				if got != want {
+					t.Errorf("field %q Positional = %v, want %v", f.Name, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCountPositionalFields(t *testing.T) {
 	cases := []struct {
 		name string
@@ -506,32 +600,73 @@ func TestDescriptionSuffixFor(t *testing.T) {
 	}
 }
 
-// TestAliasPathsFor pins the namespace-alias allow-list driving I12-B.
-// Currently only `clusters/mcp/{show,update}` get cross-listed under
-// `account/mcp/{show,update}`; other paths pass through unchanged.
-func TestAliasPathsFor(t *testing.T) {
+// TestCanonicalCLIPathFor pins the namespace remap that drives the
+// account/mcp/* CLI surface for the misclassified clusters/mcp/*
+// manifest entries. Pre-#31-round-2 the remap added an ALIAS (both
+// spellings registered, duplicating the command in `runos --help`);
+// post-fix it RELOCATES the only registration so each manifest entry
+// surfaces under exactly one CLI namespace.
+func TestCanonicalCLIPathFor(t *testing.T) {
 	cases := []struct {
 		in   string
-		want []string
+		want string
 	}{
-		{"clusters/mcp/show", []string{"account/mcp/show"}},
-		{"clusters/mcp/update", []string{"account/mcp/update"}},
-		{"clusters/list", nil},
-		{"account/users/list", nil},
-		{"", nil},
+		{"clusters/mcp/show", "account/mcp/show"},
+		{"clusters/mcp/update", "account/mcp/update"},
+		// Unrelated paths pass through unchanged.
+		{"clusters/list", "clusters/list"},
+		{"apps/show", "apps/show"},
+		{"", ""},
 	}
 	for _, tt := range cases {
 		t.Run(tt.in, func(t *testing.T) {
-			got := aliasPathsFor(tt.in)
-			if len(got) != len(tt.want) {
-				t.Fatalf("aliasPathsFor(%q) = %v, want %v", tt.in, got, tt.want)
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("aliasPathsFor(%q)[%d] = %q, want %q", tt.in, i, got[i], tt.want[i])
-				}
+			if got := canonicalCLIPathFor(tt.in); got != tt.want {
+				t.Errorf("canonicalCLIPathFor(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// Regression (#31): ResolveAliasToCanonical is the inverse of
+// canonicalCLIPathFor — given the relocated CLI spelling
+// (`account/mcp/show`) it returns the manifest entry's `command` field
+// (`clusters/mcp/show`) so `runos manifest show account/mcp/show`
+// resolves the JSON dump. Pre-fix the alias was a runtime-only
+// synthesis with no metadata link back, so `manifest show
+// account/mcp/show` errored "no command in manifest".
+func TestResolveAliasToCanonical(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"account/mcp/show", "clusters/mcp/show"},
+		{"account/mcp/update", "clusters/mcp/update"},
+		// Unknown alias → input passes through unchanged.
+		{"clusters/list", "clusters/list"},
+		{"apps/show", "apps/show"},
+		{"", ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := ResolveAliasToCanonical(tt.in); got != tt.want {
+				t.Errorf("ResolveAliasToCanonical(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	// Round-trip: canonicalCLIPathFor(manifest) → cli; ResolveAliasToCanonical(cli) → manifest.
+	// Keeps the two directions in sync as the remap table grows.
+	manifestPaths := []string{"clusters/mcp/show", "clusters/mcp/update"}
+	for _, mp := range manifestPaths {
+		cli := canonicalCLIPathFor(mp)
+		if cli == mp {
+			t.Errorf("canonicalCLIPathFor(%q) = %q, expected a remap", mp, cli)
+			continue
+		}
+		if got := ResolveAliasToCanonical(cli); got != mp {
+			t.Errorf("round-trip: %q → cli=%q, but ResolveAliasToCanonical(%q) = %q, want %q",
+				mp, cli, cli, got, mp)
+		}
 	}
 }
 
@@ -697,4 +832,31 @@ func TestBuildLongDescription(t *testing.T) {
 			t.Errorf("expected positional object to be skipped, got:\n%s", got)
 		}
 	})
+}
+
+// Regression test for the tautological `runos cli` namespace bug.
+//
+// `cli/version-check` is the sole entry under a `cli` parent, so the
+// auto-built intermediate command rendered as `runos cli   Manage cli`
+// in top-level help (uninformative; the user is already in the CLI).
+// displayPathFor hoists the leaf to `version-check`; the manifest
+// path itself (used by the executor for version auto-injection)
+// stays unchanged.
+func TestDisplayPathFor(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"cli/version-check", "version-check"},
+		{"apps/list", "apps/list"},
+		{"apps/cli-archives", "apps/cli-archives"},
+		{"services/postgresql/add", "services/postgresql/add"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := displayPathFor(tc.in); got != tc.want {
+				t.Errorf("displayPathFor(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
 }

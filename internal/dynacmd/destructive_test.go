@@ -1,0 +1,171 @@
+package dynacmd
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/runos-official/cli/internal/manifest"
+	"github.com/spf13/cobra"
+)
+
+// Regression: pre-fix, `runos apps delete <id>` (and every services
+// delete sibling) reached the wire on the first keystroke with no
+// confirmation prompt and no --yes flag, mirroring `runos deploy`
+// gives users a recoverable typo path. isDestructiveCommand is the
+// single classifier the builder uses to gate both the flag
+// registration and the prompt; pin its behaviour by method.
+func TestIsDestructiveCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		want bool
+	}{
+		{"DELETE method is destructive", manifest.Command{Method: "DELETE"}, true},
+		{"lowercase delete still matches", manifest.Command{Method: "delete"}, true},
+		{"GET is safe", manifest.Command{Method: "GET"}, false},
+		{"POST is non-destructive (add/create)", manifest.Command{Method: "POST"}, false},
+		{"PUT is non-destructive (update)", manifest.Command{Method: "PUT"}, false},
+		{"PATCH is non-destructive", manifest.Command{Method: "PATCH"}, false},
+		{"empty method is not destructive", manifest.Command{Method: ""}, false},
+		// #27: POST/PATCH endpoints with destructive verbs in the path must
+		// also trigger the guard. Pre-fix the guard fired only on DELETE
+		// and `valkey clear-cache` / `nodes drain` / `postgresql exec-sql`
+		// / `clusters reset` / `minio delete-bucket` / `valkey set-data`
+		// / `postgresql revoke-database` all reached the wire unprotected.
+		{"POST clear-cache is destructive", manifest.Command{Command: "services/valkey/{id}/clear-cache", Method: "POST"}, true},
+		{"POST nodes drain is destructive", manifest.Command{Command: "nodes/{nid}/drain", Method: "POST"}, true},
+		{"POST clusters reset is destructive", manifest.Command{Command: "clusters/{cid}/reset", Method: "POST"}, true},
+		{"PATCH exec-sql is destructive", manifest.Command{Command: "services/postgresql/{id}/exec-sql", Method: "PATCH"}, true},
+		{"PATCH set-data is destructive", manifest.Command{Command: "services/valkey/{id}/set-data", Method: "PATCH"}, true},
+		{"PATCH delete-bucket is destructive (prefix match)", manifest.Command{Command: "services/minio/{id}/delete-bucket", Method: "PATCH"}, true},
+		{"PATCH delete-object is destructive (prefix match)", manifest.Command{Command: "services/minio/{id}/delete-object", Method: "PATCH"}, true},
+		{"PATCH revoke-database is destructive", manifest.Command{Command: "services/postgresql/{id}/revoke-database", Method: "PATCH"}, true},
+		{"PATCH remove-peer is destructive", manifest.Command{Command: "services/wireguard/{id}/remove-peer", Method: "PATCH"}, true},
+		// Non-destructive POST/PATCH should NOT trip the guard. The
+		// safety net cuts the wrong way only on these few verbs.
+		{"POST add is not destructive", manifest.Command{Command: "services/postgresql/add", Method: "POST"}, false},
+		{"PATCH update is not destructive", manifest.Command{Command: "services/postgresql/{id}/update", Method: "PATCH"}, false},
+		{"POST scale is not destructive", manifest.Command{Command: "services/postgresql/{id}/scale", Method: "POST"}, false},
+		// restart is borderline; not in the destructive list because it's
+		// reversible and CI workflows expect to restart without --yes
+		// gating every invocation.
+		{"PATCH restart is not destructive (reversible)", manifest.Command{Command: "services/kafka/{id}/restart", Method: "PATCH"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDestructiveCommand(tc.cmd); got != tc.want {
+				t.Errorf("isDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// destructiveSummary lifts the resolved primary positional id into
+// the confirmation prompt so a typo on the id is visible before the
+// user answers y/N. Falls back to the manifest description when no
+// positional is available.
+func TestDestructiveSummary(t *testing.T) {
+	cmdWithID := manifest.Command{
+		Command:     "apps/{id}/delete",
+		Description: "Delete an application",
+		Method:      "DELETE",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+		}},
+	}
+	noPositional := manifest.Command{
+		Command:     "tools/cleanup",
+		Description: "Cleanup orphaned resources",
+		Method:      "DELETE",
+		Input:       &manifest.Input{Fields: []manifest.Field{}},
+	}
+	multiPositional := manifest.Command{
+		Command:     "services/{type}/{id}/delete",
+		Description: "Delete a service",
+		Method:      "DELETE",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "type", Type: "string", Positional: true, Required: true},
+			{Name: "id", Type: "string", Positional: true, Required: true},
+		}},
+	}
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		args []string
+		want string
+	}{
+		{"single positional present", cmdWithID, []string{"d2eow"}, "id=d2eow"},
+		{"positional absent falls back to description", cmdWithID, []string{}, "Delete an application"},
+		{"no positional fields uses description", noPositional, []string{}, "Cleanup orphaned resources"},
+		{"first positional wins on multi", multiPositional, []string{"postgresql", "lw0vp"}, "type=postgresql"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := destructiveSummary(tc.cmd, tc.args); got != tc.want {
+				t.Errorf("destructiveSummary(%s, %v) = %q, want %q", tc.cmd.Command, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// Regression (#23 round 2): the first cut auto-proceeded when stdin
+// was not a TTY OR --json was set, exactly the LLM/MCP/CI invocation
+// the original bug called out. confirmDestructive now refuses to
+// proceed without --yes whenever it can't show a prompt the user can
+// answer. This test covers the pure non-TTY branch via a fake cobra
+// command; the TTY-prompt branch shares the same well-traveled
+// `bufio.NewReader(os.Stdin)` path as deploy's confirmDeploy and is
+// exercised live.
+func TestConfirmDestructive_NonTTYRefusesWithoutYes(t *testing.T) {
+	cmdDef := manifest.Command{
+		Command:     "apps/{id}/delete",
+		Description: "Delete an application",
+		Method:      "DELETE",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+		}},
+	}
+
+	// Without --yes: refuse with a typed error naming the flag.
+	c := &cobra.Command{Use: "delete"}
+	c.Flags().BoolP("yes", "y", false, "skip the destructive-action confirmation prompt")
+	c.Flags().BoolP("json", "j", false, "JSON output")
+	err := confirmDestructive(c, cmdDef, []string{"d2eow"})
+	if err == nil {
+		t.Fatalf("non-TTY without --yes should refuse, got nil error")
+	}
+	if !strings.Contains(err.Error(), "requires confirmation") {
+		t.Errorf("error %q should mention 'requires confirmation'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Errorf("error %q should name the --yes flag", err.Error())
+	}
+	if !strings.Contains(err.Error(), "d2eow") {
+		t.Errorf("error %q should name the target id", err.Error())
+	}
+
+	// With --yes: skip prompt, proceed (nil error).
+	c2 := &cobra.Command{Use: "delete"}
+	c2.Flags().BoolP("yes", "y", false, "skip")
+	c2.Flags().BoolP("json", "j", false, "JSON output")
+	if err := c2.ParseFlags([]string{"--yes"}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if err := confirmDestructive(c2, cmdDef, []string{"d2eow"}); err != nil {
+		t.Errorf("--yes should auto-proceed, got error: %v", err)
+	}
+
+	// --json alone does NOT bypass the guard: the LLM/MCP caller still
+	// has to opt in explicitly with --yes. This is the key contract
+	// the original test report (#23 regressed) flagged as broken.
+	c3 := &cobra.Command{Use: "delete"}
+	c3.Flags().BoolP("yes", "y", false, "skip")
+	c3.Flags().BoolP("json", "j", false, "JSON output")
+	if err := c3.ParseFlags([]string{"--json"}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	err = confirmDestructive(c3, cmdDef, []string{"d2eow"})
+	if err == nil {
+		t.Fatalf("--json alone (no --yes) should still refuse in non-TTY mode")
+	}
+}

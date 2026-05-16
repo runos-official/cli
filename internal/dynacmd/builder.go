@@ -115,6 +115,41 @@ func applyCLIDefaults(c *cobra.Command, cmdDef manifest.Command) error {
 // placeholderRegex matches {name} patterns in command paths
 var placeholderRegex = regexp.MustCompile(`^\{(\w+)\}$`)
 
+// urlPlaceholderRegex matches `{name}` anywhere in a string (not
+// anchored, unlike placeholderRegex which checks whole path segments).
+// Used to extract URL-path slot names from the manifest command path
+// so the builder can flip the matching field to Positional:true.
+var urlPlaceholderRegex = regexp.MustCompile(`\{(\w+)\}`)
+
+// promoteURLPlaceholderFieldsToPositional walks cmdDef.Command for
+// `{<name>}` placeholders and sets Positional:true on every matching
+// input field. Pre-fix this depended on conductor's manifest spelling
+// (apps/{id}/show declared positional:true on `id`; services/<type>/
+// {id}/show didn't), which surfaced as
+// `services postgresql show lw0vp` → "accepts at most 0 arg(s)".
+// Mutates cmdDef.Input.Fields in place. Idempotent: a field already
+// flagged positional stays positional.
+func promoteURLPlaceholderFieldsToPositional(cmdDef *manifest.Command) {
+	if cmdDef == nil || cmdDef.Input == nil {
+		return
+	}
+	matches := urlPlaceholderRegex.FindAllStringSubmatch(cmdDef.Command, -1)
+	if len(matches) == 0 {
+		return
+	}
+	placeholders := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		if len(m) >= 2 {
+			placeholders[m[1]] = true
+		}
+	}
+	for i := range cmdDef.Input.Fields {
+		if placeholders[cmdDef.Input.Fields[i].Name] {
+			cmdDef.Input.Fields[i].Positional = true
+		}
+	}
+}
+
 // Builder builds Cobra commands from a manifest
 type Builder struct {
 	manifest     *manifest.Manifest
@@ -151,22 +186,36 @@ func (b *Builder) BuildCommands() []*cobra.Command {
 		parents[name] = cmd
 	}
 
+	// Normalize fields: any field whose name matches a `{<name>}`
+	// placeholder in the command path is a URL-path param and MUST be
+	// positional. The conductor manifest is inconsistent on this — some
+	// commands declare positional:true for the URL slot (apps/{id}/show,
+	// clusters/show.cid), others don't (services/<type>/{id}/show.id,
+	// status, logs). Pre-fix this inconsistency surfaced as a UX
+	// papercut: `services postgresql show lw0vp` errored with
+	// "accepts at most 0 arg(s)" while the same shape worked for
+	// `apps show`. Promote unconditionally so the surface is uniform
+	// regardless of manifest spelling.
+	for i := range b.manifest.Commands {
+		promoteURLPlaceholderFieldsToPositional(&b.manifest.Commands[i])
+	}
+
 	for _, cmdDef := range b.manifest.Commands {
-		b.buildCommandTree(cmdDef, parents)
-		// Surface account-scoped manifest entries that live under a
-		// cluster-prefixed namespace as aliases under `account/`, since
-		// the user-facing namespace is misleading. Currently:
-		// `clusters/mcp/show` and `clusters/mcp/update` are
-		// account-scoped (`/:aid/clusters/mcp-docs`, no `:cid` in the
-		// endpoint) but live under `clusters` because they describe the
-		// cluster surface. Mirror them under `account/mcp/{show,update}`
-		// so LLM/MCP users discover them in the right namespace.
-		// Regression target: I12-B.
-		for _, aliasedPath := range aliasPathsFor(cmdDef.Command) {
-			aliased := cmdDef
-			aliased.Command = aliasedPath
-			b.buildCommandTree(aliased, parents)
+		// Remap manifest entries whose CLI namespace is misclassified
+		// onto the correct one before building the tree. Currently:
+		// `clusters/mcp/show|update` are account-scoped on the wire
+		// (endpoint /:aid/clusters/mcp-docs, no :cid), so the CLI
+		// surface lives under `account/mcp/*` instead. Only the cobra
+		// tree path moves; the manifest cmdDef.Command stays untouched
+		// for endpoint substitution + `manifest show <original>`
+		// lookups (ResolveAliasToCanonical handles the alias direction
+		// for `manifest show <new>`). Drops the duplicate registration
+		// that previously surfaced both spellings (#31).
+		treeCmd := cmdDef
+		if remapped := canonicalCLIPathFor(cmdDef.Command); remapped != cmdDef.Command {
+			treeCmd.Command = remapped
 		}
+		b.buildCommandTree(treeCmd, parents)
 	}
 
 	// Return top-level commands (excluding ones that were passed in as existing)
@@ -183,7 +232,7 @@ func (b *Builder) BuildCommands() []*cobra.Command {
 }
 
 func (b *Builder) buildCommandTree(cmdDef manifest.Command, parents map[string]*cobra.Command) {
-	parts := strings.Split(cmdDef.Command, "/")
+	parts := strings.Split(displayPathFor(cmdDef.Command), "/")
 
 	// Filter out placeholder segments like {id} - they're just metadata, not actual commands
 	// The placeholder value comes from input fields as flags (e.g., --id)
@@ -307,6 +356,19 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 				return wrapJSONIfSet(err)
 			}
 
+			// Confirmation guard for destructive endpoints. Pre-fix any
+			// DELETE-method command (`apps delete`, `services postgresql
+			// delete`, ...) reached the wire on the first keystroke
+			// with no prompt and no --yes flag; a typo on the id was
+			// unrecoverable. Mirrors `runos deploy`'s -y/--yes surface.
+			// Auto-skips when stdin is not a TTY (CI) or --json is set
+			// (machine consumers).
+			if isDestructiveCommand(cmdDef) {
+				if err := confirmDestructive(c, cmdDef, args); err != nil {
+					return wrapJSONIfSet(err)
+				}
+			}
+
 			// Check if required positional args are missing.
 			// `cid` is special: even when declared positional+required, it
 			// can also be supplied via --cid or the default cluster in
@@ -329,6 +391,21 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 				// (see executor.buildEndpoint), so the missing-arg check
 				// must honour it too. Closes I6-D.
 				bodyFilePath, _ := c.Flags().GetString("file")
+				// Pre-validate the -f path so a typoed/unreadable file
+				// surfaces as a clear ENOENT instead of the misleading
+				// "missing required argument: <field>" the gate below
+				// would otherwise emit. bodyFileProvidesField silently
+				// swallows loadYAMLFile errors (returns false), letting
+				// the missing-required path fire as if -f wasn't passed.
+				// Validate up-front for non-stdin paths against commands
+				// that actually consume body input (no-body commands
+				// surface their own "flag inert" diagnostic via the
+				// executor path).
+				if bodyFilePath != "" && !isStdinPath(bodyFilePath) && hasNonPositionalInput(cmdDef) {
+					if err := validateBodyFilePath(bodyFilePath); err != nil {
+						return wrapJSONIfSet(err)
+					}
+				}
 				// I12-A: collect EVERY missing required arg before failing
 				// rather than aborting on the first. Previously the user
 				// had to re-run the command for each missing positional
@@ -459,6 +536,15 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	// has no body fields, with a typed error naming the alternative.
 	if cmdDef.Input != nil {
 		cmd.Flags().StringP("file", "f", "", "YAML file with input values")
+	}
+
+	// Register -y/--yes on destructive endpoints so users have a
+	// CI-friendly opt-out from the confirmation prompt. The prompt
+	// itself fires inside the RunE based on TTY detection +
+	// --json/--yes flags; the flag declaration just exposes the
+	// surface so cobra accepts the syntax.
+	if isDestructiveCommand(cmdDef) {
+		cmd.Flags().BoolP("yes", "y", false, "skip the destructive-action confirmation prompt")
 	}
 
 	// Accept camelCase flag spellings as aliases for their kebab forms.
@@ -734,21 +820,70 @@ func primaryPositionalIDField(cmdDef manifest.Command) string {
 	return matches[0]
 }
 
-// aliasPathsFor returns the alternate manifest paths a given command
-// should also surface under. The use-case is hand-fixing namespace
-// misclassifications without forcing a conductor manifest rename. The
-// alias receives a separate cobra command tree but shares the original
-// command's endpoint, so both invocations hit the same handler.
-// Regression target: I12-B (`clusters/mcp/{show,update}` exposed under
-// `account/mcp/{show,update}` since the endpoint is account-scoped).
-func aliasPathsFor(originalPath string) []string {
+// displayPathFor rewrites a manifest command path into the
+// user-facing cobra path. The manifest is authoritative for endpoint
+// semantics (executor.Execute keys off `cmdDef.Command`), but the
+// command-tree shape it implies is sometimes user-hostile. Currently:
+//
+//   - `cli/version-check` hoists to `version-check`. The `cli` parent
+//     wrapped a single subcommand with the tautological help text
+//     "Manage cli", which is uninformative (the user is already in the
+//     CLI) and ate a top-level slot for no payoff. Hoisting brings the
+//     verb up alongside `runos update` / `runos version`, the other
+//     self-management commands. The manifest entry's
+//     `Command: "cli/version-check"` stays unchanged so the executor's
+//     auto-injection (executor.go: localVersion + os) keeps firing.
+//
+// Keep the allow-list small and explicit. The default remains the
+// identity mapping: a manifest path is the cobra path.
+func displayPathFor(originalPath string) string {
 	switch originalPath {
-	case "clusters/mcp/show":
-		return []string{"account/mcp/show"}
-	case "clusters/mcp/update":
-		return []string{"account/mcp/update"}
+	case "cli/version-check":
+		return "version-check"
 	}
-	return nil
+	return originalPath
+}
+
+// cliNamespaceRemap maps a manifest command path to the CLI namespace
+// where it should actually live, when the manifest's namespace is
+// misclassified. Single source of truth driving:
+//   - canonicalCLIPathFor: tree-build uses the remapped path so only
+//     the corrected spelling exists in the cobra tree.
+//   - ResolveAliasToCanonical: `manifest show <new>` resolves back to
+//     the manifest's original path for the JSON dump.
+//
+// Currently: clusters/mcp/{show,update} live at /:aid/clusters/mcp-docs
+// (account-scoped — no :cid), so the CLI surfaces them under
+// `account mcp *` instead of the misleading `clusters mcp *`.
+// Regression target: I12-B (correct namespace) + #31 (drop the
+// duplicate `clusters mcp *` registration).
+var cliNamespaceRemap = map[string]string{
+	"clusters/mcp/show":   "account/mcp/show",
+	"clusters/mcp/update": "account/mcp/update",
+}
+
+// canonicalCLIPathFor returns the CLI tree path a manifest command
+// should occupy. Defaults to the manifest path; entries in
+// cliNamespaceRemap relocate to the corrected namespace.
+func canonicalCLIPathFor(manifestPath string) string {
+	if remapped, ok := cliNamespaceRemap[manifestPath]; ok {
+		return remapped
+	}
+	return manifestPath
+}
+
+// ResolveAliasToCanonical returns the manifest path for a remapped CLI
+// path spelling. Used by `runos manifest show <path>` so a user typing
+// the corrected CLI namespace (`account/mcp/show`) gets the underlying
+// manifest entry whose `command` field still reads `clusters/mcp/show`.
+// Returns the input unchanged when no remap matches.
+func ResolveAliasToCanonical(aliasPath string) string {
+	for manifestPath, cliPath := range cliNamespaceRemap {
+		if cliPath == aliasPath {
+			return manifestPath
+		}
+	}
+	return aliasPath
 }
 
 // conveniencePositionalSatisfies reports whether the given field name

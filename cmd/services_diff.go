@@ -19,8 +19,9 @@ Output is the same unified-diff style as 'runos apps diff'. The diff is
 read-only and never writes to disk; use 'runos services sync' to push
 local edits back, or 'runos services pull --force' to overwrite local
 with current server state.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runServicesDiff,
+	Args:         cobra.MaximumNArgs(1),
+	SilenceUsage: true,
+	RunE:         runServicesDiff,
 }
 
 func init() {
@@ -53,6 +54,9 @@ func runServicesDiff(cmd *cobra.Command, args []string) (rerr error) {
 
 	local, err := services.Load(yamlPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("yaml file %q not found", yamlPath)
+		}
 		return fmt.Errorf("read yaml: %w", err)
 	}
 	if local.AID != ctx.cfg.AccountID {
