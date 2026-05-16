@@ -1749,6 +1749,105 @@ overrides:
 	}
 }
 
+// TestValidateHTTPPath pins issue 88: a yaml block-scalar like
+//
+//	healthCheckPath: |
+//	  /healthz
+//	  /readiness
+//
+// used to deploy successfully and persist `/healthz\n/readiness\n`,
+// silently breaking the probe under load (k8s doesn't define probe
+// behaviour for newline-bearing paths). The validator refuses any
+// control byte, requires a leading /, and refuses whitespace.
+func TestValidateHTTPPath(t *testing.T) {
+	cases := []struct {
+		name      string
+		field     string
+		value     string
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "empty passes (field is optional)", field: "healthCheckPath", value: "", wantErr: false},
+		{name: "simple path passes", field: "healthCheckPath", value: "/healthz", wantErr: false},
+		{name: "nested path passes", field: "metricsPath", value: "/api/v1/metrics", wantErr: false},
+		{name: "query string passes", field: "healthCheckPath", value: "/healthz?ready=1", wantErr: false},
+		{
+			name:      "newline refused (the issue 88 repro)",
+			field:     "healthCheckPath",
+			value:     "/healthz\n/readiness",
+			wantErr:   true,
+			errSubstr: "control byte",
+		},
+		{
+			name:      "trailing newline (yaml `|` adds one) refused",
+			field:     "healthCheckPath",
+			value:     "/healthz\n",
+			wantErr:   true,
+			errSubstr: "control byte",
+		},
+		{
+			name:      "tab refused",
+			field:     "metricsPath",
+			value:     "/metrics\twith-tab",
+			wantErr:   true,
+			errSubstr: "control byte",
+		},
+		{
+			name:      "must begin with /",
+			field:     "healthCheckPath",
+			value:     "healthz",
+			wantErr:   true,
+			errSubstr: "must begin with /",
+		},
+		{
+			name:      "space in path refused",
+			field:     "healthCheckPath",
+			value:     "/health check",
+			wantErr:   true,
+			errSubstr: "whitespace",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHTTPPath(tc.field, tc.value)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if !contains(err.Error(), tc.errSubstr) {
+					t.Errorf("error %q missing %q", err, tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// End-to-end through Validate: a runos.yaml with a multi-line
+// healthCheckPath block scalar must fail LoadConfig (which runs
+// Validate as its final step).
+func TestLoadConfig_RefusesMultilineHealthCheckPath(t *testing.T) {
+	const yaml = `app: myapp
+port: 3000
+healthCheckPath: |
+  /healthz
+  /readiness
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	writeFile(t, path, yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected refusal for multi-line healthCheckPath")
+	}
+	if !contains(err.Error(), "healthCheckPath") {
+		t.Errorf("error should name the offending field, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

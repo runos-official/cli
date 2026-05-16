@@ -310,6 +310,19 @@ func (c *DeployConfig) Validate() error {
 		return fmt.Errorf("app name is required in runos.yaml")
 	}
 
+	// Issue 88: HTTP probe paths must be a single line beginning with /.
+	// yaml block-scalar (`|`) and folded-scalar (`>`) forms otherwise let
+	// a user stuff newlines into the value, which k8s probe semantics
+	// don't define. Same shape applies to the prometheus metricsPath.
+	// Checked before the port branching because both port styles share
+	// these optional fields.
+	if err := validateHTTPPath("healthCheckPath", c.HealthCheckPath); err != nil {
+		return err
+	}
+	if err := validateHTTPPath("metricsPath", c.MetricsPath); err != nil {
+		return err
+	}
+
 	hasMappings := len(c.ServicePortMappings) > 0
 	if !hasMappings {
 		if c.Port <= 0 || c.Port > 65535 {
@@ -322,6 +335,31 @@ func (c *DeployConfig) Validate() error {
 	for i, m := range c.ServicePortMappings {
 		if m.Port <= 0 || m.Port > 65535 {
 			return fmt.Errorf("servicePortMappings[%d].port must be 1-65535", i)
+		}
+	}
+	return nil
+}
+
+// validateHTTPPath refuses values that aren't a single-line HTTP path
+// beginning with `/`. Empty values pass through (the field is optional).
+// Pure helper so the regression test exercises each rejection mode
+// without building a full DeployConfig.
+func validateHTTPPath(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c < 0x20 || c == 0x7f {
+			return fmt.Errorf("%s contains control byte 0x%02x at position %d (must be a single-line HTTP path starting with /)", field, c, i)
+		}
+	}
+	if value[0] != '/' {
+		return fmt.Errorf("%s %q must begin with /", field, value)
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] == ' ' || value[i] == '\t' {
+			return fmt.Errorf("%s %q must not contain whitespace", field, value)
 		}
 	}
 	return nil
