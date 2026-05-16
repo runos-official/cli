@@ -8,10 +8,30 @@ import (
 	"strings"
 
 	"github.com/runos-official/cli/internal/config"
+	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 
 	"github.com/spf13/cobra"
 )
+
+// filterManifestCommandPaths returns the command-path strings from cmds
+// whose path contains filter as a case-insensitive substring. An empty
+// filter is treated as "match everything". The return slice is always
+// non-nil so the --json caller emits `[]` (not `null`) when nothing
+// matches: jq's `.[]` and `.length` error on null but work on [],
+// which silently broke CI/LLM consumers piping the introspection
+// output.
+func filterManifestCommandPaths(cmds []manifest.Command, filter string) []string {
+	needle := strings.ToLower(filter)
+	out := []string{}
+	for _, c := range cmds {
+		if needle != "" && !strings.Contains(strings.ToLower(c.Command), needle) {
+			continue
+		}
+		out = append(out, c.Command)
+	}
+	return out
+}
 
 var manifestCmd = &cobra.Command{
 	Use:   "manifest",
@@ -89,8 +109,14 @@ func runManifestShow(cmd *cobra.Command, args []string) error {
 
 	if len(args) == 1 {
 		target := args[0]
+		// Resolve CLI-side aliases (e.g. `account/mcp/show` →
+		// `clusters/mcp/show`) so the alias spellings users invoke as
+		// runnable commands also surface in `manifest show` queries.
+		// Pre-fix `manifest show account/mcp/show` errored "no command
+		// in manifest" even though `runos account mcp show` works.
+		canonical := dynacmd.ResolveAliasToCanonical(target)
 		for _, c := range m.Commands {
-			if c.Command == target {
+			if c.Command == target || c.Command == canonical {
 				out, err := json.MarshalIndent(c, "", "  ")
 				if err != nil {
 					return err
@@ -131,16 +157,9 @@ func runManifestList(cmd *cobra.Command, args []string) error {
 
 	filter := ""
 	if len(args) == 1 {
-		filter = strings.ToLower(args[0])
+		filter = args[0]
 	}
-
-	var paths []string
-	for _, c := range m.Commands {
-		if filter != "" && !strings.Contains(strings.ToLower(c.Command), filter) {
-			continue
-		}
-		paths = append(paths, c.Command)
-	}
+	paths := filterManifestCommandPaths(m.Commands, filter)
 
 	if manifestListJSON {
 		out, err := json.MarshalIndent(paths, "", "  ")
