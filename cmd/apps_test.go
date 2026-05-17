@@ -79,3 +79,67 @@ func TestReconcileCIDWithYAML_Issue83(t *testing.T) {
 		})
 	}
 }
+
+// Regression for issue 103: when the positional looks like a 5-char
+// app id (the canonical conductor identifier shape used by 8 other
+// apps subcommands), the yaml-not-found error must augment its
+// message with a --app-id hint instead of bottoming out on the bare
+// "yaml file ... not found".
+func TestAppIDLikePositional(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"5-char lowercase alphanumeric", "c479n", true},
+		{"5-char mixed case", "C479n", true},
+		{"5-char with dash", "c4-9n", true},
+		{"5-char with underscore", "c4_9n", true},
+		{"4 chars (too short)", "c479", false},
+		{"6 chars (too long)", "c479na", false},
+		{"empty", "", false},
+		{"yaml path", "runos.yaml", false},
+		{"5 chars with slash", "c/49n", false},
+		{"5 chars with dot", "c.49n", false},
+		{"5 chars with space", "c 49n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appIDLikePositional(tc.in); got != tc.want {
+				t.Errorf("appIDLikePositional(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The error wrapper must include the --app-id hint when the positional
+// looks like an app id, and fall back to the bare message otherwise.
+func TestAppsYamlNotFoundError(t *testing.T) {
+	const yamlPath = "/cwd/c479n"
+
+	t.Run("id-shaped positional gets hint", func(t *testing.T) {
+		err := appsYamlNotFoundError("c479n", yamlPath)
+		msg := err.Error()
+		if !strings.Contains(msg, "yaml file") || !strings.Contains(msg, yamlPath) {
+			t.Errorf("error must keep the base 'yaml file %q not found' shape, got: %s", yamlPath, msg)
+		}
+		if !strings.Contains(msg, "--app-id c479n") {
+			t.Errorf("error should hint '--app-id c479n', got: %s", msg)
+		}
+	})
+
+	t.Run("yaml-path positional gets bare message", func(t *testing.T) {
+		err := appsYamlNotFoundError("runos.yaml", yamlPath)
+		msg := err.Error()
+		if strings.Contains(msg, "--app-id") {
+			t.Errorf("non-id positional should NOT include --app-id hint, got: %s", msg)
+		}
+	})
+
+	t.Run("empty positional gets bare message", func(t *testing.T) {
+		err := appsYamlNotFoundError("", yamlPath)
+		if strings.Contains(err.Error(), "--app-id") {
+			t.Errorf("empty positional should NOT include --app-id hint, got: %s", err.Error())
+		}
+	})
+}

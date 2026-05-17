@@ -112,7 +112,11 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 	localApp, err := apps.LoadLocalApp(yamlPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("yaml file %q not found", yamlPath)
+			originalArg := ""
+			if len(args) > 0 {
+				originalArg = args[0]
+			}
+			return appsYamlNotFoundError(originalArg, yamlPath)
 		}
 		return fmt.Errorf("read yaml: %w", err)
 	}

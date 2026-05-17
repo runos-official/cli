@@ -84,7 +84,11 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	localApp, err := apps.LoadLocalApp(yamlPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errReturn(fmt.Errorf("yaml file %q not found", yamlPath))
+			originalArg := ""
+			if len(args) > 0 {
+				originalArg = args[0]
+			}
+			return errReturn(appsYamlNotFoundError(originalArg, yamlPath))
 		}
 		return errReturn(fmt.Errorf("read yaml: %w", err))
 	}

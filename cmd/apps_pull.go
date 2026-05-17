@@ -590,7 +590,11 @@ func resolvePullPlan(args []string, all bool, appIDFlag, outFlag, expectedCID st
 		localApp, err := apps.LoadLocalApp(yamlPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return pullPlan{}, fmt.Errorf("yaml file %q not found", yamlPath)
+				originalArg := ""
+				if len(args) > 0 {
+					originalArg = args[0]
+				}
+				return pullPlan{}, appsYamlNotFoundError(originalArg, yamlPath)
 			}
 			return pullPlan{}, fmt.Errorf("read yaml: %w", err)
 		}

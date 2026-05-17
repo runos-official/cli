@@ -150,6 +150,44 @@ func (c *appsCmdContext) requireCID() error {
 	return nil
 }
 
+// appsYamlNotFoundError formats the "yaml file not found" refusal that
+// apps pull/diff/sync emit when the positional doesn't resolve to a
+// readable yaml on disk. When the original positional `arg` looks like
+// a 5-char app id (conductor's identifier shape), append a hint so the
+// user immediately knows to switch to `--app-id`. Eight other apps
+// subcommands accept a 5-char id positional, so the conflated mental
+// model is the documented papercut for #103. Empty `arg` falls through
+// to the bare message (resolveYamlArg's auto-detect-from-cwd branch).
+func appsYamlNotFoundError(arg, yamlPath string) error {
+	base := fmt.Errorf("yaml file %q not found", yamlPath)
+	if appIDLikePositional(arg) {
+		return fmt.Errorf("%w (looks like an app id rather than a yaml path; run `runos apps pull --app-id %s --cid <cid>` to create the per-app directory, or pass an existing pulled yaml)", base, arg)
+	}
+	return base
+}
+
+// appIDLikePositional reports whether the positional looks like an app
+// id rather than a yaml file path: exactly 5 chars and the conductor
+// identifier alphabet ([A-Za-z0-9_-]). 5 is the canonical app-id length
+// across the manifest (services/apps); a longer or shorter string is
+// almost certainly a file path.
+func appIDLikePositional(s string) bool {
+	if len(s) != 5 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // resolveYamlArg returns an absolute yaml path for diff/sync. If args
 // has a positional, it's used as-is (after Abs). Otherwise the cwd is
 // scanned via apps.FindPulledYAMLs and the unique valid candidate is
