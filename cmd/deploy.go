@@ -667,7 +667,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			}
 			return fmt.Errorf("deployment failed: %w", err)
 		}
-		fmt.Println("\nDeployment completed successfully!")
+		fmt.Fprintln(humanOut, "\nDeployment completed successfully!")
 
 		// Retry any service yaml writes that 404'd at prepare-time
 		// because the conductor's service-create work was still async.
@@ -691,7 +691,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if err == nil {
 			for _, access := range networkAccess {
 				if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
-					fmt.Printf("\nApp available at: %s\n", access.Link)
+					fmt.Fprintf(humanOut, "\nApp available at: %s\n", access.Link)
 					break
 				}
 			}
