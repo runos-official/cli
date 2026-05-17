@@ -1118,6 +1118,29 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 					val, _ := cmd.Flags().GetBool(flagName)
 					result[field.Name] = val
 				}
+				continue
+			}
+			// Issue 122: when the user passed the positional via args
+			// (not the --<name> flag), bind it into the body so
+			// body-bound positionals like apps/prepare-cli-pull's
+			// cliUploadId actually reach conductor. URL-substituted
+			// positionals are filtered out by filterPathParamsFromBody
+			// before the wire send, so this writes are safe for them
+			// too. positionalArgForField returns "" when the slot is
+			// empty.
+			if posVal := positionalArgForField(args, cmdDef, field.Name); posVal != "" {
+				switch field.Type {
+				case "string":
+					result[field.Name] = posVal
+				case "integer":
+					if n, err := strconv.Atoi(posVal); err == nil {
+						result[field.Name] = n
+					}
+				case "boolean":
+					if b, err := strconv.ParseBool(posVal); err == nil {
+						result[field.Name] = b
+					}
+				}
 			}
 			continue
 		}
