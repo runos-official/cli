@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -105,6 +106,14 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			return
 		}
 		fmt.Printf(format, args...)
+	}
+	// humanOut: post-deploy IaC notices and the synthesized-RRC writeback
+	// notice land here. Under --json they route to stderr so the JSON
+	// envelope on stdout stays a clean single document; otherwise stdout.
+	// Issue 94 / sibling to #86/#93.
+	humanOut := io.Writer(os.Stdout)
+	if jsonOutput {
+		humanOut = os.Stderr
 	}
 
 	// Load CLI config
@@ -518,7 +527,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// provisioned the service. 404s from a still-async create land in
 	// the deferred bucket and are retried after the deploy job
 	// completes (see flagFollow path below).
-	freshSvcResult := writeProvisionedServiceYAMLs(cfg, configDir, cid, prepResp)
+	freshSvcResult := writeProvisionedServiceYAMLs(cfg, configDir, cid, prepResp, humanOut)
 	if len(freshSvcResult.failed) > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: write service yamls (some failed):\n  %s\n", strings.Join(freshSvcResult.failed, "\n  "))
 	}
@@ -541,7 +550,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if envFilename == "" {
 			envFilename = apps.EnvFilename(cid, appID)
 		}
-		writeDeployIaCArtifacts(configDir, envFilename)
+		writeDeployIaCArtifacts(configDir, envFilename, humanOut)
 	}
 
 	// Create tarball
@@ -664,12 +673,12 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		// because the conductor's service-create work was still async.
 		// By the time --follow returns success the resources have
 		// settled, so the show endpoint should be 200.
-		retryDeferredServiceYAMLs(cfg, configDir, cid, freshSvcResult.deferred)
+		retryDeferredServiceYAMLs(cfg, configDir, cid, freshSvcResult.deferred, humanOut)
 
 		// I2-1d: AppDocument is settled now, so it's safe to fetch the
 		// synthesized RRC and stamp it on the local yaml without
 		// racing the deploy job's Firestore writes.
-		stampSynthesizedResources(svc, deployConfig, configPath)
+		stampSynthesizedResources(svc, deployConfig, configPath, humanOut)
 
 		// Extract app ID for network access lookup
 		appID := prepResp.AppID
@@ -714,7 +723,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// later in the success branch instead. This pre-block path keeps
 	// the env / requires sync ordering identical to before.
 	if !flagFollow {
-		stampSynthesizedResources(svc, deployConfig, configPath)
+		stampSynthesizedResources(svc, deployConfig, configPath, humanOut)
 	}
 
 	// Last thing printed: any local-env vs server-env warnings, ordered
@@ -830,11 +839,11 @@ func chooseDeployAppID(deployConfig *deploy.DeployConfig, prepResp *deploy.Prepa
 // alongside the real file (I3-A). Errors print as warnings; the deploy
 // doesn't roll back since the conductor side has already accepted the
 // request.
-func writeDeployIaCArtifacts(configDir, envFilename string) {
+func writeDeployIaCArtifacts(configDir, envFilename string, humanOut io.Writer) {
 	if dr, err := apps.EnsureDockerignore(configDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write .dockerignore: %v\n", err)
 	} else if !dr.InSync {
-		fmt.Printf("Wrote .dockerignore: %s\n", dr.Path)
+		fmt.Fprintf(humanOut, "Wrote .dockerignore: %s\n", dr.Path)
 	}
 	if envFilename == "" {
 		return
@@ -853,7 +862,7 @@ func writeDeployIaCArtifacts(configDir, envFilename string) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to write %s: %v\n", envPath, err)
 		return
 	}
-	fmt.Printf("Wrote env file: %s\n", envPath)
+	fmt.Fprintf(humanOut, "Wrote env file: %s\n", envPath)
 }
 
 // writeProvisionedServiceYAMLsResult breaks the per-service outcome into
@@ -886,7 +895,7 @@ type writeProvisionedServiceYAMLsResult struct {
 // expected to retry deferred entries via retryDeferredServiceYAMLs once
 // the deploy job is complete (--follow mode) or to inform the user that
 // `runos apps pull --force` will materialise them later.
-func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, prepResp *deploy.PrepareResponse) writeProvisionedServiceYAMLsResult {
+func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, prepResp *deploy.PrepareResponse, humanOut io.Writer) writeProvisionedServiceYAMLsResult {
 	var res writeProvisionedServiceYAMLsResult
 	if prepResp == nil || len(prepResp.Services) == 0 {
 		return res
@@ -932,7 +941,7 @@ func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, pre
 			res.failed = append(res.failed, fmt.Sprintf("%s/%s: save: %v", s.Type, s.ID, err))
 			continue
 		}
-		fmt.Printf("Wrote service yaml: %s\n", dest)
+		fmt.Fprintf(humanOut, "Wrote service yaml: %s\n", dest)
 		res.written = append(res.written, dest)
 	}
 	return res
@@ -944,7 +953,7 @@ func writeProvisionedServiceYAMLs(cfg *config.Config, configDir, cid string, pre
 // produce a queryable resource. Errors here surface as best-effort
 // warnings: a still-failing yaml just means the user runs
 // `runos apps pull --force` later.
-func retryDeferredServiceYAMLs(cfg *config.Config, configDir, cid string, deferred []deploy.ProvisionedService) {
+func retryDeferredServiceYAMLs(cfg *config.Config, configDir, cid string, deferred []deploy.ProvisionedService, humanOut io.Writer) {
 	if len(deferred) == 0 {
 		return
 	}
@@ -970,7 +979,7 @@ func retryDeferredServiceYAMLs(cfg *config.Config, configDir, cid string, deferr
 			stillMissing = append(stillMissing, fmt.Sprintf("%s/%s: save: %v", s.Type, s.ID, err))
 			continue
 		}
-		fmt.Printf("Wrote service yaml: %s\n", dest)
+		fmt.Fprintf(humanOut, "Wrote service yaml: %s\n", dest)
 	}
 	if len(stillMissing) > 0 {
 		fmt.Fprintf(os.Stderr, "Note: service yaml(s) not yet pullable for: %s. Run `runos apps pull --force` once the services finish provisioning.\n",
@@ -1119,7 +1128,7 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 // syncAppState path deliberately does NOT call this so a user who
 // omits RRC on purpose has the prepare endpoint reapply that omission
 // rather than silently round-tripping a synthesized value.
-func stampSynthesizedResources(svc *deploy.Service, c *deploy.DeployConfig, configPath string) {
+func stampSynthesizedResources(svc *deploy.Service, c *deploy.DeployConfig, configPath string, humanOut io.Writer) {
 	if c == nil || c.ID == "" {
 		return
 	}
@@ -1160,7 +1169,7 @@ func stampSynthesizedResources(svc *deploy.Service, c *deploy.DeployConfig, conf
 		fmt.Fprintf(os.Stderr, "Warning: failed to record synthesized resource class to local yaml: %v\n", err)
 		return
 	}
-	fmt.Printf("Recorded synthesized resourceRequirementClassId=%q in %s\n",
+	fmt.Fprintf(humanOut, "Recorded synthesized resourceRequirementClassId=%q in %s\n",
 		app.ResourceRequirementClassID, configPath)
 }
 

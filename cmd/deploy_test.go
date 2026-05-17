@@ -1343,7 +1343,7 @@ func TestWriteDeployIaCArtifacts_HonoursExplicitEnvFilename(t *testing.T) {
 	if err := os.WriteFile(explicitPath, []byte("FOO=bar\n"), 0644); err != nil {
 		t.Fatalf("seed plain.env: %v", err)
 	}
-	writeDeployIaCArtifacts(dir, "plain.env")
+	writeDeployIaCArtifacts(dir, "plain.env", os.Stdout)
 	// Explicit file untouched (existence-check skipped the write).
 	body, err := os.ReadFile(explicitPath)
 	if err != nil {
@@ -1365,7 +1365,7 @@ func TestWriteDeployIaCArtifacts_HonoursExplicitEnvFilename(t *testing.T) {
 func TestWriteDeployIaCArtifacts_WritesCanonicalWhenNoExplicit(t *testing.T) {
 	dir := t.TempDir()
 	canonicalLeaf := "runos.k1.ab12c.config.env"
-	writeDeployIaCArtifacts(dir, canonicalLeaf)
+	writeDeployIaCArtifacts(dir, canonicalLeaf, os.Stdout)
 	canonical := filepath.Join(dir, canonicalLeaf)
 	body, err := os.ReadFile(canonical)
 	if err != nil {
@@ -1382,7 +1382,7 @@ func TestWriteDeployIaCArtifacts_WritesCanonicalWhenNoExplicit(t *testing.T) {
 // path, mis-stat it, and emit a confusing warning.
 func TestWriteDeployIaCArtifacts_EmptyEnvFilenameSkipsPlaceholder(t *testing.T) {
 	dir := t.TempDir()
-	writeDeployIaCArtifacts(dir, "")
+	writeDeployIaCArtifacts(dir, "", os.Stdout)
 	// .dockerignore should still appear (separate from env placeholder).
 	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); err != nil {
 		t.Errorf(".dockerignore should be written even when envFilename is empty: %v", err)
