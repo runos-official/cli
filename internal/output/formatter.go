@@ -293,8 +293,18 @@ const maxTextCellWidth = 40
 // truncates at a visible-character boundary instead of mid-rune. Pure
 // helper so the regression test can exercise short / exact / over /
 // multi-byte inputs without a Formatter dance.
+//
+// URL-shaped values (http:// or https:// prefix) bypass the cap: those
+// are typically the primary value the user came for (apps
+// network-access prints endpoints, services dependencies prints
+// targetIngressUrl), and copy-paste from the terminal needs the full
+// string. The table renderer's width calc picks up the longer cell so
+// alignment still works for downstream columns. Issue 106.
 func truncateCell(val string, max int) string {
 	if max <= 3 {
+		return val
+	}
+	if isURLValue(val) {
 		return val
 	}
 	runes := []rune(val)
@@ -302,6 +312,13 @@ func truncateCell(val string, max int) string {
 		return val
 	}
 	return string(runes[:max-3]) + "..."
+}
+
+// isURLValue reports whether val is an http(s) URL the user is likely
+// to copy-paste. Cheap prefix check; no full URL parsing because we
+// just need to recognise the "primary value" cells in the table.
+func isURLValue(val string) bool {
+	return strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://")
 }
 
 func (f *Formatter) formatObject(data []byte, fields []string) error {

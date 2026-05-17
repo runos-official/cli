@@ -391,6 +391,15 @@ func TestTruncateCell(t *testing.T) {
 		// Multi-byte runes: cap by runes, not bytes, so the truncation
 		// boundary doesn't split a character mid-codepoint.
 		{"multi-byte rune string truncates by rune count", strings.Repeat("é", 50), 10, strings.Repeat("é", 7) + "..."},
+		// Issue 106: URL-shaped values bypass the cap because the URL
+		// is typically the primary value the user came for (apps
+		// network-access endpoint, services dependencies targetIngressUrl)
+		// and copy-paste from the terminal needs the full string.
+		{"https URL bypasses cap", "https://app-c479n-3000.testing.mercatura.example.com/healthz", 40, "https://app-c479n-3000.testing.mercatura.example.com/healthz"},
+		{"http URL bypasses cap", "http://internal.example.com/very/long/path/that/exceeds/40/chars", 40, "http://internal.example.com/very/long/path/that/exceeds/40/chars"},
+		// Strings that merely contain http:// somewhere are NOT bypassed
+		// — only http(s)://-prefixed values get the exemption.
+		{"url-substring still truncated", "click here: https://example.com plus more text to overflow", 40, "click here: https://example.com plus ..."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
