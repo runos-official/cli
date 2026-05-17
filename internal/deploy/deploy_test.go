@@ -1826,6 +1826,76 @@ func TestLoadConfig_RefusesFractionalCpuMc(t *testing.T) {
 	}
 }
 
+// Regression for issue 117: yaml errors for known apps-add body fields
+// (`envVars`, `secretEnvVars`) that don't belong on the runos.yaml
+// schema must include a did-you-mean hint pointing at the side-file
+// + management command shape.
+func TestEnvFieldHint(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string // empty = no hint
+		matches []string
+	}{
+		{
+			name:    "envVars: side-file + apps env-vars set",
+			in:      "line 4: field envVars not found in runos.yaml",
+			matches: []string{"env:", "apps env-vars set", "runos.<cid>.<id>.config.env"},
+		},
+		{
+			name:    "secretEnvVars: side-file + apps secret-env-vars set",
+			in:      "line 4: field secretEnvVars not found in runos.yaml",
+			matches: []string{"secretEnv:", "apps secret-env-vars set", "gitignored"},
+		},
+		{
+			name: "unknown field: no hint",
+			in:   "line 4: field somethingElse not found in runos.yaml",
+			want: "",
+		},
+		{
+			name: "non-strict-decoder error: no hint",
+			in:   "yaml: line 5: did not find expected '-'",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := envFieldHint(tc.in)
+			if tc.want == "" && len(tc.matches) == 0 {
+				if got != "" {
+					t.Errorf("expected empty hint, got: %s", got)
+				}
+				return
+			}
+			for _, m := range tc.matches {
+				if !contains(got, m) {
+					t.Errorf("hint missing substring %q; got: %s", m, got)
+				}
+			}
+		})
+	}
+}
+
+// End-to-end: LoadConfig with `envVars:` in the yaml surfaces an error
+// that names the field AND includes the side-file/command hint.
+func TestLoadConfig_RejectsEnvVarsWithHint(t *testing.T) {
+	const yamlBody = "app: myapp\nport: 3000\nenvVars:\n  FOO: bar\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	writeFile(t, path, yamlBody)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected refusal for envVars in runos.yaml")
+	}
+	msg := err.Error()
+	if !contains(msg, "envVars") {
+		t.Errorf("error must name the offending field, got: %s", msg)
+	}
+	if !contains(msg, "apps env-vars set") {
+		t.Errorf("error should hint `apps env-vars set`, got: %s", msg)
+	}
+}
+
 // Regression for issue 104: yaml.v3's strict-decoder error names the
 // Go target type ("in type deploy.DeployConfig") which leaks an
 // internal implementation detail. The sanitizer rewrites the tail to

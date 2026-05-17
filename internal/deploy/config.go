@@ -305,7 +305,14 @@ func LoadConfig(path string) (*DeployConfig, error) {
 		// confuses users whose mental model is the on-disk yaml. Replace
 		// the Go-type tail with "in runos.yaml" so the message stays
 		// schema-oriented.
-		return nil, fmt.Errorf("failed to parse config: %s", sanitizeYAMLTypeName(err.Error()))
+		// Issue 117: when the unknown field is `envVars` / `secretEnvVars`
+		// (valid in the apps/add body but not in runos.yaml), append a
+		// hint pointing at the correct yaml field + management command.
+		msg := sanitizeYAMLTypeName(err.Error())
+		if hint := envFieldHint(msg); hint != "" {
+			msg += "\n  " + hint
+		}
+		return nil, fmt.Errorf("failed to parse config: %s", msg)
 	}
 
 	if err := config.Validate(); err != nil {
@@ -382,6 +389,37 @@ var resourceIntegerFields = []string{
 // don't carry the type name pass through unchanged.
 func sanitizeYAMLTypeName(msg string) string {
 	return strings.ReplaceAll(msg, "in type deploy.DeployConfig", "in runos.yaml")
+}
+
+// envFieldHint returns a did-you-mean hint for known apps-add body
+// fields that get pasted into runos.yaml by accident: `envVars` and
+// `secretEnvVars`. Both are valid on the apps/add HTTP body but not on
+// the runos.yaml schema (env vars live in side files + are managed via
+// `apps env-vars set` / `apps secret-env-vars set`). Returns an empty
+// string when the message doesn't carry one of those field names. Pure
+// helper for test coverage. Issue 117.
+func envFieldHint(strictMsg string) string {
+	field := unknownYAMLFieldName(strictMsg)
+	switch field {
+	case "envVars":
+		return "hint: plain env vars live in a side file (runos.<cid>.<id>.config.env, referenced by `env:` in runos.yaml), or push to the server with `runos apps env-vars set <appId> -f body.yaml`."
+	case "secretEnvVars":
+		return "hint: secret env vars live in a side file (.runos.<cid>.<id>.env, referenced by `secretEnv:` in runos.yaml; gitignored), or push to the server with `runos apps secret-env-vars set <appId> -f body.yaml`."
+	}
+	return ""
+}
+
+// unknownYAMLFieldRegex extracts the offending field name from yaml.v3's
+// strict-decoder error after sanitizeYAMLTypeName rewrites the Go-type
+// tail. Format: "field <name> not found in runos.yaml".
+var unknownYAMLFieldRegex = regexp.MustCompile(`field (\w+) not found in runos\.yaml`)
+
+func unknownYAMLFieldName(msg string) string {
+	m := unknownYAMLFieldRegex.FindStringSubmatch(msg)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // refuseFractionalResourceFields decodes the yaml into a generic
