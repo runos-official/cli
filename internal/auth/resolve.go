@@ -3,6 +3,7 @@ package auth
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/runos-official/cli/internal/config"
 )
@@ -29,7 +30,7 @@ const AccountIDEnvVar = "RUNOS_ACCOUNT_ID"
 func ValidateAuthEnvVars(lookup func(string) (string, bool)) error {
 	for _, name := range []string{APIKeyEnvVar, AccountIDEnvVar} {
 		v, ok := lookup(name)
-		if ok && v == "" {
+		if ok && strings.TrimSpace(v) == "" {
 			return fmt.Errorf("%s is set but empty; either unset it to fall back to interactive auth, or set it to a real value", name)
 		}
 	}
@@ -52,7 +53,13 @@ func ValidateAuthEnvVars(lookup func(string) (string, bool)) error {
 // Returns a clear "not authenticated" error when neither path is
 // available (no env var AND no Firebase config).
 func ResolveToken(cfg *config.Config) (string, error) {
-	if pat := os.Getenv(APIKeyEnvVar); pat != "" {
+	// Issue 110: a PAT pasted from Slack / docs / web UIs often carries
+	// a trailing newline or leading space. Pre-fix the trailing-newline
+	// case leaked "net/http: invalid header field value for Authorization"
+	// because net/http refuses CR/LF in header values; the leading-space
+	// case silently passed (asymmetric). TrimSpace canonicalises both so
+	// the user sees the same clean result either way.
+	if pat := strings.TrimSpace(os.Getenv(APIKeyEnvVar)); pat != "" {
 		return pat, nil
 	}
 	if cfg == nil || cfg.Firebase == nil {
@@ -65,6 +72,8 @@ func ResolveToken(cfg *config.Config) (string, error) {
 // a PAT (RUNOS_API_KEY env var). Callers that need to skip Firebase-
 // specific setup (e.g. config-required gates that don't apply when a
 // PAT is the credential) check this rather than re-reading the env.
+// Mirrors ResolveToken's TrimSpace so a whitespace-only PAT (issue 110)
+// doesn't trip the "using a PAT" predicate.
 func UsingAPIKey() bool {
-	return os.Getenv(APIKeyEnvVar) != ""
+	return strings.TrimSpace(os.Getenv(APIKeyEnvVar)) != ""
 }

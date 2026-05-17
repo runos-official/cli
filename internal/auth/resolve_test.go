@@ -89,3 +89,53 @@ func TestUsingAPIKey(t *testing.T) {
 		t.Error("expected true when env set")
 	}
 }
+
+// Issue 110: a PAT pasted with surrounding whitespace (common Slack /
+// docs / web-UI copy-paste) used to leak "net/http: invalid header
+// field value for Authorization" because net/http refuses CR/LF in
+// header values. TrimSpace canonicalises so both the leading-space
+// and trailing-newline shapes resolve to the same clean PAT.
+func TestResolveToken_TrimsWhitespace(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"trailing newline (the issue 110 repro)", "secret-pat\n", "secret-pat"},
+		{"trailing CRLF", "secret-pat\r\n", "secret-pat"},
+		{"leading space", " secret-pat", "secret-pat"},
+		{"surrounding whitespace", " \tsecret-pat\n", "secret-pat"},
+		{"clean PAT untouched", "secret-pat", "secret-pat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(APIKeyEnvVar, tc.in)
+			got, err := ResolveToken(nil)
+			if err != nil {
+				t.Fatalf("ResolveToken: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("ResolveToken = %q, want %q", got, tc.want)
+			}
+			// Symmetric: UsingAPIKey must agree with what ResolveToken
+			// considers usable.
+			if !UsingAPIKey() {
+				t.Errorf("UsingAPIKey() = false, want true (token resolved to %q)", got)
+			}
+		})
+	}
+}
+
+// A whitespace-only PAT should trip the explicit-empty refusal, not
+// reach the net/http layer.
+func TestValidateAuthEnvVars_WhitespaceOnlyPATRefused(t *testing.T) {
+	err := ValidateAuthEnvVars(func(name string) (string, bool) {
+		if name == APIKeyEnvVar {
+			return "\n", true
+		}
+		return "", false
+	})
+	if err == nil {
+		t.Fatal("expected refusal for whitespace-only PAT")
+	}
+}
