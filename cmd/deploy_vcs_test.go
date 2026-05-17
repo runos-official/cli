@@ -137,6 +137,25 @@ func TestShortSHA(t *testing.T) {
 	}
 }
 
+// Issue 109: git treats commit SHAs as case-insensitive but
+// validateCommitSHA stays strict (lowercase-hex). The deploy-VCS call
+// site must normalise via strings.ToLower BEFORE the validator. This
+// test pins the round-trip: validator alone refuses uppercase,
+// normalise-then-validate accepts both case forms.
+func TestCommitSHANormalisation(t *testing.T) {
+	const upper = "61D950B49AE9BBE79B80AC7EC6C7FE7A9CFBABBA"
+	const lower = "61d950b49ae9bbe79b80ac7ec6c7fe7a9cfbabba"
+	if err := validateCommitSHA(upper); err == nil {
+		t.Error("validateCommitSHA(upper) should still refuse uppercase; normalisation is the caller's job")
+	}
+	if err := validateCommitSHA(lower); err != nil {
+		t.Errorf("validateCommitSHA(lower) unexpectedly errored: %v", err)
+	}
+	if err := validateCommitSHA(strings.ToLower(upper)); err != nil {
+		t.Errorf("strings.ToLower then validateCommitSHA should accept uppercase input, got: %v", err)
+	}
+}
+
 // TestValidateCommitSHA pins issue 102: `runos deploy --sha <short>`
 // used to queue a job that async-failed at "Fetch source" because git
 // refused the short ref on the server side. The CLI now refuses any

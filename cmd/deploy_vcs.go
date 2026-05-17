@@ -136,6 +136,12 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		}
 		sha = head
 	}
+	// Issue 109: git treats commit SHAs as case-insensitive
+	// (`git rev-parse 61D950...` works). Users pasting from GitHub /
+	// GitLab web UIs often paste uppercase; conductor's
+	// prepareVcsDeployment SHA_REGEX expects lowercase. Normalise here
+	// so the wire body always carries the canonical lowercase form.
+	sha = strings.ToLower(sha)
 	// Issue 102: refuse explicit --sha that isn't a full 40-hex commit
 	// SHA. Short SHAs (like the 7-char form `git log --oneline` emits)
 	// otherwise queued a deploy job that async-failed at step 1 ("Fetch
