@@ -299,7 +299,13 @@ func LoadConfig(path string) (*DeployConfig, error) {
 		if err == io.EOF {
 			return nil, fmt.Errorf("runos.yaml at %s is empty", path)
 		}
-		return nil, fmt.Errorf("failed to parse config: %w", err)
+		// Issue 104: yaml.v3's strict-decoder error names the Go target
+		// type ("not found in type deploy.DeployConfig"), which leaks an
+		// internal implementation detail into a user-facing message and
+		// confuses users whose mental model is the on-disk yaml. Replace
+		// the Go-type tail with "in runos.yaml" so the message stays
+		// schema-oriented.
+		return nil, fmt.Errorf("failed to parse config: %s", sanitizeYAMLTypeName(err.Error()))
 	}
 
 	if err := config.Validate(); err != nil {
@@ -317,7 +323,7 @@ func LoadConfig(path string) (*DeployConfig, error) {
 // form. Each port must fall in 1-65535.
 func (c *DeployConfig) Validate() error {
 	if c.App == "" {
-		return fmt.Errorf("app name is required in runos.yaml")
+		return fmt.Errorf("`app:` field is required in runos.yaml")
 	}
 
 	// Issue 88: HTTP probe paths must be a single line beginning with /.
@@ -366,6 +372,16 @@ var resourceIntegerFields = []string{
 	"healthCheckPort",
 	"metricsPort",
 	"port",
+}
+
+// sanitizeYAMLTypeName rewrites yaml.v3's strict-decoder "not found in
+// type deploy.DeployConfig" tail to "not found in runos.yaml" so the
+// surfaced error stays oriented around the schema the user actually
+// edits, not the Go target type. Pure helper for test coverage. Issue
+// 104. Idempotent and only touches the tail; other yaml.v3 errors that
+// don't carry the type name pass through unchanged.
+func sanitizeYAMLTypeName(msg string) string {
+	return strings.ReplaceAll(msg, "in type deploy.DeployConfig", "in runos.yaml")
 }
 
 // refuseFractionalResourceFields decodes the yaml into a generic

@@ -341,7 +341,7 @@ func TestDeployConfig_Validate(t *testing.T) {
 			name:    "missing app name",
 			config:  DeployConfig{App: "", Port: 8080},
 			wantErr: true,
-			errMsg:  "app name is required",
+			errMsg:  "`app:` field is required",
 		},
 		{
 			name:    "missing port (zero value)",
@@ -371,7 +371,7 @@ func TestDeployConfig_Validate(t *testing.T) {
 			name:    "both missing",
 			config:  DeployConfig{},
 			wantErr: true,
-			errMsg:  "app name is required",
+			errMsg:  "`app:` field is required",
 		},
 	}
 
@@ -1652,8 +1652,8 @@ domain: example.com
 		if err == nil {
 			t.Fatal("expected validation error")
 		}
-		if !contains(err.Error(), "app name is required") {
-			t.Fatalf("expected 'app name is required' in error, got %q", err.Error())
+		if !contains(err.Error(), "`app:` field is required") {
+			t.Fatalf("expected '`app:` field is required' in error, got %q", err.Error())
 		}
 	})
 }
@@ -1823,6 +1823,48 @@ func TestLoadConfig_RefusesFractionalCpuMc(t *testing.T) {
 	}
 	if !contains(err.Error(), "cpuRequestMc") {
 		t.Errorf("error should name cpuRequestMc, got: %v", err)
+	}
+}
+
+// Regression for issue 104: yaml.v3's strict-decoder error names the
+// Go target type ("in type deploy.DeployConfig") which leaks an
+// internal implementation detail. The sanitizer rewrites the tail to
+// "in runos.yaml" so the message stays schema-oriented.
+func TestSanitizeYAMLTypeName(t *testing.T) {
+	in := "yaml: unmarshal errors:\n  line 3: field replica not found in type deploy.DeployConfig"
+	want := "yaml: unmarshal errors:\n  line 3: field replica not found in runos.yaml"
+	if got := sanitizeYAMLTypeName(in); got != want {
+		t.Errorf("sanitizeYAMLTypeName:\n  got  %q\n  want %q", got, want)
+	}
+	if got := sanitizeYAMLTypeName(want); got != want {
+		t.Errorf("sanitizer should be idempotent, got: %q", got)
+	}
+	const other = "yaml: line 5: did not find expected '-'"
+	if got := sanitizeYAMLTypeName(other); got != other {
+		t.Errorf("non-type-leak message should pass through, got: %q", got)
+	}
+}
+
+// End-to-end: a yaml with an unknown top-level field surfaces an error
+// that names the offending key WITHOUT leaking the Go target type.
+func TestLoadConfig_RejectsUnknownTopLevelFields_NoGoTypeLeak(t *testing.T) {
+	const yamlBody = "app: myapp\nport: 3000\nreplica: 3\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	writeFile(t, path, yamlBody)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected refusal for unknown field")
+	}
+	msg := err.Error()
+	if !contains(msg, "replica") {
+		t.Errorf("error must name the offending field, got: %s", msg)
+	}
+	if contains(msg, "deploy.DeployConfig") {
+		t.Errorf("error must not leak Go target type, got: %s", msg)
+	}
+	if !contains(msg, "runos.yaml") {
+		t.Errorf("error should mention runos.yaml as the schema source, got: %s", msg)
 	}
 }
 
