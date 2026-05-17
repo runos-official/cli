@@ -626,8 +626,17 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// asked. CI workflows that want exit codes to gate downstream steps
 	// add --follow explicitly.
 	if flagFollow {
-		fmt.Println("\nFollowing job progress...")
-		if err := jobs.FollowJob(prepResp.JobID); err != nil {
+		// Issue 93: under --json the build-progress stream pollutes
+		// stdout before the final JSON envelope, so CI consumers piping
+		// stdout into jq fail to parse. Route the human progress to
+		// stderr when --json is set; the terminal JSON envelope below
+		// still emits on stdout.
+		progress("\nFollowing job progress...\n")
+		followWriter := os.Stdout
+		if jsonOutput {
+			followWriter = os.Stderr
+		}
+		if err := jobs.FollowJobToWriter(prepResp.JobID, followWriter); err != nil {
 			// Roll back the source-version sidecar so the recorded id
 			// keeps pointing at the last successfully-deployed code.
 			// Without this, a failed build leaves the sidecar pointing
