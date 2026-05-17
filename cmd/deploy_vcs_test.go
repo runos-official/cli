@@ -136,3 +136,69 @@ func TestShortSHA(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateCommitSHA pins issue 102: `runos deploy --sha <short>`
+// used to queue a job that async-failed at "Fetch source" because git
+// refused the short ref on the server side. The CLI now refuses any
+// SHA that isn't a full 40-char lowercase-hex commit before the
+// request hits the wire.
+func TestValidateCommitSHA(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "40-char lowercase hex passes",
+			in:   "a7ba12e719e52212f46a4d3eefe365bc30deffe9",
+		},
+		{
+			name:      "empty refused",
+			in:        "",
+			wantErr:   true,
+			errSubstr: "empty",
+		},
+		{
+			name:      "short sha refused (the issue 102 repro)",
+			in:        "a7ba12e",
+			wantErr:   true,
+			errSubstr: "40-char",
+		},
+		{
+			name:      "uppercase hex refused",
+			in:        "A7BA12E719E52212F46A4D3EEFE365BC30DEFFE9",
+			wantErr:   true,
+			errSubstr: "non-hex",
+		},
+		{
+			name:      "non-hex character refused",
+			in:        "a7ba12e719e52212f46a4d3eefe365bc30deffezz",
+			wantErr:   true,
+			errSubstr: "40-char",
+		},
+		{
+			name:      "41 chars refused",
+			in:        "a7ba12e719e52212f46a4d3eefe365bc30deffe9a",
+			wantErr:   true,
+			errSubstr: "41 characters",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateCommitSHA(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("error %q missing %q", err, tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}

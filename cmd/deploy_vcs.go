@@ -136,6 +136,15 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		}
 		sha = head
 	}
+	// Issue 102: refuse explicit --sha that isn't a full 40-hex commit
+	// SHA. Short SHAs (like the 7-char form `git log --oneline` emits)
+	// otherwise queued a deploy job that async-failed at step 1 ("Fetch
+	// source: fatal: couldn't find remote ref <short>") because git
+	// requires the full ref on the server side. Auto-derived HEAD from
+	// git.GetHEAD already returns 40 hex.
+	if err := validateCommitSHA(sha); err != nil {
+		return err
+	}
 
 	// I25-Y: the dirty-tree gate is only meaningful when sha was
 	// auto-derived from HEAD. When --sha is explicit (canonical case:
@@ -259,4 +268,30 @@ func shortSHA(sha string) string {
 		return sha
 	}
 	return sha[:7]
+}
+
+// validateCommitSHA refuses anything that isn't a full 40-character
+// lowercase-hex git commit SHA. Short SHAs (the 7-char form `git log
+// --oneline` emits) used to slip through the CLI and only fail async
+// on the build server, leaving the user with a cryptic
+// "fatal: couldn't find remote ref <short>" partway into a queued job.
+// Pure helper so the regression test can exercise pass / short / empty
+// / uppercase / non-hex without spinning up runDeployVCS. Issue 102.
+func validateCommitSHA(sha string) error {
+	if sha == "" {
+		return fmt.Errorf("--sha is empty")
+	}
+	if len(sha) != 40 {
+		return fmt.Errorf("--sha %q has %d characters; expected the full 40-char commit SHA (use `git rev-parse %s` to expand a short ref)", sha, len(sha), sha)
+	}
+	for i := 0; i < len(sha); i++ {
+		c := sha[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		default:
+			return fmt.Errorf("--sha %q contains non-hex character %q at position %d; expected a 40-char lowercase-hex commit SHA", sha, c, i)
+		}
+	}
+	return nil
 }
