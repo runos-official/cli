@@ -363,14 +363,21 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 		}
 	}
 
-	// I25-AE: mirror deploy / services_sync. When --yes is set, skip
-	// the prompt. When stdin is not a terminal (CI / piped input), also
-	// skip: prompting EOF on a closed pipe used to surface as
-	// `Error: read confirmation: EOF` plus the full cobra Usage block.
-	// The user authored the change in the yaml on disk; running sync
-	// against it from a non-interactive shell implies intent. The
-	// empty-secret-env wipe gate and other refusals are unaffected.
-	if !skipPrompt && term.IsTerminal(int(os.Stdin.Fd())) {
+	// Issue 107: apps sync is a write operation and the help text
+	// explicitly promises "after you confirm". Pre-fix the gate also
+	// auto-skipped on non-TTY (the I25-AE EOF-on-closed-pipe papercut),
+	// which silently applied a server-side patch when CI / cron ran
+	// `runos apps sync < /dev/null` without --yes. apps delete already
+	// refuses in this shape (see destructive.go); apps sync now matches.
+	//
+	// Rules:
+	//   --yes set                              -> skip prompt, apply.
+	//   stdin not a TTY AND !--yes             -> refuse; require --yes.
+	//   stdin a TTY  AND !--yes                -> prompt.
+	if !skipPrompt {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("apps sync requires confirmation. Re-run with --yes to proceed (target: %s on cluster %s)", plan.AppName, plan.CID)
+		}
 		ok, err := confirm(fmt.Sprintf("\nApply changes to %s (%s) on cluster %s? [y/N] ", plan.AppName, plan.AppID, plan.CID))
 		if err != nil {
 			return err
