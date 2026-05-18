@@ -456,7 +456,48 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
+	// foreman #147: jobs cancel returns 200 OK with `cancelled:false`
+	// when the job already finished (status:completed/failed/cancelled),
+	// so a CI gate keyed on $? misreads the noop as success. Flip the
+	// exit code while keeping the structured body intact.
+	if cmdDef.Command == "jobs/cancel" {
+		if err := jobsCancelExitGate(respBody); err != nil {
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			return err
+		}
+	}
+
 	return nil
+}
+
+// jobsCancelExitGate parses the jobs/cancel response and returns a
+// non-nil error when `cancelled` is explicitly false (the server
+// acknowledges the request but the job was already terminal). The
+// formatter has already emitted the structured body to stdout (json
+// or table); this error exists only to flip the process exit code so
+// CI / LLM gates keyed on $? can distinguish "actually cancelled"
+// from "tried to cancel but it was already done". Regression target:
+// foreman #147.
+func jobsCancelExitGate(respBody []byte) error {
+	var resp struct {
+		Cancelled *bool  `json:"cancelled"`
+		Message   string `json:"message"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil
+	}
+	if resp.Cancelled == nil || *resp.Cancelled {
+		return nil
+	}
+	if resp.Message != "" {
+		return fmt.Errorf("jobs cancel: %s", resp.Message)
+	}
+	if resp.Status != "" {
+		return fmt.Errorf("jobs cancel: job is in terminal status %q and was not cancelled", resp.Status)
+	}
+	return fmt.Errorf("jobs cancel: job was not cancelled")
 }
 
 // printApiKeyTokenBanner prints an ASCII-framed reminder under the

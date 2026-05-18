@@ -1960,6 +1960,71 @@ func TestDomainCheckExitGate(t *testing.T) {
 	}
 }
 
+// TestJobsCancelExitGate pins the exit-code gate that flips
+// `jobs cancel` to non-zero when the conductor returns 200 OK with
+// `cancelled:false` (the noop shape when the job already finished).
+// Pre-fix CI / LLM gates keyed on $? misread the noop as success.
+// Regression target: foreman #147.
+func TestJobsCancelExitGate(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantErr  bool
+		wantSubs []string
+	}{
+		{
+			name:     "cancelled false with message and status (the #147 repro)",
+			body:     `{"cancelled":false,"jobId":"j","message":"Cannot cancel job with status 'completed'","status":"completed"}`,
+			wantErr:  true,
+			wantSubs: []string{"Cannot cancel", "completed"},
+		},
+		{
+			name:    "cancelled true passes",
+			body:    `{"cancelled":true,"jobId":"j","status":"cancelled"}`,
+			wantErr: false,
+		},
+		{
+			name:    "cancelled field missing passes (defensive: server may evolve)",
+			body:    `{"jobId":"j","status":"queued"}`,
+			wantErr: false,
+		},
+		{
+			name:    "garbage body passes (defensive)",
+			body:    `not json`,
+			wantErr: false,
+		},
+		{
+			name:     "cancelled false with status but no message",
+			body:     `{"cancelled":false,"status":"failed"}`,
+			wantErr:  true,
+			wantSubs: []string{"failed"},
+		},
+		{
+			name:    "cancelled false with neither message nor status",
+			body:    `{"cancelled":false}`,
+			wantErr: true,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := jobsCancelExitGate([]byte(tt.body))
+			if tt.wantErr && err == nil {
+				t.Errorf("jobsCancelExitGate(%q) = nil, want non-nil error", tt.body)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("jobsCancelExitGate(%q) = %v, want nil", tt.body, err)
+			}
+			if err != nil {
+				for _, want := range tt.wantSubs {
+					if !contains(err.Error(), want) {
+						t.Errorf("error %q missing %q", err.Error(), want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestExtractLogsDiagnostic pins the synthesised-diagnostic recogniser
 // for `apps logs --previous`. The conductor mixes a single diagnostic
 // entry into the log array when no previous container exists; the CLI
