@@ -88,20 +88,50 @@ func TestDestructiveSummary(t *testing.T) {
 			{Name: "id", Type: "string", Positional: true, Required: true},
 		}},
 	}
+	// Regression target: #131. `clusters reset --cid mycluster3` accepts cid
+	// only via --cid (the positional slot is empty), so the summary
+	// has to consult the flag form before falling back to the
+	// manifest description.
+	clusterReset := manifest.Command{
+		Command:     "clusters/{cid}/reset",
+		Description: "Reset a cluster to unconfigured state",
+		Method:      "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "cid", Type: "string", Positional: true, Required: true},
+		}},
+	}
 	cases := []struct {
 		name string
 		cmd  manifest.Command
 		args []string
-		want string
+		// flags optionally seeds a cobra.Command with --<key> set to
+		// <value> before destructiveSummary is called. nil reproduces
+		// the legacy "args-only" code path.
+		flags map[string]string
+		want  string
 	}{
-		{"single positional present", cmdWithID, []string{"d2eow"}, "id=d2eow"},
-		{"positional absent falls back to description", cmdWithID, []string{}, "Delete an application"},
-		{"no positional fields uses description", noPositional, []string{}, "Cleanup orphaned resources"},
-		{"first positional wins on multi", multiPositional, []string{"postgresql", "lw0vp"}, "type=postgresql"},
+		{name: "single positional present", cmd: cmdWithID, args: []string{"d2eow"}, want: "id=d2eow"},
+		{name: "positional absent falls back to description", cmd: cmdWithID, args: []string{}, want: "Delete an application"},
+		{name: "no positional fields uses description", cmd: noPositional, args: []string{}, want: "Cleanup orphaned resources"},
+		{name: "first positional wins on multi", cmd: multiPositional, args: []string{"postgresql", "lw0vp"}, want: "type=postgresql"},
+		{name: "flag-only cid surfaces in target (#131)", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": "mycluster3"}, want: "cid=mycluster3"},
+		{name: "flag empty falls back to description", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": ""}, want: "Reset a cluster to unconfigured state"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := destructiveSummary(tc.cmd, tc.args); got != tc.want {
+			var c *cobra.Command
+			if tc.flags != nil {
+				c = &cobra.Command{Use: "x"}
+				for k, v := range tc.flags {
+					c.Flags().String(k, "", "")
+					if v != "" {
+						if err := c.Flags().Set(k, v); err != nil {
+							t.Fatalf("seed flag %s: %v", k, err)
+						}
+					}
+				}
+			}
+			if got := destructiveSummary(c, tc.cmd, tc.args); got != tc.want {
 				t.Errorf("destructiveSummary(%s, %v) = %q, want %q", tc.cmd.Command, tc.args, got, tc.want)
 			}
 		})

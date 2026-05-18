@@ -118,15 +118,30 @@ func destructiveVerb(cmdPath string) string {
 // the confirmation prompt. Falls back to the manifest description
 // when no positional id can be derived. Used so the user can spot a
 // typo'd id before answering y/N.
-func destructiveSummary(cmdDef manifest.Command, args []string) string {
+//
+// Positional fields are resolved from either the positional slot (args)
+// or the matching `--<flag>` value, in declaration order. The flag
+// fallback matters because some endpoints (e.g. `clusters/{cid}/reset`)
+// accept the URL-bound id exclusively via `--cid` in everyday use, so
+// the positional args slice is empty and the summary would otherwise
+// leak the manifest description (foreman #131).
+func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
 	if cmdDef.Input != nil {
 		idx := 0
 		for _, field := range cmdDef.Input.Fields {
 			if !field.Positional {
 				continue
 			}
-			if idx < len(args) {
+			if idx < len(args) && args[idx] != "" {
 				return fmt.Sprintf("%s=%s", field.Name, args[idx])
+			}
+			if c != nil {
+				flagName := flagNameFor(field.Name)
+				if c.Flags().Lookup(flagName) != nil {
+					if v, _ := c.Flags().GetString(flagName); v != "" {
+						return fmt.Sprintf("%s=%s", field.Name, v)
+					}
+				}
 			}
 			idx++
 		}
@@ -155,7 +170,7 @@ func confirmDestructive(c *cobra.Command, cmdDef manifest.Command, args []string
 		return nil
 	}
 	verb := destructiveVerb(cmdDef.Command)
-	target := destructiveSummary(cmdDef, args)
+	target := destructiveSummary(c, cmdDef, args)
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf(
 			"%s is destructive and requires confirmation. Re-run with --yes to proceed (target: %s)",
