@@ -317,8 +317,15 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 		// I25-H / I25-I: 401s get an actionable hint with revoked-vs-malformed
 		// distinction when the conductor's body carries the structured signal.
-		if msg, ok := formatAuthError(err); ok {
-			err = fmt.Errorf("%s", msg)
+		// foreman #145: skip the RUNOS_API_KEY remediation for endpoints that
+		// proxy to an upstream provider (integrations/add/*), because a 401
+		// there means the user's PROVIDER token is bad (Hetzner / DigitalOcean
+		// / etc), not their RUNOS PAT. The conductor's APIError body already
+		// carries the provider message; let it through verbatim.
+		if !is401UpstreamProxyCommand(cmdDef) {
+			if msg, ok := formatAuthError(err); ok {
+				err = fmt.Errorf("%s", msg)
+			}
 		}
 		// I4-G: with --json set, errors must be machine-parseable
 		// stdout output too — pre-fix the error went to cobra's
@@ -668,6 +675,15 @@ func coerceArrayFlagValue(raw []string) any {
 		decoded[i] = v
 	}
 	return decoded
+}
+
+// is401UpstreamProxyCommand reports whether cmdDef's endpoint proxies
+// to an external provider API (so a 401 reflects the user's PROVIDER
+// token, not their RUNOS PAT). Callers should skip the RUNOS_API_KEY
+// auth-refused rendering so the upstream provider message reaches the
+// user verbatim. Regression target: foreman #145.
+func is401UpstreamProxyCommand(cmdDef manifest.Command) bool {
+	return strings.HasPrefix(cmdDef.Command, "integrations/add/")
 }
 
 // formatAuthError checks whether err is an *APIError carrying a 401

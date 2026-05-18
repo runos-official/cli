@@ -518,6 +518,35 @@ func TestFormatAuthError(t *testing.T) {
 	})
 }
 
+// Regression for foreman #145: a 401 from integrations/add/<provider>
+// (Hetzner / DigitalOcean / etc) reflects the user's PROVIDER token,
+// not their RUNOS PAT, so the RUNOS_API_KEY remediation must be
+// suppressed for those paths. The classifier is purely path-based so
+// the wire-side check is testable without HTTP plumbing.
+func TestIs401UpstreamProxyCommand(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"hetzner add proxies upstream", "integrations/add/hetzner", true},
+		{"digitalocean add proxies upstream", "integrations/add/digitalocean", true},
+		{"cloudflare add proxies upstream", "integrations/add/cloudflare", true},
+		{"plain apps/add stays RUNOS-auth", "apps/add", false},
+		{"integrations/list stays RUNOS-auth", "integrations/list", false},
+		{"integrations/remove stays RUNOS-auth", "integrations/{id}/remove", false},
+		{"empty command stays RUNOS-auth", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := is401UpstreamProxyCommand(manifest.Command{Command: tc.cmd}); got != tc.want {
+				t.Errorf("is401UpstreamProxyCommand(%q) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFormatDependentsError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-409 returns false", func(t *testing.T) {
