@@ -1,6 +1,7 @@
 package dynacmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -732,6 +733,57 @@ func TestApplyCLIDefaults_APIKeysAddExpiresAt(t *testing.T) {
 			t.Errorf("expected --expires-at left empty for non-api-keys-add command, got %q", got)
 		}
 	})
+
+	// Regression for foreman #132: a tz-less RFC 3339 timestamp passed
+	// via --expires-at must be refused with a clear message naming the
+	// two accepted shapes. Pre-fix the server interpreted it as local
+	// time, producing keys that expired up to 14h off the user's
+	// intent on non-UTC machines.
+	t.Run("tz-less --expires-at refused", func(t *testing.T) {
+		c := makeCmd()
+		if err := c.Flags().Set("expires-at", "2026-08-01T00:00:00"); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		err := applyCLIDefaults(c, cmdDef)
+		if err == nil {
+			t.Fatal("expected refusal for tz-less --expires-at, got nil")
+		}
+		msg := err.Error()
+		for _, want := range []string{"2026-08-01T00:00:00", "RFC 3339", "timezone"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q missing %q", msg, want)
+			}
+		}
+	})
+}
+
+// Regression for foreman #132. Pure helper so the contract is
+// pinned independently of applyCLIDefaults's plumbing.
+func TestValidateExpiresAt(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"Z suffix accepted", "2026-08-01T00:00:00Z", false},
+		{"positive numeric offset accepted", "2026-08-01T00:00:00+02:00", false},
+		{"negative numeric offset accepted", "2026-08-01T00:00:00-05:00", false},
+		{"tz-less refused (the #132 repro)", "2026-08-01T00:00:00", true},
+		{"empty refused", "", true},
+		{"garbage refused", "tomorrow", true},
+		{"date-only refused", "2026-08-01", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateExpiresAt(tc.in)
+			if tc.wantErr && err == nil {
+				t.Errorf("validateExpiresAt(%q) = nil, want error", tc.in)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("validateExpiresAt(%q) = %v, want nil", tc.in, err)
+			}
+		})
+	}
 }
 
 // TestFormatMissingFieldHint pins the I26-S contract: when a required
