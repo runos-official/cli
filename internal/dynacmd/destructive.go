@@ -85,6 +85,34 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 	return false
 }
 
+// destructivePromptApplies decides whether confirmDestructive should
+// actually fire for a given cobra invocation. It starts from
+// isDestructiveCommand (which still drives --yes flag registration in
+// buildLeafCommand) and adds per-command runtime carve-outs:
+//
+//   - exec-sql (postgresql / mysql / clickhouse) is only destructive in
+//     read-write mode. The default invocation runs a read-only SELECT
+//     and shouldn't force --yes; training operators to bypass the
+//     prompt for every diagnostic query was a real footgun (foreman
+//     #140). When --read-write is true, the prompt fires as before.
+//
+// Other destructive verbs (delete / drain / reset / clear-cache / ...)
+// have no read-only mode and stay gated unconditionally.
+func destructivePromptApplies(c *cobra.Command, cmdDef manifest.Command) bool {
+	if !isDestructiveCommand(cmdDef) {
+		return false
+	}
+	if lastPathSegment(cmdDef.Command) == "exec-sql" {
+		if c != nil && c.Flags().Lookup("read-write") != nil {
+			rw, _ := c.Flags().GetBool("read-write")
+			if !rw {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // lastPathSegment returns the final `/`-delimited segment of a manifest
 // command path, e.g. "services/postgresql/{id}/exec-sql" -> "exec-sql".
 // Used by isDestructiveCommand's verb-pattern matcher.

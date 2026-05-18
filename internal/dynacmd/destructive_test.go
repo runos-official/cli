@@ -138,6 +138,56 @@ func TestDestructiveSummary(t *testing.T) {
 	}
 }
 
+// Regression for foreman #140: exec-sql is the only destructive verb
+// whose actual destructiveness depends on a runtime flag (--read-write).
+// destructivePromptApplies must skip the prompt when --read-write is
+// false (the safe default) so read-only SELECTs don't train operators
+// to type --yes reflexively. Every other destructive verb stays gated
+// unconditionally.
+func TestDestructivePromptApplies(t *testing.T) {
+	execSQL := manifest.Command{Command: "services/postgresql/{id}/exec-sql", Method: "PATCH"}
+	appsDelete := manifest.Command{Command: "apps/{id}/delete", Method: "DELETE"}
+	clustersReset := manifest.Command{Command: "clusters/{cid}/reset", Method: "POST"}
+	appsUpdate := manifest.Command{Command: "apps/{id}/update", Method: "PATCH"}
+
+	makeExecSQLCmd := func(rwSet, rw bool) *cobra.Command {
+		c := &cobra.Command{Use: "exec-sql"}
+		c.Flags().Bool("read-write", false, "")
+		if rwSet {
+			v := "false"
+			if rw {
+				v = "true"
+			}
+			if err := c.Flags().Set("read-write", v); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+		}
+		return c
+	}
+
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		c    *cobra.Command
+		want bool
+	}{
+		{"exec-sql with --read-write=true prompts", execSQL, makeExecSQLCmd(true, true), true},
+		{"exec-sql default (read-write unset) skips prompt", execSQL, makeExecSQLCmd(false, false), false},
+		{"exec-sql explicit --read-write=false skips prompt", execSQL, makeExecSQLCmd(true, false), false},
+		{"exec-sql without --read-write declared falls back to prompting (safe default)", execSQL, &cobra.Command{Use: "exec-sql"}, true},
+		{"DELETE apps delete prompts regardless of flags", appsDelete, &cobra.Command{Use: "delete"}, true},
+		{"POST clusters reset prompts regardless of flags", clustersReset, &cobra.Command{Use: "reset"}, true},
+		{"non-destructive PATCH apps update skips", appsUpdate, &cobra.Command{Use: "update"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := destructivePromptApplies(tc.c, tc.cmd); got != tc.want {
+				t.Errorf("destructivePromptApplies(%s) = %v, want %v", tc.cmd.Command, got, tc.want)
+			}
+		})
+	}
+}
+
 // Regression (#23 round 2): the first cut auto-proceeded when stdin
 // was not a TTY OR --json was set, exactly the LLM/MCP/CI invocation
 // the original bug called out. confirmDestructive now refuses to

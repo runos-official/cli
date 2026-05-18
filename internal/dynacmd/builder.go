@@ -389,7 +389,7 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 			// unrecoverable. Mirrors `runos deploy`'s -y/--yes surface.
 			// Auto-skips when stdin is not a TTY (CI) or --json is set
 			// (machine consumers).
-			if isDestructiveCommand(cmdDef) {
+			if destructivePromptApplies(c, cmdDef) {
 				if err := confirmDestructive(c, cmdDef, args); err != nil {
 					return wrapJSONIfSet(err)
 				}
