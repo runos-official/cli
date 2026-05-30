@@ -72,6 +72,17 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 	if last == "" {
 		return false
 	}
+	// Maintenance-scripts run triggers are destructive by category: every
+	// registered script's `run` invocation reboots / cordons / drains /
+	// otherwise mutates cluster state, and this gate inherits the prompt
+	// for any future script the registry surfaces without enumerating
+	// individual script ids. Tagged on path containment + final segment
+	// so unrelated commands that happen to end in `run` (none today, but
+	// hypothetical future ones) aren't falsely gated. Regression target:
+	// foreman #37 / Story 50.
+	if last == "run" && strings.Contains(cmdDef.Command, "maintenance-scripts/") {
+		return true
+	}
 	for _, suffix := range destructiveVerbSuffixes {
 		if last == suffix {
 			return true

@@ -50,6 +50,14 @@ func TestIsDestructiveCommand(t *testing.T) {
 		// reversible and CI workflows expect to restart without --yes
 		// gating every invocation.
 		{"PATCH restart is not destructive (reversible)", manifest.Command{Command: "services/kafka/{id}/restart", Method: "PATCH"}, false},
+		// foreman #37 / Story 50: every maintenance-scripts `run` trigger
+		// is destructive by category (cordon/drain/reboot/etc). Matched
+		// on path containment + final segment so any future script the
+		// registry surfaces inherits the prompt; an unrelated command
+		// that happens to end in `run` is not falsely flagged.
+		{"POST maintenance-scripts run is destructive", manifest.Command{Command: "maintenance-scripts/node-apt-upgrade-reboot/run", Method: "POST"}, true},
+		{"POST hypothetical other maintenance-scripts run is destructive (future scripts inherit)", manifest.Command{Command: "maintenance-scripts/some-future-script/run", Method: "POST"}, true},
+		{"POST unrelated path ending in run is NOT destructive", manifest.Command{Command: "apps/{id}/run", Method: "POST"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
