@@ -458,6 +458,87 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 	})
 }
 
+// foreman #40: a YAML body for a set-*-config family command (whose
+// fields are declared `type: "string"` to match the Record<string,string>
+// wire contract) must coerce YAML-typed numbers and booleans to strings
+// before send. Without coercion, `queue_size: 128` reached the wire as a
+// number and Conductor rejected with `expected a string but got number`.
+// Symmetric path: integer-typed fields accept numeric YAML strings,
+// boolean-typed fields accept "true"/"false". Unknown / unconvertible
+// values pass through so the server can return its own typed error.
+func TestCoerceBodyFileValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		fieldType string
+		in        any
+		want      any
+	}{
+		{"string field stringifies YAML int", "string", 128, "128"},
+		{"string field stringifies YAML int64", "string", int64(64), "64"},
+		{"string field stringifies YAML bool true", "string", true, "true"},
+		{"string field stringifies YAML bool false", "string", false, "false"},
+		{"string field stringifies YAML integral float", "string", float64(42), "42"},
+		{"string field stringifies YAML fractional float", "string", 0.5, "0.5"},
+		{"string field passes string through", "string", "128", "128"},
+		{"string field passes nil through", "string", nil, nil},
+		{"integer field passes int through", "integer", 7, 7},
+		{"integer field parses numeric string", "integer", "7", 7},
+		{"integer field leaves non-numeric string", "integer", "seven", "seven"},
+		{"integer field accepts integral float", "integer", float64(7), 7},
+		{"integer field leaves fractional float", "integer", 0.5, 0.5},
+		{"boolean field passes bool through", "boolean", true, true},
+		{"boolean field parses \"true\"", "boolean", "true", true},
+		{"boolean field parses \"false\"", "boolean", "false", false},
+		{"boolean field leaves unparseable string", "boolean", "maybe", "maybe"},
+		{"array field passes through", "array", []any{"a", "b"}, []any{"a", "b"}},
+		{"object field passes through", "object", map[string]any{"k": 1}, map[string]any{"k": 1}},
+		{"unknown type passes through", "", 5, 5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := coerceBodyFileValue(tc.fieldType, tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("coerceBodyFileValue(%q, %#v) = %#v, want %#v", tc.fieldType, tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// foreman #40: bodyFileFieldTypes is the lookup that drives the -f
+// coercion above. It must cover input.fields (verbatim type),
+// input.flags (boolean), and extraFieldsFor (verbatim type), with all
+// three keyed by the manifest field Name.
+func TestBodyFileFieldTypes(t *testing.T) {
+	t.Parallel()
+	cmd := manifest.Command{
+		Command: "services/vllm/{id}/set-router-config",
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "id", Type: "string", Positional: true},
+				{Name: "policy", Type: "string"},
+				{Name: "queue_size", Type: "string"},
+				{Name: "scrapeIntervalSeconds", Type: "integer"},
+			},
+			Flags: []manifest.Flag{
+				{Name: "cache"},
+			},
+		},
+	}
+	got := bodyFileFieldTypes(cmd)
+	want := map[string]string{
+		"id":                    "string",
+		"policy":                "string",
+		"queue_size":            "string",
+		"scrapeIntervalSeconds": "integer",
+		"cache":                 "boolean",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bodyFileFieldTypes(...) = %#v, want %#v", got, want)
+	}
+}
+
 func TestFormatAuthError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-401 returns false", func(t *testing.T) {

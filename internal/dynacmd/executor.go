@@ -1143,7 +1143,18 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 		if err := refuseUnknownBodyFileKeys(filePath, fileData, cmdDef); err != nil {
 			return nil, err
 		}
+		// Coerce each -f value against the matching manifest field's
+		// declared type. The flag-set path below constructs strongly
+		// typed values via cobra.Flags().GetString/GetInt/etc.; without
+		// the same coercion here, a YAML `queue_size: 128` reaches the
+		// wire as a number, which set-*-config's
+		// `Record<string,string>` validator rejects with "expected a
+		// string but got number". Regression target: foreman #40.
+		fieldTypes := bodyFileFieldTypes(cmdDef)
 		for k, v := range fileData {
+			if t, ok := fieldTypes[k]; ok {
+				v = coerceBodyFileValue(t, v)
+			}
 			result[k] = v
 		}
 	}
@@ -1752,6 +1763,87 @@ func refuseUnknownBodyFileKeys(filePath string, fileData map[string]any, cmdDef 
 	}
 	sort.Strings(unknown)
 	return fmt.Errorf("body file %s carries fields not accepted by %s: %s (run with --help to see valid fields)", filePath, cmdDef.Command, strings.Join(unknown, ", "))
+}
+
+// bodyFileFieldTypes returns the declared manifest type for every body
+// key cmdDef accepts (input.fields + input.flags as boolean +
+// extraFieldsFor). Used by collectInput to coerce -f YAML values
+// against the wire contract; see coerceBodyFileValue.
+func bodyFileFieldTypes(cmdDef manifest.Command) map[string]string {
+	out := map[string]string{}
+	if cmdDef.Input != nil {
+		for _, f := range cmdDef.Input.Fields {
+			out[f.Name] = f.Type
+		}
+		for _, f := range cmdDef.Input.Flags {
+			out[f.Name] = "boolean"
+		}
+	}
+	for _, f := range extraFieldsFor(cmdDef.Command) {
+		out[f.Name] = f.Type
+	}
+	return out
+}
+
+// coerceBodyFileValue normalises a value loaded from a -f YAML body
+// against its declared manifest field type. The flag-set path in
+// collectInput already constructs strongly-typed values via
+// cobra.Flags().GetString/GetInt/etc.; this mirrors that contract for
+// the -f path so a user's `queue_size: 128` reaches the wire as the
+// string the set-*-config Record<string,string> validator requires.
+// Unconvertible values pass through untouched so the server can return
+// its own typed error. Regression target: foreman #40.
+func coerceBodyFileValue(fieldType string, v any) any {
+	if v == nil {
+		return v
+	}
+	switch fieldType {
+	case "string":
+		switch x := v.(type) {
+		case string:
+			return x
+		case bool:
+			return strconv.FormatBool(x)
+		case int:
+			return strconv.Itoa(x)
+		case int64:
+			return strconv.FormatInt(x, 10)
+		case float64:
+			if x == float64(int64(x)) {
+				return strconv.FormatInt(int64(x), 10)
+			}
+			return strconv.FormatFloat(x, 'f', -1, 64)
+		default:
+			return v
+		}
+	case "integer":
+		switch x := v.(type) {
+		case string:
+			if n, err := strconv.Atoi(x); err == nil {
+				return n
+			}
+			return v
+		case float64:
+			if x == float64(int64(x)) {
+				return int(x)
+			}
+			return v
+		default:
+			return v
+		}
+	case "boolean":
+		switch x := v.(type) {
+		case string:
+			if b, err := strconv.ParseBool(x); err == nil {
+				return b
+			}
+			return v
+		default:
+			return v
+		}
+	default:
+		return v
+	}
 }
 
 // validatePatchHasBody refuses a PATCH whose body — after stripping the
