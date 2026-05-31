@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.0
+
+General-availability release. Promotes the v1.0.0-rc.8 feature set to stable; see the rc.8 entry below for the full Apps/Services-as-IaC, VCS deploy, PAT auth, MCP, and hardening story. Install via `https://get.runos.com/cli.sh?release=v1.0.0`.
+
+### Changes since rc.8
+
+- **Thin-yaml pulls on a named RRC**: `apps pull` no longer emits `replicas` / `cpuRequestMc` / `cpuLimitMc` / `memoryRequestMb` / `memoryLimitMb` alongside `resourceRequirementClassId: app.sl1.beff` (or any other named class). The class already bakes those dimensions in, so carrying them in the yaml was pure noise and produced spurious "intent vs resolved state" ambiguity on re-read. `custom` rrcId continues to emit every field explicitly.
+- **Client-side flip-to-custom on conflicting overrides**: when a local yaml carries a named RRC and a `replicas` / cpu / memory value that disagrees with the class defaults, `apps sync` now detects the conflict before the wire body is built. It flips `resourceRequirementClassId` to `custom`, backfills the missing resource fields from the server snapshot, and surfaces a one-line notice in the sync plan so the promotion is visible rather than silent. The conductor's resolveRRC behaviour is unchanged; the CLI just makes the outcome explicit in the diff and the wire payload.
+- **`deploymentStrategy` round-trips through pull and deploy**: a yaml that sets `deploymentStrategy: recreate` (the right pick when the next pod can't schedule until the old one releases a single GPU, an RWO PVC, or an exclusive port) now actually reaches the deploy wire body. Pre-fix the field was silently dropped and the conductor's `rolling` default applied regardless. `apps pull` mirrors the same field so the value survives a pull/edit/deploy round-trip.
+- **`clusters kubeconfig` text mode emits raw YAML** (foreman #48). Pre-fix the default text output included framing the kubeconfig parser couldn't consume; piping to `kubectl --kubeconfig` works without `--json` now.
+- **`maintenance-scripts run` gated behind a destructive `[y/N]`** (foreman #37). Aligned with the rest of the destructive-confirm surface: the gate auto-skips when stdin is not a terminal, `--yes` is the explicit opt-out, and the prompt surfaces the script identifier so a mistyped run doesn't fire blind.
+- **`-f file=value` coerces per manifest field type** (foreman #40). YAML values supplied via `-f` are now typed against the manifest's declared field schema (int → int, bool → bool, object → object) instead of being passed as bare strings, so `-f replicas=3` reaches the API as `3`, not `"3"`.
+
 ## v1.0.0-rc.8
 
 Consolidated release candidate on top of v0.3.9. Supersedes the rc.1 through rc.7 series (those tags and releases were removed in favour of this single, cohesive entry). The CLI's IaC workflows, VCS deploy support, env-var split, regression-test scaffolding, and assorted hardening all ship in one tag. Install via `https://get.runos.com/cli.sh?release=v1.0.0-rc.8`.
