@@ -539,6 +539,81 @@ func TestBodyFileFieldTypes(t *testing.T) {
 	}
 }
 
+// foreman #48: `runos clusters kubeconfig` default plain-text rendering
+// must emit the kubeconfig YAML verbatim so it pipes cleanly into
+// `kubectl --kubeconfig=-` or `> ~/.kube/config`. The generic
+// key:value formatter wrapped it as `kubeconfig: <YAML>`, which broke
+// kubectl's parser ("mapping values are not allowed in this context").
+// Pin the carve-out: positive on clusters/kubeconfig with a non-empty
+// string field, negative on any other command, negative on missing /
+// wrong-typed / empty value, negative on a non-object response body.
+func TestExtractRawSingleStringOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		cmd     string
+		body    string
+		want    string
+		wantOk  bool
+	}{
+		{
+			name:   "clusters/kubeconfig with string yaml",
+			cmd:    "clusters/kubeconfig",
+			body:   `{"kubeconfig":"apiVersion: v1\nclusters:\n- cluster:\n    server: https://example\n"}`,
+			want:   "apiVersion: v1\nclusters:\n- cluster:\n    server: https://example\n",
+			wantOk: true,
+		},
+		{
+			name:   "clusters/kubeconfig missing field",
+			cmd:    "clusters/kubeconfig",
+			body:   `{"other":"value"}`,
+			wantOk: false,
+		},
+		{
+			name:   "clusters/kubeconfig empty string field",
+			cmd:    "clusters/kubeconfig",
+			body:   `{"kubeconfig":""}`,
+			wantOk: false,
+		},
+		{
+			name:   "clusters/kubeconfig non-string field",
+			cmd:    "clusters/kubeconfig",
+			body:   `{"kubeconfig":{"apiVersion":"v1"}}`,
+			wantOk: false,
+		},
+		{
+			name:   "clusters/kubeconfig invalid json",
+			cmd:    "clusters/kubeconfig",
+			body:   `not json`,
+			wantOk: false,
+		},
+		{
+			name:   "unrelated command not in carve-out",
+			cmd:    "clusters/show",
+			body:   `{"kubeconfig":"verbatim string"}`,
+			wantOk: false,
+		},
+		{
+			name:   "empty command not in carve-out",
+			cmd:    "",
+			body:   `{"kubeconfig":"verbatim string"}`,
+			wantOk: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := extractRawSingleStringOutput(manifest.Command{Command: tc.cmd}, []byte(tc.body))
+			if ok != tc.wantOk {
+				t.Fatalf("extractRawSingleStringOutput(%q, %q) ok = %v, want %v", tc.cmd, tc.body, ok, tc.wantOk)
+			}
+			if got != tc.want {
+				t.Errorf("value = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFormatAuthError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-401 returns false", func(t *testing.T) {

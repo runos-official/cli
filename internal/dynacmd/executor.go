@@ -395,6 +395,24 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
+	// `clusters/kubeconfig` returns {kubeconfig: <YAML body>} so the
+	// caller can pipe the result straight to `kubectl --kubeconfig=-`
+	// or `> ~/.kube/config`. The generic key:value formatter renders
+	// that as `kubeconfig: <multiline YAML>`, which prefixes the YAML
+	// with a stray top-level key and breaks the documented use case.
+	// In plain-text mode print the kubeconfig field's value verbatim;
+	// `--json` keeps the structured envelope so scripts can `-j | jq`
+	// or read other future fields. Regression target: foreman #48.
+	if !jsonOutput {
+		if body, ok := extractRawSingleStringOutput(cmdDef, respBody); ok {
+			fmt.Fprint(cmd.OutOrStdout(), body)
+			if !strings.HasSuffix(body, "\n") {
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+			return nil
+		}
+	}
+
 	formatter := output.NewFormatter(jsonOutput)
 
 	err = formatter.Format(respBody, cmdDef.Output)
@@ -583,6 +601,40 @@ func extractLogsDiagnostic(respBody []byte) (string, bool) {
 		return "", false
 	}
 	return msg, true
+}
+
+// rawSingleStringOutputCommands enumerates commands whose plain-text
+// rendering should emit the body of a single string-typed output
+// field verbatim, instead of running it through the generic
+// key:value formatter. Maps command -> the field name to print raw.
+// Used by `clusters/kubeconfig` so the output is a directly-usable
+// admin kubeconfig (pipeable to `kubectl --kubeconfig=-`) rather
+// than `kubeconfig: <multiline YAML>`. Regression target: foreman #48.
+var rawSingleStringOutputCommands = map[string]string{
+	"clusters/kubeconfig": "kubeconfig",
+}
+
+// extractRawSingleStringOutput reports whether cmdDef opts into raw
+// single-string text rendering and, if so, returns the body of the
+// designated field. Returns ("", false) when the command is not in
+// the carve-out list, the response isn't a JSON object, the field is
+// absent, or the field's value isn't a non-empty string. Callers
+// should fall through to the generic formatter in the false case so
+// other commands keep their existing rendering.
+func extractRawSingleStringOutput(cmdDef manifest.Command, respBody []byte) (string, bool) {
+	fieldName, ok := rawSingleStringOutputCommands[cmdDef.Command]
+	if !ok {
+		return "", false
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(respBody, &obj); err != nil {
+		return "", false
+	}
+	val, ok := obj[fieldName].(string)
+	if !ok || val == "" {
+		return "", false
+	}
+	return val, true
 }
 
 // domainCheckExitGate parses the tools/domain-check response and
