@@ -557,7 +557,7 @@ func TestComputeYAMLPatch_BodyIsFullLocalYAMLOnDrift(t *testing.T) {
 			map[string]any{"port": float64(8080), "standardHttps": true},
 		},
 	}
-	patch, _, refused := computeYAMLPatch(local, server, nil)
+	patch, _, refused, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected non-nil patch when replicas drifts")
 	}
@@ -588,7 +588,7 @@ func TestComputeYAMLPatch_NoDriftReturnsNilPatch(t *testing.T) {
 		"name":     "my-app",
 		"replicas": float64(1),
 	}
-	patch, diff, refused := computeYAMLPatch(local, server, nil)
+	patch, diff, refused, _ := computeYAMLPatch(local, server, nil)
 	if patch != nil {
 		t.Errorf("expected nil patch (no drift), got %+v", patch)
 	}
@@ -612,7 +612,7 @@ func TestComputeYAMLPatch_OmittedReplicasIsNotDrift(t *testing.T) {
 		"name":     "my-app",
 		"replicas": float64(2),
 	}
-	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	patch, diff, _, _ := computeYAMLPatch(local, server, nil)
 	if patch != nil {
 		t.Errorf("expected nil patch when only diff is server-replicas-vs-local-zero (preserve), got %+v", patch)
 	}
@@ -628,7 +628,7 @@ func TestComputeYAMLPatch_OmittedResourceRequirementClassIDIsNotDrift(t *testing
 		"replicas":                   float64(1),
 		"resourceRequirementClassId": "app.sl1.beff",
 	}
-	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	patch, diff, _, _ := computeYAMLPatch(local, server, nil)
 	if patch != nil {
 		t.Errorf("expected nil patch when local omits resourceRequirementClassId (preserve), got %+v", patch)
 	}
@@ -644,7 +644,7 @@ func TestComputeYAMLPatch_OmittedClusterDomainIDIsNotDrift(t *testing.T) {
 		"replicas":        float64(1),
 		"clusterDomainId": "cd-abc12",
 	}
-	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	patch, diff, _, _ := computeYAMLPatch(local, server, nil)
 	if patch != nil {
 		t.Errorf("expected nil patch when local omits clusterDomainId (preserve), got %+v", patch)
 	}
@@ -661,7 +661,7 @@ func TestComputeYAMLPatch_ExplicitReplicasMismatchIsDrift(t *testing.T) {
 		"name":     "my-app",
 		"replicas": float64(1),
 	}
-	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	patch, diff, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected non-nil patch when local replicas differ from server")
 	}
@@ -670,6 +670,162 @@ func TestComputeYAMLPatch_ExplicitReplicasMismatchIsDrift(t *testing.T) {
 	}
 	if diff == "" {
 		t.Error("expected non-empty diff so the user sees the replica change")
+	}
+}
+
+// Thin yaml on a named RRC, no resource overrides anywhere: no
+// promotion. Sanity check that the new client-side flip detection
+// doesn't false-positive on the canonical pulled-yaml shape.
+func TestComputeYAMLPatch_NamedRRCNoOverridesNoPromotion(t *testing.T) {
+	local := &PulledApp{
+		App:                        "my-app",
+		ID:                         "ab12c",
+		CID:                        "k1",
+		AID:                        "acc-1",
+		ResourceRequirementClassID: "app.sl1.beff",
+	}
+	server := map[string]any{
+		"name":                       "my-app",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"replicas":                   float64(1),
+		"cpuRequestMc":               float64(50),
+		"cpuLimitMc":                 float64(1000),
+		"memoryRequestMb":            float64(128),
+		"memoryLimitMb":              float64(2048),
+	}
+	patch, _, _, promotion := computeYAMLPatch(local, server, nil)
+	if patch != nil {
+		t.Errorf("expected nil patch (no drift on a clean named-RRC pull), got %+v", patch)
+	}
+	if promotion != "" {
+		t.Errorf("expected no promotion notice, got %q", promotion)
+	}
+}
+
+// Named RRC with an explicit Replicas value that MATCHES the server
+// snapshot's class default: no flip. The local yaml is redundant (the
+// class already bakes the count in) but it's not a conflict. We don't
+// want to flip apps that round-trip cleanly just because the user
+// happened to spell out the default value.
+func TestComputeYAMLPatch_NamedRRCMatchingReplicasNoPromotion(t *testing.T) {
+	local := &PulledApp{
+		App:                        "my-app",
+		ID:                         "ab12c",
+		CID:                        "k1",
+		AID:                        "acc-1",
+		Replicas:                   1, // matches the class default below
+		ResourceRequirementClassID: "app.sl1.beff",
+	}
+	server := map[string]any{
+		"name":                       "my-app",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"replicas":                   float64(1),
+	}
+	_, _, _, promotion := computeYAMLPatch(local, server, nil)
+	if promotion != "" {
+		t.Errorf("matching replicas should not trigger a flip, got promotion=%q", promotion)
+	}
+}
+
+// Named RRC + conflicting Replicas: the flip fires. The wire body
+// carries rrcId=custom (not the named class) and backfills cpu/memory
+// from the server snapshot, because the thin local yaml didn't carry
+// them and the server's stored values for this class are what the
+// post-flip "custom" state must inherit. Without the backfill the
+// PATCH would be a partial custom payload and the conductor would
+// reject (or worse, resolve cpu/memory to zero-init defaults).
+func TestComputeYAMLPatch_NamedRRCConflictingReplicasFlipsToCustom(t *testing.T) {
+	local := &PulledApp{
+		App:                        "my-app",
+		ID:                         "ab12c",
+		CID:                        "k1",
+		AID:                        "acc-1",
+		Replicas:                   2, // user-added override, conflicts with sl1.beff default
+		ResourceRequirementClassID: "app.sl1.beff",
+	}
+	server := map[string]any{
+		"name":                       "my-app",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"replicas":                   float64(1),
+		"cpuRequestMc":               float64(50),
+		"cpuLimitMc":                 float64(1000),
+		"memoryRequestMb":            float64(128),
+		"memoryLimitMb":              float64(2048),
+	}
+	patch, _, _, promotion := computeYAMLPatch(local, server, nil)
+	if patch == nil {
+		t.Fatal("expected non-nil patch when replicas conflicts with named-RRC default")
+	}
+	if got := patch["resourceRequirementClassId"]; got != "custom" {
+		t.Errorf("rrcId should flip to custom on the wire, got %v", got)
+	}
+	if got := patch["replicas"]; got != 2 {
+		t.Errorf("replicas should carry the user override (2), got %v", got)
+	}
+	// Backfill from the snapshot: every resource dimension must reach
+	// the wire so the post-flip custom record is complete.
+	for k, want := range map[string]int{
+		"cpuRequestMc":    50,
+		"cpuLimitMc":      1000,
+		"memoryRequestMb": 128,
+		"memoryLimitMb":   2048,
+	} {
+		got, ok := patch[k]
+		if !ok {
+			t.Errorf("patch missing backfilled %q (need %d so custom payload is complete)", k, want)
+			continue
+		}
+		if got != want {
+			t.Errorf("patch[%q] = %v, want %d (from server snapshot)", k, got, want)
+		}
+	}
+	if promotion == "" {
+		t.Error("expected promotion notice describing the flip and the backfill")
+	}
+	if !strings.Contains(promotion, "app.sl1.beff") || !strings.Contains(promotion, "custom") {
+		t.Errorf("promotion notice should name the source class and the destination; got %q", promotion)
+	}
+}
+
+// Named RRC + conflicting cpuLimit (via a pointer override on the
+// pulled-app struct). Same flip path as replicas; verifies the cpu
+// dimension is wired into the conflict detector. Useful canary in
+// case someone refactors promoteToCustomIfConflicted and accidentally
+// special-cases the Replicas field.
+func TestComputeYAMLPatch_NamedRRCConflictingCPUFlipsToCustom(t *testing.T) {
+	custom := 1500
+	local := &PulledApp{
+		App:                        "my-app",
+		ID:                         "ab12c",
+		CID:                        "k1",
+		AID:                        "acc-1",
+		CPULimitMc:                 &custom, // overrides sl1.beff's 1000
+		ResourceRequirementClassID: "app.sl1.beff",
+	}
+	server := map[string]any{
+		"name":                       "my-app",
+		"resourceRequirementClassId": "app.sl1.beff",
+		"replicas":                   float64(1),
+		"cpuRequestMc":               float64(50),
+		"cpuLimitMc":                 float64(1000),
+		"memoryRequestMb":            float64(128),
+		"memoryLimitMb":              float64(2048),
+	}
+	patch, _, _, promotion := computeYAMLPatch(local, server, nil)
+	if patch == nil {
+		t.Fatal("expected non-nil patch when cpuLimitMc conflicts with named-RRC default")
+	}
+	if got := patch["resourceRequirementClassId"]; got != "custom" {
+		t.Errorf("rrcId should flip to custom, got %v", got)
+	}
+	if got := patch["cpuLimitMc"]; got != 1500 {
+		t.Errorf("cpuLimitMc should carry the user override (1500), got %v", got)
+	}
+	if got := patch["replicas"]; got != 1 {
+		t.Errorf("replicas should be backfilled to the class default (1), got %v", got)
+	}
+	if promotion == "" {
+		t.Error("expected promotion notice")
 	}
 }
 
@@ -688,7 +844,7 @@ func TestComputeYAMLPatch_HealthCheckClearedByOmission(t *testing.T) {
 		"healthCheckPort": float64(3000),
 		"healthCheckPath": "/healthz",
 	}
-	patch, diff, _ := computeYAMLPatch(local, server, nil)
+	patch, diff, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected non-nil patch (server has health-check, local doesn't)")
 	}
@@ -713,7 +869,7 @@ func TestComputeYAMLPatch_PortsTranslateStandardHttps(t *testing.T) {
 			map[string]any{"port": float64(8080), "standardHttps": true},
 		},
 	}
-	patch, _, _ := computeYAMLPatch(local, server, nil)
+	patch, _, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected patch")
 	}
@@ -789,7 +945,7 @@ func TestComputeYAMLPatch_DomainsCarryProxied(t *testing.T) {
 			map[string]any{"port": float64(8080), "standardHttps": true},
 		},
 	}
-	patch, _, _ := computeYAMLPatch(local, server, nil)
+	patch, _, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected patch when domains added locally")
 	}
@@ -820,7 +976,7 @@ func TestComputeYAMLPatch_VCSChangeBecomesRefused(t *testing.T) {
 		"repoName":         "x/y",
 		"branchName":       "main", // user changed locally
 	}
-	_, _, refused := computeYAMLPatch(local, server, nil)
+	_, _, refused, _ := computeYAMLPatch(local, server, nil)
 	if len(refused) == 0 {
 		t.Error("expected vcs change to be refused")
 	}
@@ -839,7 +995,7 @@ func TestComputeYAMLPatch_SourceDirDriftIsDetected(t *testing.T) {
 		"replicas": float64(1),
 		// server has no sourceDir → drift
 	}
-	patch, _, _ := computeYAMLPatch(local, server, nil)
+	patch, _, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected non-nil patch when local sourceDir is set and server has none")
 	}
@@ -855,7 +1011,7 @@ func TestComputeYAMLPatch_DockerfileDriftIsDetected(t *testing.T) {
 		"replicas":   float64(1),
 		"dockerfile": "Dockerfile", // server has different value
 	}
-	patch, _, _ := computeYAMLPatch(local, server, nil)
+	patch, _, _, _ := computeYAMLPatch(local, server, nil)
 	if patch == nil {
 		t.Fatal("expected non-nil patch when local dockerfile differs from server")
 	}
@@ -875,7 +1031,7 @@ func TestComputeYAMLPatch_OmittedSourceDirIsNotDrift(t *testing.T) {
 		"replicas":  float64(1),
 		"sourceDir": "../../../apps/backend",
 	}
-	patch, _, _ := computeYAMLPatch(local, server, nil)
+	patch, _, _, _ := computeYAMLPatch(local, server, nil)
 	if patch != nil {
 		t.Errorf("expected nil patch when local omits sourceDir (preserve); got %+v", patch)
 	}

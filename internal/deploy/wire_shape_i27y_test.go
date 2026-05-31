@@ -56,3 +56,56 @@ func TestPrepareDeployment_WireShape_DockerfilePath(t *testing.T) {
 		t.Errorf("sourceDir should NOT be on the wire (json:\"-\"); got: %v", got["sourceDir"])
 	}
 }
+
+// DeploymentStrategy reaches the wire body verbatim when set in the yaml,
+// and is omitted entirely when empty (omitempty on the json tag). Pre-
+// fix this field was absent from DeployConfig and was silently dropped
+// from the wire body, so a user setting `deploymentStrategy: recreate`
+// in runos.yaml got a deploy with the conductor's `rolling` default.
+func TestPrepareDeployment_WireShape_DeploymentStrategy(t *testing.T) {
+	cases := []struct {
+		name string
+		set  string
+		want any // nil means key absent on the wire
+	}{
+		{"set to recreate", "recreate", "recreate"},
+		{"set to zero-downtime", "zero-downtime", "zero-downtime"},
+		{"omitted (default)", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				captured = b
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jobId":"j","osid":"o","appId":"a","uploadUrl":"http://x","token":"t","expiresAt":"x"}`))
+			}))
+			t.Cleanup(srv.Close)
+			svc := &Service{
+				baseURL:    srv.URL,
+				httpClient: &http.Client{Timeout: 5 * time.Second},
+				token:      "t",
+				aid:        "aid",
+				cid:        "cid",
+			}
+			cfg := &DeployConfig{App: "demo", ID: "abcde", DeploymentStrategy: tc.set}
+			if _, err := svc.PrepareDeployment(cfg); err != nil {
+				t.Fatalf("PrepareDeployment: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(captured, &got); err != nil {
+				t.Fatalf("unmarshal wire body: %v\nbody: %s", err, captured)
+			}
+			if tc.want == nil {
+				if _, ok := got["deploymentStrategy"]; ok {
+					t.Errorf("deploymentStrategy should be omitted when empty; got: %v", got["deploymentStrategy"])
+				}
+				return
+			}
+			if got["deploymentStrategy"] != tc.want {
+				t.Errorf("deploymentStrategy on wire = %v, want %v", got["deploymentStrategy"], tc.want)
+			}
+		})
+	}
+}

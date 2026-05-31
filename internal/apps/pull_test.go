@@ -653,6 +653,121 @@ func TestBuildPulledApp_CustomResources_EmitsAllFourFieldsEvenWhenZero(t *testin
 	}
 }
 
+// Named RRC (e.g. `app.sl1.beff`) produces a thin yaml: only the class
+// id is set, replicas/cpu/memory all stay at their zero/nil values so
+// omitempty drops the keys. The raw response may carry server-resolved
+// values for all five fields (the snapshot) but the pull deliberately
+// drops them, because the class itself bakes them in and re-emitting
+// them would (a) clutter the yaml and (b) make the user's "intent" vs
+// "resolved state" indistinguishable on a re-read.
+//
+// Companion to the custom-rrc fat-yaml test above: the two together
+// pin down the binary rule "named => thin, custom => fat".
+func TestBuildPulledApp_NamedRRC_ProducesThinYAML(t *testing.T) {
+	// Raw response carries the full resolved snapshot, as conductor
+	// returns it from GET /apps/:id even for named-RRC apps.
+	raw := map[string]any{
+		"id":                         "r0c7p",
+		"name":                       "cto-summit",
+		"replicas":                   float64(1),
+		"resourceRequirementClassId": "app.sl1.beff",
+		"cpuRequestMc":               float64(50),
+		"cpuLimitMc":                 float64(1000),
+		"memoryRequestMb":            float64(128),
+		"memoryLimitMb":              float64(2048),
+		"deployType":                 "cli",
+	}
+
+	p := BuildPulledApp(raw, "mycluster4", "myacct")
+
+	if p.ResourceRequirementClassID != "app.sl1.beff" {
+		t.Errorf("ResourceRequirementClassID = %q, want app.sl1.beff", p.ResourceRequirementClassID)
+	}
+	if p.Replicas != 0 {
+		t.Errorf("Replicas should stay 0 on named RRC (the class bakes it in), got %d", p.Replicas)
+	}
+	if p.CPURequestMc != nil || p.CPULimitMc != nil || p.MemoryRequestMb != nil || p.MemoryLimitMb != nil {
+		t.Errorf("cpu/memory pointers should all be nil on named RRC; got cpuReq=%v cpuLim=%v memReq=%v memLim=%v",
+			p.CPURequestMc, p.CPULimitMc, p.MemoryRequestMb, p.MemoryLimitMb)
+	}
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	got := string(out)
+	// The yaml must contain the class id and none of the resource keys.
+	if !strings.Contains(got, "resourceRequirementClassId: app.sl1.beff") {
+		t.Errorf("yaml missing class id:\n%s", got)
+	}
+	for _, bad := range []string{
+		"replicas:", "cpuRequestMc:", "cpuLimitMc:", "memoryRequestMb:", "memoryLimitMb:",
+	} {
+		if strings.Contains(got, bad) {
+			t.Errorf("named-RRC yaml should not contain %q:\n%s", bad, got)
+		}
+	}
+}
+
+// Custom RRC produces a fat yaml: every resource dimension is explicit.
+// The user has overridden at least one field server-side, so the
+// snapshot is the only source of truth and the yaml must carry it. A
+// custom yaml whose Replicas == 0 would be suspicious; the server
+// stores at least 1, so we don't expect omitempty to ever drop replicas
+// in this branch.
+func TestBuildPulledApp_CustomRRC_ProducesFatYAML(t *testing.T) {
+	raw := map[string]any{
+		"id":                         "abc12",
+		"name":                       "demo",
+		"replicas":                   float64(3),
+		"resourceRequirementClassId": "custom",
+		"cpuRequestMc":               float64(100),
+		"cpuLimitMc":                 float64(750),
+		"memoryRequestMb":            float64(256),
+		"memoryLimitMb":              float64(1024),
+		"deployType":                 "cli",
+	}
+
+	p := BuildPulledApp(raw, "k1", "acc-1")
+
+	if p.ResourceRequirementClassID != "custom" {
+		t.Errorf("ResourceRequirementClassID = %q, want custom", p.ResourceRequirementClassID)
+	}
+	if p.Replicas != 3 {
+		t.Errorf("Replicas = %d, want 3", p.Replicas)
+	}
+	if p.CPURequestMc == nil || *p.CPURequestMc != 100 {
+		t.Errorf("CPURequestMc = %v, want *100", p.CPURequestMc)
+	}
+	if p.CPULimitMc == nil || *p.CPULimitMc != 750 {
+		t.Errorf("CPULimitMc = %v, want *750", p.CPULimitMc)
+	}
+	if p.MemoryRequestMb == nil || *p.MemoryRequestMb != 256 {
+		t.Errorf("MemoryRequestMb = %v, want *256", p.MemoryRequestMb)
+	}
+	if p.MemoryLimitMb == nil || *p.MemoryLimitMb != 1024 {
+		t.Errorf("MemoryLimitMb = %v, want *1024", p.MemoryLimitMb)
+	}
+
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		t.Fatalf("yaml marshal: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"resourceRequirementClassId: custom",
+		"replicas: 3",
+		"cpuRequestMc: 100",
+		"cpuLimitMc: 750",
+		"memoryRequestMb: 256",
+		"memoryLimitMb: 1024",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("custom-rrc yaml missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestBuildPulledApp_EmptyPortsForWorker(t *testing.T) {
 	raw := map[string]any{"name": "worker", "replicas": float64(3)}
 
@@ -787,6 +902,33 @@ func TestBuildPulledApp_MetricsOmittedWhenPortZero(t *testing.T) {
 	}
 }
 
+// DeploymentStrategy round-trips verbatim when the server has a value,
+// and is omitted from the pulled yaml when the server reports nothing
+// (i.e. the app runs on the conductor's default `rolling`). Without
+// the second case, every pull of a default-strategy app would leak a
+// synthetic `deploymentStrategy: ""` line into the yaml and produce
+// spurious drift in apps_diff. Mirrors the healthCheck behaviour.
+func TestBuildPulledApp_DeploymentStrategy(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{"explicit recreate", map[string]any{"name": "svc", "deploymentStrategy": "recreate"}, "recreate"},
+		{"explicit zero-downtime", map[string]any{"name": "svc", "deploymentStrategy": "zero-downtime"}, "zero-downtime"},
+		{"server omitted", map[string]any{"name": "svc"}, ""},
+		{"server empty string", map[string]any{"name": "svc", "deploymentStrategy": ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := BuildPulledApp(tc.raw, "k1", "acc-1")
+			if p.DeploymentStrategy != tc.want {
+				t.Errorf("DeploymentStrategy = %q, want %q", p.DeploymentStrategy, tc.want)
+			}
+		})
+	}
+}
+
 // YAML round-trip smoke test: ensures the on-disk file matches the expected
 // ordering and shape for a realistic full-featured app.
 func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
@@ -817,11 +959,14 @@ func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
 	got := string(out)
 
 	// Verify ordering: app first, deployType second, id/cid/aid, then env,
-	// replicas, clusterDomainId, rrc, integration, ports, healthCheck.
+	// clusterDomainId, rrc, integration, ports, healthCheck.
 	// secretFiles intentionally absent from this ordering check because this
 	// test doesn't populate any; its presence/absence is covered separately.
+	// `replicas:` is absent because the app sits on a named RRC
+	// (`app.sl1.beff`), and named-RRC pulls omit replicas/cpu/memory so
+	// the yaml stays thin; the count is baked into the class.
 	expectedOrder := []string{
-		"app:", "deployType:", "id:", "cid:", "aid:", "env:", "replicas:",
+		"app:", "deployType:", "id:", "cid:", "aid:", "env:",
 		"clusterDomainId:", "resourceRequirementClassId:",
 		"integration:", "servicePortMappings:", "healthCheck:",
 	}
@@ -839,7 +984,15 @@ func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
 	}
 
 	// Things that must NOT be in the file any more.
-	for _, bad := range []string{"osid:", "status:", "domain:", "networkAccess:", "extras:", "dockerfile:", "createdAt:", "updatedAt:"} {
+	// `replicas:`, `cpuRequestMc:`, `cpuLimitMc:`, `memoryRequestMb:`,
+	// `memoryLimitMb:` are absent because the app is on a named RRC and
+	// the named-RRC pull writes a thin yaml (the class bakes in every
+	// dimension). The thin shape is the visible signal that re-deploying
+	// this yaml will resolve back to the same class.
+	for _, bad := range []string{
+		"osid:", "status:", "domain:", "networkAccess:", "extras:", "dockerfile:", "createdAt:", "updatedAt:",
+		"replicas:", "cpuRequestMc:", "cpuLimitMc:", "memoryRequestMb:", "memoryLimitMb:",
+	} {
 		if strings.Contains(got, bad) {
 			t.Errorf("output should not contain %q:\n%s", bad, got)
 		}

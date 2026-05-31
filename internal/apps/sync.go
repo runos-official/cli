@@ -504,8 +504,18 @@ func ComputeSyncPlan(in SyncInputs) *SyncPlan {
 		CID:     in.LocalApp.CID,
 	}
 
-	plan.YAMLPatch, plan.YAMLDiff, plan.RefusedYAML = computeYAMLPatch(in.LocalApp, in.ServerRaw, in.ServerRequires)
+	var promotion string
+	plan.YAMLPatch, plan.YAMLDiff, plan.RefusedYAML, promotion = computeYAMLPatch(in.LocalApp, in.ServerRaw, in.ServerRequires)
 	plan.Notes = buildClassFlapNotes(in.LocalApp, in.ServerRaw)
+	// Promotion notice rendered alongside the existing class-flap note.
+	// The two surface adjacent but distinct conditions: class-flap fires
+	// when the server has ALREADY flipped to custom (post-sync state);
+	// promotion fires when the CLI is ABOUT to send a body that will
+	// trigger the flip. Surface both so the user sees a coherent story
+	// across the diff -> sync transition.
+	if promotion != "" {
+		plan.Notes = append(plan.Notes, promotion)
+	}
 	// Requires-injected names live only in the secret-env-vars Secret (never
 	// in the plain ConfigMap), so the partition only applies to the secret
 	// side. Built from the local yaml because it's the authoritative record
@@ -840,11 +850,114 @@ func overrideDiffers(local LocalOverride, server OverrideSummary) bool {
 // response (covers most fields). serverRequires is the separate
 // /requires response, GET /apps/:id doesn't expose the requires
 // block so we need it as its own input.
-func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires map[string]ServiceRequirement) (patch map[string]any, diff string, refused []string) {
+// promoteToCustomIfConflicted detects a named-RRC override that will
+// flip the server-side rrcId to "custom" on apply. When the local yaml
+// sits on a named class (e.g. `app.sl1.beff`) AND a resource field
+// disagrees with the class's defaults (the server snapshot is the
+// authoritative source of those defaults for this app), the function
+// returns a shallow copy of localApp with the flip applied: rrcId is
+// set to "custom" and any nil cpu/memory pointer is backfilled from
+// the server snapshot so the wire body carries a complete custom
+// payload. The Replicas override (or backfill) is overlaid on top.
+//
+// Returns (copy, notice) when promoted, (localApp, "") otherwise. The
+// notice is the one-liner the plan surfaces above the section headers.
+// The caller's localApp is never mutated.
+//
+// Detection rule: a local resource field "disagrees" if it's set to a
+// non-zero value (Replicas) or non-nil pointer (cpu/memory) AND its
+// value differs from the server snapshot. A thin pulled yaml carries
+// none of these fields (omitempty drops them when the class baked the
+// value in), so any value present came from the user editing the yaml
+// by hand. That's the signal we use to decide a flip is intentional
+// rather than an artefact of stale pull data.
+func promoteToCustomIfConflicted(localApp *PulledApp, server map[string]any) (*PulledApp, string) {
+	if localApp == nil {
+		return localApp, ""
+	}
+	localClass := localApp.ResourceRequirementClassID
+	if localClass == "" || localClass == "custom" {
+		return localApp, ""
+	}
+	serverReplicas, _ := asInt(server["replicas"])
+	serverCpuReq, _ := asInt(server["cpuRequestMc"])
+	serverCpuLim, _ := asInt(server["cpuLimitMc"])
+	serverMemReq, _ := asInt(server["memoryRequestMb"])
+	serverMemLim, _ := asInt(server["memoryLimitMb"])
+
+	var conflicts []string
+	if localApp.Replicas != 0 && localApp.Replicas != serverReplicas {
+		conflicts = append(conflicts, fmt.Sprintf("replicas %d (default %d)", localApp.Replicas, serverReplicas))
+	}
+	if localApp.CPURequestMc != nil && *localApp.CPURequestMc != serverCpuReq {
+		conflicts = append(conflicts, fmt.Sprintf("cpuRequestMc %d (default %d)", *localApp.CPURequestMc, serverCpuReq))
+	}
+	if localApp.CPULimitMc != nil && *localApp.CPULimitMc != serverCpuLim {
+		conflicts = append(conflicts, fmt.Sprintf("cpuLimitMc %d (default %d)", *localApp.CPULimitMc, serverCpuLim))
+	}
+	if localApp.MemoryRequestMb != nil && *localApp.MemoryRequestMb != serverMemReq {
+		conflicts = append(conflicts, fmt.Sprintf("memoryRequestMb %d (default %d)", *localApp.MemoryRequestMb, serverMemReq))
+	}
+	if localApp.MemoryLimitMb != nil && *localApp.MemoryLimitMb != serverMemLim {
+		conflicts = append(conflicts, fmt.Sprintf("memoryLimitMb %d (default %d)", *localApp.MemoryLimitMb, serverMemLim))
+	}
+	if len(conflicts) == 0 {
+		return localApp, ""
+	}
+
+	// Shallow copy is sufficient: the only fields we mutate are the
+	// scalar rrcId, Replicas, and the four resource pointers (each
+	// reassigned to a fresh address rather than mutated through). Slice
+	// and map fields (SecretFiles, Requires, ServicePortMappings, etc.)
+	// alias into the caller's struct, which is fine because we never
+	// read-modify-write them here.
+	out := *localApp
+	out.ResourceRequirementClassID = "custom"
+	if out.Replicas == 0 {
+		out.Replicas = serverReplicas
+	}
+	if out.CPURequestMc == nil {
+		v := serverCpuReq
+		out.CPURequestMc = &v
+	}
+	if out.CPULimitMc == nil {
+		v := serverCpuLim
+		out.CPULimitMc = &v
+	}
+	if out.MemoryRequestMb == nil {
+		v := serverMemReq
+		out.MemoryRequestMb = &v
+	}
+	if out.MemoryLimitMb == nil {
+		v := serverMemLim
+		out.MemoryLimitMb = &v
+	}
+	notice := fmt.Sprintf(
+		"flipping resourceRequirementClassId %s -> custom (%s). cpu/memory backfilled from %s snapshot so the full custom payload reaches the conductor.",
+		localClass, strings.Join(conflicts, ", "), localClass,
+	)
+	return &out, notice
+}
+
+func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires map[string]ServiceRequirement) (patch map[string]any, diff string, refused []string, promotion string) {
+	// Named-RRC override flip: when the local yaml carries a named class
+	// (e.g. `app.sl1.beff`) AND a replicas/cpu/memory value that disagrees
+	// with the class's defaults, the conductor's resolveRRC will silently
+	// flip rrcId to "custom" on apply. Detect that client-side so the
+	// plan / wire body reflect the post-flip state explicitly: rrcId
+	// becomes "custom" in the patch, and any resource fields the thin
+	// local yaml didn't carry are backfilled from the server snapshot
+	// so the custom payload is complete. Mutation is confined to a
+	// shallow copy; the caller's localApp stays pristine.
+	effective := localApp
+	if local, note := promoteToCustomIfConflicted(localApp, server); note != "" {
+		effective = local
+		promotion = note
+	}
 	driftFields := map[string]any{}
 
-	if localApp.App != "" && localApp.App != stringOr(server, "name") {
-		driftFields["name"] = localApp.App
+	if effective.App != "" && effective.App != stringOr(server, "name") {
+		driftFields["name"] = effective.App
 	}
 	// clusterDomainId, resourceRequirementClassId, replicas are partial-update
 	// fields on the conductor's PATCH endpoint: an omitted local value means
@@ -855,16 +968,16 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	// for every yaml that omitted them, scaring users into either refusing the
 	// (harmless) sync or pulling-and-re-syncing as a workaround. Gate drift
 	// reporting on local being non-empty to mirror the wire body's omit logic.
-	if localApp.ClusterDomainID != "" && localApp.ClusterDomainID != stringOr(server, "clusterDomainId") {
-		driftFields["clusterDomainId"] = localApp.ClusterDomainID
+	if effective.ClusterDomainID != "" && effective.ClusterDomainID != stringOr(server, "clusterDomainId") {
+		driftFields["clusterDomainId"] = effective.ClusterDomainID
 	}
-	if localApp.ResourceRequirementClassID != "" &&
-		localApp.ResourceRequirementClassID != stringOr(server, "resourceRequirementClassId") {
-		driftFields["resourceRequirementClassId"] = localApp.ResourceRequirementClassID
+	if effective.ResourceRequirementClassID != "" &&
+		effective.ResourceRequirementClassID != stringOr(server, "resourceRequirementClassId") {
+		driftFields["resourceRequirementClassId"] = effective.ResourceRequirementClassID
 	}
-	if localApp.Replicas != 0 {
-		if serverReplicas, ok := asInt(server["replicas"]); !ok || serverReplicas != localApp.Replicas {
-			driftFields["replicas"] = localApp.Replicas
+	if effective.Replicas != 0 {
+		if serverReplicas, ok := asInt(server["replicas"]); !ok || serverReplicas != effective.Replicas {
+			driftFields["replicas"] = effective.Replicas
 		}
 	}
 	intDrift := func(field string, local *int) {
@@ -875,13 +988,13 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 			driftFields[field] = *local
 		}
 	}
-	intDrift("cpuRequestMc", localApp.CPURequestMc)
-	intDrift("cpuLimitMc", localApp.CPULimitMc)
-	intDrift("memoryRequestMb", localApp.MemoryRequestMb)
-	intDrift("memoryLimitMb", localApp.MemoryLimitMb)
+	intDrift("cpuRequestMc", effective.CPURequestMc)
+	intDrift("cpuLimitMc", effective.CPULimitMc)
+	intDrift("memoryRequestMb", effective.MemoryRequestMb)
+	intDrift("memoryLimitMb", effective.MemoryLimitMb)
 
-	if portsDiffer(localApp.ServicePortMappings, server["servicePortMappings"]) {
-		driftFields["servicePortMappings"] = portsToWire(localApp.ServicePortMappings)
+	if portsDiffer(effective.ServicePortMappings, server["servicePortMappings"]) {
+		driftFields["servicePortMappings"] = portsToWire(effective.ServicePortMappings)
 	}
 
 	// healthCheck / metrics: desired-state on the new conductor. "Local
@@ -889,30 +1002,30 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	serverHealth := stringOr(server, "healthCheck")
 	serverHealthPort, _ := asInt(server["healthCheckPort"])
 	serverHealthPath := stringOr(server, "healthCheckPath")
-	if localApp.HealthCheck != serverHealth {
-		driftFields["healthCheck"] = localApp.HealthCheck
+	if effective.HealthCheck != serverHealth {
+		driftFields["healthCheck"] = effective.HealthCheck
 	}
 	localHealthPort := 0
-	if localApp.HealthCheckPort != nil {
-		localHealthPort = *localApp.HealthCheckPort
+	if effective.HealthCheckPort != nil {
+		localHealthPort = *effective.HealthCheckPort
 	}
 	if localHealthPort != serverHealthPort {
 		driftFields["healthCheckPort"] = localHealthPort
 	}
-	if localApp.HealthCheckPath != serverHealthPath {
-		driftFields["healthCheckPath"] = localApp.HealthCheckPath
+	if effective.HealthCheckPath != serverHealthPath {
+		driftFields["healthCheckPath"] = effective.HealthCheckPath
 	}
 	serverMetricsPort, _ := asInt(server["metricsPort"])
 	serverMetricsPath := stringOr(server, "metricsPath")
 	localMetricsPort := 0
-	if localApp.MetricsPort != nil {
-		localMetricsPort = *localApp.MetricsPort
+	if effective.MetricsPort != nil {
+		localMetricsPort = *effective.MetricsPort
 	}
 	if localMetricsPort != serverMetricsPort {
 		driftFields["metricsPort"] = localMetricsPort
 	}
-	if localApp.MetricsPath != serverMetricsPath {
-		driftFields["metricsPath"] = localApp.MetricsPath
+	if effective.MetricsPath != serverMetricsPath {
+		driftFields["metricsPath"] = effective.MetricsPath
 	}
 
 	// Build-metadata round-trip (V13). sourceDir and dockerfile are partial-
@@ -920,11 +1033,11 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	// "preserve" (the wire body builder skips empty), so drift only surfaces
 	// when the local yaml has a non-empty value that disagrees with the
 	// server's. Mirrors the configPath round-trip story.
-	if localApp.SourceDir != "" && localApp.SourceDir != stringOr(server, "sourceDir") {
-		driftFields["sourceDir"] = localApp.SourceDir
+	if effective.SourceDir != "" && effective.SourceDir != stringOr(server, "sourceDir") {
+		driftFields["sourceDir"] = effective.SourceDir
 	}
-	if localApp.Dockerfile != "" && localApp.Dockerfile != stringOr(server, "dockerfile") {
-		driftFields["dockerfile"] = localApp.Dockerfile
+	if effective.Dockerfile != "" && effective.Dockerfile != stringOr(server, "dockerfile") {
+		driftFields["dockerfile"] = effective.Dockerfile
 	}
 
 	// VCS / integration: not patchable. Surface user changes as refused so
@@ -935,34 +1048,37 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	// the provider slug 'github-arc' / 'gitlab-runner' and lives separately).
 	// Earlier code conflated these and produced perpetual drift on every
 	// pulled-then-synced VCS app — see the matching note in pull.go.
-	if localApp.Integration != nil {
+	if effective.Integration != nil {
 		serverDeployType := stringOr(server, "deployType")
 		serverIntegrationID := stringOr(server, "vcsIntegrationId")
 		serverRepoID := int64Or(server, "repoId")
 		serverRepoName := stringOr(server, "repoName")
 		serverBranch := stringOr(server, "branchName")
-		if localApp.DeployType != serverDeployType ||
-			localApp.Integration.ID != serverIntegrationID ||
-			localApp.Integration.RepoID != serverRepoID ||
-			localApp.Integration.RepoName != serverRepoName ||
-			localApp.Integration.BranchName != serverBranch {
+		if effective.DeployType != serverDeployType ||
+			effective.Integration.ID != serverIntegrationID ||
+			effective.Integration.RepoID != serverRepoID ||
+			effective.Integration.RepoName != serverRepoName ||
+			effective.Integration.BranchName != serverBranch {
 			refused = append(refused, "integration (deployType, repo, branch, change via console)")
 		}
 	}
 
-	requiresDrift := requiresHaveDrift(localApp, serverRequires)
+	requiresDrift := requiresHaveDrift(effective, serverRequires)
 
 	if len(driftFields) == 0 && !requiresDrift {
-		return nil, "", refused
+		return nil, "", refused, promotion
 	}
 
-	// Drift exists. Build the full wire body from the local yaml.
-	patch = buildFullYAMLBody(localApp)
+	// Drift exists. Build the full wire body from the effective (post-
+	// promotion) local yaml so a named-RRC-with-overrides app sends a
+	// complete custom payload rather than a half-baked named-class one
+	// the conductor would have to re-resolve.
+	patch = buildFullYAMLBody(effective)
 	diff = renderYAMLPatchAsDiff(driftFields, server)
 	if requiresDrift {
-		diff = appendRequiresDiff(diff, localApp, serverRequires)
+		diff = appendRequiresDiff(diff, effective, serverRequires)
 	}
-	return patch, diff, refused
+	return patch, diff, refused, promotion
 }
 
 // appendRequiresDiff renders per-alias drift between the local yaml's

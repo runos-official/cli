@@ -59,12 +59,22 @@ type PulledApp struct {
 	// yaml under a different path, the explicit field wins so deploy
 	// still targets the committed source location.
 	ConfigPath string `yaml:"configPath,omitempty"`
-	Replicas   int    `yaml:"replicas"`
+	// Replicas is omitted from the on-disk yaml when the app sits on a
+	// named RRC (e.g. `app.sl1.beff`), because the class already bakes
+	// the replica count in. Only populated by BuildPulledApp for
+	// `custom`-rrc apps (where every resource field must be explicit)
+	// and legacy apps with no RRC set. Storing the field as an int with
+	// omitempty (rather than *int) keeps the literal `Replicas: 1` test
+	// initializers throughout the package working unchanged.
+	Replicas int `yaml:"replicas,omitempty"`
 
 	ClusterDomainID string `yaml:"clusterDomainId,omitempty"`
 
-	// Exactly one of ResourceRequirementClassID (preset) or the four mc/mb
-	// pointers (custom) is populated by BuildPulledApp.
+	// Resource fields follow the rrcId rule: named class → only
+	// ResourceRequirementClassID is populated and the yaml stays thin
+	// (cpu/memory/replicas all omitted). `custom` rrcId → every field is
+	// populated and emitted as a fat yaml. Empty rrcId (legacy apps with
+	// no class set) emits cpu/memory but not rrcId.
 	ResourceRequirementClassID string `yaml:"resourceRequirementClassId,omitempty"`
 	CPURequestMc               *int   `yaml:"cpuRequestMc,omitempty"`
 	CPULimitMc                 *int   `yaml:"cpuLimitMc,omitempty"`
@@ -84,6 +94,13 @@ type PulledApp struct {
 	HealthCheckPath string `yaml:"healthCheckPath,omitempty"`
 	MetricsPort     *int   `yaml:"metricsPort,omitempty"`
 	MetricsPath     string `yaml:"metricsPath,omitempty"`
+
+	// DeploymentStrategy mirrors DeployConfig.DeploymentStrategy so a
+	// pulled yaml round-trips the rollout preset alongside the other
+	// AppSpec fields. Empty when the server has nothing set (i.e. the
+	// app runs on the conductor's default `rolling`); omitempty keeps
+	// the field absent from the pulled yaml in that case.
+	DeploymentStrategy string `yaml:"deploymentStrategy,omitempty"`
 
 	// SecretFiles is intentionally omitted from the yaml when empty. A
 	// present-but-empty `secretFiles: []` in the file is authoritative and
@@ -260,10 +277,6 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 		// the YAML when the app has none.
 	}
 
-	if n, ok := asInt(raw["replicas"]); ok {
-		p.Replicas = n
-	}
-
 	// Deploy type: prefer the server's `deployType` ('cli' | 'vcs') from the
 	// canonical contract. Fall back to deriving from `integrationType` for
 	// legacy conductors that pre-date the deployType field on the GET
@@ -311,23 +324,31 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 	// the field for them).
 	p.ConfigPath = stringOr(raw, "configPath")
 
-	// Resources: preset wins when it's a real class, otherwise emit all
-	// four custom fields (including zeros, so the user knows they must set them).
+	// Resources: thin-yaml on named RRC, fat-yaml on custom.
 	//
-	// "custom" is the server-synthesised label for "user supplied a class
-	// AND overrode at least one of cpu/memory/replicas with a value that
-	// disagrees with the class defaults" (see conductor's resolveRRC).
-	// We preserve the literal "custom" string in the pulled yaml so
-	// apps_show and apps_pull return symmetric views (apps_show already
-	// surfaces resourceRequirementClassId="custom"). Materialised
-	// cpu/memory fields are still emitted alongside, since "custom" by
-	// itself carries no values.
+	// Named RRC (e.g. `app.sl1.beff`): the class bakes in every resource
+	// dimension (replicas, cpu, memory), so the pulled yaml carries ONLY
+	// the class id. cpu/memory pointers stay nil and Replicas stays 0;
+	// both omit via omitempty. Re-deploying this thin yaml round-trips
+	// to the same resolved state because the conductor re-applies the
+	// class on its side.
+	//
+	// "custom" rrcId is the server-synthesised label for "user supplied
+	// a class AND overrode at least one of replicas/cpu/memory with a
+	// value that disagrees with the class defaults" (see conductor's
+	// resolveRRC). In that branch the yaml must carry every dimension
+	// explicitly because there is no class to fall back to. Legacy apps
+	// with no rrcId set fall into the same fat branch so the user sees
+	// the actual server-side values.
 	rrc := stringOr(raw, "resourceRequirementClassId")
 	if rrc != "" && rrc != "custom" {
 		p.ResourceRequirementClassID = rrc
 	} else {
 		if rrc == "custom" {
 			p.ResourceRequirementClassID = "custom"
+		}
+		if n, ok := asInt(raw["replicas"]); ok {
+			p.Replicas = n
 		}
 		cpuReq := 0
 		if v, ok := asInt(raw["cpuRequestMc"]); ok {
@@ -408,6 +429,14 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 	if port, ok := asInt(raw["metricsPort"]); ok && port > 0 {
 		p.MetricsPort = &port
 		p.MetricsPath = stringOr(raw, "metricsPath")
+	}
+
+	// DeploymentStrategy is preserve-on-omit server-side (defaults to
+	// `rolling` when the AppDocument has no value), so an empty string
+	// from the server means "use the default" and we leave the field
+	// off the pulled yaml. Any non-empty value is surfaced verbatim.
+	if strat := stringOr(raw, "deploymentStrategy"); strat != "" {
+		p.DeploymentStrategy = strat
 	}
 
 	return p

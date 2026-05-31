@@ -150,6 +150,14 @@ type DeployConfig struct {
 	HealthCheckPath            string               `yaml:"healthCheckPath,omitempty" json:"healthCheckPath,omitempty"`
 	MetricsPort                *int                 `yaml:"metricsPort,omitempty" json:"metricsPort,omitempty"`
 	MetricsPath                string               `yaml:"metricsPath,omitempty" json:"metricsPath,omitempty"`
+	// DeploymentStrategy is the pod rollout preset: rolling (default),
+	// zero-downtime, resource-constrained, recreate, fast. Pick `recreate`
+	// when the next pod can't schedule until the old one releases its
+	// resource (single GPU, RWO PVC, exclusive port). Enum values aren't
+	// enforced client-side; the conductor is the source of truth and
+	// rejects unknown presets with a 400. Empty round-trips as "use
+	// server-side default", matching healthCheck's shape.
+	DeploymentStrategy         string               `yaml:"deploymentStrategy,omitempty" json:"deploymentStrategy,omitempty"`
 
 	// --- CLI-only / not-in-PulledApp ---
 	// Domain is the legacy top-level domain field. New yamls put FQDNs
