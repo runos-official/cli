@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.0
+
+Adds Docker build-time arguments to `runos deploy`. Install via `https://get.runos.com/cli.sh?release=v1.1.0`.
+
+### New
+
+- **Docker build args on `runos deploy`**: apps that bake build-time configuration into the image (e.g. a Next.js bundle that needs `NEXT_PUBLIC_*` at build time) can now pass values without bespoke GitHub Actions workarounds. Two sources, merged server-side:
+  - **`buildArgs:` in the app yaml** — a `KEY: VALUE` map that round-trips through `apps pull` / `apps sync` (the field mirrors onto `PulledApp` when the server surfaces it).
+  - **`--build-arg KEY=VALUE` on the CLI** (repeatable) — parsed and validated before any HTTP call. ARG names must match Docker's `^[A-Za-z_][A-Za-z0-9_]*$`, duplicate keys are rejected, and commas in values survive (the flag is a `StringArray`). The parsed list rides on both the `prepare-cli-deployment` body (CLI deploy) and the `POST /apps/:id/deploy` body (VCS deploy) under a separate `buildArgsCli` field. The conductor merges yaml `buildArgs:` with `buildArgsCli` server-side; the CLI never pre-merges. Argless deploys omit both fields for back-compat.
+  - **MCP**: the `deploy` tool gains a `build_arg` array property, forwarded as one `--build-arg` per entry to the `runos` subprocess.
+
 ## v1.0.0
 
 General-availability release. Promotes the v1.0.0-rc.8 feature set to stable; see the rc.8 entry below for the full Apps/Services-as-IaC, VCS deploy, PAT auth, MCP, and hardening story. Install via `https://get.runos.com/cli.sh?release=v1.0.0`.
