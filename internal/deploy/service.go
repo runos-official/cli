@@ -453,12 +453,28 @@ func (s *Service) GetApp(appID string) (*AppShow, error) {
 // AppDocument has stored" (CI mode without a yaml on disk). Non-empty
 // values are persisted to the AppDocument so subsequent deploys inherit
 // them — the yaml is the source of truth for its own repo location.
-func (s *Service) DeployVCS(appID, sha, configPath string) (*VCSDeployResponse, error) {
+//
+// buildArgsCli carries the CLI `--build-arg KEY=VALUE` flag entries
+// (already parsed + validated by internal/buildargs.Parse). Conductor
+// merges these with the yaml `buildArgs:` map (which it reads from the
+// committed yaml at <sha>, since the VCS path never sends the yaml
+// inline) using CLI > yaml precedence. Nil/empty drops the field from
+// the wire body so the conductor's back-compat path is exercised for
+// argless deploys.
+func (s *Service) DeployVCS(appID, sha, configPath string, buildArgsCli []BuildArgCliEntry) (*VCSDeployResponse, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/deploy", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 
-	bodyMap := map[string]string{"sha": sha}
+	// The deploy body is a mixed-type object: `sha` and `configPath` are
+	// strings, `buildArgsCli` is a structured list. `map[string]any` lets
+	// the legacy two-field shape stay byte-equivalent (omitempty on the
+	// buildArgsCli branch keeps the wire body identical to today when
+	// the user hasn't passed --build-arg).
+	bodyMap := map[string]any{"sha": sha}
 	if configPath != "" {
 		bodyMap["configPath"] = configPath
+	}
+	if len(buildArgsCli) > 0 {
+		bodyMap["buildArgsCli"] = buildArgsCli
 	}
 	jsonBody, err := json.Marshal(bodyMap)
 	if err != nil {

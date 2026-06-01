@@ -53,6 +53,16 @@ func (s StringOrSlice) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]string(s))
 }
 
+// BuildArgCliEntry is one `--build-arg KEY=VALUE` flag entry, carried on
+// the deploy request body as a structured list under `buildArgsCli`. The
+// CLI parses + validates + dedup-checks the flag values before sending;
+// conductor then merges this list with the yaml's BuildArgs map using
+// `cli > yaml` precedence and forwards the result to the cluster agent.
+type BuildArgCliEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 // MappingDomain mirrors the conductor's MappingDomain. One FQDN attached to
 // a port mapping, with optional Cloudflare proxy ("orange cloud"). The object
 // form is intentional so future per-domain knobs (path matching, requestCert
@@ -159,6 +169,18 @@ type DeployConfig struct {
 	// server-side default", matching healthCheck's shape.
 	DeploymentStrategy         string               `yaml:"deploymentStrategy,omitempty" json:"deploymentStrategy,omitempty"`
 
+	// BuildArgs is the declarative, committed Docker build-args map sourced
+	// from `runos.yaml`. Conductor parses this server-side on CLI deploys
+	// (the yaml ships in the prepare-cli-deployment body) and on VCS
+	// deploys (read from the committed yaml at <sha>), then merges with
+	// the CLI --build-arg list using CLI > yaml precedence. Forwarded to
+	// the cluster agent as one `--opt build-arg:KEY=VALUE` per entry on
+	// the buildctl invocation. Keys must match Docker ARG name rules
+	// (^[A-Za-z_][A-Za-z0-9_]*$); BuildKit ignores ARGs not declared in
+	// the Dockerfile (no-op, safe). Values are plaintext (no secret
+	// handling in this iteration; see objective 40 deferred scope).
+	BuildArgs map[string]string `yaml:"buildArgs,omitempty" json:"buildArgs,omitempty"`
+
 	// --- CLI-only / not-in-PulledApp ---
 	// Domain is the legacy top-level domain field. New yamls put FQDNs
 	// under `servicePortMappings[].domains` so each domain binds to a
@@ -192,6 +214,13 @@ type DeployConfig struct {
 	// CustomEnvVars holds the parsed contents of Env (plain, ConfigMap-backed,
 	// VCS-committed). Lands in the {osid}-user-env-vars ConfigMap.
 	CustomEnvVars       map[string]string       `yaml:"-" json:"customEnvVars,omitempty"`
+	// BuildArgsCli carries the `--build-arg KEY=VALUE` entries from the
+	// command line as a structured list. Conductor merges these with the
+	// yaml-sourced BuildArgs map (CLI > yaml precedence) before forwarding
+	// to the cluster agent. Wire-only: never written to the local yaml;
+	// `omitempty` keeps argless deploys byte-equivalent to the pre-feature
+	// request body so the conductor's back-compat path is exercised.
+	BuildArgsCli []BuildArgCliEntry `yaml:"-" json:"buildArgsCli,omitempty"`
 
 	// --- Legacy shorthand (normalized server-side into ServicePortMappings) ---
 	Port          int   `yaml:"port,omitempty" json:"port,omitempty"`

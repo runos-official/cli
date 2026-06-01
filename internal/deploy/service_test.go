@@ -11,6 +11,103 @@ import (
 	"time"
 )
 
+// TestDeployVCS_BodyCarriesBuildArgsCli pins the VCS deploy POST body
+// shape: when the CLI passes `buildArgsCli` entries through DeployVCS,
+// the wire body includes them as a structured `[{key,value}]` array
+// alongside `sha` and `configPath`. Conductor (story 59) reads from
+// this field. When no entries are supplied the field is OMITTED so the
+// body is byte-equivalent to the pre-feature shape. Objective 40.
+func TestDeployVCS_BodyCarriesBuildArgsCli(t *testing.T) {
+	t.Run("with entries", func(t *testing.T) {
+		var captured []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured, _ = readAllBody(r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jobId":"job-1"}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		svc := &Service{
+			baseURL:    srv.URL,
+			httpClient: &http.Client{Timeout: 5 * time.Second},
+			token:      "t",
+			aid:        "aid",
+			cid:        "cid",
+		}
+		entries := []BuildArgCliEntry{
+			{Key: "NEXT_PUBLIC_APP_VERSION", Value: "1.2.3"},
+			{Key: "NODE_ENV", Value: "production"},
+		}
+		if _, err := svc.DeployVCS("ultbd", strings.Repeat("a", 40), "apps/web/runos.yaml", entries); err != nil {
+			t.Fatalf("DeployVCS: %v", err)
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(captured, &body); err != nil {
+			t.Fatalf("body not JSON: %v\n%s", err, captured)
+		}
+		if body["sha"] != strings.Repeat("a", 40) {
+			t.Errorf("body sha = %v, want 40 'a's", body["sha"])
+		}
+		if body["configPath"] != "apps/web/runos.yaml" {
+			t.Errorf("body configPath = %v, want apps/web/runos.yaml", body["configPath"])
+		}
+		raw, ok := body["buildArgsCli"].([]any)
+		if !ok {
+			t.Fatalf("buildArgsCli missing or not an array; got %T: %v", body["buildArgsCli"], body["buildArgsCli"])
+		}
+		if len(raw) != 2 {
+			t.Fatalf("buildArgsCli length = %d, want 2", len(raw))
+		}
+		first := raw[0].(map[string]any)
+		if first["key"] != "NEXT_PUBLIC_APP_VERSION" || first["value"] != "1.2.3" {
+			t.Errorf("buildArgsCli[0] = %v, want {key:NEXT_PUBLIC_APP_VERSION, value:1.2.3}", first)
+		}
+	})
+
+	t.Run("argless deploy omits the field (back-compat)", func(t *testing.T) {
+		var captured []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured, _ = readAllBody(r)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jobId":"job-2"}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		svc := &Service{
+			baseURL:    srv.URL,
+			httpClient: &http.Client{Timeout: 5 * time.Second},
+			token:      "t",
+			aid:        "aid",
+			cid:        "cid",
+		}
+		if _, err := svc.DeployVCS("ultbd", strings.Repeat("a", 40), "", nil); err != nil {
+			t.Fatalf("DeployVCS: %v", err)
+		}
+		if strings.Contains(string(captured), "buildArgsCli") {
+			t.Errorf("argless body must omit buildArgsCli; got: %s", captured)
+		}
+	})
+}
+
+func readAllBody(r *http.Request) ([]byte, error) {
+	defer r.Body.Close()
+	buf := make([]byte, 0, 1024)
+	tmp := make([]byte, 512)
+	for {
+		n, err := r.Body.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
+}
+
 // Regression test for I2-4e (TEST_LOG.md): hostFromLink reduces a
 // network-access link to its bare fqdn, which the gate diffs against
 // the local yaml's `domain:` set. Bad URLs degrade gracefully (return
@@ -172,7 +269,7 @@ func TestDeployVCS_ReturnsTypedAPIErrorOn4xx(t *testing.T) {
 		cid:        "cid",
 	}
 
-	_, err := svc.DeployVCS("ultbd", "aaaa", "")
+	_, err := svc.DeployVCS("ultbd", "aaaa", "", nil)
 	if err == nil {
 		t.Fatalf("expected error on 400")
 	}

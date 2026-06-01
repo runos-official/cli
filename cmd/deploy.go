@@ -13,6 +13,7 @@ import (
 
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
+	"github.com/runos-official/cli/internal/buildargs"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
@@ -69,6 +70,14 @@ func init() {
 	deployCmd.Flags().String("app", "", "VCS-only: app ID to deploy (when no runos.yaml is present)")
 	deployCmd.Flags().String("sha", "", "VCS-only: commit SHA to deploy (defaults to git rev-parse HEAD)")
 	deployCmd.Flags().Bool("allow-dirty", false, "VCS-only: deploy even when the working tree has uncommitted changes")
+	// --build-arg KEY=VALUE, repeatable. StringArray (not StringSlice) so
+	// values containing commas survive intact, matching `docker build
+	// --build-arg` semantics. Parsing + validation lives in
+	// internal/buildargs.Parse so the same pipeline runs for the CLI and
+	// VCS branches; merging with runos.yaml's `buildArgs:` map happens
+	// server-side (CLI > yaml precedence). Duplicate keys are a hard
+	// error (no implicit last-wins). Objective 40 / story 60.
+	deployCmd.Flags().StringArray("build-arg", nil, "Docker build arg `KEY=VALUE` (repeatable). Merged server-side with runos.yaml buildArgs:; --build-arg wins on conflicts. Duplicate keys within a single invocation are rejected.")
 
 	// Add sync subcommand
 	deploySyncCmd.Flags().StringP("config", "c", "runos.yaml", "path to config file")
@@ -166,6 +175,19 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	flagFollow, _ := cmd.Flags().GetBool("follow")
 	flagYes, _ := cmd.Flags().GetBool("yes")
 
+	// Parse `--build-arg KEY=VALUE` once, here, before any branch (CI
+	// VCS dispatch, laptop VCS dispatch, CLI deploy). Refuses malformed
+	// shape, invalid ARG names, and duplicate keys with messages that
+	// name the offending entry; the error fires before any HTTP call so
+	// the user sees the failure close to their argv. Same parsed list
+	// feeds the CLI deploy body (deployConfig.BuildArgsCli) and both
+	// VCS deploy entry points. internal/buildargs covers the contract.
+	rawBuildArgs, _ := cmd.Flags().GetStringArray("build-arg")
+	buildArgsCli, err := buildargs.Parse(rawBuildArgs)
+	if err != nil {
+		return err
+	}
+
 	if flagApp != "" {
 		// CI mode: --app pins the target, no yaml is consulted, so cid must
 		// come from flag/config — yaml fallback is unavailable here.
@@ -189,7 +211,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
 		// Conductor falls back to whatever the AppDocument has stored
 		// (typically set by an earlier laptop deploy that DID send it).
-		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow, flagYes, jsonOutput)
+		return runDeployVCS(svc, flagApp, flagSha, "", flagAllowDirty, flagFollow, flagYes, jsonOutput, buildArgsCli)
 	}
 
 	// Load deploy config
@@ -265,7 +287,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if deployType == "vcs" {
 		cmd.SilenceUsage = true
 		configPathForServer := resolveVcsConfigPath(deployConfig, configPath)
-		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow, flagYes, jsonOutput)
+		return runDeployVCS(svc, deployConfig.ID, flagSha, configPathForServer, flagAllowDirty, flagFollow, flagYes, jsonOutput, buildArgsCli)
 	}
 
 	// CLI-deploy guard: the VCS-only flags must not silently no-op here.
@@ -504,6 +526,16 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// CLI half (wire-side flip).
 	if err := deployConfig.LoadSecretFileContents(configDir); err != nil {
 		return fmt.Errorf("failed to load secret file contents: %w", err)
+	}
+
+	// Attach the parsed --build-arg list (validated earlier) to the
+	// deploy config so PrepareDeployment marshals it into the request
+	// body under `buildArgsCli`. The yaml's `buildArgs:` map ships in
+	// the same body under `buildArgs`; conductor merges + applies
+	// CLI > yaml precedence server-side. omitempty on BuildArgsCli
+	// keeps argless deploys byte-equivalent to the pre-feature shape.
+	if len(buildArgsCli) > 0 {
+		deployConfig.BuildArgsCli = buildArgsCli
 	}
 
 	// Prepare deployment

@@ -82,6 +82,147 @@ func indexOf(haystack, needle string) int {
 
 // TestDeployConfig_SourceDirRoundTrip pins yaml round-tripping for the
 // directory-per-app field. Empty stays omitted, set stays set.
+// TestDeployConfig_BuildArgsYamlRoundTrip pins the yaml round-trip for
+// the declarative `buildArgs:` map: a yaml with the field decodes into
+// DeployConfig.BuildArgs and re-marshals into a yaml that still carries
+// the key. Strict KnownFields(true) decoding must accept it (Issue 50
+// regression: an unknown top-level key fails the deploy entirely).
+// Acceptance criterion #1 on objective 40 / story 60.
+func TestDeployConfig_BuildArgsYamlRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runos.yaml")
+	input := []byte(`app: web
+port: 3000
+buildArgs:
+  NEXT_PUBLIC_API_BASE_URL: https://api.staging.acme.com
+  NEXT_PUBLIC_API_PORT: "443"
+  NODE_ENV: production
+`)
+	if err := os.WriteFile(path, input, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	wantArgs := map[string]string{
+		"NEXT_PUBLIC_API_BASE_URL": "https://api.staging.acme.com",
+		"NEXT_PUBLIC_API_PORT":     "443",
+		"NODE_ENV":                 "production",
+	}
+	if !reflect.DeepEqual(cfg.BuildArgs, wantArgs) {
+		t.Errorf("BuildArgs after LoadConfig = %#v, want %#v", cfg.BuildArgs, wantArgs)
+	}
+
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"buildArgs:",
+		"NEXT_PUBLIC_API_BASE_URL: https://api.staging.acme.com",
+		"NODE_ENV: production",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("re-marshaled yaml missing %q\n---\n%s", want, got)
+		}
+	}
+
+	// And re-load it once more to confirm the round-trip is stable
+	// across two passes (catches issues where SaveConfig emits a key
+	// that LoadConfig then rejects under KnownFields(true)).
+	cfg2, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig after SaveConfig: %v", err)
+	}
+	if !reflect.DeepEqual(cfg2.BuildArgs, wantArgs) {
+		t.Errorf("BuildArgs after second LoadConfig = %#v, want %#v", cfg2.BuildArgs, wantArgs)
+	}
+}
+
+// TestDeployConfig_BuildArgsCliWireShape pins the deploy request body
+// shape: the yaml's `buildArgs:` map and the CLI flag list ship as two
+// SEPARATE fields (`buildArgs` and `buildArgsCli`); the CLI does NOT
+// pre-merge them. Conductor (story 59) reads from `buildArgsCli`, not
+// `buildArgs`, for the CLI-flag entries. The BuildArgsCli field is
+// suppressed from the local yaml so a SaveConfig doesn't leak flag
+// values into a committed file. Argless deploys omit both fields.
+func TestDeployConfig_BuildArgsCliWireShape(t *testing.T) {
+	t.Run("both populated marshals to two distinct JSON fields", func(t *testing.T) {
+		cfg := &DeployConfig{
+			App:       "web",
+			BuildArgs: map[string]string{"NODE_ENV": "production"},
+			BuildArgsCli: []BuildArgCliEntry{
+				{Key: "NEXT_PUBLIC_APP_VERSION", Value: "1.2.3"},
+			},
+		}
+		blob, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			t.Fatalf("unmarshal probe: %v", err)
+		}
+		if _, ok := raw["buildArgs"]; !ok {
+			t.Errorf("wire body missing `buildArgs`; got keys %v", keysOf(raw))
+		}
+		if _, ok := raw["buildArgsCli"]; !ok {
+			t.Errorf("wire body missing `buildArgsCli`; got keys %v", keysOf(raw))
+		}
+		// Confirm CLI entries serialize as [{key, value}].
+		var entries []BuildArgCliEntry
+		if err := json.Unmarshal(raw["buildArgsCli"], &entries); err != nil {
+			t.Fatalf("buildArgsCli payload not a list of {key,value}: %v\n%s", err, raw["buildArgsCli"])
+		}
+		if len(entries) != 1 || entries[0].Key != "NEXT_PUBLIC_APP_VERSION" || entries[0].Value != "1.2.3" {
+			t.Errorf("buildArgsCli payload = %+v, want one entry NEXT_PUBLIC_APP_VERSION=1.2.3", entries)
+		}
+	})
+
+	t.Run("argless deploy omits both fields (omitempty)", func(t *testing.T) {
+		cfg := &DeployConfig{App: "web"}
+		blob, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal: %v", err)
+		}
+		s := string(blob)
+		if strings.Contains(s, "buildArgs") {
+			t.Errorf("argless wire body must omit buildArgs/buildArgsCli; got: %s", s)
+		}
+	})
+
+	t.Run("BuildArgsCli never lands in the yaml", func(t *testing.T) {
+		cfg := &DeployConfig{
+			App: "web",
+			BuildArgsCli: []BuildArgCliEntry{
+				{Key: "NEXT_PUBLIC_APP_VERSION", Value: "1.2.3"},
+			},
+		}
+		out, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("yaml.Marshal: %v", err)
+		}
+		if strings.Contains(string(out), "buildArgsCli") {
+			t.Errorf("BuildArgsCli must not appear in yaml; got:\n%s", out)
+		}
+	})
+}
+
+func keysOf(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestDeployConfig_SourceDirRoundTrip(t *testing.T) {
 	t.Run("set sourceDir round-trips", func(t *testing.T) {
 		cfg := &DeployConfig{App: "web", SourceDir: ".."}

@@ -102,6 +102,14 @@ type PulledApp struct {
 	// the field absent from the pulled yaml in that case.
 	DeploymentStrategy string `yaml:"deploymentStrategy,omitempty"`
 
+	// BuildArgs mirrors DeployConfig.BuildArgs for the apps_pull
+	// round-trip. Populated from the apps/:id response when conductor
+	// surfaces a non-empty `buildArgs` map; empty otherwise (omitempty
+	// drops the field from the pulled yaml). Forward-compatible: if the
+	// server response does not yet include the key, the projection
+	// leaves the field nil and apps_pull continues to behave as today.
+	BuildArgs map[string]string `yaml:"buildArgs,omitempty"`
+
 	// SecretFiles is intentionally omitted from the yaml when empty. A
 	// present-but-empty `secretFiles: []` in the file is authoritative and
 	// would mean "no secret files" on a future up-sync, while omission
@@ -439,7 +447,47 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 		p.DeploymentStrategy = strat
 	}
 
+	// BuildArgs projects the server's `buildArgs` map (when present) into
+	// the pulled yaml so the declarative source-of-truth round-trips
+	// through `apps pull` -> edit -> `runos deploy`. Forward-compatible:
+	// missing key or non-map value leaves p.BuildArgs nil, which
+	// omitempty drops from the pulled yaml.
+	if rawBA, ok := raw["buildArgs"].(map[string]any); ok && len(rawBA) > 0 {
+		out := make(map[string]string, len(rawBA))
+		for k, v := range rawBA {
+			switch tv := v.(type) {
+			case string:
+				out[k] = tv
+			case bool:
+				if tv {
+					out[k] = "true"
+				} else {
+					out[k] = "false"
+				}
+			case float64:
+				out[k] = trimFloat(tv)
+			case int:
+				out[k] = fmt.Sprintf("%d", tv)
+			case int64:
+				out[k] = fmt.Sprintf("%d", tv)
+			}
+		}
+		if len(out) > 0 {
+			p.BuildArgs = out
+		}
+	}
+
 	return p
+}
+
+// trimFloat formats a JSON-decoded numeric build-arg value as the
+// minimal string a user would have written by hand. Whole numbers lose
+// the trailing ".0" (`%g` handles this naturally); fractional values
+// keep their full precision. Used by BuildPulledApp so a server
+// response carrying `buildArgs: {PORT: 443}` round-trips to `PORT:
+// "443"` rather than `PORT: "443.000000"`.
+func trimFloat(v float64) string {
+	return fmt.Sprintf("%g", v)
 }
 
 func stringOr(m map[string]any, key string) string {

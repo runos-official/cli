@@ -672,7 +672,9 @@ Pre-deploy drift gate (CLI-deploy only): when the yaml has id/cid/aid set, deplo
 
 LEGACY YAML MIGRATION (CLI-deploy only): when the deploy refusal output contains "deprecated field names" or "deprecated fields (port:/domain:/standardHttps:)", the user's yaml uses the legacy schema (top-level port:/standardHttps:/domain: instead of servicePortMappings:[{port,standardHttps,domains:[{fqdn,enableCloudflareProxy}]}]). DO NOT recommend force=true in this case, forcing keeps the user on the legacy shape and the same drift returns on every deploy. Instead, recommend they run "runos apps pull <yaml-path> --force" (which rewrites the local file from the canonical server state), then re-call this deploy tool. Migration is one-time per yaml.
 
-VCS deploys with an unchanged sha are near-instant: the orchestration short-circuits the build when the image is already in Harbor and only runs manifest reconcile + rollout watch. Use this to apply config drift after editing the yaml without a rebuild: edit yaml, commit, push, deploy with the new sha.`,
+VCS deploys with an unchanged sha are near-instant: the orchestration short-circuits the build when the image is already in Harbor and only runs manifest reconcile + rollout watch. Use this to apply config drift after editing the yaml without a rebuild: edit yaml, commit, push, deploy with the new sha.
+
+DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the build_arg array to set Docker build args on the image build (most acutely Next.js bundles baking NEXT_PUBLIC_* values). Build args also accept a declarative source in runos.yaml under "buildArgs:" (committed, per-environment). Precedence: --build-arg > runos.yaml buildArgs. Conductor merges and forwards to BuildKit server-side; the CLI does NOT merge. Duplicate keys within build_arg are rejected with a clear error before any API call. Keys must match the Docker ARG name regex (^[A-Za-z_][A-Za-z0-9_]*$). Undeclared ARGs in the Dockerfile are ignored (no-op, safe). Values are plaintext; do not put secrets here.`,
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -701,6 +703,11 @@ VCS deploys with an unchanged sha are near-instant: the orchestration short-circ
 							Type:        "boolean",
 							Description: "CLI-deploy only. Bypass the pre-deploy drift gate and overwrite server state with the local version. Only set this after the user has reviewed the drift and explicitly chosen to proceed. DO NOT set this when the gate output mentions deprecated/legacy fields, recommend `apps_pull <yaml> force=true` to migrate first.",
 							Default:     false,
+						},
+						"build_arg": {
+							Type:        "array",
+							Description: "Docker build args as KEY=VALUE strings (repeatable, applies to both deployTypes). Merged server-side with runos.yaml `buildArgs:`; --build-arg wins. Duplicate keys rejected. Keys must match the Docker ARG name regex (^[A-Za-z_][A-Za-z0-9_]*$). Values are plaintext, do not pass secrets here.",
+							Items:       &Property{Type: "string"},
 						},
 					},
 				},

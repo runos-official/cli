@@ -415,6 +415,20 @@ func buildDeployArgs(args map[string]any) []string {
 	if boolArg(args, "force") {
 		out = append(out, "--force")
 	}
+	// build_arg: array of KEY=VALUE strings, repeatable. Forwarded to
+	// the CLI subprocess as one --build-arg per entry; the CLI's
+	// internal/buildargs.Parse owns shape/name/dup-key validation, so
+	// invalid entries surface with the same error here as they would
+	// at the terminal. Non-string entries are skipped silently (the
+	// MCP schema declares `items: string`, so a non-string in the
+	// array is malformed input on the caller's side).
+	if raw, ok := args["build_arg"].([]any); ok {
+		for _, entry := range raw {
+			if s, ok := entry.(string); ok && s != "" {
+				out = append(out, "--build-arg", s)
+			}
+		}
+	}
 	return out
 }
 

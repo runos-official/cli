@@ -99,3 +99,11 @@ Where MCP wrappers translate a process's exit code (e.g. drift-as-error → succ
 - If a test starts failing because the underlying behaviour legitimately changed, **update the test** to match the new contract.
 - If you change a manifest's allowed-fields list and a sync test breaks, that's the test doing its job — update the fakeManifest to match.
 - If you find yourself writing a long mock setup, stop and ask: would lifting the logic out into a pure helper be cheaper? Almost always yes.
+
+## Regression tests by fix
+
+Running list of regression tests pinned to a specific bug or feature contract. New entries land at the bottom.
+
+| Fix / contract | Test(s) | What it pins |
+|---|---|---|
+| Objective 40 / story 60: Docker build args on `runos deploy` | `internal/buildargs.TestParse_*`, `internal/buildargs.TestIsValidArgName`, `internal/deploy.TestDeployConfig_BuildArgsYamlRoundTrip`, `internal/deploy.TestDeployConfig_BuildArgsCliWireShape`, `internal/deploy.TestDeployVCS_BodyCarriesBuildArgsCli`, `internal/mcp.TestBuildDeployArgs_ForwardsBuildArgArray` (+ siblings) | `--build-arg KEY=VALUE` parsing, ARG-name regex, dup-key rejection, `KEY=VALUE` splits on first `=`, `StringArrayVar` preserves commas in values. Yaml `buildArgs:` round-trips through `LoadConfig`/`SaveConfig` under strict KnownFields decoding. Wire body carries CLI list under `buildArgsCli` and yaml map under `buildArgs` as two distinct fields (CLI does not pre-merge). Argless deploys omit both. VCS deploy POST body extends `{sha, configPath}` with `buildArgsCli`. MCP `build_arg` array forwards as one `--build-arg` per entry. |

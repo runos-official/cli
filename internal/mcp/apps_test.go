@@ -344,6 +344,87 @@ func TestBuildDeployArgs_YamlFileWithCidAndForce(t *testing.T) {
 	}
 }
 
+// TestBuildDeployArgs_ForwardsBuildArgArray pins the MCP -> CLI
+// translation for the new `build_arg` array: one --build-arg flag per
+// entry, preserved in invocation order. Non-string entries are skipped
+// (MCP schema declares items as string; a non-string in the array is
+// malformed input on the caller's side, not silent corruption).
+// Objective 40 / story 60.
+func TestBuildDeployArgs_ForwardsBuildArgArray(t *testing.T) {
+	got := buildDeployArgs(map[string]any{
+		"build_arg": []any{
+			"NEXT_PUBLIC_API_PORT=443",
+			"NODE_ENV=production",
+		},
+	})
+	if !contains(got, "--build-arg") {
+		t.Fatalf("expected --build-arg in argv; got %v", got)
+	}
+	// Count: two flags + two values = four matching positions.
+	var flagCount, val1Idx, val2Idx int
+	for i, s := range got {
+		if s == "--build-arg" {
+			flagCount++
+		}
+		if s == "NEXT_PUBLIC_API_PORT=443" {
+			val1Idx = i
+		}
+		if s == "NODE_ENV=production" {
+			val2Idx = i
+		}
+	}
+	if flagCount != 2 {
+		t.Errorf("--build-arg occurrences = %d, want 2; got %v", flagCount, got)
+	}
+	if val1Idx == 0 || val2Idx == 0 || val1Idx > val2Idx {
+		t.Errorf("build_arg values out of order or missing; got %v (val1=%d val2=%d)", got, val1Idx, val2Idx)
+	}
+}
+
+func TestBuildDeployArgs_BuildArgAbsentOrEmpty(t *testing.T) {
+	for _, args := range []map[string]any{
+		{},
+		{"build_arg": nil},
+		{"build_arg": []any{}},
+		{"build_arg": "not-an-array"}, // wrong type, must not propagate
+	} {
+		got := buildDeployArgs(args)
+		if contains(got, "--build-arg") {
+			t.Errorf("--build-arg should be absent for args %v; got %v", args, got)
+		}
+	}
+}
+
+func TestBuildDeployArgs_BuildArgSkipsNonStringEntries(t *testing.T) {
+	// MCP schema declares items: string. Non-string entries from a
+	// misbehaving caller are silently dropped here; the CLI's
+	// internal/buildargs.Parse would in any case reject malformed shape
+	// downstream. Pinned so a future "be tolerant" refactor can't
+	// turn a 42 into "42" implicitly.
+	got := buildDeployArgs(map[string]any{
+		"build_arg": []any{
+			"FOO=ok",
+			42, // dropped
+			"",
+			"BAR=ok",
+		},
+	})
+	matches := 0
+	for _, s := range got {
+		if s == "FOO=ok" || s == "BAR=ok" {
+			matches++
+		}
+	}
+	if matches != 2 {
+		t.Errorf("expected FOO=ok and BAR=ok to survive; got %v", got)
+	}
+	for _, s := range got {
+		if s == "42" || s == "" {
+			t.Errorf("non-string entry leaked into argv: %v", got)
+		}
+	}
+}
+
 func TestBuildDeployArgs_NoForceWhenFalseOrAbsent(t *testing.T) {
 	cases := []map[string]any{
 		{},

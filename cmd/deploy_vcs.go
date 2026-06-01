@@ -112,7 +112,7 @@ func resolveVcsConfigPath(cfg *deploy.DeployConfig, configFileAbs string) string
 // Sibling to the CLI-deploy code in deploy.go: the two share the verb name
 // but no downstream logic. runDeployVCS is dispatched from runDeploy when
 // the resolved app's deployType is 'vcs'.
-func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput bool) error {
+func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput bool, buildArgsCli []deploy.BuildArgCliEntry) error {
 	// Under --json, every human-readable line (preamble, configPath note,
 	// "Deployment initiated", follow progress, network-access tail) goes
 	// to stderr so stdout stays pure JSON for `jq` / MCP consumers. The
@@ -184,7 +184,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	// banner that misleadingly suggests the deploy is in progress. Banner
 	// now prints AFTER the API 2xx. (Under --json it routes to stderr
 	// regardless so stdout stays pure JSON.)
-	resp, err := svc.DeployVCS(appID, sha, configPath)
+	resp, err := svc.DeployVCS(appID, sha, configPath, buildArgsCli)
 	if err != nil {
 		if inGitHubActions {
 			fmt.Printf("::error::Failed to trigger deploy: %v\n", err)
