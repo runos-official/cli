@@ -492,6 +492,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// Special handling for deploy (calls runos deploy subprocess)
 	if params.Name == "deploy" {
 		result, err = s.handleDeploy(params.Arguments)
+	} else if isStaticRunTool(params.Name) {
+		result, err = s.handleRun(params.Arguments)
 	} else if isStaticAppsTool(params.Name) {
 		// Static apps subcommands (pull, diff, sync, list-previous-uploads)
 		// are not in the manifest; they orchestrate local filesystem
@@ -797,6 +799,11 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 	// Append jobs_follow — long-poll streaming until terminal state,
 	// shape the manifest dispatcher doesn't model.
 	tools = append(tools, staticJobsTools(s.category)...)
+	// Append `run` — blocks streaming container output and exits with
+	// the container's real exit code; a shape the manifest's one-call
+	// dispatcher can't model. Only surfaces under sensitive_write
+	// since it mutates cluster state.
+	tools = append(tools, staticRunTools(s.category)...)
 
 	return tools
 }

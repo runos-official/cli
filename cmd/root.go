@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -117,9 +118,17 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-// Execute runs the root command and exits with code 1 on error.
+// Execute runs the root command and exits with the appropriate code:
+// 0 on success, the wrapped ExitCode() on errors that carry one
+// (e.g. `runos run` propagating a container's real exit code), or 1
+// otherwise. The ExitCode() unwrap lets commands signal a specific
+// non-zero code without bypassing cobra's error-formatting flow.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		var ec interface{ ExitCode() int }
+		if errors.As(err, &ec) {
+			os.Exit(ec.ExitCode())
+		}
 		os.Exit(1)
 	}
 }
@@ -141,6 +150,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(followCmd)
 	rootCmd.AddCommand(deployCmd)
+	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(pullCmd)
 	rootCmd.AddCommand(manifestCmd)
 	rootCmd.AddCommand(statusCmd)

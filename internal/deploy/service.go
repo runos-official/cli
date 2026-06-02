@@ -514,6 +514,75 @@ func (s *Service) DeployVCS(appID, sha, configPath string, buildArgsCli []BuildA
 	return &result, nil
 }
 
+// RunResponse is what POST /apps/:id/run returns (202 + jobId, osid).
+// The orchestration is async; the CLI then follows the job via the
+// standard jobs endpoints to stream logs and read the final exit code
+// from jobs.result.
+type RunResponse struct {
+	JobID string `json:"jobId"`
+	OSID  string `json:"osid"`
+}
+
+// Run triggers a one-off `runos run` against a VCS-deployed app. The
+// conductor preflights deployType=vcs, ensures the image@SHA exists in
+// Harbor (build-on-demand short-circuit), applies the app's namespace
+// env/secrets if missing, dispatches a one-shot Kubernetes Job via the
+// cluster agent with the given command + timeout, and persists an audit
+// record. Returns 202 + jobId + osid; the orchestration is async.
+//
+// timeoutSeconds=0 lets the conductor pick its default (1800s as of
+// MANIFEST_VERSION 28.14.0); positive values are forwarded verbatim and
+// surfaced as activeDeadlineSeconds on the Job. Conductor caps at 7200s
+// and rejects malformed values; the CLI lets the server own those
+// limits so this surface stays in lockstep with the API contract.
+//
+// Returns a typed *APIError on non-2xx so callers can branch on 409
+// (already in flight) and 400 (non-VCS app, malformed body) without
+// string-matching the message body.
+func (s *Service) Run(appID, sha string, command []string, timeoutSeconds int) (*RunResponse, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/run", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+
+	bodyMap := map[string]any{
+		"sha":     sha,
+		"command": command,
+	}
+	if timeoutSeconds > 0 {
+		bodyMap["timeoutSeconds"] = timeoutSeconds
+	}
+	jsonBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
+	}
+
+	var result RunResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
+
 // FindAppByName searches for an app by name in the cluster
 func (s *Service) FindAppByName(appName string) (*AppInfo, error) {
 	// Endpoint: /:aid/:cid/apps

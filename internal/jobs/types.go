@@ -10,6 +10,36 @@ type JobStatus struct {
 	Progress    string `json:"progress"`
 	CurrentStep string `json:"currentStep"`
 	Error       string `json:"error,omitempty"`
+	// RawResult is the conductor's `result` field as raw JSON. Decoded
+	// per-job-type by the caller (e.g. `runos run` reads { exitCode,
+	// durationMs, imageTag } from app.run jobs to propagate the
+	// container's real exit code). Stays as json.RawMessage so future
+	// job types can carry their own result shapes without touching this
+	// struct.
+	RawResult json.RawMessage `json:"result,omitempty"`
+}
+
+// RunResult is the shape of jobs.result for type=app.run jobs.
+// exitCode is the container's real terminated exit code (0 on success,
+// non-zero on failure, 124 on timeout per the cluster-agent contract).
+type RunResult struct {
+	ExitCode    int    `json:"exitCode"`
+	DurationMs  int64  `json:"durationMs,omitempty"`
+	ImageTag    string `json:"imageTag,omitempty"`
+}
+
+// RunResult parses RawResult as an app.run result envelope. Returns
+// (nil, nil) when no result is set yet (job still in flight), or a
+// parse error wrapped with context.
+func (j *JobStatus) RunResult() (*RunResult, error) {
+	if len(j.RawResult) == 0 {
+		return nil, nil
+	}
+	var r RunResult
+	if err := json.Unmarshal(j.RawResult, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // WorkItem represents a single step in a job's execution pipeline.

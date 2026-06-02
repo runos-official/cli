@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.0
+
+Adds `runos run`, a new top-level verb for executing a one-off task in the cluster against a VCS app's image. Install via `https://get.runos.com/cli.sh?release=v1.2.0`.
+
+### New
+
+- **`runos run`**: sibling to `runos deploy`. Where deploy is build then rollout, run is build then execute. The typical use is pre-rollout work (DB migrations, seeds, backfills) that today still depends on `kubectl exec` and CI-level cluster credentials. The canonical CI shape is two ordered steps, `runos run ... scripts/release.sh` then `runos deploy ... --sha <same>`: both verbs are keyed on the commit SHA so the second one reuses the image already in Harbor and only does the rollout.
+  - **Two invocation shapes.** CI: `runos run --app <id> --sha <sha> --cid <cid> [--] <script-or-command>` (no yaml on disk). Laptop: `runos run [--] <script-or-command>` (loads `runos.yaml` from cwd, defaults `--sha` to git HEAD with a dirty-tree refusal unless `--allow-dirty`, and resolves `--cid` via the same three-source order as deploy).
+  - **VCS-only.** CLI-deploy (tarball) apps are refused locally before any conductor call; they have no meaningful commit SHA for the build-on-demand short-circuit.
+  - **`--timeout` flag.** Accepts a Go duration (e.g. `30m`, `1h`). The conductor enforces a 7200s hard cap and a 1800s default when omitted. A timeout kill exits non-zero.
+  - **Exit-code propagation.** The CLI exits with the container's real exit code: a non-zero command exit becomes a non-zero CLI exit so a CI step gating on the run will fail when the command fails. The job result's `exitCode` field is the source of truth.
+  - **`--json` flag.** Mirrors deploy's contract: the streamed progress routes to stderr, and stdout carries a single JSON envelope (`jobId`, `osid`, `appId`, `sha`, `status`, `exitCode`) at the end for `jq`-driven CI gates.
+  - **MCP**: a new `run` tool is registered under the `sensitive_write` category. Accepts `app`, `sha`, `cid`, `command` (array), and `timeout`. The subprocess blocks until terminal state and returns the streamed output plus exit code in one text payload; a 60-minute outer ceiling fires past the conductor's hard cap.
+
 ## v1.1.0
 
 Adds Docker build-time arguments to `runos deploy`. Install via `https://get.runos.com/cli.sh?release=v1.1.0`.
