@@ -163,7 +163,7 @@ Both sources are managed independently of `runos deploy --sha`. Set them via:
 
 The verb is fully manifest-driven (no static cobra code in this repo, no MCP shim). After the conductor side ships, `runos manifest update` picks up the entry and `runos services postgresql adopt-user --help` renders.
 
-The companion piece is the discrete-field `requires.env` injection: an app's `requires.<alias>.env` map can route individual Postgres credential fields to arbitrary env-var names, not just the legacy single `url: DATABASE_URL` shape. Supported field keys: `url`, `host`, `port`, `user`, `password`, `database`. Note `user`, not `username`; the adopt-user verb's `--username` flag is unrelated to the requires.env key.
+The companion piece is the discrete-field `requires.env` injection: an app's `requires.<alias>.env` map can route individual Postgres credential fields to arbitrary env-var names, not just the legacy single `url: DATABASE_URL` shape. Supported field keys: `url`, `host`, `port`, `username`, `password`, `database`. `user` is still accepted as a back-compat alias for `username` (the conductor's generateEnvVars handler accepts both); new yamls should prefer `username` for parity with the adopt-user verb's `--username` flag and the rest of the credential vocabulary.
 
 ```yaml
 requires:
@@ -177,7 +177,7 @@ requires:
       host:     POSTGRES_SERVER
       port:     POSTGRES_PORT
       database: POSTGRES_DB
-      user:     POSTGRES_USER
+      username: POSTGRES_USER
       password: POSTGRES_PASSWORD
       url:      DATABASE_URL
 ```

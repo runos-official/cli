@@ -83,10 +83,10 @@ func TestFindServerInjectedEnvCollisions(t *testing.T) {
 			},
 		},
 		{
-			name: "discrete-field requires.env: every field key produces a distinct collision",
+			name: "discrete-field requires.env (username preferred): every field key produces a distinct collision",
 			// Objective 42 regression: the conductor's discrete-field
 			// requires.env injection lets an app map host/port/database/
-			// user/password/url to arbitrary env names (GrowthCo's
+			// username/password/url to arbitrary env names (GrowthCo's
 			// adopt-user + link path). FindServerInjectedEnvCollisions
 			// iterates the env map field-key-agnostically; a future
 			// refactor that tightened the iteration to legacy url-only
@@ -107,7 +107,7 @@ func TestFindServerInjectedEnvCollisions(t *testing.T) {
 					"host":     "POSTGRES_SERVER",
 					"port":     "POSTGRES_PORT",
 					"database": "POSTGRES_DB",
-					"user":     "POSTGRES_USER",
+					"username": "POSTGRES_USER",
 					"password": "POSTGRES_PASSWORD",
 					"url":      "DATABASE_URL",
 				}},
@@ -118,7 +118,34 @@ func TestFindServerInjectedEnvCollisions(t *testing.T) {
 				{EnvVar: "POSTGRES_PASSWORD", Alias: "growthco-db", Field: "password"},
 				{EnvVar: "POSTGRES_PORT", Alias: "growthco-db", Field: "port"},
 				{EnvVar: "POSTGRES_SERVER", Alias: "growthco-db", Field: "host"},
-				{EnvVar: "POSTGRES_USER", Alias: "growthco-db", Field: "user"},
+				{EnvVar: "POSTGRES_USER", Alias: "growthco-db", Field: "username"},
+			},
+		},
+		{
+			name: "discrete-field requires.env (user back-compat alias): legacy yamls still collide identically",
+			// The human reversed the original "leave naming as-is"
+			// decision: requires.env now accepts BOTH username (preferred)
+			// and user (legacy alias) as the discrete-field key. The CLI
+			// iteration treats either as just another field name — the
+			// collision is reported with whatever key the yaml used. Pin
+			// both shapes so a future refactor that drops `user` is
+			// caught at test time.
+			local: map[string]string{
+				"POSTGRES_USER":     "hand-authored",
+				"POSTGRES_PASSWORD": "hand-authored",
+				"DATABASE_URL":      "postgresql://hand-authored",
+			},
+			requires: map[string]ServiceRequirement{
+				"legacy-db": {Env: map[string]string{
+					"user":     "POSTGRES_USER",
+					"password": "POSTGRES_PASSWORD",
+					"url":      "DATABASE_URL",
+				}},
+			},
+			want: []ServerInjectedEnvCollision{
+				{EnvVar: "DATABASE_URL", Alias: "legacy-db", Field: "url"},
+				{EnvVar: "POSTGRES_PASSWORD", Alias: "legacy-db", Field: "password"},
+				{EnvVar: "POSTGRES_USER", Alias: "legacy-db", Field: "user"},
 			},
 		},
 		{
@@ -218,7 +245,7 @@ func TestFilterPlatformInjectedEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "discrete-field requires.env: every injected name drops out",
+			name: "discrete-field requires.env (username preferred): every injected name drops out",
 			// Objective 42 regression: when the adopted app's
 			// requires.env maps the full discrete-field set, all six
 			// platform-injected names must drop out of the comparison.
@@ -238,9 +265,31 @@ func TestFilterPlatformInjectedEnv(t *testing.T) {
 					"host":     "POSTGRES_SERVER",
 					"port":     "POSTGRES_PORT",
 					"database": "POSTGRES_DB",
-					"user":     "POSTGRES_USER",
+					"username": "POSTGRES_USER",
 					"password": "POSTGRES_PASSWORD",
 					"url":      "DATABASE_URL",
+				}},
+			},
+			want: map[string]string{
+				"USER_TOKEN": "user-set",
+			},
+		},
+		{
+			name: "discrete-field requires.env (user back-compat alias): the legacy key drops out identically",
+			// Pin the back-compat path: a yaml authored against the
+			// pre-scope-change vocabulary using `user:` instead of
+			// `username:` must still produce the same strip-out, since
+			// the right-hand side env name is what the conductor will
+			// inject either way.
+			serverEnv: map[string]string{
+				"POSTGRES_USER": "growthco_sor",
+				"DATABASE_URL":  "postgresql://managed",
+				"USER_TOKEN":    "user-set",
+			},
+			requires: map[string]ServiceRequirement{
+				"legacy-db": {Env: map[string]string{
+					"user": "POSTGRES_USER",
+					"url":  "DATABASE_URL",
 				}},
 			},
 			want: map[string]string{
