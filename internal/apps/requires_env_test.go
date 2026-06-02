@@ -83,6 +83,45 @@ func TestFindServerInjectedEnvCollisions(t *testing.T) {
 			},
 		},
 		{
+			name: "discrete-field requires.env: every field key produces a distinct collision",
+			// Objective 42 regression: the conductor's discrete-field
+			// requires.env injection lets an app map host/port/database/
+			// user/password/url to arbitrary env names (GrowthCo's
+			// adopt-user + link path). FindServerInjectedEnvCollisions
+			// iterates the env map field-key-agnostically; a future
+			// refactor that tightened the iteration to legacy url-only
+			// would silently lose discrete-field collision detection
+			// and the user would re-acquire the I3-E false-positive
+			// drift gate for the non-url keys.
+			local: map[string]string{
+				"POSTGRES_SERVER":   "hand-authored.example.com",
+				"POSTGRES_PORT":     "5433",
+				"POSTGRES_DB":       "old_db_name",
+				"POSTGRES_USER":     "hand-authored",
+				"POSTGRES_PASSWORD": "hand-authored",
+				"DATABASE_URL":      "postgresql://hand-authored",
+				"LOG_LEVEL":         "info",
+			},
+			requires: map[string]ServiceRequirement{
+				"growthco-db": {Env: map[string]string{
+					"host":     "POSTGRES_SERVER",
+					"port":     "POSTGRES_PORT",
+					"database": "POSTGRES_DB",
+					"user":     "POSTGRES_USER",
+					"password": "POSTGRES_PASSWORD",
+					"url":      "DATABASE_URL",
+				}},
+			},
+			want: []ServerInjectedEnvCollision{
+				{EnvVar: "DATABASE_URL", Alias: "growthco-db", Field: "url"},
+				{EnvVar: "POSTGRES_DB", Alias: "growthco-db", Field: "database"},
+				{EnvVar: "POSTGRES_PASSWORD", Alias: "growthco-db", Field: "password"},
+				{EnvVar: "POSTGRES_PORT", Alias: "growthco-db", Field: "port"},
+				{EnvVar: "POSTGRES_SERVER", Alias: "growthco-db", Field: "host"},
+				{EnvVar: "POSTGRES_USER", Alias: "growthco-db", Field: "user"},
+			},
+		},
+		{
 			name: "empty env name on requires entry is ignored",
 			// A requires entry with no env mapping isn't claiming any
 			// var; never flag it as a collision even if the local env
@@ -176,6 +215,36 @@ func TestFilterPlatformInjectedEnv(t *testing.T) {
 			want: map[string]string{
 				"DATABASE_URL": "postgresql://...",
 				"USER_TOKEN":   "user-set",
+			},
+		},
+		{
+			name: "discrete-field requires.env: every injected name drops out",
+			// Objective 42 regression: when the adopted app's
+			// requires.env maps the full discrete-field set, all six
+			// platform-injected names must drop out of the comparison.
+			// Locks down today's field-key-agnostic iteration so a
+			// future refactor can't silently tighten to url-only.
+			serverEnv: map[string]string{
+				"POSTGRES_SERVER":   "myosid-rw.mycluster.svc",
+				"POSTGRES_PORT":     "5432",
+				"POSTGRES_DB":       "growthco_sor",
+				"POSTGRES_USER":     "growthco_sor",
+				"POSTGRES_PASSWORD": "managed-secret",
+				"DATABASE_URL":      "postgresql://managed",
+				"USER_TOKEN":        "user-set",
+			},
+			requires: map[string]ServiceRequirement{
+				"growthco-db": {Env: map[string]string{
+					"host":     "POSTGRES_SERVER",
+					"port":     "POSTGRES_PORT",
+					"database": "POSTGRES_DB",
+					"user":     "POSTGRES_USER",
+					"password": "POSTGRES_PASSWORD",
+					"url":      "DATABASE_URL",
+				}},
+			},
+			want: map[string]string{
+				"USER_TOKEN": "user-set",
 			},
 		},
 		{

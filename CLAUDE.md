@@ -157,6 +157,35 @@ Both sources are managed independently of `runos deploy --sha`. Set them via:
 
 `runos deploy --sha <sha>` does NOT touch either source (intentionally — `.env` isn't committed; `.config.env` is, but env state is conceptually orthogonal to image deploys). The conductor's `deploy.vcs` orchestration reads both the existing Secret and the existing ConfigMap on its apply step and round-trips them, so env vars survive every VCS deploy. CI deploys (no laptop, no env files on the runner) just rebuild what's already on the server.
 
+## Postgres adopt-user and discrete-field requires.env
+
+`runos services postgresql adopt-user --id <svc> --cid <cid> --username <u> --database <db> (--rotate-password | --password <specific>)` brings an existing Postgres role under RunOS management. Sibling to `create-database`, distinct verb: where create-database is greenfield, adopt-user takes over a role that already exists (restored, cloned, or migrated). Idempotent. Always reassigns ownership of objects in the target database to the role (tables + sequences + the `public` schema; extensions stay owned by `postgres`). Always ends with a RunOS-managed password (one of `--rotate-password` / `--password` is required; passing both is rejected). Returns credentials once, like create-database; the role then appears in `services postgresql users` tagged owner and credentials are retrievable via `services postgresql user-credentials`.
+
+The verb is fully manifest-driven (no static cobra code in this repo, no MCP shim). After the conductor side ships, `runos manifest update` picks up the entry and `runos services postgresql adopt-user --help` renders.
+
+The companion piece is the discrete-field `requires.env` injection: an app's `requires.<alias>.env` map can route individual Postgres credential fields to arbitrary env-var names, not just the legacy single `url: DATABASE_URL` shape. Supported field keys: `url`, `host`, `port`, `user`, `password`, `database`. Note `user`, not `username`; the adopt-user verb's `--username` flag is unrelated to the requires.env key.
+
+```yaml
+requires:
+  growthco-db:
+    id: myosid
+    type: postgresql
+    config:
+      databaseName: growthco_sor
+      databaseUsername: growthco_sor
+    env:
+      host:     POSTGRES_SERVER
+      port:     POSTGRES_PORT
+      database: POSTGRES_DB
+      user:     POSTGRES_USER
+      password: POSTGRES_PASSWORD
+      url:      DATABASE_URL
+```
+
+`requires.env` is a `map[string]string` in [internal/deploy/config.go](internal/deploy/config.go) `ServiceRequirement.Env` and the consumers in [internal/apps/requires_env.go](internal/apps/requires_env.go) (`FilterPlatformInjectedEnv`, `FindServerInjectedEnvCollisions`) iterate field-key-agnostically, so the discrete-field shape works through the CLI without any code change. The collision-detection / drift-gate filter already pulls every right-hand-side env name into the platform-injected set, so a deploy against an adopted app doesn't trip the I3-E false-positive drift gate for any of the six fields. The regression-test pin lives in [internal/apps/requires_env_test.go](internal/apps/requires_env_test.go).
+
+Linking the adopted instance to the app is the existing `requires:` link-to-existing mechanism (service id + config). `requires:` does NOT auto-invoke adoption on deploy — adoption is an explicit operator pre-step (it mutates object ownership and the password, which must not happen implicitly on every push).
+
 ## MCP integration
 
 The CLI also runs as an MCP server (`runos mcp`). Tools fall into two buckets:

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.0
+
+`runos services postgresql adopt-user` joins the Postgres-service verbs. Take an existing Postgres role under RunOS management in one shot, with the credentials then injectable into an app via `requires:` like any greenfield user. Install via `https://get.runos.com/cli.sh?release=v1.3.0`.
+
+### New
+
+- **`runos services postgresql adopt-user`**: sibling to `create-database`. Where create-database is greenfield, adopt-user takes over an existing role (restored, cloned, or migrated). One verb does it all: ensure role + database exist, reassign object ownership in the target database to the role (tables + sequences + `public` schema; extensions stay owned by `postgres`), set a RunOS-managed password, and register as a managed user so `services postgresql user-credentials` returns the creds and `requires:` injects them into apps. Idempotent. Requires exactly one of `--rotate-password` (generate a managed value) or `--password <specific>` (operator-supplied), so RunOS always ends up holding the password and `requires:` injection always has a complete credential. The verb is manifest-driven and picked up automatically by `runos manifest update`.
+- **Discrete-field `requires.env` injection**: an app's `requires.<alias>.env` map can route individual Postgres credential fields to arbitrary env-var names, not just the legacy single `url: DATABASE_URL` shape. Supported field keys: `url`, `host`, `port`, `user`, `password`, `database`. Note `user`, not `username` (the adopt-user verb's `--username` flag is unrelated). No yaml schema change — the existing `map[string]string` already fits. The drift-gate / collision-detection helpers in `internal/apps/requires_env.go` already iterate field-key-agnostically; new regression-test coverage in `internal/apps/requires_env_test.go` pins this so a future refactor can't accidentally tighten the iteration to a legacy `url`-only shape.
+
 ## v1.2.0
 
 Adds `runos run`, a new top-level verb for executing a one-off task in the cluster against a VCS app's image. Install via `https://get.runos.com/cli.sh?release=v1.2.0`.
