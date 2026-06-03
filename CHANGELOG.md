@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.1
+
+Lets app-scoped manifest commands accept `--app` as an alias for `--id`, matching the hand-coded `deploy` / `apps build` verbs. Install via `https://get.runos.com/cli.sh?release=v1.4.1`.
+
+### Fixes
+
+- **`--app` accepted as an alias for `--id` on app-scoped manifest commands** (foreman #80). `runos deploy` and `runos apps build` both take `--app <id>`, but manifest-driven app commands (`apps run`, `apps show`, `apps logs`, ...) only registered `--id`, so `runos apps run --app <id>` failed with `unknown flag: --app` — a copy-paste trap for CI scripts following the build → run → deploy pattern. The dynacmd flag-normalizer now redirects `--app` to `--id` on app-scoped commands (endpoint contains `/apps/:id` and the primary positional is named `id`). The alias stays off services commands (e.g. `services postgresql show`, where `id` is the service id), so a stray `--app` there still surfaces `unknown flag`. Invisible in `--help`, same precedent as the existing camelCase→kebab and primary-id-alias plumbing.
+
 ## v1.4.0
 
 Adds `runos apps build`, a standalone image-build verb that builds and pushes a VCS app's SHA-keyed image to Harbor without rolling it out. Install via `https://get.runos.com/cli.sh?release=v1.4.0`.
