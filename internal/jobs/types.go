@@ -42,6 +42,33 @@ func (j *JobStatus) RunResult() (*RunResult, error) {
 	return &r, nil
 }
 
+// BuildResult is the shape of jobs.result for type=app.build jobs
+// (conductor objective 43 / story 73). ImageTag is the Harbor tag the
+// build pushed (or would have pushed in the cached case); BuiltAt is
+// an RFC3339 timestamp; DurationMs is orchestration wall time;
+// SkippedBecauseCached is true when Harbor already had the image and
+// fetch/resolve/build steps short-circuited.
+type BuildResult struct {
+	ImageTag             string `json:"imageTag,omitempty"`
+	BuiltAt              string `json:"builtAt,omitempty"`
+	DurationMs           int64  `json:"durationMs,omitempty"`
+	SkippedBecauseCached bool   `json:"skippedBecauseCached"`
+}
+
+// BuildResult parses RawResult as an app.build result envelope. Returns
+// (nil, nil) when no result is set yet (job still in flight), or a
+// parse error wrapped with context. Mirrors RunResult.
+func (j *JobStatus) BuildResult() (*BuildResult, error) {
+	if len(j.RawResult) == 0 {
+		return nil, nil
+	}
+	var r BuildResult
+	if err := json.Unmarshal(j.RawResult, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // WorkItem represents a single step in a job's execution pipeline.
 type WorkItem struct {
 	ID          string          `json:"id"`

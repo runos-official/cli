@@ -410,6 +410,14 @@ type VCSDeployResponse struct {
 	JobID string `json:"jobId"`
 }
 
+// BuildOnlyResponse is what POST /apps/:id/build returns (202 + jobId).
+// The conductor's app.build orchestration is async; the CLI follows the
+// job via the standard jobs endpoints for build progress + final
+// imageTag/skippedBecauseCached/durationMs (foreman objective 43).
+type BuildOnlyResponse struct {
+	JobID string `json:"jobId"`
+}
+
 // GetApp fetches the app details for branching on deployType. Returns the
 // raw HTTP error so callers can distinguish 404 from other failures.
 func (s *Service) GetApp(appID string) (*AppShow, error) {
@@ -508,6 +516,58 @@ func (s *Service) DeployVCS(appID, sha, configPath string, buildArgsCli []BuildA
 	}
 
 	var result VCSDeployResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &result, nil
+}
+
+// BuildOnly triggers a standalone build via POST /apps/:id/build. The
+// conductor's app.build orchestration builds + pushes the SHA-keyed
+// image to Harbor and stops: no rollout, no command run (foreman
+// objective 43, story 73). Body shape mirrors DeployVCS so the
+// argless wire body stays identical when --build-arg is not used.
+//
+// Returns a typed *APIError on non-2xx so callers can branch on 400 /
+// 404 / 409 without string-matching the conductor body.
+func (s *Service) BuildOnly(appID, sha, configPath string, buildArgsCli []BuildArgCliEntry) (*BuildOnlyResponse, error) {
+	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/build", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
+
+	bodyMap := map[string]any{"sha": sha}
+	if configPath != "" {
+		bodyMap["configPath"] = configPath
+	}
+	if len(buildArgsCli) > 0 {
+		bodyMap["buildArgsCli"] = buildArgsCli
+	}
+	jsonBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
+	}
+
+	var result BuildOnlyResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
