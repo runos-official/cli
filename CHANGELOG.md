@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.2
+
+Follow-ups to v1.4.1: surfaces `--app` in `--help` and stops `--command` mangling bareword literals. Install via `https://get.runos.com/cli.sh?release=v1.4.2`.
+
+### Fixes
+
+- **`--app` is now visible in `--help` on app-scoped commands** (foreman #82). v1.4.1 added `--app` as a normalizer redirect to `--id`, but the redirect was invisible in `--help`, so the alias was undiscoverable. It's now a real cobra flag on app-scoped commands (`Application ID (alias for --id; same value)`). Passing both `--id` and `--app` with different values is a pre-network "pass one or the other" error, and the missing-arg hint mentions both flags.
+- **`--command` no longer coerces bareword literals to the wrong JSON type** (foreman #83). `runos apps run --command true` (or `false` / `0` / `1234` / `null`) hit a conductor 400 (`command[0] must be a non-empty string (got boolean)`) because dynacmd JSON-decoded every element of a string-array flag. The array coercer now consults the field's manifest `itemType`: `string`-typed arrays (the `--command` case) pass through verbatim, so numbers, JSON keywords, and JSON-shaped fragments all survive as literal strings on the wire; object/array item types keep their JSON-unwrap behaviour.
+
 ## v1.4.1
 
 Lets app-scoped manifest commands accept `--app` as an alias for `--id`, matching the hand-coded `deploy` / `apps build` verbs. Install via `https://get.runos.com/cli.sh?release=v1.4.1`.
