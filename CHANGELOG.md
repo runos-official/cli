@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.4.0
+
+Adds `runos apps build`, a standalone image-build verb that builds and pushes a VCS app's SHA-keyed image to Harbor without rolling it out. Install via `https://get.runos.com/cli.sh?release=v1.4.0`.
+
+### New
+
+- **`runos apps build`**: builds and pushes a VCS app's image for a given SHA and stops, with no rollout and no command run. Optional and opt-in for clean CI logs; the build-on-demand short-circuit inside `runos run` / `runos deploy` is unchanged, so the canonical CI shape (`apps build` then `run` then `deploy` on the same SHA) reuses the one image already in Harbor.
+  - **Two invocation shapes, copied from `runos run`.** CI: `runos apps build --app <id> --sha <sha> --cid <cid> [--follow]` (no yaml on disk). Laptop: `runos apps build [--follow]` (id from `runos.yaml`, `--sha` defaults to git HEAD with a dirty-tree refusal unless `--allow-dirty`, `--cid` via the same three-source order as deploy).
+  - **VCS-only.** A CLI-deploy app is refused with the same shaped error `runos run` emits, after a server-side `deployType` lookup and before any build POST.
+  - **Fire-and-forget by default, `--follow` to wait.** Without `--follow` the command prints the `jobId` plus a `runos follow` hint and exits 0 the moment the conductor accepts the request. With `--follow` it streams cluster-agent build progress and exits non-zero on build failure so a CI step gates on the build outcome.
+  - **`--build-arg KEY=VALUE` parity with deploy** (repeatable): parsed and validated by `internal/buildargs` and forwarded as `buildArgsCli` in the `POST /apps/:id/build` body, so the SHA-keyed image is byte-identical to one a subsequent `deploy` / `run` builds at the same SHA and args. Argless builds keep the wire body identical to today's deploy/run bodies.
+  - **`--json` envelope on stdout** (progress routes to stderr): `{ jobId, appId, sha, configPath, imageTag?, skippedBecauseCached?, durationMs? }`. The optional fields populate only when `--follow` reaches a terminal state and the conductor's structured job result is present.
+  - **MCP**: a new `apps_build` tool, forwarding `app`, `sha`, `cid`, and `build_arg`.
+
+### Fixes
+
+- **MCP empty-body 2xx responses now emit a valid text content block** (foreman #78). `ContentBlock.Text` carried `json:"text,omitempty"`, so an empty-text success frame marshalled to `{"type":"text"}` with no `text` field, which MCP rejects as an `invalid_union` (conformant clients saw a Zod validation dump even though the call succeeded, e.g. `account api-keys revoke` returning 200 with an empty body). Two-part fix in the shared wrapper so every no-content endpoint behaves at once: drop `omitempty` so empty frames marshal to `{"type":"text","text":""}`, and detect empty/whitespace-only bodies after a 2xx to return a deterministic `"<command> succeeded (<status>)"` string instead of failing `json.Unmarshal` on empty bytes.
+
 ## v1.3.0
 
 `runos services postgresql adopt-user` joins the Postgres-service verbs. Take an existing Postgres role under RunOS management in one shot, with the credentials then injectable into an app via `requires:` like any greenfield user. Install via `https://get.runos.com/cli.sh?release=v1.3.0`.
