@@ -124,9 +124,15 @@ type CallToolResult struct {
 }
 
 // ContentBlock represents a single content block in a tool call result.
+// Text MUST NOT be tagged `omitempty`: the MCP spec requires every text
+// block to carry a string `text` field, and conformant clients reject
+// `{"type":"text"}` with a Zod `invalid_union` error. An empty success
+// frame is emitted as `{"type":"text","text":""}`; the executor turns
+// empty-body 2xx responses into a deterministic success string before
+// wrapping, so this branch should not fire in practice (foreman #78).
 type ContentBlock struct {
 	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Text string `json:"text"`
 }
 
 // minTopicsRead is the number of distinct documentation topics the LLM must

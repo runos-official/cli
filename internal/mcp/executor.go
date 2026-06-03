@@ -190,6 +190,15 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 		return "", fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
+	// Empty-body 2xx (typical for DELETE and other no-content endpoints,
+	// e.g. `account/api-keys/revoke` returning 200 with no payload).
+	// Without this branch the executor would return the empty string and
+	// the MCP wrap would emit a content block with no `text` field,
+	// failing conformant client validation (foreman #78).
+	if isEmptyBody(respBody) {
+		return emptyBodySuccessMessage(cmdDef.Command, resp.Status), nil
+	}
+
 	// Pretty print JSON response
 	var jsonResp any
 	if err := json.Unmarshal(respBody, &jsonResp); err != nil {
@@ -202,6 +211,27 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	}
 
 	return string(pretty), nil
+}
+
+// isEmptyBody reports whether the response body is empty or contains
+// only whitespace. Used by the executor to detect no-content 2xx
+// responses (foreman #78).
+func isEmptyBody(b []byte) bool {
+	return len(bytes.TrimSpace(b)) == 0
+}
+
+// emptyBodySuccessMessage builds the deterministic success string
+// returned by the MCP executor for empty-body 2xx responses, so the
+// resulting text content block carries a meaningful payload instead of
+// an empty string (foreman #78).
+func emptyBodySuccessMessage(command, status string) string {
+	if command == "" {
+		command = "request"
+	}
+	if status == "" {
+		status = "200 OK"
+	}
+	return fmt.Sprintf("%s succeeded (%s)", command, status)
 }
 
 func (e *CommandExecutor) getAuthToken(cfg *config.Config) (string, error) {

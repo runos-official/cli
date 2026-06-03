@@ -251,3 +251,78 @@ func TestBuildBodyStripsClusterNameSuffixFromCID(t *testing.T) {
 		t.Errorf("body[\"integrationId\"] = %q, want %q", got, "int-1")
 	}
 }
+
+// foreman #78 regression: empty-body 2xx responses (e.g. DELETE
+// /account/api-keys/{id}) must surface as a meaningful success string,
+// not "", so the resulting MCP text content block carries a non-empty
+// `text` field and conformant clients accept the frame.
+func TestIsEmptyBody(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"nil", nil, true},
+		{"empty", []byte(""), true},
+		{"whitespace only", []byte("  \n\t "), true},
+		{"json null", []byte("null"), false},
+		{"json object", []byte(`{"ok":true}`), false},
+		{"plain text", []byte("ok"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isEmptyBody(c.in); got != c.want {
+				t.Errorf("isEmptyBody(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// foreman #78 regression: the deterministic success message must
+// always include both the command and the HTTP status text, never
+// empty, so the MCP wrapper never produces a `{"type":"text"}` frame
+// with no `text` field.
+func TestEmptyBodySuccessMessage(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		status  string
+		want    string
+	}{
+		{
+			name:    "revoke 200 OK",
+			command: "account/api-keys/revoke",
+			status:  "200 OK",
+			want:    "account/api-keys/revoke succeeded (200 OK)",
+		},
+		{
+			name:    "204 no content",
+			command: "apps/delete",
+			status:  "204 No Content",
+			want:    "apps/delete succeeded (204 No Content)",
+		},
+		{
+			name:    "empty command falls back",
+			command: "",
+			status:  "200 OK",
+			want:    "request succeeded (200 OK)",
+		},
+		{
+			name:    "empty status falls back",
+			command: "apps/delete",
+			status:  "",
+			want:    "apps/delete succeeded (200 OK)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := emptyBodySuccessMessage(c.command, c.status)
+			if got != c.want {
+				t.Errorf("emptyBodySuccessMessage(%q,%q) = %q, want %q", c.command, c.status, got, c.want)
+			}
+			if got == "" {
+				t.Errorf("emptyBodySuccessMessage must never return empty string")
+			}
+		})
+	}
+}

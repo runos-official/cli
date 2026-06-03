@@ -493,3 +493,41 @@ func TestProjectObjectValue(t *testing.T) {
 		}
 	})
 }
+
+// foreman #78 regression: ContentBlock.Text must NOT carry an
+// `omitempty` JSON tag. The MCP spec requires every text content
+// block to include a `text` field, and conformant clients reject
+// `{"type":"text"}` with an invalid_union error. Empty success
+// frames must marshal to `{"type":"text","text":""}`.
+func TestContentBlockMarshalsTextEvenWhenEmpty(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ContentBlock
+		want string
+	}{
+		{
+			name: "non-empty text",
+			in:   ContentBlock{Type: "text", Text: "API key revoked"},
+			want: `{"type":"text","text":"API key revoked"}`,
+		},
+		{
+			name: "empty text must still emit text field",
+			in:   ContentBlock{Type: "text", Text: ""},
+			want: `{"type":"text","text":""}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := json.Marshal(c.in)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(got) != c.want {
+				t.Errorf("ContentBlock JSON = %s, want %s", got, c.want)
+			}
+			if !strings.Contains(string(got), `"text"`) {
+				t.Errorf("text field omitted from %s; MCP spec requires it", got)
+			}
+		})
+	}
+}
