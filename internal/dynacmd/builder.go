@@ -594,7 +594,16 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	// (notify-keys uses `id` natively so this is a no-op there but stays
 	// consistent).
 	primaryIDAlias := primaryPositionalIDField(cmdDef)
-	cmd.Flags().SetNormalizeFunc(makeFlagNormalizer(primaryIDAlias))
+	// foreman #80: on app-scoped commands (endpoint
+	// /:aid/:cid/apps/:id[/...]), accept `--app` as an alias for the
+	// `id` positional so the natural CLI convention from `runos deploy
+	// --app <id>` and `runos apps build --app <id>` (both hand-coded
+	// with explicit `--app`) also works on the manifest-driven app
+	// commands (`apps run`, `apps show`, `apps logs`, ...). Scoped to
+	// /apps/ endpoints so services/<type>/show (where `id` is a service
+	// id, not an app id) doesn't silently accept `--app`.
+	appAlias := isAppsScopedCommand(cmdDef)
+	cmd.Flags().SetNormalizeFunc(makeFlagNormalizer(primaryIDAlias, appAlias))
 
 	// Add --cid flag for cluster ID (if endpoint uses :cid). The
 	// `cluster-domains/show` command is an exception: its endpoint
@@ -999,20 +1008,55 @@ func makeFlagErrorFunc(accountScoped bool, multiIDFlags []string) func(*cobra.Co
 	}
 }
 
-// makeFlagNormalizer composes the camelCase→kebab normaliser with an
-// optional `id → <primaryID>` alias. When primaryIDAlias is non-empty,
-// any user-typed `--id` / `id` lookup is redirected to that kebab name
-// (e.g. `--job-id` on jobs/show, `--override-id` on apps/overrides/*).
-// Other names fall through to the camelCase→kebab rewrite. pflag accepts
-// exactly one NormalizeFunc per FlagSet, so the combined behaviour ships
-// as a single closure. Regression target: I12-L.
-func makeFlagNormalizer(primaryIDAlias string) func(*pflag.FlagSet, string) pflag.NormalizedName {
+// makeFlagNormalizer composes the camelCase→kebab normaliser with two
+// optional aliases:
+//
+//  1. `id → <primaryID>` when primaryIDAlias is non-empty: any
+//     user-typed `--id` / `id` lookup is redirected to the canonical
+//     kebab name (e.g. `--job-id` on jobs/show, `--override-id` on
+//     apps/overrides/*). Regression target: I12-L.
+//  2. `app → id` when appAlias is true: user-typed `--app`, `--App`,
+//     `--APP` redirects to `id` on commands whose primary positional
+//     IS the app id (`apps/run`, `apps/show`, ...). Foreman #80; lifts
+//     the asymmetry where `runos deploy --app <id>` and `runos apps
+//     build --app <id>` are hand-coded with explicit `--app` but the
+//     manifest-driven apps commands only accept `--id`.
+//
+// Other names fall through to the camelCase→kebab rewrite. pflag
+// accepts exactly one NormalizeFunc per FlagSet, so the combined
+// behaviour ships as a single closure.
+func makeFlagNormalizer(primaryIDAlias string, appAlias bool) func(*pflag.FlagSet, string) pflag.NormalizedName {
 	return func(fs *pflag.FlagSet, name string) pflag.NormalizedName {
 		if primaryIDAlias != "" && (name == "id" || name == "Id" || name == "ID") {
 			return pflag.NormalizedName(primaryIDAlias)
 		}
+		if appAlias && (name == "app" || name == "App" || name == "APP") {
+			return pflag.NormalizedName("id")
+		}
 		return normalizeCamelToKebab(fs, name)
 	}
+}
+
+// isAppsScopedCommand reports whether a manifest command targets an
+// app via the canonical `/apps/:id[/...]` endpoint shape AND its
+// primary positional is named `id` (so accepting `--app` as an alias
+// for `--id` is semantically right). Used by makeFlagNormalizer to
+// gate the `app → id` alias to /apps/ endpoints so a
+// `services/postgresql/show --id <svc>` doesn't silently accept
+// `--app <svc>` and confuse the surface. Foreman #80.
+func isAppsScopedCommand(cmdDef manifest.Command) bool {
+	if !strings.Contains(cmdDef.Endpoint, "/apps/:id") {
+		return false
+	}
+	if cmdDef.Input == nil {
+		return false
+	}
+	for _, field := range cmdDef.Input.Fields {
+		if field.Positional && field.Name == "id" {
+			return true
+		}
+	}
+	return false
 }
 
 // containsUpper reports whether s has any ASCII uppercase rune. Used

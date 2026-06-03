@@ -912,3 +912,138 @@ func TestDisplayPathFor(t *testing.T) {
 		})
 	}
 }
+
+// foreman #80: isAppsScopedCommand must return true ONLY when the
+// endpoint is /apps/:id[/...] AND the primary positional is named `id`.
+// services/<type>/{id}/show endpoints (where `id` is the service id,
+// not an app id) must NOT match, so they don't silently accept `--app`.
+func TestIsAppsScopedCommand(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		want bool
+	}{
+		{
+			name: "apps/run endpoint, id positional",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/apps/:id/run",
+				Input:    &manifest.Input{Fields: []manifest.Field{{Name: "id", Positional: true}}},
+			},
+			want: true,
+		},
+		{
+			name: "apps/show endpoint, id positional",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/apps/:id",
+				Input:    &manifest.Input{Fields: []manifest.Field{{Name: "id", Positional: true}}},
+			},
+			want: true,
+		},
+		{
+			name: "apps/logs endpoint with extra segments",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/apps/:id/logs",
+				Input:    &manifest.Input{Fields: []manifest.Field{{Name: "id", Positional: true}}},
+			},
+			want: true,
+		},
+		{
+			name: "apps/list (no :id) must not match",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/apps",
+				Input:    &manifest.Input{},
+			},
+			want: false,
+		},
+		{
+			name: "services/postgresql/show: /apps/ not in path",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/services/postgresql/:id",
+				Input:    &manifest.Input{Fields: []manifest.Field{{Name: "id", Positional: true}}},
+			},
+			want: false,
+		},
+		{
+			name: "nil Input returns false",
+			cmd:  manifest.Command{Endpoint: "/:aid/:cid/apps/:id"},
+			want: false,
+		},
+		{
+			name: "apps endpoint but id is not positional",
+			cmd: manifest.Command{
+				Endpoint: "/:aid/:cid/apps/:id",
+				Input:    &manifest.Input{Fields: []manifest.Field{{Name: "id"}}},
+			},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isAppsScopedCommand(c.cmd); got != c.want {
+				t.Errorf("isAppsScopedCommand(%+v) = %v, want %v", c.cmd, got, c.want)
+			}
+		})
+	}
+}
+
+// foreman #80: the flag normalizer must redirect `--app` → `id` on
+// app-scoped commands so `runos apps run --app <id>` matches the
+// asymmetry-breaking deploy + apps build verbs. Existing aliases must
+// keep working: primary `--id` (when primaryIDAlias is set) and the
+// camelCase→kebab pass-through.
+func TestMakeFlagNormalizer_AppAlias(t *testing.T) {
+	t.Run("app alias on app-scoped command redirects to id", func(t *testing.T) {
+		n := makeFlagNormalizer("", true)
+		for _, name := range []string{"app", "App", "APP"} {
+			got := string(n(nil, name))
+			if got != "id" {
+				t.Errorf("normalize(%q) = %q, want %q", name, got, "id")
+			}
+		}
+	})
+
+	t.Run("app alias disabled never redirects to id", func(t *testing.T) {
+		n := makeFlagNormalizer("", false)
+		// "app" (lowercase) passes through as-is. "App"/"APP" go through
+		// the existing camelCase→kebab pass-through which lowercases them
+		// to "app" (matching the I9-L precedent). Neither becomes "id":
+		// that's the contract — services/<type>/show MUST NOT silently
+		// accept --app on its service id positional.
+		for _, name := range []string{"app", "App", "APP"} {
+			got := string(n(nil, name))
+			if got == "id" {
+				t.Errorf("normalize(%q) = %q; --app must NOT redirect to id on non-apps-scoped commands", name, got)
+			}
+		}
+	})
+
+	t.Run("primary id alias still wins over app alias", func(t *testing.T) {
+		// jobs/show carries primaryIDAlias=job-id; --id → job-id.
+		n := makeFlagNormalizer("job-id", false)
+		if got := string(n(nil, "id")); got != "job-id" {
+			t.Errorf("--id on jobs/show: normalize = %q, want %q", got, "job-id")
+		}
+	})
+
+	t.Run("app alias and primary id alias coexist on app-scoped commands", func(t *testing.T) {
+		n := makeFlagNormalizer("", true)
+		// Plain --id on apps/run (primaryIDAlias is empty because the
+		// field is just `id`; the addFieldFlags path already registers
+		// `--id` natively, so the normalizer doesn't have to remap it).
+		// What we care about: --app redirects to id, --id is untouched.
+		if got := string(n(nil, "id")); got != "id" {
+			t.Errorf("--id on apps/run: normalize = %q, want %q", got, "id")
+		}
+		if got := string(n(nil, "app")); got != "id" {
+			t.Errorf("--app on apps/run: normalize = %q, want %q", got, "id")
+		}
+	})
+
+	t.Run("camelCase pass-through still works alongside app alias", func(t *testing.T) {
+		n := makeFlagNormalizer("", true)
+		// camelCase → kebab still kicks in for non-aliased names.
+		if got := string(n(nil, "buildArgs")); got != "build-args" {
+			t.Errorf("camelCase pass-through broke: normalize(%q) = %q, want %q", "buildArgs", got, "build-args")
+		}
+	})
+}
