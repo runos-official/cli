@@ -465,6 +465,17 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 								argIndex++
 								continue
 							}
+							// foreman #82: --app is a visible alias for
+							// --id on apps-scoped commands; treat it as
+							// satisfying the positional `id` requirement
+							// here so the missing-arg gate doesn't fire
+							// when the user supplied --app instead of
+							// --id. The executor's conflict-detection
+							// path covers the both-set case.
+							if field.Name == "id" && c.Flags().Lookup("app") != nil && c.Flags().Changed("app") {
+								argIndex++
+								continue
+							}
 							if bodyFileProvidesField(bodyFilePath, field.Name) {
 								argIndex++
 								continue
@@ -477,7 +488,11 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 							if len(field.Enum) > 0 && enumField == nil {
 								enumField = &field
 							}
-							missing = append(missing, fmt.Sprintf("%s (or pass --%s, or include %s: in -f file)", field.Name, flagName, field.Name))
+							hint := fmt.Sprintf("%s (or pass --%s, or include %s: in -f file)", field.Name, flagName, field.Name)
+							if field.Name == "id" && c.Flags().Lookup("app") != nil {
+								hint = fmt.Sprintf("%s (or pass --%s / --app, or include %s: in -f file)", field.Name, flagName, field.Name)
+							}
+							missing = append(missing, hint)
 						}
 						argIndex++
 					}
@@ -594,16 +609,26 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	// (notify-keys uses `id` natively so this is a no-op there but stays
 	// consistent).
 	primaryIDAlias := primaryPositionalIDField(cmdDef)
-	// foreman #80: on app-scoped commands (endpoint
-	// /:aid/:cid/apps/:id[/...]), accept `--app` as an alias for the
-	// `id` positional so the natural CLI convention from `runos deploy
-	// --app <id>` and `runos apps build --app <id>` (both hand-coded
-	// with explicit `--app`) also works on the manifest-driven app
-	// commands (`apps run`, `apps show`, `apps logs`, ...). Scoped to
-	// /apps/ endpoints so services/<type>/show (where `id` is a service
-	// id, not an app id) doesn't silently accept `--app`.
-	appAlias := isAppsScopedCommand(cmdDef)
-	cmd.Flags().SetNormalizeFunc(makeFlagNormalizer(primaryIDAlias, appAlias))
+	cmd.Flags().SetNormalizeFunc(makeFlagNormalizer(primaryIDAlias))
+
+	// foreman #80 / #82: on app-scoped commands (endpoint
+	// /:aid/:cid/apps/:id[/...]), register `--app` as a visible
+	// alias for the `id` positional so the natural CLI convention from
+	// `runos deploy --app <id>` and `runos apps build --app <id>` (both
+	// hand-coded with explicit `--app`) also works on the
+	// manifest-driven app commands (`apps run`, `apps show`,
+	// `apps logs`, ...). Scoped to /apps/:id endpoints so
+	// services/<type>/show (where `id` is a service id, not an app id)
+	// still errors with "unknown flag: --app". Registering as a real
+	// flag (rather than the #80 normalizer-only redirect) makes the
+	// alias visible in `--help`, addressing the #82 follow-up. The
+	// existing `--id` registration in addFieldFlags is untouched, so
+	// `--id` keeps working for back-compat. Conflict resolution (both
+	// flags set with different values) fires in the executor's input
+	// path, not here.
+	if isAppsScopedCommand(cmdDef) {
+		cmd.Flags().String("app", "", "Application ID (alias for --id; same value)")
+	}
 
 	// Add --cid flag for cluster ID (if endpoint uses :cid). The
 	// `cluster-domains/show` command is an exception: its endpoint
@@ -1008,30 +1033,22 @@ func makeFlagErrorFunc(accountScoped bool, multiIDFlags []string) func(*cobra.Co
 	}
 }
 
-// makeFlagNormalizer composes the camelCase→kebab normaliser with two
-// optional aliases:
+// makeFlagNormalizer composes the camelCase→kebab normaliser with an
+// optional `id → <primaryID>` alias. When primaryIDAlias is non-empty,
+// any user-typed `--id` / `id` lookup is redirected to that kebab name
+// (e.g. `--job-id` on jobs/show, `--override-id` on apps/overrides/*).
+// Other names fall through to the camelCase→kebab rewrite. pflag accepts
+// exactly one NormalizeFunc per FlagSet, so the combined behaviour ships
+// as a single closure. Regression target: I12-L.
 //
-//  1. `id → <primaryID>` when primaryIDAlias is non-empty: any
-//     user-typed `--id` / `id` lookup is redirected to the canonical
-//     kebab name (e.g. `--job-id` on jobs/show, `--override-id` on
-//     apps/overrides/*). Regression target: I12-L.
-//  2. `app → id` when appAlias is true: user-typed `--app`, `--App`,
-//     `--APP` redirects to `id` on commands whose primary positional
-//     IS the app id (`apps/run`, `apps/show`, ...). Foreman #80; lifts
-//     the asymmetry where `runos deploy --app <id>` and `runos apps
-//     build --app <id>` are hand-coded with explicit `--app` but the
-//     manifest-driven apps commands only accept `--id`.
-//
-// Other names fall through to the camelCase→kebab rewrite. pflag
-// accepts exactly one NormalizeFunc per FlagSet, so the combined
-// behaviour ships as a single closure.
-func makeFlagNormalizer(primaryIDAlias string, appAlias bool) func(*pflag.FlagSet, string) pflag.NormalizedName {
+// `--app` no longer goes through the normalizer (foreman #82 moved it
+// to a visible flag registered in buildLeafCommand). `--App` / `--APP`
+// still work via the camelCase pass-through, which lowercases them to
+// `app` so cobra resolves to the registered flag.
+func makeFlagNormalizer(primaryIDAlias string) func(*pflag.FlagSet, string) pflag.NormalizedName {
 	return func(fs *pflag.FlagSet, name string) pflag.NormalizedName {
 		if primaryIDAlias != "" && (name == "id" || name == "Id" || name == "ID") {
 			return pflag.NormalizedName(primaryIDAlias)
-		}
-		if appAlias && (name == "app" || name == "App" || name == "APP") {
-			return pflag.NormalizedName("id")
 		}
 		return normalizeCamelToKebab(fs, name)
 	}

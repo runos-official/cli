@@ -389,7 +389,7 @@ func TestRefuseAmbiguousKeyValueArray(t *testing.T) {
 func TestCoerceArrayFlagValue(t *testing.T) {
 	t.Parallel()
 	t.Run("single JSON array unwraps", func(t *testing.T) {
-		got := coerceArrayFlagValue([]string{`[{"port":3000,"standardHttps":true}]`})
+		got := coerceArrayFlagValue([]string{`[{"port":3000,"standardHttps":true}]`}, "object")
 		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("expected []any, got %T", got)
@@ -410,7 +410,7 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 	})
 
 	t.Run("multiple JSON objects via repeated flag", func(t *testing.T) {
-		got := coerceArrayFlagValue([]string{`{"port":3000}`, `{"port":9090}`})
+		got := coerceArrayFlagValue([]string{`{"port":3000}`, `{"port":9090}`}, "object")
 		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("expected []any, got %T", got)
@@ -425,7 +425,7 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 	})
 
 	t.Run("bare string list passes through", func(t *testing.T) {
-		got := coerceArrayFlagValue([]string{"one", "two"})
+		got := coerceArrayFlagValue([]string{"one", "two"}, "")
 		strs, ok := got.([]string)
 		if !ok {
 			t.Fatalf("expected []string passthrough, got %T", got)
@@ -436,7 +436,7 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 	})
 
 	t.Run("empty list passes through", func(t *testing.T) {
-		got := coerceArrayFlagValue([]string{})
+		got := coerceArrayFlagValue([]string{}, "")
 		strs, ok := got.([]string)
 		if !ok {
 			t.Fatalf("expected []string passthrough, got %T", got)
@@ -447,7 +447,7 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 	})
 
 	t.Run("mixed JSON + bare string falls back to []string", func(t *testing.T) {
-		got := coerceArrayFlagValue([]string{`{"a":1}`, "bare"})
+		got := coerceArrayFlagValue([]string{`{"a":1}`, "bare"}, "object")
 		strs, ok := got.([]string)
 		if !ok {
 			t.Fatalf("expected []string fallback on heterogeneous input, got %T", got)
@@ -456,6 +456,71 @@ func TestCoerceArrayFlagValue(t *testing.T) {
 			t.Errorf("expected verbatim passthrough, got %v", strs)
 		}
 	})
+}
+
+// foreman #83: array fields whose itemType is "string" (e.g. --command
+// on apps/run) must NEVER JSON-coerce their elements. Without the
+// itemType short-circuit, `--command true` produced
+// `command: [true]` (boolean) on the wire and conductor 400'd with
+// "command[0] must be a non-empty string (got boolean)". Numbers,
+// JSON-keyword-like literals, and JSON-shaped fragments all stay
+// strings when itemType is string; the existing I25-B object-array
+// path is unaffected.
+func TestCoerceArrayFlagValue_StringItemTypeNeverJSONCoerces(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"single bareword true stays string", []string{"true"}, []string{"true"}},
+		{"single bareword false stays string", []string{"false"}, []string{"false"}},
+		{"single bareword null stays string", []string{"null"}, []string{"null"}},
+		{"single numeric stays string", []string{"1234"}, []string{"1234"}},
+		{"single zero stays string", []string{"0"}, []string{"0"}},
+		{"single one stays string", []string{"1"}, []string{"1"}},
+		{"mixed argv with boolean-looking middle stays all strings", []string{"alembic", "true", "head"}, []string{"alembic", "true", "head"}},
+		{"json-shaped fragment stays string", []string{`{"a":1}`}, []string{`{"a":1}`}},
+		{"json array fragment stays string", []string{`[1,2,3]`}, []string{`[1,2,3]`}},
+		{"empty list stays empty []string", []string{}, []string{}},
+		{"realistic shell snippet stays string", []string{"sh", "-c", "scripts/release.sh && true"}, []string{"sh", "-c", "scripts/release.sh && true"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := coerceArrayFlagValue(c.in, "string")
+			strs, ok := got.([]string)
+			if !ok {
+				t.Fatalf("expected []string for itemType=string, got %T (%+v)", got, got)
+			}
+			if len(strs) != len(c.want) {
+				t.Fatalf("length = %d, want %d (%v)", len(strs), len(c.want), strs)
+			}
+			for i := range strs {
+				if strs[i] != c.want[i] {
+					t.Errorf("element %d = %q, want %q", i, strs[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+// foreman #83: itemType=object (and unset/empty itemType for
+// back-compat) keeps the I25-B JSON-coerce behaviour so
+// --service-port-mappings et al. land on the wire as real objects.
+func TestCoerceArrayFlagValue_ObjectItemTypeStillJSONCoerces(t *testing.T) {
+	t.Parallel()
+	got := coerceArrayFlagValue([]string{`{"port":3000}`}, "object")
+	if _, ok := got.([]string); ok {
+		t.Fatalf("itemType=object must JSON-coerce; got []string passthrough")
+	}
+	arr, ok := got.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", got)
+	}
+	m, ok := arr[0].(map[string]any)
+	if !ok || m["port"].(float64) != 3000 {
+		t.Errorf("expected object{port:3000}, got %+v", arr[0])
+	}
 }
 
 // foreman #40: a YAML body for a set-*-config family command (whose

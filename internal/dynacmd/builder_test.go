@@ -986,64 +986,59 @@ func TestIsAppsScopedCommand(t *testing.T) {
 	}
 }
 
-// foreman #80: the flag normalizer must redirect `--app` → `id` on
-// app-scoped commands so `runos apps run --app <id>` matches the
-// asymmetry-breaking deploy + apps build verbs. Existing aliases must
-// keep working: primary `--id` (when primaryIDAlias is set) and the
-// camelCase→kebab pass-through.
-func TestMakeFlagNormalizer_AppAlias(t *testing.T) {
-	t.Run("app alias on app-scoped command redirects to id", func(t *testing.T) {
-		n := makeFlagNormalizer("", true)
-		for _, name := range []string{"app", "App", "APP"} {
-			got := string(n(nil, name))
-			if got != "id" {
-				t.Errorf("normalize(%q) = %q, want %q", name, got, "id")
-			}
-		}
-	})
-
-	t.Run("app alias disabled never redirects to id", func(t *testing.T) {
-		n := makeFlagNormalizer("", false)
-		// "app" (lowercase) passes through as-is. "App"/"APP" go through
-		// the existing camelCase→kebab pass-through which lowercases them
-		// to "app" (matching the I9-L precedent). Neither becomes "id":
-		// that's the contract — services/<type>/show MUST NOT silently
-		// accept --app on its service id positional.
-		for _, name := range []string{"app", "App", "APP"} {
-			got := string(n(nil, name))
-			if got == "id" {
-				t.Errorf("normalize(%q) = %q; --app must NOT redirect to id on non-apps-scoped commands", name, got)
-			}
-		}
-	})
-
-	t.Run("primary id alias still wins over app alias", func(t *testing.T) {
+// foreman #80 / #82: the primary --id normalizer redirect still works
+// (e.g. `jobs show --id <jobId>` → --job-id) and the camelCase→kebab
+// pass-through is untouched. The `--app` alias moved off the
+// normalizer in #82 (now a visible flag registered in
+// buildLeafCommand), so the normalizer no longer maps `app` → `id`;
+// `--App` / `--APP` still reach the registered `app` flag via the
+// camelCase pass-through lowercasing.
+func TestMakeFlagNormalizer(t *testing.T) {
+	t.Run("primary id alias redirects --id to canonical kebab", func(t *testing.T) {
 		// jobs/show carries primaryIDAlias=job-id; --id → job-id.
-		n := makeFlagNormalizer("job-id", false)
+		n := makeFlagNormalizer("job-id")
 		if got := string(n(nil, "id")); got != "job-id" {
 			t.Errorf("--id on jobs/show: normalize = %q, want %q", got, "job-id")
 		}
+		if got := string(n(nil, "Id")); got != "job-id" {
+			t.Errorf("--Id on jobs/show: normalize = %q, want %q", got, "job-id")
+		}
 	})
 
-	t.Run("app alias and primary id alias coexist on app-scoped commands", func(t *testing.T) {
-		n := makeFlagNormalizer("", true)
-		// Plain --id on apps/run (primaryIDAlias is empty because the
-		// field is just `id`; the addFieldFlags path already registers
-		// `--id` natively, so the normalizer doesn't have to remap it).
-		// What we care about: --app redirects to id, --id is untouched.
+	t.Run("no primary alias leaves --id alone", func(t *testing.T) {
+		n := makeFlagNormalizer("")
 		if got := string(n(nil, "id")); got != "id" {
-			t.Errorf("--id on apps/run: normalize = %q, want %q", got, "id")
-		}
-		if got := string(n(nil, "app")); got != "id" {
-			t.Errorf("--app on apps/run: normalize = %q, want %q", got, "id")
+			t.Errorf("--id without alias: normalize = %q, want %q", got, "id")
 		}
 	})
 
-	t.Run("camelCase pass-through still works alongside app alias", func(t *testing.T) {
-		n := makeFlagNormalizer("", true)
-		// camelCase → kebab still kicks in for non-aliased names.
+	t.Run("camelCase→kebab pass-through preserved", func(t *testing.T) {
+		n := makeFlagNormalizer("")
 		if got := string(n(nil, "buildArgs")); got != "build-args" {
 			t.Errorf("camelCase pass-through broke: normalize(%q) = %q, want %q", "buildArgs", got, "build-args")
+		}
+	})
+
+	t.Run("--App / --APP lowercase to app via camelCase pass-through (#82 visible-flag path)", func(t *testing.T) {
+		// After #82, --app is a real flag registered in buildLeafCommand
+		// on apps-scoped commands. --App / --APP need to reach that flag;
+		// the camelCase normalizer does it by lowercasing to "app".
+		n := makeFlagNormalizer("")
+		for _, name := range []string{"App", "APP"} {
+			if got := string(n(nil, name)); got != "app" {
+				t.Errorf("normalize(%q) = %q, want %q (must reach the registered --app flag on apps-scoped commands)", name, got, "app")
+			}
+		}
+	})
+
+	t.Run("normalizer no longer maps app → id (visible flag handles it)", func(t *testing.T) {
+		// Pin the regression direction: foreman #82 moved the alias to
+		// a real flag, so the normalizer must NOT rewrite "app" to "id".
+		// If it did, the conflict-detection path in executor.go (both
+		// --id and --app set) would fire incorrectly.
+		n := makeFlagNormalizer("")
+		if got := string(n(nil, "app")); got != "app" {
+			t.Errorf("normalize(%q) = %q; #82 moved alias off the normalizer, so app must stay app", "app", got)
 		}
 	})
 }

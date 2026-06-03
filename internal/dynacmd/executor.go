@@ -745,8 +745,20 @@ func refuseAmbiguousKeyValueArray(flagName string, raw []string) error {
 	return nil
 }
 
-func coerceArrayFlagValue(raw []string) any {
+func coerceArrayFlagValue(raw []string, itemType string) any {
 	if len(raw) == 0 {
+		return raw
+	}
+	// foreman #83: string-element arrays must NEVER JSON-coerce. The
+	// I25-B unwrap was for `object` / `array` element fields like
+	// `--service-port-mappings`. For `--command` (manifest declares
+	// `itemType: string`), JSON-coercing `true` / `false` / `0` /
+	// `1234` previously produced booleans + numbers on the wire and
+	// conductor 400'd with `command[0] must be a non-empty string
+	// (got boolean)`. Skip the coercion when the element shape is
+	// declared string; every argv element survives as a literal
+	// string regardless of content.
+	if itemType == "string" {
 		return raw
 	}
 	// Single invocation that itself parses as a JSON array: unwrap it.
@@ -1219,6 +1231,23 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 	for _, field := range cmdDef.Input.Fields {
 		flagName := flagNameFor(field.Name)
 		if field.Positional {
+			// foreman #82: --app is a visible alias for --id on
+			// apps-scoped commands (e.g. `apps run --app appid8`).
+			// Registered in buildLeafCommand only when the command is
+			// apps-scoped, so the Lookup gate keeps this branch dormant
+			// elsewhere. Conflict (both --id and --app set with
+			// different values) surfaces as a pre-network refusal here.
+			if field.Name == "id" && cmd.Flags().Lookup("app") != nil && cmd.Flags().Changed("app") {
+				appVal, _ := cmd.Flags().GetString("app")
+				if cmd.Flags().Changed(flagName) {
+					idVal, _ := cmd.Flags().GetString(flagName)
+					if idVal != appVal {
+						return nil, fmt.Errorf("--id and --app both set with different values (%q vs %q); pass one or the other", idVal, appVal)
+					}
+				}
+				result[field.Name] = appVal
+				continue
+			}
 			// Honour the `--<name>` flag form for every typed positional
 			// field (not just strings). The builder now registers
 			// integer- and boolean-typed flag forms too so users can
@@ -1297,7 +1326,7 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 					if err := refuseAmbiguousKeyValueArray(flagName, val); err != nil {
 						return nil, err
 					}
-					result[field.Name] = coerceArrayFlagValue(val)
+					result[field.Name] = coerceArrayFlagValue(val, field.ItemType)
 				}
 			case "boolean":
 				val, _ := cmd.Flags().GetBool(flagName)
