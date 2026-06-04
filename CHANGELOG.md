@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.0
+
+Adds `runos services harbor build-image`, a first-class way to build an auxiliary (non-app) container image from a local build context and push it into the cluster's system Harbor under the managed `runos-apps` project. Install via `https://get.runos.com/cli.sh?release=v1.5.0`.
+
+### New
+
+- **`runos services harbor build-image`**: build an arbitrary image that is NOT tied to an app's own Dockerfile (sidecar images, shared base images, one-off tooling images) and push it to `runos-apps/<repo>:<tag>` using Harbor's managed push credentials. Decoupled from apps, deployments, and VCS: no app id, no commit SHA, no robot/RBAC/GitHub cred, and no phantom build-only app cluttering `apps list`.
+  - **Local-context upload.** `--context <dir>` is tarballed (Docker-standard `.dockerignore` semantics, keeping dotfiles and `runos.*.yaml` that a generic Dockerfile may COPY) and uploaded directly to the cluster agent, which builds it on the same in-cluster BuildKit that builds app images. `--dockerfile` (default `Dockerfile`) is relative to `--context` and validated to stay inside it before any upload.
+  - **Fixed project, multi-tag.** The project is fixed to `runos-apps` (not a flag); `--repo` is the repository name within it. Pass `--tag` one or more times: the same built image is pushed to each, and mutable tags (e.g. `latest`) are overwritten silently like a normal docker push.
+  - **Fire-and-forget by default, `--follow` to wait.** Without `--follow` the command prints the `jobId` plus a `runos follow` hint and exits 0 the moment the conductor accepts the request. With `--follow` it streams build logs and exits non-zero on build failure so a CI step gates on the outcome. `--json` carries a structured envelope (`jobId`, `repo`, `tags`, `images`, and `skippedBecauseCached`/`durationMs` once `--follow` reaches a terminal state).
+  - **`--build-arg KEY=VALUE` parity with deploy** (repeatable): parsed and validated by `internal/buildargs`; duplicate keys within a single invocation are rejected.
+  - **MCP**: exposed as the `services_harbor_build-image` tool so agents can trigger the same build-and-push from a local context (the build context is a local path, so it's a hand-written shim, not a manifest-generated tool).
+  - **Security**: the server-supplied upload URL is scheme-validated (an absolute URL must be https) and redirects are disabled before the bearer token is attached, so the upload token can't be downgraded to plaintext or bounced to another host.
+
 ## v1.4.2
 
 Follow-ups to v1.4.1: surfaces `--app` in `--help` and stops `--command` mangling bareword literals. Install via `https://get.runos.com/cli.sh?release=v1.4.2`.

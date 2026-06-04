@@ -164,6 +164,15 @@ func init() {
 	rootCmd.AddCommand(appsCmd)
 	rootCmd.AddCommand(jobsCmd)
 
+	// Attach the hand-written services/harbor subtree BEFORE the dynamic
+	// builder runs. The conductor manifest carries a services/harbor/build-image
+	// entry, but the verb needs to tarball + upload a local build context
+	// (filesystem state the manifest can't express), so the real command is
+	// the hand-written one. Wiring it here means the builder's leaf-collision
+	// guard sees `build-image` and skips the manifest duplicate, while still
+	// reusing this harbor parent for the manifest-driven harbor verbs.
+	wireStaticHarborSubtree()
+
 	// Dynamic commands from manifest
 	if err := registerDynamicCommands(); err != nil {
 		// I25-E: when the manifest can't load at init time, dynacmd-

@@ -19,6 +19,30 @@ var servicesCmd = &cobra.Command{
 	Long:  `Manage RunOS services. Use subcommands to list, show, add, or delete services.`,
 }
 
+// servicesHarborCmd is the hand-written parent for Harbor service tools
+// (e.g. build-image) whose surface needs a local-filesystem build context
+// the manifest can't express. It is wired onto servicesCmd in root.go's
+// init() BEFORE the dynamic builder runs (see wireStaticHarborSubtree), so
+// the builder's leaf-collision guard sees the static `build-image` and
+// skips the manifest-generated, filesystem-blind duplicate, while still
+// reusing this parent for the manifest-driven services/harbor/* verbs
+// (add, list, show, ...). Wiring it here in services.go's init() instead
+// would attach it AFTER BuildCommands (cross-file init order: root.go runs
+// before services.go), leaving the manifest leaf to shadow the static one.
+var servicesHarborCmd = &cobra.Command{
+	Use:   "harbor",
+	Short: "Harbor service tools",
+	Long:  `Tools for the cluster's Harbor service, such as building and pushing an auxiliary image from a local context.`,
+}
+
+// wireStaticHarborSubtree attaches the hand-written harbor subtree to
+// servicesCmd. Called from root.go's init() before the dynamic builder so
+// the collision guard can see it (see servicesHarborCmd's doc).
+func wireStaticHarborSubtree() {
+	servicesHarborCmd.AddCommand(servicesHarborBuildImageCmd)
+	servicesCmd.AddCommand(servicesHarborCmd)
+}
+
 func init() {
 	servicesCmd.AddCommand(servicesPullCmd)
 	servicesCmd.AddCommand(servicesDiffCmd)

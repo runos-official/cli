@@ -655,6 +655,16 @@ func (s *Server) buildTools() []Tool {
 		cmdPath := placeholderRegex.ReplaceAllString(cmd.Command, "")
 		toolName := strings.ReplaceAll(cmdPath, "/", "_")
 
+		// Skip any tool that has a hand-written static shim. The conductor
+		// may register a manifest entry for services/harbor/build-image (for
+		// discoverability + the CLI verb), but the build context is a local
+		// filesystem path the manifest can't express, so the real tool is
+		// the filesystem-aware shim appended via staticServicesTools. A
+		// manifest-driven version here would be a filesystem-blind duplicate.
+		if isStaticServicesTool(toolName) || isStaticAppsTool(toolName) {
+			continue
+		}
+
 		// Skip deploy - it has a built-in handler
 		if toolName == "deploy" {
 			// Add deploy tool with custom description and cid parameter

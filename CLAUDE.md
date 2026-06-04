@@ -186,6 +186,16 @@ requires:
 
 Linking the adopted instance to the app is the existing `requires:` link-to-existing mechanism (service id + config). `requires:` does NOT auto-invoke adoption on deploy — adoption is an explicit operator pre-step (it mutates object ownership and the password, which must not happen implicitly on every push).
 
+## services harbor build-image: auxiliary (non-app) image builds
+
+`runos services harbor build-image --cid <cid> --context <dir> [--dockerfile <rel>] --repo <name> --tag <t> [--tag <t2>...] [--build-arg K=V] [--follow] [--json]` builds an arbitrary container image from a LOCAL build context and pushes it to the cluster's system Harbor under the fixed `runos-apps` project as `runos-apps/<repo>:<tag>`. It exists for images that aren't an app's own Dockerfile (sidecar images, shared base images, one-off tooling). Fully decoupled: no app id, no commit SHA, no VCS — sibling in spirit to `apps build` but with no owning app. The project is fixed (no flag); the system Harbor is resolved from `--cid` (no `--id`). Multiple `--tag`s push the same built image to each; mutable tags are overwritten silently.
+
+Unlike `adopt-user` (pure manifest), this verb is HAND-WRITTEN because the build context is local filesystem state the manifest can't express. The dispatch:
+
+- **CLI**: [cmd/services_harbor_build_image.go](cmd/services_harbor_build_image.go), a static cobra leaf under a hand-written `services harbor` parent. The conductor manifest ALSO carries a `services/harbor/build-image` entry (for the other harbor verbs and discoverability), so the leaf is wired onto `servicesCmd` via `wireStaticHarborSubtree()` in [cmd/root.go](cmd/root.go) BEFORE `registerDynamicCommands()` runs — otherwise cross-file init order (root.go before services.go) would attach it after `BuildCommands`, and the dynacmd leaf-collision guard would let the manifest-generated (filesystem-blind, broken) leaf shadow it. Wiring it first lets the guard skip the manifest leaf while still reusing the harbor parent for the manifest verbs (add/list/show/...).
+- **Transport** ([internal/harbor/service.go](internal/harbor/service.go)): mirrors the CLI-deploy prepare→upload→follow shape. `POST /:aid/:cid/services/harbor/build-image` (body `{repo, tags, dockerfile?, buildArgsCli?}`) returns `{jobId, uploadUrl, token, expiresAt, uploadId, images}`; the CLI tarballs `--context` via `deploy.CreateBuildContextTarball` (Docker-standard `.dockerignore`-only archive — NOT the app-deploy `CreateTarball`, which strips dotfiles + `runos.*.yaml`) and uploads it DIRECTLY to the presigned cluster-agent `uploadUrl`, then follows the job. The upload URL is scheme-validated (absolute must be https) and redirects are disabled so the bearer token can't downgrade or be bounced.
+- **MCP**: the `services_harbor_build-image` tool is a hand-written shim ([internal/mcp/services.go](internal/mcp/services.go), in `isStaticServicesTool`) that shells to `runos services harbor build-image --follow --yes`. `buildTools` in [internal/mcp/server.go](internal/mcp/server.go) skips any `isStaticServicesTool`/`isStaticAppsTool` name so the manifest entry doesn't also emit a filesystem-blind duplicate tool.
+
 ## MCP integration
 
 The CLI also runs as an MCP server (`runos mcp`). Tools fall into two buckets:

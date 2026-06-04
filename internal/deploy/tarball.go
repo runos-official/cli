@@ -18,9 +18,50 @@ const (
 	maxTarballSize = 500 * 1024 * 1024
 )
 
-// CreateTarball creates a gzipped tarball of the directory contents,
-// excluding hidden files and patterns from .dockerignore
+// tarballOptions controls which app-deploy-specific exclusions the
+// archive walk applies on top of the always-on .dockerignore + size-cap +
+// symlink-escape protections. The two app-deploy stripping rules
+// (hidden/dotfiles, RunOS-managed manifests) are correct for an app's
+// own source tree but wrong for a generic Docker build context, where a
+// Dockerfile may legitimately COPY in a dotfile or a runos.yaml.
+type tarballOptions struct {
+	excludeHidden       bool // skip any path component starting with "."
+	excludeRunosManaged bool // skip runos.*.yaml / overrides/ and friends
+}
+
+// CreateTarball creates a gzipped tarball of an app's source directory,
+// excluding hidden files, RunOS-managed manifests, and patterns from
+// .dockerignore. This is the app-deploy archive (runos deploy for a
+// deployType: cli app).
 func CreateTarball(dir string) (*bytes.Buffer, error) {
+	return createTarball(dir, tarballOptions{excludeHidden: true, excludeRunosManaged: true})
+}
+
+// CreateBuildContextTarball archives a generic Docker build context for
+// the Harbor build-image primitive. Docker-standard semantics: include
+// everything except .dockerignore matches, keeping dotfiles and
+// runos.*.yaml (a non-app Dockerfile may COPY them in). The size cap and
+// symlink-escape protections still apply.
+func CreateBuildContextTarball(dir string) (*bytes.Buffer, error) {
+	return createTarball(dir, tarballOptions{})
+}
+
+// excludeFromTarball reports whether a relative path (forward-slash form)
+// must be skipped given the archive options and the loaded .dockerignore
+// patterns. Pure (no filesystem access) so the archive-membership rules
+// are unit-testable for both the app-deploy and build-context option sets
+// without staging real directory trees.
+func excludeFromTarball(relPath string, isDir bool, patterns []string, opts tarballOptions) bool {
+	if opts.excludeHidden && isHidden(relPath) {
+		return true
+	}
+	if opts.excludeRunosManaged && shouldAlwaysExclude(relPath, isDir) {
+		return true
+	}
+	return shouldIgnore(relPath, isDir, patterns)
+}
+
+func createTarball(dir string, opts tarballOptions) (*bytes.Buffer, error) {
 	// Load dockerignore patterns
 	ignorePatterns, err := loadDockerignore(dir)
 	if err != nil {
@@ -50,29 +91,10 @@ func CreateTarball(dir string) (*bytes.Buffer, error) {
 			return nil
 		}
 
-		// Skip hidden files and directories
-		if isHidden(relPath) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip RunOS-managed manifests and directories unconditionally.
-		// Defense-in-depth against cross-cluster config bleed: a project
-		// with multiple runos.<cid>.<id>.yaml files (staging + prod, etc.)
-		// would otherwise upload every yaml and the overrides/ dir as
-		// part of every app's source archive. apps_pull also writes a
-		// .dockerignore covering the same set as discoverable documentation.
-		if shouldAlwaysExclude(relPath, d.IsDir()) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip dockerignore patterns
-		if shouldIgnore(relPath, d.IsDir(), ignorePatterns) {
+		// Apply the exclusion rules (hidden + RunOS-managed gated by opts,
+		// .dockerignore always). Pure decision so the membership logic is
+		// unit-tested without staging real trees.
+		if excludeFromTarball(relPath, d.IsDir(), ignorePatterns, opts) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
