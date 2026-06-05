@@ -416,9 +416,9 @@ func TestFilenameBuilders(t *testing.T) {
 
 func TestAsInt(t *testing.T) {
 	tests := []struct {
-		name  string
-		in    any
-		want  int
+		name   string
+		in     any
+		want   int
 		wantOK bool
 	}{
 		{"int", 42, 42, true},
@@ -1011,12 +1011,12 @@ func TestBuildPulledApp_YAMLOutputMatchesExpectedShape(t *testing.T) {
 func TestSaveYAML_WritesMarshaledFileWith0644(t *testing.T) {
 	dir := t.TempDir()
 	app := &PulledApp{
-		App:        "web",
-		DeployType: "cli",
-		ID:         "ab12c",
-		CID:        "k1",
-		AID:        "acc-1",
-		Replicas:   1,
+		App:                 "web",
+		DeployType:          "cli",
+		ID:                  "ab12c",
+		CID:                 "k1",
+		AID:                 "acc-1",
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)
@@ -1070,12 +1070,12 @@ func TestSaveYAML_WritesMarshaledFileWith0644(t *testing.T) {
 func TestSaveYAML_OverwritesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	app := &PulledApp{
-		App:        "web",
-		DeployType: "cli",
-		ID:         "ab12c",
-		CID:        "k1",
-		AID:        "acc-1",
-		Replicas:   1,
+		App:                 "web",
+		DeployType:          "cli",
+		ID:                  "ab12c",
+		CID:                 "k1",
+		AID:                 "acc-1",
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)
@@ -1435,14 +1435,14 @@ func TestValidateIdentifier(t *testing.T) {
 			"../etc",
 			"foo/bar",
 			"foo\\bar",
-			"foo bar",        // space
-			"foo.bar",        // dot
-			"foo\x00bar",     // null byte
-			"foo;ls",         // shell metacharacter
-			"foo\nbar",       // newline
-			"foo:bar",        // colon
-			"日本",             // non-ASCII
-			"appid4/../tmp",   // documented attack shape
+			"foo bar",       // space
+			"foo.bar",       // dot
+			"foo\x00bar",    // null byte
+			"foo;ls",        // shell metacharacter
+			"foo\nbar",      // newline
+			"foo:bar",       // colon
+			"日本",            // non-ASCII
+			"appid4/../tmp", // documented attack shape
 		}
 		for _, v := range bad {
 			if err := ValidateIdentifier("app id", v); err == nil {
@@ -1553,12 +1553,12 @@ func TestSaveOverride_RejectsPathSeparators(t *testing.T) {
 func TestSaveYAML_InSyncWhenContentMatches(t *testing.T) {
 	dir := t.TempDir()
 	app := &PulledApp{
-		App:        "web",
-		DeployType: "cli",
-		ID:         "ab12c",
-		CID:        "k1",
-		AID:        "acc-1",
-		Replicas:   1,
+		App:                 "web",
+		DeployType:          "cli",
+		ID:                  "ab12c",
+		CID:                 "k1",
+		AID:                 "acc-1",
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)

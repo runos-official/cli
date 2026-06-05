@@ -339,4 +339,3 @@ func TestFilterPlatformInjectedEnv_DoesNotMutateInput(t *testing.T) {
 		t.Errorf("input mutated: got %+v, want %+v", serverEnv, original)
 	}
 }
-

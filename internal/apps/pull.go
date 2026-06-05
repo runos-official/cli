@@ -24,10 +24,10 @@ type PulledApp struct {
 	AID        string `yaml:"aid"`
 	// SecretEnv: relative path to the file holding sensitive (Secret-backed)
 	// env vars. Default `.runos.{cid}.{id}.env`. Gitignored — never commit.
-	SecretEnv  string `yaml:"secretEnv,omitempty"`
+	SecretEnv string `yaml:"secretEnv,omitempty"`
 	// Env: relative path to the file holding plain (ConfigMap-backed) env
 	// vars committed to VCS. Default `runos.{cid}.{id}.config.env`.
-	Env        string `yaml:"env,omitempty"`
+	Env string `yaml:"env,omitempty"`
 	// SourceDir is the path (relative to the yaml's directory) to the
 	// build context. Empty defaults to "." (the yaml's own directory).
 	// May start with ".." when the yaml lives deeper than the source
@@ -862,7 +862,7 @@ func AppDir(parentDir, base string) string {
 //
 //   - Valid:    file exists and parses as a pulled-app yaml (id/cid/aid set).
 //   - Partial:  filename matches and parses as YAML, but is missing id/cid/aid.
-//               Typically a fresh, pre-deploy runos.yaml that was never pulled.
+//     Typically a fresh, pre-deploy runos.yaml that was never pulled.
 type YAMLScan struct {
 	Valid   []string
 	Partial []string

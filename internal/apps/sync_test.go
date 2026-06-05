@@ -349,8 +349,8 @@ func TestComputeSecretFilesChange_AddUpdateRemove(t *testing.T) {
 	driftedContent := []byte("local-version\n")
 
 	local := map[string][]byte{
-		"match.crt":   matchingContent,
-		"drift.crt":   driftedContent,
+		"match.crt":    matchingContent,
+		"drift.crt":    driftedContent,
 		"new-only.pem": []byte("brand-new\n"),
 	}
 	server := []SecretFileSummary{
@@ -860,7 +860,7 @@ func TestComputeYAMLPatch_HealthCheckClearedByOmission(t *testing.T) {
 
 func TestComputeYAMLPatch_PortsTranslateStandardHttps(t *testing.T) {
 	local := &PulledApp{
-		Replicas: 1,
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 8080, StandardHttps: false}},
 	}
 	server := map[string]any{
@@ -1341,11 +1341,11 @@ func TestLoadLocalOverrides_MissingFile(t *testing.T) {
 func TestComputeSyncPlan_AggregatesAllSections(t *testing.T) {
 	in := SyncInputs{
 		LocalApp: &PulledApp{
-			App:      "my-app",
-			ID:       "ab12c",
-			CID:      "k1",
-			AID:      "acc-1",
-			Replicas: 3, // changed
+			App:                 "my-app",
+			ID:                  "ab12c",
+			CID:                 "k1",
+			AID:                 "acc-1",
+			Replicas:            3, // changed
 			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
 		},
 		LocalEnvVars:     map[string]string{"NEW": "yes", "SAME": "ok"},
@@ -1400,7 +1400,7 @@ func TestComputeSyncPlan_NoChangesProducesEmptyPlan(t *testing.T) {
 	in := SyncInputs{
 		LocalApp: &PulledApp{
 			App: "my-app", ID: "ab12c", CID: "k1", AID: "acc-1",
-			Replicas: 1,
+			Replicas:            1,
 			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
 		},
 		LocalEnvVars:     map[string]string{"A": "1"},
@@ -1702,7 +1702,7 @@ func TestCheckEmptySecretEnvWipe_RefusesEmptyReplaceWithServerKeys(t *testing.T)
 			Remove: []string{"DATABASE_PASS", "STRIPE_KEY", "JWT_SECRET"},
 		},
 	}
-	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ false, nil)
+	err := CheckEmptySecretEnvWipe(plan /* allowEmpty */, false, nil)
 	if err == nil {
 		t.Fatal("expected refusal when local is empty and server has keys")
 	}
@@ -1730,7 +1730,7 @@ func TestCheckEmptySecretEnvWipe_AllowsWhenOptedIn(t *testing.T) {
 			Remove: []string{"A", "B"},
 		},
 	}
-	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ true, nil)
+	err := CheckEmptySecretEnvWipe(plan /* allowEmpty */, true, nil)
 	if err != nil {
 		t.Errorf("expected pass with allowEmpty=true, got: %v", err)
 	}
@@ -1805,7 +1805,7 @@ func TestCheckEmptySecretEnvWipe_RefusesWhenFinalHasOnlyPlatformInjected(t *test
 		},
 	}
 	platformInjected := map[string]bool{"DATABASE_URL": true}
-	err := CheckEmptySecretEnvWipe(plan, /* allowEmpty */ false, platformInjected)
+	err := CheckEmptySecretEnvWipe(plan /* allowEmpty */, false, platformInjected)
 	if err == nil {
 		t.Fatal("expected refusal when Final contains only platform-injected keys and server has user keys to remove")
 	}
@@ -1839,7 +1839,6 @@ func TestCheckEmptySecretEnvWipe_PassesWhenFinalMixesUserAndPlatform(t *testing.
 		t.Errorf("expected pass when Final contains at least one user-set key, got: %v", err)
 	}
 }
-
 
 // TestSyncPlan_RedactSecrets pins the JSON-path redaction added for
 // I10-M: --redact-secrets must apply when the plan is emitted as JSON,
@@ -1888,7 +1887,7 @@ func TestSyncPlan_RedactSecrets_NilSafe(t *testing.T) {
 	var plan *SyncPlan
 	plan.RedactSecrets() // must not panic
 
-	plan = &SyncPlan{} // no SecretEnv, no Env
+	plan = &SyncPlan{}   // no SecretEnv, no Env
 	plan.RedactSecrets() // must not panic
 }
 

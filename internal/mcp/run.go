@@ -208,6 +208,6 @@ func stringArrayArg(args map[string]any, key string) ([]string, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("%s must be an array of strings, got %T (try " + strconv.Quote("[]string") + ")", key, raw)
+		return nil, fmt.Errorf("%s must be an array of strings, got %T (try "+strconv.Quote("[]string")+")", key, raw)
 	}
 }

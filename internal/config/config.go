@@ -70,6 +70,7 @@ type Config struct {
 	AccountID        string          `json:"account_id,omitempty"`
 	DefaultClusterID string          `json:"default_cluster_id,omitempty"`
 	RefreshToken     string          `json:"refresh_token,omitempty"`
+	APIKey           string          `json:"api_key,omitempty"` // stored PAT; set by `runos login --api-key`, takes precedence over Firebase, overridden by the RUNOS_API_KEY env var
 	Firebase         *FirebaseConfig `json:"firebase,omitempty"`
 	SignedInAt       string          `json:"signed_in_at,omitempty"` // RFC3339 timestamp of login
 }

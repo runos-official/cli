@@ -113,9 +113,9 @@ func TestSanitizeFlagDescription(t *testing.T) {
 // is uniform across resource-id commands.
 func TestPromoteURLPlaceholderFieldsToPositional(t *testing.T) {
 	cases := []struct {
-		name   string
-		in     manifest.Command
-		want   map[string]bool
+		name string
+		in   manifest.Command
+		want map[string]bool
 	}{
 		{
 			"services/<type>/{id}/show promotes id",

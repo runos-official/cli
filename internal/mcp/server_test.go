@@ -86,9 +86,9 @@ func TestBootstrapGate_ReadServerAllowsToolsAfterBootstrapAndTopics(t *testing.T
 	srv := newTestServer("read", &mockExecutor{result: "cluster data"})
 	srv.bootstrapped = true
 	srv.topicsRead = map[string]struct{}{
-		"deploying-apps":      {},
+		"deploying-apps":       {},
 		"dockerfile-templates": {},
-		"runos-yaml":          {},
+		"runos-yaml":           {},
 	}
 
 	resp := srv.handleToolsCall(makeToolCallRequest("clusters_list"))

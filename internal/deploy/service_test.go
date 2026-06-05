@@ -114,13 +114,13 @@ func readAllBody(r *http.Request) ([]byte, error) {
 // the input verbatim) so a malformed link never crashes the gate.
 func TestHostFromLink(t *testing.T) {
 	cases := map[string]string{
-		"https://app-appid2-3000.mycluster2.myacct.dev.runos.xyz":         "app-appid2-3000.mycluster2.myacct.dev.runos.xyz",
-		"https://my-custom.example.com":                          "my-custom.example.com",
-		"https://my-custom.example.com:8443":                     "my-custom.example.com",
-		"https://my-custom.example.com/path?q=1":                 "my-custom.example.com",
-		"http://example.com":                                     "example.com",
-		"":                                                       "",
-		"not-a-url-just-a-host.example.com":                      "not-a-url-just-a-host.example.com",
+		"https://app-appid2-3000.mycluster2.myacct.dev.runos.xyz": "app-appid2-3000.mycluster2.myacct.dev.runos.xyz",
+		"https://my-custom.example.com":                           "my-custom.example.com",
+		"https://my-custom.example.com:8443":                      "my-custom.example.com",
+		"https://my-custom.example.com/path?q=1":                  "my-custom.example.com",
+		"http://example.com":                                      "example.com",
+		"":                                                        "",
+		"not-a-url-just-a-host.example.com":                       "not-a-url-just-a-host.example.com",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -132,7 +132,7 @@ func TestHostFromLink(t *testing.T) {
 	}
 }
 
-// Regression test for I2-4e''' (TEST_LOG.md): the gate sources
+// Regression test for I2-4e”' (TEST_LOG.md): the gate sources
 // custom-domain state from /:aid/domains, NOT /:aid/:cid/apps/:id/
 // network-access. network-access only carries auto-assigned
 // (RUNOS_PUBLIC_*) and K8s internal (IN_CLUSTER_*) entries, never the
@@ -183,7 +183,7 @@ func TestGetAppCustomDomains_FiltersAndDedupes(t *testing.T) {
 	}
 }
 
-// I2-4e''' partner: empty account-wide list returns no domains.
+// I2-4e”' partner: empty account-wide list returns no domains.
 func TestGetAppCustomDomains_EmptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]Domain{})
@@ -207,7 +207,7 @@ func TestGetAppCustomDomains_EmptyResponse(t *testing.T) {
 	}
 }
 
-// I2-4e''' partner: pure pin on the token-boundary matcher. Catches
+// I2-4e”' partner: pure pin on the token-boundary matcher. Catches
 // regressions where a future change to targetIngressMatchesOSID
 // re-introduces prefix-only matching.
 func TestTargetIngressMatchesOSID(t *testing.T) {

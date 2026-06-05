@@ -23,9 +23,9 @@ type JobStatus struct {
 // exitCode is the container's real terminated exit code (0 on success,
 // non-zero on failure, 124 on timeout per the cluster-agent contract).
 type RunResult struct {
-	ExitCode    int    `json:"exitCode"`
-	DurationMs  int64  `json:"durationMs,omitempty"`
-	ImageTag    string `json:"imageTag,omitempty"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	ImageTag   string `json:"imageTag,omitempty"`
 }
 
 // RunResult parses RawResult as an app.run result envelope. Returns

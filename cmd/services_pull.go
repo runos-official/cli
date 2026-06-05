@@ -48,12 +48,12 @@ func init() {
 // pulled service, optional skip reasons. Kept simple for v1; expand if
 // services_pull --all is added later.
 type servicePullSummary struct {
-	CID  string                `json:"cid"`
-	Path string                `json:"path,omitempty"`
-	Type string                `json:"type,omitempty"`
-	ID   string                `json:"id,omitempty"`
-	InSync bool                `json:"inSync"`
-	Drifted bool               `json:"drifted,omitempty"`
+	CID     string `json:"cid"`
+	Path    string `json:"path,omitempty"`
+	Type    string `json:"type,omitempty"`
+	ID      string `json:"id,omitempty"`
+	InSync  bool   `json:"inSync"`
+	Drifted bool   `json:"drifted,omitempty"`
 }
 
 func runServicesPull(cmd *cobra.Command, args []string) error {
@@ -166,4 +166,3 @@ func runServicesPull(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Pulled %s/%s into %s\n", serviceType, sid, destPath)
 	return nil
 }
-

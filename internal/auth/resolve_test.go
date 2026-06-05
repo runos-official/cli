@@ -49,6 +49,61 @@ func TestResolveToken_NilCfgWithoutEnvErrors(t *testing.T) {
 	}
 }
 
+func TestResolveToken_StoredAPIKeyWhenNoEnv(t *testing.T) {
+	t.Setenv(APIKeyEnvVar, "")
+	cfg := &config.Config{APIKey: "stored-pat"}
+	got, err := ResolveToken(cfg)
+	if err != nil {
+		t.Fatalf("ResolveToken: %v", err)
+	}
+	if got != "stored-pat" {
+		t.Errorf("expected stored PAT, got %q", got)
+	}
+}
+
+func TestResolveToken_EnvWinsOverStoredAPIKey(t *testing.T) {
+	t.Setenv(APIKeyEnvVar, "env-pat")
+	cfg := &config.Config{APIKey: "stored-pat"}
+	got, err := ResolveToken(cfg)
+	if err != nil {
+		t.Fatalf("ResolveToken: %v", err)
+	}
+	if got != "env-pat" {
+		t.Errorf("env var must win over stored PAT, got %q", got)
+	}
+}
+
+// A stored PAT must short-circuit before the Firebase exchange (which
+// would otherwise attempt a network call), proving stored-PAT >
+// Firebase in the precedence order.
+func TestResolveToken_StoredAPIKeyWinsOverFirebase(t *testing.T) {
+	t.Setenv(APIKeyEnvVar, "")
+	cfg := &config.Config{
+		APIKey:       "stored-pat",
+		Firebase:     &config.FirebaseConfig{APIKey: "fb-key"},
+		RefreshToken: "fb-refresh",
+	}
+	got, err := ResolveToken(cfg)
+	if err != nil {
+		t.Fatalf("ResolveToken: %v", err)
+	}
+	if got != "stored-pat" {
+		t.Errorf("stored PAT must win over Firebase, got %q", got)
+	}
+}
+
+func TestResolveToken_StoredAPIKeyTrimmed(t *testing.T) {
+	t.Setenv(APIKeyEnvVar, "")
+	cfg := &config.Config{APIKey: " \tstored-pat\n"}
+	got, err := ResolveToken(cfg)
+	if err != nil {
+		t.Fatalf("ResolveToken: %v", err)
+	}
+	if got != "stored-pat" {
+		t.Errorf("stored PAT should be trimmed, got %q", got)
+	}
+}
+
 func TestValidateAuthEnvVars(t *testing.T) {
 	cases := []struct {
 		name      string

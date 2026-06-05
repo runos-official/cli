@@ -260,10 +260,10 @@ func (s *Server) handleAppsCommand(toolName string, args map[string]any) (string
 // Contract (mirrored on the producer side in cmd/apps_diff.go):
 //   - exit 0       → output, nil           (clean run)
 //   - exit 2 + apps_diff → output, nil    (drift detected, surface as success
-//                                          so MCP caller gets the structured
-//                                          drift report instead of a red
-//                                          error block; CI still sees the
-//                                          non-zero exit at the CLI layer)
+//     so MCP caller gets the structured
+//     drift report instead of a red
+//     error block; CI still sees the
+//     non-zero exit at the CLI layer)
 //   - any other error → "", error          (real failure)
 func interpretAppsCommandResult(
 	runErr error,

@@ -191,4 +191,3 @@ func extractClusterIDs(body []byte) ([]string, error) {
 	}
 	return ids, nil
 }
-

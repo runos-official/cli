@@ -38,32 +38,43 @@ func ValidateAuthEnvVars(lookup func(string) (string, bool)) error {
 }
 
 // ResolveToken returns the bearer token to send in Authorization headers.
-// Two paths, in priority order:
+// Three paths, in priority order:
 //
 //  1. If RUNOS_API_KEY is set in the environment, return it verbatim.
 //     This is the CI/CD path: a PAT minted via account/api-keys/add
 //     authenticates directly, no Firebase round-trip, no on-disk
 //     credentials. cfg may be nil or partially populated in this mode.
 //
-//  2. Otherwise, fall back to the Firebase refresh-token exchange the
+//  2. If a PAT is persisted on disk (cfg.APIKey, set by
+//     `runos login --api-key`), return it. This is the developer who
+//     forced a PAT instead of the browser flow. The env var still wins
+//     over the stored key so a CI runner can override a local default.
+//
+//  3. Otherwise, fall back to the Firebase refresh-token exchange the
 //     interactive `runos login` flow set up. This is the human-developer
 //     path: refresh token + Firebase API key live in ~/.runos/config.json
 //     and produce a fresh ID token (~1h lifetime) per call.
 //
-// Returns a clear "not authenticated" error when neither path is
-// available (no env var AND no Firebase config).
+// Returns a clear "not authenticated" error when no path is available
+// (no env var, no stored PAT, AND no Firebase config).
 func ResolveToken(cfg *config.Config) (string, error) {
 	// Issue 110: a PAT pasted from Slack / docs / web UIs often carries
 	// a trailing newline or leading space. Pre-fix the trailing-newline
 	// case leaked "net/http: invalid header field value for Authorization"
 	// because net/http refuses CR/LF in header values; the leading-space
 	// case silently passed (asymmetric). TrimSpace canonicalises both so
-	// the user sees the same clean result either way.
+	// the user sees the same clean result either way. The same trim
+	// covers a stored PAT for parity.
 	if pat := strings.TrimSpace(os.Getenv(APIKeyEnvVar)); pat != "" {
 		return pat, nil
 	}
+	if cfg != nil {
+		if pat := strings.TrimSpace(cfg.APIKey); pat != "" {
+			return pat, nil
+		}
+	}
 	if cfg == nil || cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated: run 'runos login' or set %s", APIKeyEnvVar)
+		return "", fmt.Errorf("not authenticated: run 'runos login' (or 'runos login --api-key <pat>') or set %s", APIKeyEnvVar)
 	}
 	return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 }

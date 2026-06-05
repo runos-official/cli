@@ -139,11 +139,11 @@ func TestUnflattenBody(t *testing.T) {
 
 func TestAnnotateDefaultCluster(t *testing.T) {
 	tests := []struct {
-		name            string
-		data            string
-		defaultCID      string
-		appendAsterisk  bool
-		want            string
+		name           string
+		data           string
+		defaultCID     string
+		appendAsterisk bool
+		want           string
 	}{
 		// Text mode: `*` appended to cid AND isDefault: true added.
 		{
@@ -615,11 +615,11 @@ func TestBodyFileFieldTypes(t *testing.T) {
 func TestExtractRawSingleStringOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		cmd     string
-		body    string
-		want    string
-		wantOk  bool
+		name   string
+		cmd    string
+		body   string
+		want   string
+		wantOk bool
 	}{
 		{
 			name:   "clusters/kubeconfig with string yaml",
@@ -1231,10 +1231,10 @@ func TestValidateInputValues(t *testing.T) {
 			body: map[string]any{"since": 9999999999},
 		},
 		{
-			name:    "I19-G apps/logs --since at cap boundary OK",
-			cmd:     cmdLogs,
-			args:    []string{"appid1"},
-			body:    map[string]any{"id": "appid1", "since": 7776000},
+			name: "I19-G apps/logs --since at cap boundary OK",
+			cmd:  cmdLogs,
+			args: []string{"appid1"},
+			body: map[string]any{"id": "appid1", "since": 7776000},
 		},
 		{
 			name:    "I19-G apps/logs --since just over cap rejected",
@@ -1418,9 +1418,9 @@ func TestRefuseUnknownBodyFileKeys(t *testing.T) {
 
 	t.Run("unknown keys refused and named", func(t *testing.T) {
 		body := map[string]any{
-			"name":             "renamed",
-			"unknownFieldOne":  "should-error",
-			"anotherTypo":      map[string]any{"inner": "x"},
+			"name":            "renamed",
+			"unknownFieldOne": "should-error",
+			"anotherTypo":     map[string]any{"inner": "x"},
 		}
 		err := refuseUnknownBodyFileKeys("body.yaml", body, updateCmd)
 		if err == nil {
@@ -1700,17 +1700,17 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 			wantErr: `ambiguous id: positional "appid1" and --id="zzzzz" disagree`,
 		},
 		{
-			name: "second positional disagrees on overrideId",
-			args: []string{"appid1", "AAA"},
-			cmd:  cmdOverrideShow,
-			body: map[string]any{"overrideId": "BBB"},
+			name:    "second positional disagrees on overrideId",
+			args:    []string{"appid1", "AAA"},
+			cmd:     cmdOverrideShow,
+			body:    map[string]any{"overrideId": "BBB"},
 			wantErr: `ambiguous overrideId: positional "AAA" and --override-id="BBB" disagree`,
 		},
 		{
-			name: "first positional disagrees on id",
-			args: []string{"appid1", "AAA"},
-			cmd:  cmdOverrideShow,
-			body: map[string]any{"id": "zzzzz"},
+			name:    "first positional disagrees on id",
+			args:    []string{"appid1", "AAA"},
+			cmd:     cmdOverrideShow,
+			body:    map[string]any{"id": "zzzzz"},
 			wantErr: `ambiguous id: positional "appid1" and --id="zzzzz" disagree`,
 		},
 		{
@@ -1730,20 +1730,20 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 			// the literal "false" in the next positional slot; the
 			// disagreement error gains a pointer at `--<flag>=false`
 			// (equals-form) so the user isn't chasing the wrong end.
-			name: "bool flag space-form lands false in positional (I27-AC)",
-			args: []string{"false"},
-			cmd:  cmdOverrideUpdate,
-			body: map[string]any{"id": "ultbd", "enabled": true},
+			name:    "bool flag space-form lands false in positional (I27-AC)",
+			args:    []string{"false"},
+			cmd:     cmdOverrideUpdate,
+			body:    map[string]any{"id": "ultbd", "enabled": true},
 			wantErr: `If you meant a boolean flag, use --<flag>=false`,
 		},
 		{
 			// I27-AC partner: same as above but the literal positional
 			// is "true" (matching `--enabled true` cobra-parses where
 			// --enabled is already true-by-presence).
-			name: "bool flag space-form lands true in positional (I27-AC)",
-			args: []string{"true"},
-			cmd:  cmdOverrideUpdate,
-			body: map[string]any{"id": "ultbd"},
+			name:    "bool flag space-form lands true in positional (I27-AC)",
+			args:    []string{"true"},
+			cmd:     cmdOverrideUpdate,
+			body:    map[string]any{"id": "ultbd"},
 			wantErr: `If you meant a boolean flag, use --<flag>=true`,
 		},
 		{
@@ -1939,10 +1939,10 @@ func TestPositionalArgForField(t *testing.T) {
 	cmdNoInput := manifest.Command{Command: "apps/list"}
 
 	cases := []struct {
-		name string
-		args []string
-		cmd  manifest.Command
-		want string
+		name       string
+		args       []string
+		cmd        manifest.Command
+		want       string
 		want_field string
 	}{
 		{name: "cid present", args: []string{"notreal"}, cmd: cmdClusters, want: "notreal", want_field: "cid"},
@@ -1983,9 +1983,9 @@ func TestValidateBodyFilePath(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		path      string
-		wantErr   string
+		name    string
+		path    string
+		wantErr string
 	}{
 		{"valid file no error", good, ""},
 		{"missing file", filepath.Join(dir, "nope.yaml"), "-f file not found"},
@@ -2035,10 +2035,10 @@ func TestBodyFileProvidesField(t *testing.T) {
 	garbage := writeFile("garbage.yaml", "::not yaml::\n")
 
 	cases := []struct {
-		name      string
-		path      string
-		field     string
-		want      bool
+		name  string
+		path  string
+		field string
+		want  bool
 	}{
 		{"empty path", "", "id", false},
 		{"empty field", withID, "", false},
@@ -2252,10 +2252,10 @@ func TestJobsCancelExitGate(t *testing.T) {
 // lifts it into a top-level envelope or stderr notice (I11-S).
 func TestExtractLogsDiagnostic(t *testing.T) {
 	cases := []struct {
-		name     string
-		body     string
-		wantMsg  string
-		wantHit  bool
+		name    string
+		body    string
+		wantMsg string
+		wantHit bool
 	}{
 		{
 			name:    "single diagnostic entry",
@@ -2603,7 +2603,6 @@ func TestLoadYAMLFileStdin(t *testing.T) {
 		}
 	})
 }
-
 
 // I27-AE residual: queryHasRawUserRoleDDL matches the destructive
 // USER / ROLE / DATABASE DDL that bypasses conductor 17.13.0's

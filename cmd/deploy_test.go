@@ -1202,7 +1202,7 @@ func TestMergeServerEnvIntoLocalFile_NoOpWhenLocalMatchesServer(t *testing.T) {
 	}
 }
 
-// Regression test for I2-4e' / I2-4e''' (TEST_LOG.md): the
+// Regression test for I2-4e' / I2-4e”' (TEST_LOG.md): the
 // destructive-removal WARNING block must print whenever a custom-
 // domain removal is detected, regardless of --force / --yes / non-tty.
 // Round-6 also pins the source endpoint as /:aid/domains rather than
@@ -1421,4 +1421,3 @@ func TestMergeServerEnvIntoLocalFile_MaterializesFileOnFreshCheckout(t *testing.
 		t.Errorf("file should be materialised with server values, got %v", got)
 	}
 }
-

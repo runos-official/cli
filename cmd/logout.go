@@ -22,7 +22,7 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if already logged out
-	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" {
+	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" && cfg.APIKey == "" {
 		fmt.Println("Already logged out.")
 		return nil
 	}
@@ -32,6 +32,7 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	cfg.Firebase = nil
 	cfg.AccountID = ""
 	cfg.SignedInAt = ""
+	cfg.APIKey = ""
 
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)

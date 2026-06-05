@@ -170,9 +170,9 @@ func TestBuildPulledService_FlagsFilteredToManifestNames(t *testing.T) {
 		"id":   "vsid1",
 		"name": "cache",
 		"flags": map[string]any{
-			"secured":    true,  // declared in add.Input.Flags
-			"apacheAge":  false, // not declared, should be dropped
-			"vector":     true,  // not declared, should be dropped
+			"secured":   true,  // declared in add.Input.Flags
+			"apacheAge": false, // not declared, should be dropped
+			"vector":    true,  // not declared, should be dropped
 		},
 	}
 	got := BuildPulledService(raw, "valkey", "mycluster3", "acct1", "vsid1", addCmd, updateCmd)

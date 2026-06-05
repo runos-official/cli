@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.6.0
+
+Adds `runos login --api-key`, a way to persist a personal access token (PAT) as the active credential instead of the interactive browser flow. Install via `https://get.runos.com/cli.sh?release=v1.6.0`.
+
+### New
+
+- **`runos login --api-key <pat> [--account-id <id>]`**: stores a PAT in `~/.runos/config.json` (already `0600`) and switches the active credential to it, so every subsequent command authenticates with the PAT without exporting `RUNOS_API_KEY` in each shell. Previously a PAT was only consumable via the env var; this is the "force a PAT on this machine" path for a developer who wants headless-style auth locally.
+  - **Precedence is unchanged where it matters**: the `RUNOS_API_KEY` environment variable still wins over a stored key, so a CI runner overrides a local default. Order is env var > stored PAT > Firebase refresh-token. A stored PAT short-circuits before any Firebase exchange.
+  - **Account id**: `--account-id` is stored alongside the key; if omitted, the account already in config (from a prior login) is kept. A PAT addresses a specific account, so a login with neither is refused rather than silently account-less. The id is charset-validated (alphanumeric, 1-64) before it can be joined into request paths.
+  - **The token is never echoed** to the terminal on store, and `runos logout` now clears the stored PAT alongside the Firebase credentials (URLs and default cluster are preserved). Setting a PAT clears any existing Firebase refresh-token state so exactly one credential is active.
+  - **No MCP surface**: setting a PAT stays CLI-only. The MCP server continues to inherit `RUNOS_API_KEY` from its host environment and never accepts a raw token as a tool argument, so the secret can't leak into tool output / LLM context.
+
 ## v1.5.0
 
 Adds `runos services harbor build-image`, a first-class way to build an auxiliary (non-app) container image from a local build context and push it into the cluster's system Harbor under the managed `runos-apps` project. Install via `https://get.runos.com/cli.sh?release=v1.5.0`.

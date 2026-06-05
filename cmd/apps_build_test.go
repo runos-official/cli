@@ -45,9 +45,9 @@ func TestEnforceBuildVCSDeployType(t *testing.T) {
 // fallback is in play (mirrors buildVCSDeploySummary's contract).
 func TestBuildAppsBuildSummary(t *testing.T) {
 	cases := []struct {
-		name        string
-		configPath  string
-		wantConfig  string
+		name       string
+		configPath string
+		wantConfig string
 	}{
 		{name: "explicit configPath rendered", configPath: "apps/billing/runos.yaml", wantConfig: "configPath: apps/billing/runos.yaml"},
 		{name: "empty configPath renders server-default sentinel", configPath: "", wantConfig: "configPath: <server default>"},

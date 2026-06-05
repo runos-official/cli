@@ -116,8 +116,8 @@ type pullSummary struct {
 	// Hint is populated when Drifted is non-empty so the LLM/MCP caller
 	// gets the resolution path inline instead of having to read the
 	// human-readable error stream. Empty when no drift refusal occurred.
-	Hint    string            `json:"hint,omitempty"`
-	Skipped []pullSkipEntry   `json:"skipped,omitempty"`
+	Hint    string          `json:"hint,omitempty"`
+	Skipped []pullSkipEntry `json:"skipped,omitempty"`
 }
 
 // driftedAppEntry records an app whose local files diverged from the
@@ -133,11 +133,11 @@ type driftedAppEntry struct {
 // distinguish "fully in-sync re-pull" from "wrote N new files" without
 // reading the human-readable text.
 type pulledAppEntry struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	YAML               apps.WriteResult  `json:"yaml"`
-	SecretEnv          *apps.WriteResult `json:"secretEnv,omitempty"`
-	Env                *apps.WriteResult `json:"env,omitempty"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	YAML      apps.WriteResult  `json:"yaml"`
+	SecretEnv *apps.WriteResult `json:"secretEnv,omitempty"`
+	Env       *apps.WriteResult `json:"env,omitempty"`
 	// EnvVars is the count of plain user-set env vars — matches what
 	// `apps_env-vars` returns. SecretEnvVars is the count of user-set
 	// secret env vars (platform-injected keys from `requires:` aliases
@@ -145,8 +145,8 @@ type pulledAppEntry struct {
 	// Pre-fix this was a single `EnvVars` field summing both, which
 	// double-counted requires-injected keys and disagreed with
 	// `apps_env-vars` ground truth.
-	EnvVars            int               `json:"envVarCount"`
-	SecretEnvVars      int               `json:"secretEnvVarCount"`
+	EnvVars       int `json:"envVarCount"`
+	SecretEnvVars int `json:"secretEnvVarCount"`
 	// SecretEnvVarsPlatformInjected is the count of secret env keys
 	// the pull wrote to disk that match a `requires.<alias>.env`
 	// mapping. They land in the file because the platform re-injects
@@ -155,12 +155,12 @@ type pulledAppEntry struct {
 	// user-set, so the count is reported separately from
 	// SecretEnvVars (I5-E). Total bytes written = SecretEnvVars +
 	// SecretEnvVarsPlatformInjected.
-	SecretEnvVarsPlatformInjected int    `json:"secretEnvVarCountPlatformInjected,omitempty"`
-	SecretFilesTotal   int               `json:"secretFilesTotal,omitempty"`
-	SecretFilesWritten int               `json:"secretFilesWritten,omitempty"`
-	OverridesTotal     int               `json:"overridesTotal,omitempty"`
-	OverridesWritten   int               `json:"overridesWritten,omitempty"`
-	Code               *pulledCodeEntry  `json:"code,omitempty"`
+	SecretEnvVarsPlatformInjected int              `json:"secretEnvVarCountPlatformInjected,omitempty"`
+	SecretFilesTotal              int              `json:"secretFilesTotal,omitempty"`
+	SecretFilesWritten            int              `json:"secretFilesWritten,omitempty"`
+	OverridesTotal                int              `json:"overridesTotal,omitempty"`
+	OverridesWritten              int              `json:"overridesWritten,omitempty"`
+	Code                          *pulledCodeEntry `json:"code,omitempty"`
 	// CodeVersion reports the local source-version sidecar's status
 	// against the server's current archive list. Always populated when
 	// a sidecar exists, even when --code wasn't passed this run, so
@@ -229,10 +229,10 @@ type configPathUpdateError struct {
 
 // pulledCodeEntry summarises what the --code path did for one app.
 type pulledCodeEntry struct {
-	CliUploadID string `json:"cliUploadId"`
-	PushTime    string `json:"pushTime,omitempty"`
-	Size        int64  `json:"size,omitempty"`
-	FilesWritten int   `json:"filesWritten"`
+	CliUploadID  string `json:"cliUploadId"`
+	PushTime     string `json:"pushTime,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	FilesWritten int    `json:"filesWritten"`
 }
 
 // allInSync is true when nothing on disk needed a change for this app:
@@ -1753,6 +1753,3 @@ func cascadePulledServices(exec *dynacmd.Executor, m *manifest.Manifest, appDir,
 	}
 	return skips
 }
-
-
-

@@ -247,10 +247,10 @@ func parseAccountDomainsResponse(body []byte) ([]Domain, error) {
 // Regression history (TEST_LOG.md):
 //   - I2-4e (round 3): originally sourced from /:aid/:cid/apps/:id/
 //     network-access. Worked initially.
-//   - I2-4e'' (round 5): tightened filter to drop IN_CLUSTER and
+//   - I2-4e” (round 5): tightened filter to drop IN_CLUSTER and
 //     *.svc.cluster.local entries, since the original filter let K8s
 //     internal service DNS through.
-//   - I2-4e''' (round 6, this commit): switched source endpoint to
+//   - I2-4e”' (round 6, this commit): switched source endpoint to
 //     /:aid/domains. The network-access endpoint never includes
 //     user custom domains (only RUNOS_PUBLIC_<port> + IN_CLUSTER_<port>),
 //     so round-5's tightened filter went from "too many entries" to

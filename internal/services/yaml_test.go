@@ -102,9 +102,9 @@ func TestIsServiceYAMLFilename(t *testing.T) {
 	}{
 		{"runos.service.mycluster3.postgresql.abc12.yaml", true},   // canonical
 		{"runos.service.mycluster2.cert-manager.aegrg.yaml", true}, // canonical with hyphenated type
-		{"runos.service.zz.x.yaml", true},                   // tolerated old shape (prefix+suffix)
+		{"runos.service.zz.x.yaml", true},                          // tolerated old shape (prefix+suffix)
 		{"runos.mycluster3.abc12.yaml", false},                     // app yaml, not service yaml
-		{"runos.service.yaml", true},                        // boundary; prefix matches, accept
+		{"runos.service.yaml", true},                               // boundary; prefix matches, accept
 		{"runos.service.mycluster3.postgresql.abc12.yml", false},   // wrong extension (canonical detector)
 		{".runos.service.mycluster3.postgresql.abc12.yaml", false}, // hidden file, skip
 	}
@@ -151,10 +151,10 @@ func TestFindByID(t *testing.T) {
 	}
 
 	cases := []struct {
-		name           string
-		cid, sid       string
-		wantSubstring  string
-		wantEmpty      bool
+		name          string
+		cid, sid      string
+		wantSubstring string
+		wantEmpty     bool
 	}{
 		{"matches canonical filename", "mycluster3", "abc12", canonical, false},
 		{"matches renamed file", "mycluster3", "vsid1", "my-renamed-service.yaml", false},

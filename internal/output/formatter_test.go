@@ -480,7 +480,7 @@ func TestHeaderLabel(t *testing.T) {
 		{"name", "NAME"},
 		{"createdAt", "CREATEDAT"},
 		{"id", "ID"},
-		{"__docId", "ID"},     // alias → upper(id)
+		{"__docId", "ID"}, // alias → upper(id)
 		{"enabled", "ENABLED"},
 	}
 	for _, c := range cases {

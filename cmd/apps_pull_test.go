@@ -30,9 +30,9 @@ func TestWriteStateLabel(t *testing.T) {
 
 func TestWrittenInSyncLabel(t *testing.T) {
 	tests := []struct {
-		name             string
-		written, inSync  int
-		want             string
+		name            string
+		written, inSync int
+		want            string
 	}{
 		{"all in sync", 0, 3, "all 3 in sync"},
 		{"all written", 2, 0, "2 written"},
@@ -50,11 +50,11 @@ func TestWrittenInSyncLabel(t *testing.T) {
 
 func TestValidatePullPlan(t *testing.T) {
 	tests := []struct {
-		name      string
-		plan      pullPlan
-		force     bool
-		codeFlag  bool
-		wantErr   string // substring; "" means should succeed
+		name     string
+		plan     pullPlan
+		force    bool
+		codeFlag bool
+		wantErr  string // substring; "" means should succeed
 	}{
 		{"bulk, no force/code", pullPlan{mode: "bulk"}, false, false, ""},
 		{"yaml mode + force ok", pullPlan{mode: "yaml", appID: "x"}, true, false, ""},
@@ -809,4 +809,3 @@ func TestPulledAppEntry_ConfigPathUpdateErrorJSON(t *testing.T) {
 		})
 	}
 }
-

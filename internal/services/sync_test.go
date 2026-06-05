@@ -419,7 +419,7 @@ func TestServicesSyncPlan_RedactSecrets(t *testing.T) {
 			"replicas": 1,
 		},
 		PatchBody: map[string]any{
-			"adminToken":         "tok-secret",
+			"adminToken":                 "tok-secret",
 			"resourceRequirementClassId": "postgresql.c0.beff",
 		},
 	}
@@ -448,6 +448,6 @@ func TestServicesSyncPlan_RedactSecrets(t *testing.T) {
 func TestServicesSyncPlan_RedactSecrets_NilSafe(t *testing.T) {
 	t.Parallel()
 	var plan *SyncPlan
-	plan.RedactSecrets() // must not panic
+	plan.RedactSecrets()          // must not panic
 	(&SyncPlan{}).RedactSecrets() // empty bodies, must not panic
 }

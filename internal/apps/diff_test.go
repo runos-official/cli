@@ -23,12 +23,12 @@ import (
 func TestComputeYAMLDiff_InSyncWhenBytesMatch(t *testing.T) {
 	dir := t.TempDir()
 	p := &PulledApp{
-		App:        "svc",
-		DeployType: "cli",
-		ID:         "x",
-		CID:        "k1",
-		AID:        "acc-1",
-		Replicas:   1,
+		App:                 "svc",
+		DeployType:          "cli",
+		ID:                  "x",
+		CID:                 "k1",
+		AID:                 "acc-1",
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
 	}
 	data, err := yaml.Marshal(p)
@@ -56,7 +56,7 @@ func TestComputeYAMLDiff_DriftProducesUnifiedDiff(t *testing.T) {
 	dir := t.TempDir()
 	local := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
-		Replicas: 1,
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
 	}
 	localBytes, _ := yaml.Marshal(local)
@@ -585,7 +585,7 @@ func TestComputeYAMLDiff_AdditiveOnlyWhenServerHasMore(t *testing.T) {
 	dir := t.TempDir()
 	local := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
-		Replicas: 1,
+		Replicas:            1,
 		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
 	}
 	localBytes, _ := yaml.Marshal(local)
@@ -1843,8 +1843,8 @@ healthCheck: standard
 `)
 	got := listServerOnlyFields(local, server)
 	want := map[string]bool{
-		`clusterDomainId ("elpfn")`:  true,
-		`healthCheck ("standard")`:   true,
+		`clusterDomainId ("elpfn")`: true,
+		`healthCheck ("standard")`:  true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d entries (%v), want %d (%v)", len(got), got, len(want), want)
@@ -1990,9 +1990,9 @@ func TestIsRoundTripOnlyYAMLField(t *testing.T) {
 
 func TestFilterRoundTripFromYAMLDiff_FoldsPureWaiverToInSync(t *testing.T) {
 	sd := SectionDiff{
-		Status: StatusDrift,
-		Path:   "/tmp/runos.yaml",
-		UnifiedDiff: "--- local\n+++ server\n@@\n aid: myacct\n-sourceDir: ..\n replicas: 1\n",
+		Status:           StatusDrift,
+		Path:             "/tmp/runos.yaml",
+		UnifiedDiff:      "--- local\n+++ server\n@@\n aid: myacct\n-sourceDir: ..\n replicas: 1\n",
 		ServerOnlyFields: []string{`sourceDir ("..")`},
 	}
 	got := FilterRoundTripFromYAMLDiff(sd)
@@ -2011,9 +2011,9 @@ func TestFilterRoundTripFromYAMLDiff_KeepsActionableLines(t *testing.T) {
 	// Mixed: sourceDir + a real replicas change. Should keep replicas
 	// in the body, drop sourceDir, stay in drift state.
 	sd := SectionDiff{
-		Status: StatusDrift,
-		Path:   "/tmp/runos.yaml",
-		UnifiedDiff: "--- local\n+++ server\n@@\n aid: myacct\n-sourceDir: ..\n-replicas: 1\n+replicas: 2\n",
+		Status:           StatusDrift,
+		Path:             "/tmp/runos.yaml",
+		UnifiedDiff:      "--- local\n+++ server\n@@\n aid: myacct\n-sourceDir: ..\n-replicas: 1\n+replicas: 2\n",
 		ServerOnlyFields: []string{`sourceDir ("..")`, "replicas (2)"},
 	}
 	got := FilterRoundTripFromYAMLDiff(sd)

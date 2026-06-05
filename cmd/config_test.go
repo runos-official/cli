@@ -90,10 +90,10 @@ func TestConfigKeyAliases_TargetCanonicalKeys(t *testing.T) {
 // from unknown keys and points at the right path.
 func TestConfigSetUnknownKeyError(t *testing.T) {
 	cases := []struct {
-		name      string
-		rawKey    string
-		normKey   string
-		wantSubs  []string
+		name     string
+		rawKey   string
+		normKey  string
+		wantSubs []string
 	}{
 		{"env redirects to config env subcommand", "env", "env", []string{"read-only", "runos config env"}},
 		{"account-id redirects to login", "account-id", "account-id", []string{"auth flow", "runos login"}},
