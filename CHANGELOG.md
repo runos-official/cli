@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.1
+
+Maintenance release. Adds the deterministic release runbook used to cut and verify CLI releases, and is the first release to flow through the live build-provenance validation pipeline (release webhook to attestation verify to the R2 digest registry). No user-facing CLI behavior change from v1.7.0. Install via `https://get.runos.com/cli.sh?release=v1.7.1`.
+
+### Internal
+
+- **Release runbook** (`scripts/release.sh`, `make release`, and the `release-cli` skill): one deterministic, fail-closed path for cutting a release. Gates (`go build`/`go vet`/`go test`/`make local`), fast-forward `main` to `dev`, tag, push, watch CI, and verify the published asset's attestation, plus a public-repo sensitivity scan over the release payload. Serves as the entry point for automated / foreman-dispatched releases.
+
 ## v1.7.0
 
 Hardens CLI distribution: every released archive now carries a keyless build-provenance attestation, and the archives are renamed to `runos-{os}-{arch}` so a downloaded binary can be verified against a server-published digest before it runs. Install via `https://get.runos.com/cli.sh?release=v1.7.0`.
