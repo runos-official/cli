@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.7.2
+
+Maintenance release. No user-facing CLI behavior change from v1.7.1. Cut as the supervised verification target for the obj-52 re-rollout: publishing it drives a fresh, observed release event through the live validation pipeline (release webhook to HMAC verify to build-provenance attestation verify to the shared R2 digest registry to the `current.json` flip), so the fail-closed install guarantee can be exercised end to end under supervision across dev, beta, and prod. Install via `https://get.runos.com/cli.sh?release=v1.7.2`.
+
 ## v1.7.1
 
 Maintenance release. Adds the deterministic release runbook used to cut and verify CLI releases, and is the first release to flow through the live build-provenance validation pipeline (release webhook to attestation verify to the R2 digest registry). No user-facing CLI behavior change from v1.7.0. Install via `https://get.runos.com/cli.sh?release=v1.7.1`.
