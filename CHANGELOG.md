@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.7.0
+
+Hardens CLI distribution: every released archive now carries a keyless build-provenance attestation, and the archives are renamed to `runos-{os}-{arch}` so a downloaded binary can be verified against a server-published digest before it runs. Install via `https://get.runos.com/cli.sh?release=v1.7.0`.
+
+### New
+
+- **Build-provenance attestation on every release** (foreman obj-50). The release workflow now runs `actions/attest-build-provenance` (keyless, Sigstore/OIDC, no long-lived secret), attesting each platform archive to the workflow's OIDC identity `https://github.com/runos-official/cli/.github/workflows/release.yml`. This lets the distribution side prove a downloaded `runos` is the exact artifact this pipeline built, defending against post-build tampering (replace-asset / swap-checksums) of the released archives.
+- **Release trust model documented** (`SECURITY.md`). Captures the full chain (keyless attestation, server-side validator + digest registry, fail-closed installers) and the accepted limitation that attestation does not defend against a compromised build, plus the admin-only GitHub controls (branch protection, required review, restricted workflow edits, restricted tag/release publishing) that are the only mitigation for that limitation. Every `uses:` in `release.yml` and `ci.yml` is SHA-pinned.
+
+### Changed (one-time break)
+
+- **Release archives renamed from `runos-latest-{os}-{arch}` to `runos-{os}-{arch}`** (`.tar.gz` for darwin/linux, `.zip` for windows). The literal `latest` is dropped so asset names align 1:1 with the digest-registry path. This is a deliberate one-time break: existing `releases/latest/download/runos-latest-*` URLs stop resolving for releases cut from this version on; consumers must move to exact-tag download URLs. `checksums.txt` tracks the new names automatically.
+- **Self-updater synced to the new asset names** (`internal/update`). `runos update` now downloads the renamed asset and matches the corresponding `checksums.txt` line. Note: a `runos` binary from v1.6.0 or earlier still looks for the old `runos-latest-*` name, so updating onto v1.7.0 from an older binary requires a fresh install via the installer rather than `runos update`.
+
 ## v1.6.0
 
 Adds `runos login --api-key`, a way to persist a personal access token (PAT) as the active credential instead of the interactive browser flow. Install via `https://get.runos.com/cli.sh?release=v1.6.0`.
