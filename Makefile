@@ -2,6 +2,7 @@
 
 # Color codes for output
 GREEN := \033[0;32m
+RED := \033[0;31m
 BLUE := \033[0;34m
 CYAN := \033[0;36m
 GRAY := \033[0;90m
@@ -41,6 +42,18 @@ test:
 clean:
 	@rm -f runos
 
+# ============================================================================
+# Release
+# ============================================================================
+
+# Cut a release: runs every gate (build/vet/test/make local), fast-forwards
+# main to dev, tags, pushes, watches CI, and verifies the attestation.
+# Usage: make release VERSION=v1.7.0   (add CHECK=1 to run gates only, no push)
+.PHONY: release
+release:
+	@test -n "$(VERSION)" || { echo "$(RED)set VERSION, e.g. make release VERSION=v1.7.0$(NC)"; exit 1; }
+	@scripts/release.sh $(VERSION) $(if $(CHECK),--check,)
+
 .PHONY: version
 version:
 	@echo "$(VERSION)"
@@ -59,5 +72,8 @@ help:
 	@echo "  make version  Show current version"
 	@echo "  make clean    Remove build artifacts"
 	@echo ""
-	@echo "Cross-platform builds and releases are handled by GitHub Actions."
-	@echo "To release: git tag v$(VERSION) && git push origin v$(VERSION)"
+	@echo "  make release VERSION=vX.Y.Z         Cut a release (gates, tag, push, verify)"
+	@echo "  make release VERSION=vX.Y.Z CHECK=1 Run release gates only, no tag/push"
+	@echo ""
+	@echo "Release runs scripts/release.sh: build/vet/test/make local, fast-forward"
+	@echo "main to dev, tag, push, watch CI, and verify the build-provenance attestation."

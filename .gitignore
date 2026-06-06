@@ -25,7 +25,9 @@ vendor/
 # IDE and editor
 .idea/
 .vscode/
-.claude/
+# Ignore local Claude state but track shared skills (release-cli runbook, etc.)
+.claude/*
+!.claude/skills/
 *.swp
 *.swo
 *~

@@ -301,7 +301,20 @@ Store auth tokens securely in `~/.runos/`. Consider implementing API key fallbac
 After making code changes, always run `make local` to build and install the CLI to `~/.local/bin/runos`.
 
 ### Releasing
-1. Add a `## vX.Y.Z` section to `CHANGELOG.md` with release notes
-2. Commit, tag (`git tag vX.Y.Z`), and push with `--tags`
-3. CI builds all platforms, extracts the matching section from `CHANGELOG.md`, and creates the GitHub release with those notes
-4. If no changelog entry exists for the version, CI falls back to auto-generated notes from commits
+
+A CLI release IS the deployment: the CLI ships as GitHub release artifacts (attested, then validated server-side by Templates). There is ONE canonical path. Do not hand-run git/gh for a release.
+
+**Entry point (agents, incl. foreman-dispatched): the [`release-cli` skill](.claude/skills/release-cli/SKILL.md).** It wraps the deterministic mechanism with the two judgment gates a machine cannot do, code verification (review the diff, not just tests) and a public-repo sensitivity audit (no real account/cluster/app IDs, OSIDs, org names), then runs the script.
+
+**The mechanism: [scripts/release.sh](scripts/release.sh)**, fronted by `make release`. It also enforces a deterministic, fail-closed **sensitivity floor** (secret-shaped content in the release payload aborts the release) that runs even if someone invokes the script directly.
+
+1. Write the `## vX.Y.Z` section in `CHANGELOG.md` first (the script refuses to release a version with no matching section; CI extracts that section as the GitHub release notes, falling back to auto-generated notes only if absent). Commit it on `dev`.
+2. `make release VERSION=vX.Y.Z` (or `scripts/release.sh vX.Y.Z`). The script, in order:
+   - **Preflight**: tools present + `gh` authed; tag not already taken (local or origin); CHANGELOG section exists; working tree clean; `dev` and `main` in sync with origin and `main` fast-forwardable to `dev`.
+   - **Gates** (against the `dev` tree, any failure aborts before tagging): `go build ./...`, `go vet ./...`, `go test ./...`, `make local`.
+   - **Cutover**: fast-forward `main` to `dev` (refuses if histories diverged), tag `main`, push `main` + tag + `dev`.
+   - **CI watch**: wait for the Release workflow run for the tag to succeed.
+   - **Attest**: download a published asset and verify its build-provenance attestation is bound to `release.yml @ refs/tags/<VERSION>`.
+3. `make release VERSION=vX.Y.Z CHECK=1` (or `scripts/release.sh vX.Y.Z --check`) runs preflight + gates only and stops before any tag/push, for a no-side-effect dry run.
+
+Releases are cut from `main`; work lands on `dev`; the script does the `dev` -> `main` fast-forward as part of cutover. The Templates R2 backfill + installer/k8s deploy is a SEPARATE repo with its own process and is NOT part of this script (see foreman obj-50 for the full cross-repo go-live sequence).
