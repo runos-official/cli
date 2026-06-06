@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -54,7 +56,7 @@ jobs:
             echo "Building ${GOOS}/${GOARCH}..."
             CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags="$LDFLAGS -s -w" -o "dist/${output}" .
 
-            archive="runos-latest-${GOOS}-${GOARCH}.${ext}"
+            archive="runos-${GOOS}-${GOARCH}.${ext}"
             if [ "$ext" = "zip" ]; then
               (cd dist && zip -q "../dist/${archive}" "${output}")
             else
@@ -71,6 +73,19 @@ jobs:
           sha256sum * > checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
+
+      # Keyless (Sigstore/OIDC) build-provenance attestation for every
+      # released archive. Binds each artifact's sha256 to this workflow's
+      # OIDC identity, so a downstream verifier (the Templates validator and
+      # `gh attestation verify ... --repo runos-official/cli`) can prove the
+      # archive is the exact artifact this pipeline produced. No long-lived
+      # secret, safe for a public repo.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/runos-*.tar.gz
+            dist/runos-*.zip
 
       - name: Extract release notes
         id: notes

@@ -190,7 +190,7 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 		return fmt.Errorf("invalid version format: %s", latestVersion)
 	}
 
-	binaryName := fmt.Sprintf("runos-latest-%s-%s.%s", osName, arch, ext)
+	binaryName := fmt.Sprintf("runos-%s-%s.%s", osName, arch, ext)
 	downloadURL := fmt.Sprintf("%s/v%s/%s", cdnBaseURL, latestVersion, binaryName)
 
 	fmt.Printf("Downloading from %s...\n", downloadURL)
