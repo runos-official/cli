@@ -308,13 +308,17 @@ A CLI release IS the deployment: the CLI ships as GitHub release artifacts (atte
 
 **The mechanism: [scripts/release.sh](scripts/release.sh)**, fronted by `make release`. It also enforces a deterministic, fail-closed **sensitivity floor** (secret-shaped content in the release payload aborts the release) that runs even if someone invokes the script directly.
 
+**Branch model:** `dev` = local development (the commit that gets tagged + deployed); `deployed` = the record of what has shipped (the script fast-forwards it only on a successful deploy); `main` = **human-controlled, tooling NEVER touches it** (you merge `dev`/`deployed` into `main` yourself after personal verification). A deploy advances `dev` and `deployed`; it leaves `main` alone.
+
 1. Write the `## vX.Y.Z` section in `CHANGELOG.md` first (the script refuses to release a version with no matching section; CI extracts that section as the GitHub release notes, falling back to auto-generated notes only if absent). Commit it on `dev`.
 2. `make release VERSION=vX.Y.Z` (or `scripts/release.sh vX.Y.Z`). The script, in order:
-   - **Preflight**: tools present + `gh` authed; tag not already taken (local or origin); CHANGELOG section exists; working tree clean; `dev` and `main` in sync with origin and `main` fast-forwardable to `dev`.
+   - **Preflight**: tools present + `gh` authed; tag not already taken (local or origin); CHANGELOG section exists; working tree clean; `dev` in sync with origin; `deployed` (if it exists) in sync and fast-forwardable to `dev`. `main` is not inspected.
+   - **Sensitivity floor** (PUBLIC repo): deterministic secret-pattern scan over the deploy payload (`deployed..dev`); aborts on any hit.
    - **Gates** (against the `dev` tree, any failure aborts before tagging): `go build ./...`, `go vet ./...`, `go test ./...`, `make local`.
-   - **Cutover**: fast-forward `main` to `dev` (refuses if histories diverged), tag `main`, push `main` + tag + `dev`.
+   - **Deploy**: tag the `dev` commit, push the tag + `dev`. `main` is NOT touched.
    - **CI watch**: wait for the Release workflow run for the tag to succeed.
    - **Attest**: download a published asset and verify its build-provenance attestation is bound to `release.yml @ refs/tags/<VERSION>`.
+   - **Record**: only on success, fast-forward `deployed` to the shipped commit and push it.
 3. `make release VERSION=vX.Y.Z CHECK=1` (or `scripts/release.sh vX.Y.Z --check`) runs preflight + gates only and stops before any tag/push, for a no-side-effect dry run.
 
-Releases are cut from `main`; work lands on `dev`; the script does the `dev` -> `main` fast-forward as part of cutover. The Templates R2 backfill + installer/k8s deploy is a SEPARATE repo with its own process and is NOT part of this script (see foreman obj-50 for the full cross-repo go-live sequence).
+The Templates R2 registry + installer/k8s deploy is a SEPARATE repo with its own deploy skill and is NOT part of this script. The live validation pipeline (release webhook -> attestation verify -> R2 -> fail-closed installer) is deployed and verified end to end (foreman obj-50).
