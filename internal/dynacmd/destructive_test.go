@@ -41,6 +41,12 @@ func TestIsDestructiveCommand(t *testing.T) {
 		{"PATCH delete-object is destructive (prefix match)", manifest.Command{Command: "services/minio/{id}/delete-object", Method: "PATCH"}, true},
 		{"PATCH revoke-database is destructive", manifest.Command{Command: "services/postgresql/{id}/revoke-database", Method: "PATCH"}, true},
 		{"PATCH remove-peer is destructive", manifest.Command{Command: "services/wireguard/{id}/remove-peer", Method: "PATCH"}, true},
+		// obj-58 / Story 103: postgres teardown verbs. drop-user / drop-
+		// database are sync PATCH (method-agnostic prefix match on `drop-`)
+		// and must inherit the --yes guard + confirmation prompt. The
+		// prefix also future-proofs any further drop-* verb.
+		{"PATCH drop-user is destructive (drop- prefix)", manifest.Command{Command: "services/postgresql/{id}/drop-user", Method: "PATCH"}, true},
+		{"PATCH drop-database is destructive (drop- prefix)", manifest.Command{Command: "services/postgresql/{id}/drop-database", Method: "PATCH"}, true},
 		// Non-destructive POST/PATCH should NOT trip the guard. The
 		// safety net cuts the wrong way only on these few verbs.
 		{"POST add is not destructive", manifest.Command{Command: "services/postgresql/add", Method: "POST"}, false},

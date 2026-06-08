@@ -43,11 +43,13 @@ var destructiveVerbSuffixes = []string{
 
 // destructiveVerbPrefixes are leading-token matches used when the final
 // segment carries a sub-resource name (e.g. `delete-bucket`,
-// `delete-object`, `revoke-database`, `revoke-bucket`, `remove-peer`).
+// `delete-object`, `revoke-database`, `revoke-bucket`, `remove-peer`,
+// `drop-user`, `drop-database`).
 var destructiveVerbPrefixes = []string{
 	"delete-",
 	"revoke-",
 	"remove-",
+	"drop-",
 }
 
 // isDestructiveCommand reports whether cmdDef needs a confirmation
