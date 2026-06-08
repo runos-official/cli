@@ -48,6 +48,17 @@ func TestFlagNameFor(t *testing.T) {
 		{"API", "api"},
 		// Single trailing acronym after lower run.
 		{"resourceCPU", "resource-cpu"},
+		// clone-database flag-spelling overrides: these three field
+		// names map to a shorter agreed flag form while the body key
+		// stays the camelCase field name. The override pre-empts the
+		// kebab transform.
+		{"sourcePgOsid", "source-osid"},
+		{"sourceDatabase", "source-db"},
+		{"targetDatabase", "target-db"},
+		// Sibling clone-database fields that need no override (natural
+		// kebab already matches the agreed flag).
+		{"sourceCid", "source-cid"},
+		{"owner", "owner"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.in, func(t *testing.T) {

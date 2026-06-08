@@ -2648,3 +2648,77 @@ func TestQueryHasRawUserRoleDDL(t *testing.T) {
 		})
 	}
 }
+
+// cloneDatabaseCommand returns the manifest.Command for
+// services/postgresql/{id}/clone-database matching conductor's shipped
+// entry: positional `id` (TARGET instance) fills :id; the five discrete
+// string fields carry the wire body; output declares jobId (auto --follow).
+func cloneDatabaseCommand() manifest.Command {
+	return manifest.Command{
+		Command:  "services/postgresql/{id}/clone-database",
+		Endpoint: "/:aid/:cid/services/postgresql/:id/clone-database",
+		Method:   http.MethodPost,
+		Input: &manifest.Input{
+			Fields: []manifest.Field{
+				{Name: "id", Type: "string", Required: true, Positional: true},
+				{Name: "sourceCid", Type: "string", Required: true},
+				{Name: "sourcePgOsid", Type: "string", Required: true},
+				{Name: "sourceDatabase", Type: "string", Required: true},
+				{Name: "targetDatabase", Type: "string", Required: true},
+				{Name: "owner", Type: "string", Required: true},
+			},
+		},
+		Output: &manifest.Output{Type: "object", Fields: []manifest.OutputField{{Name: "jobId"}}},
+	}
+}
+
+// TestFilterPathParamsFromBody_CloneDatabase pins the clone-database
+// flag→body/path routing. The TARGET instance osid (`id`) is a path
+// param (:id) and must be stripped from the request body, while the five
+// discrete fields stay at top level (they are Fields, not Flags, so they
+// are NOT nested under "flags"). Crucially `sourceCid` must survive: it
+// is an ordinary body field and must not be mistaken for the ambient
+// `:cid` path slot (which the executor fills from --cid / config, never
+// from a per-field flag). Guards against a regression where discrete-flag
+// routing or the ambient-:cid distinction breaks. Regression target:
+// clone-database flag→path/body mapping.
+func TestFilterPathParamsFromBody_CloneDatabase(t *testing.T) {
+	cmdDef := cloneDatabaseCommand()
+	body := map[string]any{
+		"id":             "tgt12", // TARGET instance osid → fills :id, must be stripped
+		"sourceCid":      "srccluster",
+		"sourcePgOsid":   "postgresql-xy9kl",
+		"sourceDatabase": "appdb",
+		"targetDatabase": "appdb",
+		"owner":          "app_user",
+	}
+
+	got := filterPathParamsFromBody(body, cmdDef)
+
+	if _, present := got["id"]; present {
+		t.Errorf("id (the :id path param) must be stripped from the body, got %v", got)
+	}
+	if _, present := got["flags"]; present {
+		t.Errorf("clone-database has no boolean Flags, so no \"flags\" object should appear, got %v", got)
+	}
+	wantBody := map[string]any{
+		"sourceCid":      "srccluster",
+		"sourcePgOsid":   "postgresql-xy9kl",
+		"sourceDatabase": "appdb",
+		"targetDatabase": "appdb",
+		"owner":          "app_user",
+	}
+	if !reflect.DeepEqual(got, wantBody) {
+		t.Errorf("clone-database body mismatch:\n got  %#v\n want %#v", got, wantBody)
+	}
+}
+
+// TestCloneDatabaseAutoFollow pins that clone-database is recognised as a
+// job-emitting command (its Output declares jobId), so the builder
+// auto-wires --follow. Guards the contract that the CLI streams the
+// clone job to completion. Regression target: clone-database --follow.
+func TestCloneDatabaseAutoFollow(t *testing.T) {
+	if !hasJobIdOutput(cloneDatabaseCommand()) {
+		t.Error("clone-database declares a jobId output; hasJobIdOutput must report true so --follow is auto-wired")
+	}
+}

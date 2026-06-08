@@ -781,9 +781,34 @@ func hasNonPositionalInput(cmdDef manifest.Command) bool {
 // what golang.org/x/text/cases and similar idiomatic Go converters
 // produce. Regression target: I2-3c (TEST_LOG.md), I13-D / I13-G
 // (acronym handling for `minIOOsid` and similar).
+// flagSpellingOverrides maps a manifest field name to a preferred CLI
+// flag spelling when a naive kebab of the field name diverges from the
+// flag form the command's UX wants. The field name remains the wire
+// body key (conductor's fixed contract); only the user-facing flag
+// changes. Both flag registration (buildLeafCommand) and flag reading
+// (collectInput) route through flagNameFor, so an entry here keeps them
+// consistent automatically.
+//
+// services/postgresql/clone-database: the body keys sourcePgOsid /
+// sourceDatabase / targetDatabase are fixed by conductor (the async
+// dispatcher spreads them straight into the orchestration's jobInput),
+// but the agreed CLI shape is the shorter --source-osid / --source-db /
+// --target-db. These three field names appear in no other manifest
+// command, so a name-keyed override is unambiguous. sourceCid (->
+// --source-cid) and owner (-> --owner) already kebab naturally and need
+// no override. Regression target: clone-database flag spelling.
+var flagSpellingOverrides = map[string]string{
+	"sourcePgOsid":   "source-osid",
+	"sourceDatabase": "source-db",
+	"targetDatabase": "target-db",
+}
+
 func flagNameFor(name string) string {
 	if name == "" {
 		return name
+	}
+	if override, ok := flagSpellingOverrides[name]; ok {
+		return override
 	}
 	runes := []rune(name)
 	isUpper := func(r rune) bool { return r >= 'A' && r <= 'Z' }
