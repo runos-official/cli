@@ -34,6 +34,10 @@ For headless / CI use, pass --api-key to store a personal access token
 
   runos login --api-key <pat> --account-id <id>
 
+--account-id is required with --api-key: a PAT is scoped to one account,
+so it must be paired with the matching account id explicitly (no fallback
+to any account already in config).
+
 The stored PAT is used for all subsequent commands and cleared by
 'runos logout'. The RUNOS_API_KEY environment variable still takes
 precedence over a stored key.`,
@@ -42,20 +46,20 @@ precedence over a stored key.`,
 
 func init() {
 	loginCmd.Flags().String("api-key", "", "Authenticate with a personal access token (PAT) instead of the browser flow; pair with --account-id")
-	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (defaults to the account already in config, if any)")
+	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the PAT is account-scoped)")
 }
 
-// resolveLoginAccountID picks the account id to persist for an api-key
-// login: the --account-id flag wins, otherwise any id already in config
-// (from a prior login) is kept. A PAT addresses a specific account, so
-// an empty result is an error rather than a silent no-account login.
-func resolveLoginAccountID(flagAID, existingAID string) (string, error) {
+// resolveLoginAccountID validates the account id to persist for an
+// api-key login. --account-id is mandatory: a PAT is account-scoped, so
+// falling back to a stale config value would silently store the new PAT
+// against the wrong tenant (auth succeeds by token, every /:aid/...
+// request targets the wrong account). An empty flag is therefore a hard
+// error, never a fallback. The CI env path (RUNOS_API_KEY +
+// RUNOS_ACCOUNT_ID) pairs them explicitly and does not use this.
+func resolveLoginAccountID(flagAID string) (string, error) {
 	aid := strings.TrimSpace(flagAID)
 	if aid == "" {
-		aid = strings.TrimSpace(existingAID)
-	}
-	if aid == "" {
-		return "", fmt.Errorf("--api-key requires an account id: pass --account-id <id> (find it in the console, or run a normal 'runos login' first)")
+		return "", fmt.Errorf("--api-key requires --account-id <id> (the PAT is account-scoped; find the id in the console)")
 	}
 	if !accountIDCharset.MatchString(aid) {
 		return "", fmt.Errorf("account id %q is not a valid shape (expected alphanumeric, 1-64 chars)", aid)
@@ -178,7 +182,7 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	}
 
 	flagAID, _ := cmd.Flags().GetString("account-id")
-	aid, err := resolveLoginAccountID(flagAID, cfg.AccountID)
+	aid, err := resolveLoginAccountID(flagAID)
 	if err != nil {
 		return err
 	}
