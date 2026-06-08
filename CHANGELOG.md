@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.7.4
+
+Fixes a login bug where a stored PAT silently shadowed a fresh interactive login. After `runos login --api-key <pat>` against one environment, switching environments and running an interactive `runos login` (browser or `preauth` device flow) reported "Authenticated successfully!" but left the old PAT in `~/.runos/config.json`. Since `ResolveToken` ranks a stored PAT above the Firebase session, every subsequent call sent the stale key and failed with `401 Invalid token`. Both non-PAT login paths now clear the stored PAT on success, so the fresh session takes over (the mirror of `--api-key` login clearing the refresh token). Workaround on older versions: `runos logout`, or remove the `api_key` field from the config. Install via `https://get.runos.com/cli.sh?release=v1.7.4`.
+
 ## v1.7.3
 
 Maintenance release. No user-facing CLI behavior change from v1.7.2. Cut as the phantom patch for obj-55 (installer signature-level verification): publishing it produces a fresh build-provenance-attested release archive so the updated `get.runos.com/cli.sh` installer can fetch and `gh attestation verify` a current artifact end to end. The release process itself re-downloads the published asset and verifies its attestation is bound to `release.yml @ refs/tags/v1.7.3`, exercising the download+verify path from the producer side at the same time. Install via `https://get.runos.com/cli.sh?release=v1.7.3`.
