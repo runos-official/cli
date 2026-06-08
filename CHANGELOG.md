@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.8.0
+
+Adds the `runos services postgresql clone-database` command: copy a managed PostgreSQL database into another instance, cross-cluster or same-cluster, within one account. The copied database lands on the target owned by the source's role with its username AND password preserved (read from the source's managed-user secret, not regenerated), so an app still holding the old connection string keeps working after the migration.
+
+```
+runos services postgresql clone-database <target-instance-osid> \
+  --source-cid <cid> --source-osid <pgOsid> --source-db <dbName> \
+  --target-db <dbName> --owner <role> --follow
+```
+
+The target cluster is the ambient `--cid` (or `runos config set cid` default), like every other `services postgresql` verb; only `--source-cid` carries a cluster, since the source may live elsewhere. `--follow` streams the clone job to completion and exits non-zero if it fails.
+
+The command is manifest-driven; this release adds the CLI-side flag presentation so the discrete flags render as `--source-osid` / `--source-db` / `--target-db` while the request body keeps the conductor's wire field names. Requires a conductor that serves the `clone-database` endpoint. Install via `https://get.runos.com/cli.sh?release=v1.8.0`.
+
 ## v1.7.5
 
 Fixes three stored-PAT / `RUNOS_API_KEY` auth defects found together; all three repro on a PAT-only config (`api_key` set, no Firebase session):
