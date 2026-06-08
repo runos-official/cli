@@ -75,6 +75,23 @@ type Config struct {
 	SignedInAt       string          `json:"signed_in_at,omitempty"` // RFC3339 timestamp of login
 }
 
+// ApplySessionLogin records a Firebase refresh-token session on the
+// config and clears any stored PAT (c.APIKey). Both non-PAT login paths
+// (interactive browser `runos login`, device `runos login preauth`)
+// call this so exactly one credential is live afterward. The APIKey
+// clear is the load-bearing part: ResolveToken ranks a stored PAT above
+// the Firebase refresh session, so a leftover key from a prior
+// `runos login --api-key` would shadow the fresh login and every call
+// would 401 with "Invalid token" despite login reporting success. This
+// is the mirror of loginWithAPIKey clearing RefreshToken in reverse.
+func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, refreshToken, signedInAt string) {
+	c.AccountID = accountID
+	c.Firebase = firebase
+	c.RefreshToken = refreshToken
+	c.SignedInAt = signedInAt
+	c.APIKey = ""
+}
+
 func configDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

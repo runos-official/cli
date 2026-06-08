@@ -56,14 +56,16 @@ func runPreauth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to exchange token: %w", err)
 	}
 
-	cfg.AccountID = resp.AccountID
-	cfg.Firebase = &config.FirebaseConfig{
-		APIKey:     resp.Firebase.APIKey,
-		AuthDomain: resp.Firebase.AuthDomain,
-		ProjectID:  resp.Firebase.ProjectID,
-	}
-	cfg.RefreshToken = signIn.RefreshToken
-	cfg.SignedInAt = time.Now().UTC().Format(time.RFC3339)
+	cfg.ApplySessionLogin(
+		resp.AccountID,
+		&config.FirebaseConfig{
+			APIKey:     resp.Firebase.APIKey,
+			AuthDomain: resp.Firebase.AuthDomain,
+			ProjectID:  resp.Firebase.ProjectID,
+		},
+		signIn.RefreshToken,
+		time.Now().UTC().Format(time.RFC3339),
+	)
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}

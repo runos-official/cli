@@ -6,6 +6,35 @@ import (
 	"testing"
 )
 
+// Bug 85 regression: both non-PAT login paths route through
+// ApplySessionLogin, which MUST clear a leftover stored PAT. Without
+// the clear, ResolveToken would rank the stale api_key above the fresh
+// Firebase session and every call would 401.
+func TestApplySessionLogin_ClearsStoredAPIKey(t *testing.T) {
+	cfg := &Config{
+		APIKey:    "stale-pat-from-prior-login",
+		AccountID: "oldacct",
+	}
+	fb := &FirebaseConfig{APIKey: "fb-key", AuthDomain: "d", ProjectID: "p"}
+	cfg.ApplySessionLogin("newacct", fb, "fresh-refresh", "2026-06-08T00:00:00Z")
+
+	if cfg.APIKey != "" {
+		t.Errorf("api_key must be cleared after a non-PAT login, got %q", cfg.APIKey)
+	}
+	if cfg.RefreshToken != "fresh-refresh" {
+		t.Errorf("refresh_token = %q, want fresh-refresh", cfg.RefreshToken)
+	}
+	if cfg.AccountID != "newacct" {
+		t.Errorf("account_id = %q, want newacct", cfg.AccountID)
+	}
+	if cfg.Firebase != fb {
+		t.Error("firebase config not set")
+	}
+	if cfg.SignedInAt != "2026-06-08T00:00:00Z" {
+		t.Errorf("signed_in_at = %q, want 2026-06-08T00:00:00Z", cfg.SignedInAt)
+	}
+}
+
 func TestGetConsoleURL(t *testing.T) {
 	tests := []struct {
 		name       string
