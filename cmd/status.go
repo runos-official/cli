@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/runos-official/cli/internal/auth"
@@ -10,6 +12,36 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// authMethod names the credential the CLI would use for outgoing
+// requests, in auth.ResolveToken's priority order. authNone means no
+// credential is present.
+type authMethod string
+
+const (
+	authNone      authMethod = "none"
+	authPATEnv    authMethod = "pat-env"    // RUNOS_API_KEY
+	authPATStored authMethod = "pat-stored" // cfg.APIKey, set by `runos login --api-key`
+	authFirebase  authMethod = "firebase"   // interactive refresh-token session
+)
+
+// resolveAuthMethod reports which credential the CLI would use, mirroring
+// auth.ResolveToken's priority (RUNOS_API_KEY -> stored PAT -> Firebase)
+// without any network round-trip, so `runos status` recognises a PAT as
+// authenticated instead of only honouring the Firebase fields. apiKeyEnv
+// is passed in (the RUNOS_API_KEY value) to keep the helper pure.
+func resolveAuthMethod(cfg *config.Config, apiKeyEnv string) authMethod {
+	if strings.TrimSpace(apiKeyEnv) != "" {
+		return authPATEnv
+	}
+	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
+		return authPATStored
+	}
+	if cfg != nil && cfg.RefreshToken != "" && cfg.Firebase != nil {
+		return authFirebase
+	}
+	return authNone
+}
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -56,14 +88,25 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		status["defaultClusterId"] = defaultCID
 	}
 
-	// Check authentication and get token info
-	if cfg.RefreshToken != "" && cfg.Firebase != nil {
+	// Check authentication and get token info. A stored PAT or
+	// RUNOS_API_KEY counts as authenticated by presence (the same
+	// credential ordinary commands use via auth.ResolveToken); only the
+	// Firebase path needs a network refresh to confirm the session.
+	switch method := resolveAuthMethod(cfg, os.Getenv(auth.APIKeyEnvVar)); method {
+	case authPATEnv, authPATStored:
+		status["authenticated"] = true
+		status["authMethod"] = string(method)
+		if cfg.SignedInAt != "" {
+			status["signedInAt"] = cfg.SignedInAt
+		}
+	case authFirebase:
 		_, err := auth.RefreshIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 		if err != nil {
 			status["authenticated"] = false
 			status["authError"] = err.Error()
 		} else {
 			status["authenticated"] = true
+			status["authMethod"] = string(method)
 
 			// Use stored sign-in timestamp
 			if cfg.SignedInAt != "" {
@@ -88,7 +131,7 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 
 	// Authentication status
 	if authenticated, ok := status["authenticated"].(bool); ok && authenticated {
-		fmt.Println("Authentication: ✓ Logged in")
+		fmt.Printf("Authentication: ✓ Logged in%s\n", authMethodLabel(status["authMethod"]))
 	} else {
 		fmt.Println("Authentication: ✗ Not logged in")
 		if authErr, ok := status["authError"].(string); ok {
@@ -121,6 +164,7 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 
 	// Session info (only show if authenticated)
 	if authenticated, ok := status["authenticated"].(bool); ok && authenticated {
+		method, _ := status["authMethod"].(string)
 		fmt.Printf("\nSession:\n")
 		if signedInAt, ok := status["signedInAt"].(string); ok {
 			t, err := time.Parse(time.RFC3339, signedInAt)
@@ -129,6 +173,8 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			} else {
 				fmt.Printf("  Signed in:  %s\n", t.Local().Format("2006-01-02 15:04:05"))
 			}
+		} else if method == string(authPATEnv) || method == string(authPATStored) {
+			fmt.Printf("  Signed in:  via personal access token\n")
 		} else {
 			fmt.Printf("  Signed in:  Unknown (logged in before CLI update)\n")
 		}
@@ -136,4 +182,20 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// authMethodLabel renders the parenthetical credential hint for the
+// "Logged in" line. Empty for the legacy/unknown case so the line is
+// unchanged when no method was recorded.
+func authMethodLabel(v any) string {
+	switch v {
+	case string(authPATEnv):
+		return fmt.Sprintf(" (PAT via %s)", auth.APIKeyEnvVar)
+	case string(authPATStored):
+		return " (PAT)"
+	case string(authFirebase):
+		return ""
+	default:
+		return ""
+	}
 }
