@@ -761,6 +761,28 @@ func hasNonPositionalInput(cmdDef manifest.Command) bool {
 	return len(cmdDef.Input.Flags) > 0
 }
 
+// flagSpellingOverrides maps a manifest field name to a preferred CLI
+// flag spelling when a naive kebab of the field name diverges from the
+// flag form the command's UX wants. The field name remains the wire
+// body key (conductor's fixed contract); only the user-facing flag
+// changes. flagNameFor consults this first, and both flag registration
+// (buildLeafCommand) and flag reading (collectInput) route through
+// flagNameFor, so an entry here keeps them consistent automatically.
+//
+// services/postgresql/clone-database: the body keys sourcePgOsid /
+// sourceDatabase / targetDatabase are fixed by conductor (the async
+// dispatcher spreads them straight into the orchestration's jobInput),
+// but the agreed CLI shape is the shorter --source-osid / --source-db /
+// --target-db. These three field names appear in no other manifest
+// command, so a name-keyed override is unambiguous. sourceCid (->
+// --source-cid) and owner (-> --owner) already kebab naturally and need
+// no override. Regression target: clone-database flag spelling.
+var flagSpellingOverrides = map[string]string{
+	"sourcePgOsid":   "source-osid",
+	"sourceDatabase": "source-db",
+	"targetDatabase": "target-db",
+}
+
 // flagNameFor returns the kebab-case flag form of a manifest field
 // name with acronym awareness. Pre-fix the naive "insert dash before
 // any uppercase" rule split runs of consecutive uppercase letters into
@@ -779,30 +801,9 @@ func hasNonPositionalInput(cmdDef manifest.Command) bool {
 // Consecutive uppercase runs at the end of the string stay together
 // (`publicURL` → `public-url`, `IOID` → `ioid`). The result matches
 // what golang.org/x/text/cases and similar idiomatic Go converters
-// produce. Regression target: I2-3c (TEST_LOG.md), I13-D / I13-G
-// (acronym handling for `minIOOsid` and similar).
-// flagSpellingOverrides maps a manifest field name to a preferred CLI
-// flag spelling when a naive kebab of the field name diverges from the
-// flag form the command's UX wants. The field name remains the wire
-// body key (conductor's fixed contract); only the user-facing flag
-// changes. Both flag registration (buildLeafCommand) and flag reading
-// (collectInput) route through flagNameFor, so an entry here keeps them
-// consistent automatically.
-//
-// services/postgresql/clone-database: the body keys sourcePgOsid /
-// sourceDatabase / targetDatabase are fixed by conductor (the async
-// dispatcher spreads them straight into the orchestration's jobInput),
-// but the agreed CLI shape is the shorter --source-osid / --source-db /
-// --target-db. These three field names appear in no other manifest
-// command, so a name-keyed override is unambiguous. sourceCid (->
-// --source-cid) and owner (-> --owner) already kebab naturally and need
-// no override. Regression target: clone-database flag spelling.
-var flagSpellingOverrides = map[string]string{
-	"sourcePgOsid":   "source-osid",
-	"sourceDatabase": "source-db",
-	"targetDatabase": "target-db",
-}
-
+// produce. A flagSpellingOverrides hit short-circuits all of this.
+// Regression target: I2-3c (TEST_LOG.md), I13-D / I13-G (acronym
+// handling for `minIOOsid` and similar).
 func flagNameFor(name string) string {
 	if name == "" {
 		return name
