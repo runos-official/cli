@@ -234,11 +234,13 @@ func emptyBodySuccessMessage(command, status string) string {
 	return fmt.Sprintf("%s succeeded (%s)", command, status)
 }
 
+// getAuthToken resolves the bearer token for outgoing MCP requests via
+// auth.ResolveToken, which applies the RUNOS_API_KEY -> stored PAT ->
+// Firebase priority order. Previously this hard-required cfg.Firebase,
+// so a PAT-only config (api_key, no refresh token) failed every tool;
+// updater.go and jobs/service.go fixed the same Firebase-straggler bug.
 func (e *CommandExecutor) getAuthToken(cfg *config.Config) (string, error) {
-	if cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated")
-	}
-	return auth.GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	return auth.ResolveToken(cfg)
 }
 
 func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]any, cmdDef *manifest.Command, cid string) (string, error) {

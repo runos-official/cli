@@ -6,8 +6,53 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/runos-official/cli/internal/auth"
+	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
 )
+
+// Bug 86 regression: the MCP executor's getAuthToken must accept a
+// stored PAT (cfg.APIKey) and RUNOS_API_KEY, not hard-require Firebase.
+// Pre-fix it returned "not authenticated" for any PAT-only config, so
+// every MCP tool failed for a PAT user even though the same PAT worked
+// for ordinary CLI commands. We assert only the PAT and no-credential
+// paths here; the Firebase path round-trips to Google and isn't unit
+// testable without a live token exchange.
+func TestGetAuthTokenPAT(t *testing.T) {
+	e := NewCommandExecutor(nil, "https://example.test")
+
+	t.Run("stored PAT, no firebase", func(t *testing.T) {
+		t.Setenv(auth.APIKeyEnvVar, "")
+		cfg := &config.Config{APIKey: "stored-pat-abc"}
+		got, err := e.getAuthToken(cfg)
+		if err != nil {
+			t.Fatalf("getAuthToken returned error for stored PAT: %v", err)
+		}
+		if got != "stored-pat-abc" {
+			t.Errorf("getAuthToken = %q, want stored PAT", got)
+		}
+	})
+
+	t.Run("env PAT overrides", func(t *testing.T) {
+		t.Setenv(auth.APIKeyEnvVar, "env-pat-xyz")
+		cfg := &config.Config{APIKey: "stored-pat-abc"}
+		got, err := e.getAuthToken(cfg)
+		if err != nil {
+			t.Fatalf("getAuthToken returned error for env PAT: %v", err)
+		}
+		if got != "env-pat-xyz" {
+			t.Errorf("getAuthToken = %q, want env PAT", got)
+		}
+	})
+
+	t.Run("no credentials errors", func(t *testing.T) {
+		t.Setenv(auth.APIKeyEnvVar, "")
+		cfg := &config.Config{}
+		if _, err := e.getAuthToken(cfg); err == nil {
+			t.Error("getAuthToken returned nil error for empty config, want not-authenticated error")
+		}
+	})
+}
 
 // I4-K MCP path regression: the MCP executor must opt into
 // `?merge=true` for `apps/update` exactly the way the cobra/dynacmd
