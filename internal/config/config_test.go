@@ -12,7 +12,7 @@ import (
 // Firebase session and every call would 401.
 func TestApplySessionLogin_ClearsStoredAPIKey(t *testing.T) {
 	cfg := &Config{
-		APIKey:    "stale-pat-from-prior-login",
+		APIKey:    "old-pat",
 		AccountID: "oldacct",
 	}
 	fb := &FirebaseConfig{APIKey: "fb-key", AuthDomain: "d", ProjectID: "p"}
