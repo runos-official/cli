@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.5
+
+Fixes three stored-PAT / `RUNOS_API_KEY` auth defects found together; all three repro on a PAT-only config (`api_key` set, no Firebase session):
+
+- **`runos mcp` was unusable under a PAT (blocking).** The MCP auth gate hard-required a Firebase refresh-token, so `mcp_bootstrap` and every manifest-driven tool failed with "authentication required" even though the same PAT worked for ordinary CLI commands. `getAuthToken` now routes through `auth.ResolveToken` (`RUNOS_API_KEY` -> stored PAT -> Firebase), matching the rest of the CLI.
+- **`runos status` falsely reported "Not logged in" under a valid PAT.** The auth check only honoured the Firebase fields, so a PAT user saw a misleading unauthenticated status while every command succeeded. Status now recognises a stored PAT or `RUNOS_API_KEY` as authenticated and shows the credential type (`(PAT)` / `(PAT via RUNOS_API_KEY)`), with an `authMethod` field in `--json`.
+- **`runos login --api-key` could store a PAT against the wrong tenant.** When `--account-id` was omitted it fell back to whatever account was already in config; since a PAT is account-scoped, a new PAT minted for account B run while config held account A was stored against A (authenticated-but-wrong-tenant, worse than a clean failure). `--account-id` is now required with `--api-key`; the stale-config fallback is gone. The CI env path (`RUNOS_API_KEY` + `RUNOS_ACCOUNT_ID`) is unaffected.
+
+Install via `https://get.runos.com/cli.sh?release=v1.7.5`.
+
 ## v1.7.4
 
 Fixes a login bug where a stored PAT silently shadowed a fresh interactive login. After `runos login --api-key <pat>` against one environment, switching environments and running an interactive `runos login` (browser or `preauth` device flow) reported "Authenticated successfully!" but left the old PAT in `~/.runos/config.json`. Since `ResolveToken` ranks a stored PAT above the Firebase session, every subsequent call sent the stale key and failed with `401 Invalid token`. Both non-PAT login paths now clear the stored PAT on success, so the fresh session takes over (the mirror of `--api-key` login clearing the refresh token). Workaround on older versions: `runos logout`, or remove the `api_key` field from the config. Install via `https://get.runos.com/cli.sh?release=v1.7.4`.
