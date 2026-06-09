@@ -25,7 +25,7 @@ So a deploy advances `dev` (tag + push) and `deployed` (on success); it leaves `
 Run these in order. Any failure stops the deploy.
 
 ### 1. Confirm version and CHANGELOG
-- Decide the version `vX.Y.Z` (semver: features/security -> minor, fixes -> patch).
+- Decide the version `vX.Y.Z` from the diff since the last deploy: **patch (`Z`) for a bugfix, minor (`Y`) for new functionality** (features and security fixes are minor). This is the one judgment that drives every bump; pick it from what actually changed, not a default.
 - Ensure `CHANGELOG.md` has a `## vX.Y.Z` section with accurate notes, **committed on `dev`**. CI uses that section as the GitHub release notes; the script refuses a version with no matching section.
 - If you wrote the CHANGELOG this session, commit it on `dev` before proceeding.
 
@@ -56,9 +56,13 @@ scripts/release.sh vX.Y.Z      # or: make release VERSION=vX.Y.Z
 ```
 The script then, deterministically: re-runs preflight + gates -> **tags the `dev` commit and pushes the tag + `dev`** (main untouched) -> waits for the Release workflow to succeed -> verifies the published asset's attestation is bound to `release.yml @ refs/tags/vX.Y.Z` -> **on success, fast-forwards `deployed` to the shipped commit and pushes it.** It aborts before tagging on any gate failure; `deployed` advances only when the deploy fully succeeds.
 
-### 6. Report
+### 6. Advertise the new version in foreman (dev)
+The CLI's advertised version lives in foreman as `CLI_VERSION`; conductor dev consumes it (foreman auto-syncs dev downstream), so set it here and a deploy never leaves a manual `/versions` step behind. Call the foreman MCP tool **`advertise_version`** with `component: "cli"`, `env: "dev"`, and `version:` the tag you just shipped (a leading `v` is stripped, so `vX.Y.Z` or `X.Y.Z` both work). It returns the stored entry; confirm its `value` matches. The deploy already succeeded by this point, so if foreman is unreachable do NOT fail the release: report it as "published but NOT advertised, advertise `CLI_VERSION` dev manually" so it can be fixed.
+
+### 7. Report
 - State the deployed version and the GitHub release URL; confirm the attestation verified and `deployed` advanced.
 - Optionally confirm the live validation pipeline picked it up: webhook delivery `release`/`published` -> 202, and `https://runoscdn.com/cli/validated/current.json` flipped to the new tag (Templates side; it is live).
+- Confirm `CLI_VERSION` dev now reads the shipped version in foreman (or flag it as not-advertised if step 6 could not reach foreman).
 - Remind the human that **`main` is theirs to merge** once they have verified.
 
 ## If a gate fails
