@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.9.0
+
+Gates the PostgreSQL teardown verbs `runos services postgresql drop-user` and `drop-database` behind the uniform destructive-command guard: on a TTY they now prompt `y/N` before running, and in a non-TTY (CI, piped) they refuse unless `--yes`/`-y` is passed. This matches the existing protection on `delete-*` / `revoke-*` / `remove-*` verbs, so an irreversible role/database drop can no longer fire from a stray invocation. The match is on the `drop-` prefix and is method-agnostic, so any future `drop-*` verb inherits the same guard automatically.
+
+No other user-facing change. This release also pins the BuildKit `set-advanced-configs` manifest surface (CLI flags + MCP write tool) with regression tests; that command is fully manifest-driven, so there is no CLI behavior change, the tests guard the field-name -> flag-name mapping against conductor manifest drift.
+
+Install via `https://get.runos.com/cli.sh?release=v1.9.0`.
+
 ## v1.8.0
 
 Adds the `runos services postgresql clone-database` command: copy a managed PostgreSQL database into another instance, cross-cluster or same-cluster, within one account. The copied database lands on the target owned by the source's role with its username AND password preserved (read from the source's managed-user secret, not regenerated), so an app still holding the old connection string keeps working after the migration.
