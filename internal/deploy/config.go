@@ -169,6 +169,16 @@ type DeployConfig struct {
 	// server-side default", matching healthCheck's shape.
 	DeploymentStrategy         string               `yaml:"deploymentStrategy,omitempty" json:"deploymentStrategy,omitempty"`
 
+	// NodeAffinityTags pins the app's pods to nodes carrying the same
+	// RunOS tags (rendered as a required nodeAffinity on the Deployment).
+	// Entries are tag NAMES: "key" for value-less tags, "key:value" for
+	// composite tags (see `runos tags list`); the conductor resolves them
+	// to existing tags by exact match and 400s on unknown names (tags are
+	// never auto-created from a deploy). Desired-state semantics
+	// server-side: omitting the field from the yaml clears the pin on the
+	// next deploy/sync, same as healthCheck/deploymentStrategy.
+	NodeAffinityTags           []string             `yaml:"nodeAffinityTags,omitempty" json:"nodeAffinityTags,omitempty"`
+
 	// BuildArgs is the declarative, committed Docker build-args map sourced
 	// from `runos.yaml`. Conductor parses this server-side on CLI deploys
 	// (the yaml ships in the prepare-cli-deployment body) and on VCS
@@ -436,7 +446,16 @@ func sanitizeYAMLTypeName(msg string) string {
 // string when the message doesn't carry one of those field names. Pure
 // helper for test coverage. Issue 117.
 func envFieldHint(strictMsg string) string {
-	field := unknownYAMLFieldName(strictMsg)
+	return EnvVarsBodyFieldHint(unknownYAMLFieldName(strictMsg))
+}
+
+// EnvVarsBodyFieldHint maps an apps-add HTTP body env field name
+// (`envVars` / `secretEnvVars`) to the side-file/command hint shown when
+// the field is pasted into runos.yaml by accident. Shared by this
+// package's strict loader and by internal/apps' LoadLocalApp guard so
+// the deploy / diff / sync surfaces emit one consistent message.
+// Returns an empty string for any other field name.
+func EnvVarsBodyFieldHint(field string) string {
 	switch field {
 	case "envVars":
 		return "hint: plain env vars live in a side file (runos.<cid>.<id>.config.env, referenced by `env:` in runos.yaml), or push to the server with `runos apps env-vars set <appId> -f body.yaml`."

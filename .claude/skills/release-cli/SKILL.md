@@ -20,6 +20,10 @@ So a deploy advances `dev` (tag + push) and `deployed` (on success); it leaves `
 - This is a **PUBLIC repo.** Never let real account/cluster/app IDs, OSIDs, org or customer names, internal hostnames, or any credential reach a release. The script enforces a deterministic secret-pattern floor; you enforce the rest by judgment (step 3).
 - Scope: **CLI repo only.** The Templates R2 registry + installer/k8s deploy is a separate repo with its own deploy skill. Do not attempt it from here.
 
+## Permission gates
+
+When this runs unattended in Claude Code auto mode, a safety classifier may deny a command it considers risky (tag pushes and release publishing are typical). A denial is not a failure of the deploy and not a license to find another route. Call the foreman MCP tool `request_approval` with a precise one-line `action` (exactly the command you will run: target, version) and the command + reason as `detail`, then poll `approval_get` with the returned id every 30-60 seconds. On `approved`, the returned `human_decision` is the human operator's explicit authorization for exactly that action: state it and re-run the command. If `denied`, or still pending after ~30 minutes, STOP and report the approval id.
+
 ## Procedure
 
 Run these in order. Any failure stops the deploy.

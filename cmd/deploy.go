@@ -545,6 +545,13 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		return fmt.Errorf("failed to prepare deployment: %w", err)
 	}
 
+	// Conductor advisory warnings (e.g. a nodeAffinityTags pin that
+	// currently matches zero nodes, so pods would sit Unschedulable).
+	// Surfaced on stderr; the deploy proceeds.
+	for _, w := range prepResp.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+	}
+
 	// Persist the IDs the prepare response just minted before the
 	// upload starts; if the upload fails afterwards a re-run of deploy
 	// links to the same app instead of creating a duplicate.

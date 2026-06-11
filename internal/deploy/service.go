@@ -56,6 +56,10 @@ type PrepareResponse struct {
 	ExpiresAt   string               `json:"expiresAt"`
 	CliUploadID string               `json:"cliUploadId,omitempty"`
 	Services    []ProvisionedService `json:"services,omitempty"`
+	// Advisory warnings from conductor (e.g. a nodeAffinityTags pin that
+	// currently matches zero nodes). Printed after the deploy kicks off;
+	// never blocks it.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ProvisionedService represents a service that will be provisioned for an app dependency

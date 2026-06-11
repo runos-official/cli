@@ -1283,6 +1283,98 @@ func TestLoadLocalApp_MalformedYAML(t *testing.T) {
 	}
 }
 
+// Regression: an inline `envVars:` / `secretEnvVars:` block in
+// runos.yaml (valid on the apps-add HTTP body, never applied from the
+// yaml) was silently dropped by the lenient typed decode, so
+// `apps sync` no-op'd it and `apps diff` showed only generic yaml
+// drift. LoadLocalApp must refuse with the same hint the deploy
+// loader emits.
+func TestLoadLocalApp_RejectsInlineEnvVarsWithHint(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		matches []string
+	}{
+		{
+			name: "envVars",
+			yaml: "app: myapp\nid: ab12c\ncid: k1\nenvVars:\n  LOG_LEVEL: debug\n",
+			matches: []string{
+				"envVars",
+				"runos.<cid>.<id>.config.env",
+				"apps env-vars set",
+			},
+		},
+		{
+			name: "secretEnvVars",
+			yaml: "app: myapp\nid: ab12c\ncid: k1\nsecretEnvVars:\n  TOKEN: shh\n",
+			matches: []string{
+				"secretEnvVars",
+				"secretEnv:",
+				"apps secret-env-vars set",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runos.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, err := LoadLocalApp(path)
+			if err == nil {
+				t.Fatalf("expected refusal for inline %s", tc.name)
+			}
+			for _, m := range tc.matches {
+				if !strings.Contains(err.Error(), m) {
+					t.Errorf("error missing %q; got: %v", m, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRejectAppsBodyEnvFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{
+			name:    "top-level envVars refused",
+			yaml:    "app: myapp\nenvVars:\n  K: v\n",
+			wantErr: true,
+		},
+		{
+			name:    "top-level secretEnvVars refused",
+			yaml:    "app: myapp\nsecretEnvVars:\n  K: v\n",
+			wantErr: true,
+		},
+		{
+			name: "clean yaml passes",
+			yaml: "app: myapp\nid: ab12c\nenv: runos.k1.ab12c.config.env\n",
+		},
+		{
+			name: "nested key untouched",
+			yaml: "app: myapp\nrequires:\n  db:\n    config:\n      envVars: irrelevant\n",
+		},
+		{
+			name: "malformed yaml deferred to typed decode",
+			yaml: "app: [unterminated\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectAppsBodyEnvFields([]byte(tc.yaml))
+			if tc.wantErr && err == nil {
+				t.Fatal("expected refusal")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LoadLocalOverrides
 // ---------------------------------------------------------------------------

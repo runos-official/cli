@@ -102,6 +102,14 @@ type PulledApp struct {
 	// the field absent from the pulled yaml in that case.
 	DeploymentStrategy string `yaml:"deploymentStrategy,omitempty"`
 
+	// NodeAffinityTags mirrors DeployConfig.NodeAffinityTags so a pulled
+	// yaml round-trips the scheduling pin. Entries are tag NAMES ("key" /
+	// "key:value"), projected from the show response's nodeAffinityTags.
+	// Omitted when the server has no tags set (omission means "no
+	// affinity" server-side under the omit-equals-clear rule, so an empty
+	// list and an absent field agree).
+	NodeAffinityTags []string `yaml:"nodeAffinityTags,omitempty"`
+
 	// BuildArgs mirrors DeployConfig.BuildArgs for the apps_pull
 	// round-trip. Populated from the apps/:id response when conductor
 	// surfaces a non-empty `buildArgs` map; empty otherwise (omitempty
@@ -447,6 +455,20 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 		p.DeploymentStrategy = strat
 	}
 
+	// NodeAffinityTags: emitted only when non-empty (omission and []
+	// both mean "no affinity" under the server's omit-equals-clear rule).
+	if rawTags, ok := raw["nodeAffinityTags"].([]any); ok && len(rawTags) > 0 {
+		names := make([]string, 0, len(rawTags))
+		for _, v := range rawTags {
+			if s, ok := v.(string); ok && s != "" {
+				names = append(names, s)
+			}
+		}
+		if len(names) > 0 {
+			p.NodeAffinityTags = names
+		}
+	}
+
 	// BuildArgs projects the server's `buildArgs` map (when present) into
 	// the pulled yaml so the declarative source-of-truth round-trips
 	// through `apps pull` -> edit -> `runos deploy`. Forward-compatible:
@@ -517,6 +539,36 @@ func asInt(v any) (int, bool) {
 		return int(n), true
 	}
 	return 0, false
+}
+
+// stringSliceOr extracts a []string from a JSON-decoded []any value.
+// Non-string entries are skipped; missing/invalid values return nil.
+func stringSliceOr(m map[string]any, key string) []string {
+	raw, ok := m[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// stringSlicesEqual compares two string slices order-sensitively, treating
+// nil and empty as equal (both mean "no value" on the wire).
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SanitizeName returns a filesystem-safe version of an app name. Spaces,

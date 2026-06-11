@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.10.0
+
+Node affinity round-trip for apps, plus two related fixes:
+
+- **`nodeAffinityTags` in runos.yaml.** Pin an app's pods to nodes carrying RunOS tags (a required nodeAffinity on the Deployment). Entries are tag names: `key` for value-less tags, `key:value` for composite tags (`runos tags list` to discover; the server resolves by exact match and rejects unknown names rather than auto-creating tags). The field round-trips through `apps pull`, drift-detects in `apps diff`, and pushes via `apps sync` and `runos deploy`. Desired-state semantics: omitting the field (or `[]`) clears the pin on the next deploy/sync, same family as `healthCheck` / `deploymentStrategy`. Multiple tags must ALL be on one node (AND, not alternatives). Requires conductor manifest 30.x.
+- **`deploymentStrategy` no longer clobbered by sync.** The field was missing from `apps sync`'s drift detection and wire body entirely, so a yaml carrying it never pushed the preset, and a yaml without it silently cleared a console-set preset with no plan line. It now drift-detects and pushes like the other desired-state fields.
+- **Inline `envVars:` / `secretEnvVars:` in runos.yaml are rejected** by `apps sync` / `apps diff` with the same fix-it hint `runos deploy` emits (plain env vars live in the `env:` side file; secrets push via `apps env-vars set`). Previously the typed decode silently dropped them, so the vars never reached the container and nothing said so.
+- **Deploy prints conductor advisory warnings.** `runos deploy` now surfaces the prepare response's `warnings` array on stderr, currently used when a `nodeAffinityTags` pin matches zero nodes (pods would sit Pending/Unschedulable until a node is tagged). The deploy proceeds; the warning closes the feedback gap.
+
+Install via `https://get.runos.com/cli.sh?release=v1.10.0`.
+
 ## v1.9.0
 
 Gates the PostgreSQL teardown verbs `runos services postgresql drop-user` and `drop-database` behind the uniform destructive-command guard: on a TTY they now prompt `y/N` before running, and in a non-TTY (CI, piped) they refuse unless `--yes`/`-y` is passed. This matches the existing protection on `delete-*` / `revoke-*` / `remove-*` verbs, so an irreversible role/database drop can no longer fire from a stray invocation. The match is on the `drop-` prefix and is method-agnostic, so any future `drop-*` verb inherits the same guard automatically.

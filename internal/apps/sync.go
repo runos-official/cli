@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/envfile"
 	"gopkg.in/yaml.v3"
 )
@@ -1028,6 +1029,22 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 		driftFields["metricsPath"] = effective.MetricsPath
 	}
 
+	// deploymentStrategy + nodeAffinityTags: desired-state like healthCheck
+	// ("local empty + server set" IS drift; sync will clear). Both were/are
+	// in the conductor's omit-equals-clear set, so omitting them from the
+	// wire body clears the server value; drift detection must mirror that
+	// or the plan hides a clearing (or never pushes a local value).
+	// deploymentStrategy was previously missing here entirely, so a synced
+	// yaml carrying it never pushed the preset and a yaml without it
+	// silently cleared a console-set preset with no plan line.
+	if effective.DeploymentStrategy != stringOr(server, "deploymentStrategy") {
+		driftFields["deploymentStrategy"] = effective.DeploymentStrategy
+	}
+	serverAffinity := stringSliceOr(server, "nodeAffinityTags")
+	if !stringSlicesEqual(effective.NodeAffinityTags, serverAffinity) {
+		driftFields["nodeAffinityTags"] = effective.NodeAffinityTags
+	}
+
 	// Build-metadata round-trip (V13). sourceDir and dockerfile are partial-
 	// update fields like clusterDomainId: an omitted local value means
 	// "preserve" (the wire body builder skips empty), so drift only surfaces
@@ -1263,6 +1280,15 @@ func buildFullYAMLBody(localApp *PulledApp) map[string]any {
 	if localApp.Dockerfile != "" {
 		body["dockerfile"] = localApp.Dockerfile
 	}
+	// Desired-state fields in the conductor's omit-equals-clear set:
+	// silence on these keys is the user's "clear it" signal, so only emit
+	// when the local yaml carries a value (mirrors healthCheck above).
+	if localApp.DeploymentStrategy != "" {
+		body["deploymentStrategy"] = localApp.DeploymentStrategy
+	}
+	if len(localApp.NodeAffinityTags) > 0 {
+		body["nodeAffinityTags"] = localApp.NodeAffinityTags
+	}
 	// Requires uses full-replacement semantics on the wire: aliases
 	// absent from the body are removed server-side. Always include the
 	// field (even when empty) so a user who deleted every requires
@@ -1426,16 +1452,51 @@ func formatDiffSide(sign, key string, val any) []string {
 // LoadLocalApp parses a yaml file at the given path into a PulledApp.
 // The same struct used for pull is used here in reverse, no schema
 // duplication.
+//
+// The decode is deliberately lenient about unknown fields (a newer
+// server may pull fields an older CLI doesn't know; diff/sync must not
+// hard-fail on those), with one carve-out: the apps-add HTTP body
+// fields `envVars` / `secretEnvVars` are rejected with the same hint
+// the deploy loader emits. Pre-fix, an inline `envVars:` block was
+// silently dropped by the typed decode, so `apps sync` no-op'd it and
+// `apps diff` showed it only as generic yaml drift while the env
+// category stayed in_sync. The vars never reached the container and
+// nothing said so.
 func LoadLocalApp(yamlPath string) (*PulledApp, error) {
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
 		return nil, err
+	}
+	if err := rejectAppsBodyEnvFields(data); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filepath.Base(yamlPath), err)
 	}
 	var app PulledApp
 	if err := yaml.Unmarshal(data, &app); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filepath.Base(yamlPath), err)
 	}
 	return &app, nil
+}
+
+// rejectAppsBodyEnvFields refuses a runos.yaml that carries the
+// apps-add HTTP body env fields (`envVars` / `secretEnvVars`) at the
+// top level. Both are valid on `apps add -f body.yaml` but have no
+// effect in runos.yaml; the typed PulledApp decode would silently drop
+// them. Nested occurrences (e.g. a key inside `requires.*.config`) are
+// untouched. Pure helper for test coverage.
+func rejectAppsBodyEnvFields(data []byte) error {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Malformed yaml: let the typed decode downstream surface its
+		// own parse error rather than duplicating it here.
+		return nil
+	}
+	for _, field := range []string{"envVars", "secretEnvVars"} {
+		if _, present := raw[field]; present {
+			return fmt.Errorf("field %s not supported in runos.yaml (it is an `apps add` body field; inline values here are never applied)\n  %s",
+				field, deploy.EnvVarsBodyFieldHint(field))
+		}
+	}
+	return nil
 }
 
 // LoadLocalEnv reads the env file referenced by the app yaml's `env:` (or
