@@ -63,8 +63,19 @@ jobs:
               tar -czf "dist/${archive}" -C dist "${output}"
             fi
 
+            # Back-compat alias for pre-v1.7.0 self-updaters. Those binaries
+            # (v1.0.0-v1.6.0) hardcode a `runos-latest-{os}-{arch}` asset name
+            # in their download + checksum-lookup paths; commit 5ec7510 renamed
+            # the canonical asset to `runos-{os}-{arch}` and they have 404'd on
+            # `runos update` ever since. Publishing a byte-identical copy under
+            # the legacy name lets a stuck old binary self-update to current.
+            # The copy is created before the checksum + attestation steps so it
+            # is covered by both. Drop this once no pre-1.7.0 clients remain.
+            alias="runos-latest-${GOOS}-${GOARCH}.${ext}"
+            cp "dist/${archive}" "dist/${alias}"
+
             rm "dist/${output}"
-            echo "Built: ${archive}"
+            echo "Built: ${archive} (+ alias ${alias})"
           done
 
       - name: Generate checksums
