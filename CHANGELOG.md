@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.10.1
+
+Restores self-update for old CLI binaries. Releases v1.0.0-v1.6.0 hardcode a `runos-latest-{os}-{arch}` asset name in their updater's download and checksum-lookup paths; the v1.7.0 asset rename to `runos-{os}-{arch}` left those binaries 404ing on every `runos update`. Each release now also publishes a byte-identical `runos-latest-{os}-{arch}` copy (listed in `checksums.txt`, attested like the canonical asset), so a stuck old binary can self-update to current. No CLI behavior change; release-pipeline only. The alias copies are a temporary bridge to be removed once no pre-1.7.0 clients remain.
+
+Install via `https://get.runos.com/cli.sh?release=v1.10.1`.
+
 ## v1.10.0
 
 Node affinity round-trip for apps, plus two related fixes:
