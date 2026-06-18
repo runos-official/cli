@@ -29,7 +29,7 @@ When this runs unattended in Claude Code auto mode, a safety classifier may deny
 Run these in order. Any failure stops the deploy.
 
 ### 1. Confirm version and CHANGELOG
-- Decide the version `vX.Y.Z` from the diff since the last deploy: **patch (`Z`) for a bugfix, minor (`Y`) for new functionality** (features and security fixes are minor). This is the one judgment that drives every bump; pick it from what actually changed, not a default.
+- Decide the version `vX.Y.Z` from the diff since the last deploy. **Default to a patch (`Z`); reserve a minor (`Y`) for genuinely new user-facing capability.** Bump minor only when the release lets a user do something they could not before: a new command, a new flag/field that unlocks behavior, support for a new resource. Everything else backward-compatible is a patch, including bug fixes, UX and output refinements, changes to how an existing command behaves, friendlier errors/messages, performance, internal refactors, docs, and release-pipeline-only changes. A security fix is a patch unless it also ships new capability. **When torn between patch and minor, choose patch.** (Major `X` is reserved for a breaking change to an existing command's contract; raise it with the human before shipping.) This is the one judgment that drives every bump; pick it from what actually changed, not a default.
 - Ensure `CHANGELOG.md` has a `## vX.Y.Z` section with accurate notes, **committed on `dev`**. CI uses that section as the GitHub release notes; the script refuses a version with no matching section.
 - If you wrote the CHANGELOG this session, commit it on `dev` before proceeding.
 
