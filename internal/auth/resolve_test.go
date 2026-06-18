@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/runos-official/cli/internal/config"
@@ -39,6 +40,60 @@ func TestResolveToken_NoCredsErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when neither env nor Firebase config is set")
 	}
+	// The first-run UX depends on classifying this as the expected
+	// "not signed in" state, not a hard failure.
+	if !errors.Is(err, ErrNotAuthenticated) {
+		t.Errorf("expected ErrNotAuthenticated, got %v", err)
+	}
+}
+
+// HasCredentials must report presence without a network round-trip and
+// without dereferencing a nil cfg, across every credential shape.
+func TestHasCredentials(t *testing.T) {
+	t.Run("nil cfg, no env", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		if HasCredentials(nil) {
+			t.Error("expected false for nil cfg with no env PAT")
+		}
+	})
+	t.Run("empty cfg, no env", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		if HasCredentials(&config.Config{}) {
+			t.Error("expected false for empty cfg")
+		}
+	})
+	t.Run("env PAT present", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "env-pat")
+		if !HasCredentials(nil) {
+			t.Error("expected true when env PAT is set, even with nil cfg")
+		}
+	})
+	t.Run("stored PAT", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		if !HasCredentials(&config.Config{APIKey: "stored-pat"}) {
+			t.Error("expected true for stored PAT")
+		}
+	})
+	t.Run("whitespace-only stored PAT is not creds", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		if HasCredentials(&config.Config{APIKey: "  \n"}) {
+			t.Error("whitespace-only stored PAT must not count as credentials")
+		}
+	})
+	t.Run("firebase refresh token", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		cfg := &config.Config{Firebase: &config.FirebaseConfig{APIKey: "fb"}, RefreshToken: "refresh"}
+		if !HasCredentials(cfg) {
+			t.Error("expected true for Firebase refresh-token credentials")
+		}
+	})
+	t.Run("firebase config without refresh token is not creds", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "")
+		cfg := &config.Config{Firebase: &config.FirebaseConfig{APIKey: "fb"}}
+		if HasCredentials(cfg) {
+			t.Error("Firebase config without a refresh token must not count as credentials")
+		}
+	})
 }
 
 func TestResolveToken_NilCfgWithoutEnvErrors(t *testing.T) {

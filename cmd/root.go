@@ -4,6 +4,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -23,6 +24,39 @@ import (
 // duplicated here so root.go can probe its existence without exporting
 // an extra helper from the package.
 const manifestFileName = "manifest.json"
+
+// dynamicCmdsUnavailable records, at init time, that the manifest failed
+// to load and so the dynacmd-driven subtree (apps show, services list,
+// integrations *, account *, ...) is absent from cobra's tree for this
+// invocation. PersistentPreRunE reads it to decide what to surface to the
+// user, keyed on the real auth state rather than the init-time error.
+var dynamicCmdsUnavailable bool
+
+// loginNudgeApplies reports whether an unauthenticated invocation of the
+// named command should print the one-line "run runos login" nudge when
+// dynamic commands are unavailable. Excluded: the bare root command (it
+// shows the fuller welcome banner instead) and commands that are part of
+// getting signed in or render their own guidance. Pure for testability.
+func loginNudgeApplies(cmdName string) bool {
+	switch cmdName {
+	case "runos", "login", "logout", "config", "env", "version", "help", "update", "mcp":
+		return false
+	}
+	return true
+}
+
+// printWelcome writes the first-run welcome shown when a user who is not
+// signed in runs bare `runos`. Points only at `runos login`: environment
+// selection is a local-dev affordance and must never surface here.
+func printWelcome(w io.Writer) {
+	fmt.Fprintln(w, "Welcome to RunOS.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "You're not signed in yet. To get started:")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  runos login     Sign in with your browser")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Once signed in, run 'runos --help' to see everything you can do.")
+}
 
 // shouldBootstrapManifest reports whether PersistentPreRunE should
 // attempt to fetch the manifest on this command invocation. Returns
@@ -55,6 +89,16 @@ var rootCmd = &cobra.Command{
 	Short:   "CLI for interacting with RunOS clusters",
 	Long:    `RunOS CLI allows you to manage your RunOS clusters, provision services, and interact with your self-hosted cloud infrastructure.`,
 	Version: version.Version,
+	// Bare `runos`: greet a not-signed-in user with a welcome pointing at
+	// `runos login`; otherwise fall back to the normal help output.
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, _ := config.Load()
+		if !auth.HasCredentials(cfg) {
+			printWelcome(cmd.OutOrStdout())
+			return nil
+		}
+		return cmd.Help()
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config check for these commands
 		cmdName := cmd.Name()
@@ -98,10 +142,34 @@ var rootCmd = &cobra.Command{
 				cfg, cfgErr := config.Load()
 				if cfgErr == nil {
 					loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
-					if _, err := loader.Load(); err != nil && term.IsTerminal(int(os.Stderr.Fd())) {
+					// Not-authenticated is the expected pre-login state, not a
+					// first-run failure: stay quiet so a brand-new user isn't
+					// told the manifest "failed" before they've even signed in.
+					if _, err := loader.Load(); err != nil && !errors.Is(err, auth.ErrNotAuthenticated) && term.IsTerminal(int(os.Stderr.Fd())) {
 						fmt.Fprintf(os.Stderr, "Note: failed to fetch CLI manifest on first run (%v). Run 'runos manifest update' to retry.\n", err)
 					}
 				}
+			}
+		}
+
+		// When dynamic commands couldn't load at init time, decide what to
+		// tell the user based on the real auth state now (post-bootstrap).
+		// The bare-root welcome (RunE) and the sign-in commands handle their
+		// own messaging, so loginNudgeApplies filters those out.
+		if dynamicCmdsUnavailable {
+			cfg, _ := config.Load()
+			switch {
+			case !auth.HasCredentials(cfg):
+				// New install or signed-out: nudge toward login instead of
+				// leaving cobra silent (errors are suppressed at init).
+				if loginNudgeApplies(cmd.Name()) {
+					fmt.Fprintln(os.Stderr, "You're not signed in. Run 'runos login' to get started.")
+				}
+			case term.IsTerminal(int(os.Stderr.Fd())):
+				// Signed in but the manifest still didn't load: a genuine
+				// problem worth the loud recovery diagnostic.
+				fmt.Fprintln(os.Stderr, "Unable to load manifest: dynamic commands (apps show / services list / integrations * / account * ...) are unavailable in this invocation.")
+				fmt.Fprintln(os.Stderr, "  Recovery: run 'runos manifest update', or verify RUNOS_API_URL + RUNOS_API_KEY are correct for the target environment.")
 			}
 		}
 
@@ -177,25 +245,19 @@ func init() {
 	if err := registerDynamicCommands(); err != nil {
 		// I25-E: when the manifest can't load at init time, dynacmd-
 		// driven commands (apps show, services list, integrations *,
-		// account *, etc.) silently vanish from cobra's tree. The
-		// downstream user-visible failure is then a misleading
-		// "unknown flag: --cid". Surface the root cause loudly here
-		// AND name the recovery commands so the user doesn't chase the
-		// cobra error. PersistentPreRunE retries the manifest fetch on
-		// every invocation (see V6), so the next run picks up dynamic
-		// commands once the underlying issue (network, PAT scope,
-		// wrong RUNOS_API_URL) is resolved.
-		fmt.Fprintf(os.Stderr, "Unable to load manifest: %v\n", err)
-		fmt.Fprintln(os.Stderr, "  Dynamic commands (apps show / services list / integrations * / account * ...) are unavailable in this invocation.")
-		fmt.Fprintln(os.Stderr, "  Recovery: 'runos manifest update' (interactive) or verify RUNOS_API_URL + RUNOS_API_KEY are correct for the target environment.")
-		// Suppress cobra's downstream "unknown flag: --cid" +
-		// 16-line Usage block when the user invokes a vanished
-		// dynacmd subcommand. The manifest-load diagnostic above is
-		// the actionable signal; cobra's flag-parsing fallout is
-		// noise that previously buried the diagnostic three screens
-		// back. SilenceErrors leaves cobra's "Error: ..." line off,
-		// SilenceUsage strips the Usage block; the non-zero exit
-		// code is preserved so CI gates still trip.
+		// account *, etc.) silently vanish from cobra's tree, and the
+		// downstream user-visible failure is a misleading "unknown flag:
+		// --cid". Record the gap here; PersistentPreRunE decides what (if
+		// anything) to tell the user, because only there do we know the
+		// command being run AND the real auth state. A fresh install /
+		// signed-out user gets a friendly welcome or login nudge instead
+		// of recovery jargon; an authenticated-but-broken setup still gets
+		// the loud manifest-recovery diagnostic. The next run retries the
+		// fetch (see V6) and picks up dynamic commands once resolved.
+		dynamicCmdsUnavailable = true
+		// Suppress cobra's downstream "unknown flag: --cid" + 16-line
+		// Usage block when the user invokes a vanished dynacmd subcommand.
+		// The non-zero exit code is preserved so CI gates still trip.
 		rootCmd.SilenceUsage = true
 		rootCmd.SilenceErrors = true
 	}

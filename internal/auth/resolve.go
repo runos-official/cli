@@ -1,12 +1,20 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/runos-official/cli/internal/config"
 )
+
+// ErrNotAuthenticated is returned when no credential path is available:
+// no RUNOS_API_KEY, no stored PAT, and no Firebase refresh-token config.
+// Callers use errors.Is to distinguish the expected "not signed in yet"
+// state (new install, logged out) from genuine failures, so first-run
+// output can stay friendly instead of dumping recovery jargon.
+var ErrNotAuthenticated = errors.New("not authenticated")
 
 // APIKeyEnvVar is the env var the CLI reads to use a RunOS account API
 // key (PAT) instead of the interactive Firebase refresh-token flow.
@@ -74,9 +82,28 @@ func ResolveToken(cfg *config.Config) (string, error) {
 		}
 	}
 	if cfg == nil || cfg.Firebase == nil {
-		return "", fmt.Errorf("not authenticated: run 'runos login' (or 'runos login --api-key <pat>') or set %s", APIKeyEnvVar)
+		return "", fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <pat>') or set %s", ErrNotAuthenticated, APIKeyEnvVar)
 	}
 	return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+}
+
+// HasCredentials reports whether any auth path is available WITHOUT a
+// network round-trip: a PAT in the env, a stored PAT, or Firebase
+// refresh-token credentials on disk. Used for cheap "is the user signed
+// in?" checks (welcome banner, first-run guidance) that must not trigger
+// a token refresh. A true result means credentials are present, not that
+// they are still valid.
+func HasCredentials(cfg *config.Config) bool {
+	if UsingAPIKey() {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		return true
+	}
+	return cfg.Firebase != nil && strings.TrimSpace(cfg.RefreshToken) != ""
 }
 
 // UsingAPIKey reports whether the current process is configured to use

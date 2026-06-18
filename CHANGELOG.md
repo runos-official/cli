@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11.0
+
+Friendlier first run. A fresh install (no `~/.runos`) previously printed two alarming blocks before `runos login` even opened the browser: `Unable to load manifest: config not found ...` and `Note: failed to fetch CLI manifest on first run ...`. Both were expected pre-login states dressed up as failures, with recovery jargon aimed at the wrong audience. The CLI now distinguishes "not signed in yet" from "set up but broken":
+
+- **Welcome on bare `runos`.** A not-signed-in user gets a short welcome pointing at `runos login`, instead of help-text noise or a manifest error. Signed-in users still get the normal help output.
+- **Pre-login warnings suppressed.** The manifest "first run" note no longer fires when the only reason the fetch failed is that you have not authenticated yet. The loud `runos manifest update` / recovery diagnostic is now reserved for the genuine case it was written for: signed in, but the manifest still failed to load.
+- **Login nudge instead of silence.** A signed-out user who runs a manifest-driven command (e.g. `runos services list`) gets a one-line `Run 'runos login' to get started.` rather than a silent non-zero exit.
+- **Manifest warmed after login.** Both interactive and `--api-key` login now best-effort fetch the manifest on success, so dynamic commands work on the very next invocation with no manual `runos manifest update`.
+
+Internally this adds an `auth.ErrNotAuthenticated` sentinel (so the not-authenticated state is detected via `errors.Is`, not string matching) and a network-free `auth.HasCredentials` check. No change to authentication, transport, or any command's behavior once signed in.
+
+Install via `https://get.runos.com/cli.sh?release=v1.11.0`.
+
 ## v1.10.1
 
 Restores self-update for old CLI binaries. Releases v1.0.0-v1.6.0 hardcode a `runos-latest-{os}-{arch}` asset name in their updater's download and checksum-lookup paths; the v1.7.0 asset rename to `runos-{os}-{arch}` left those binaries 404ing on every `runos update`. Each release now also publishes a byte-identical `runos-latest-{os}-{arch}` copy (listed in `checksums.txt`, attested like the canonical asset), so a stuck old binary can self-update to current. No CLI behavior change; release-pipeline only. The alias copies are a temporary bridge to be removed once no pre-1.7.0 clients remain.

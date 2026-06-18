@@ -66,7 +66,11 @@ func (l *Loader) Load() (*Manifest, error) {
 		// declaring nothing is available.
 		rawJSON, fetchErr := l.fetchManifestRaw()
 		if fetchErr != nil {
-			return nil, fmt.Errorf("no manifest available: %w (manifest fetch also failed: %v)", localErr, fetchErr)
+			// Wrap both errors (Go 1.20+ multi-%w) so callers can
+			// errors.Is the fetch failure (notably auth.ErrNotAuthenticated
+			// on a fresh, pre-login install) and keep first-run output
+			// friendly instead of treating it as a hard manifest fault.
+			return nil, fmt.Errorf("no manifest available: %w (manifest fetch also failed: %w)", localErr, fetchErr)
 		}
 		if err := l.saveLocalRaw(rawJSON); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to cache manifest: %v\n", err)

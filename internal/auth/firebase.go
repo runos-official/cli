@@ -115,7 +115,7 @@ func RefreshIDToken(refreshToken, apiKey string) (*RefreshResponse, error) {
 // Returns an error if the refresh token or API key is empty, or if the refresh fails.
 func GetIDToken(refreshToken, apiKey string) (string, error) {
 	if refreshToken == "" || apiKey == "" {
-		return "", fmt.Errorf("not authenticated")
+		return "", ErrNotAuthenticated
 	}
 
 	resp, err := RefreshIDToken(refreshToken, apiKey)

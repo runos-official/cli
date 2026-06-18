@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
+	"github.com/runos-official/cli/internal/manifest"
 
 	"github.com/spf13/cobra"
 )
@@ -142,6 +145,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 			}
 
 			fmt.Printf("\nAuthenticated successfully!\n")
+			warmManifestCache(cfg)
 			return nil
 		}
 
@@ -199,5 +203,24 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	fmt.Printf("Stored API key for account %s.\n", aid)
 	fmt.Println("The CLI will use this PAT for authentication. Run 'runos logout' to clear it.")
 	fmt.Printf("Note: the %s environment variable, when set, still takes precedence over the stored key.\n", auth.APIKeyEnvVar)
+	warmManifestCache(cfg)
 	return nil
+}
+
+// warmManifestCache best-effort fetches the CLI manifest right after a
+// successful login so the dynamic commands (apps show, services list, ...)
+// are available on the very next invocation, with no manual 'runos
+// manifest update' step. Silent on failure: the next command's first-run
+// bootstrap retries the fetch.
+func warmManifestCache(cfg *config.Config) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	configDir := filepath.Join(home, ".runos")
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
+	if _, err := loader.Load(); err != nil {
+		return
+	}
+	fmt.Println("Run 'runos --help' to see available commands.")
 }

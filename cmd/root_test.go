@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 // Regression test for V6 (VCS_DEPLOY_TEST_NOTES.md): the manifest-bootstrap
 // skip-list must NOT trigger a fetch for help/version/config/update/manifest
@@ -37,5 +41,50 @@ func TestShouldBootstrapManifest(t *testing.T) {
 				t.Errorf("shouldBootstrapManifest(%q, %q, present=%v) = %v, want %v", tc.cmdName, tc.parentName, tc.manifestPresent, got, tc.want)
 			}
 		})
+	}
+}
+
+// loginNudgeApplies must stay silent for the bare root command (it shows
+// the welcome banner) and for sign-in / self-guiding commands, but nudge
+// for manifest-driven commands a signed-out user might run by mistake.
+func TestLoginNudgeApplies(t *testing.T) {
+	cases := []struct {
+		cmdName string
+		want    bool
+	}{
+		{cmdName: "runos", want: false},
+		{cmdName: "login", want: false},
+		{cmdName: "logout", want: false},
+		{cmdName: "config", want: false},
+		{cmdName: "env", want: false},
+		{cmdName: "version", want: false},
+		{cmdName: "help", want: false},
+		{cmdName: "update", want: false},
+		{cmdName: "mcp", want: false},
+		{cmdName: "show", want: true},
+		{cmdName: "list", want: true},
+		{cmdName: "deploy", want: true},
+		{cmdName: "sync", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cmdName, func(t *testing.T) {
+			if got := loginNudgeApplies(tc.cmdName); got != tc.want {
+				t.Errorf("loginNudgeApplies(%q) = %v, want %v", tc.cmdName, got, tc.want)
+			}
+		})
+	}
+}
+
+// printWelcome must never leak the local-dev-only `runos config env`
+// affordance into user-facing first-run output (it's a public repo).
+func TestPrintWelcomeOmitsEnv(t *testing.T) {
+	var buf bytes.Buffer
+	printWelcome(&buf)
+	out := buf.String()
+	if strings.Contains(out, "config env") {
+		t.Errorf("welcome message leaks 'config env': %q", out)
+	}
+	if !strings.Contains(out, "runos login") {
+		t.Errorf("welcome message should point at 'runos login': %q", out)
 	}
 }
