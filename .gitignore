@@ -25,9 +25,10 @@ vendor/
 # IDE and editor
 .idea/
 .vscode/
-# Ignore local Claude state but track shared skills (release-cli runbook, etc.)
-.claude/*
-!.claude/skills/
+# Local AI-assistant / agent state (never shipped publicly)
+.claude/
+CLAUDE.md
+AGENTS.md
 *.swp
 *.swo
 *~

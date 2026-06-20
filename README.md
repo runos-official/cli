@@ -256,3 +256,10 @@ cli/
 ### How Dynamic Commands Work
 
 The CLI fetches a manifest from the API that defines available commands, their flags, and endpoint mappings. This means most commands are generated at runtime -- when the API adds new endpoints, the CLI picks them up automatically on the next `runos manifest update` (or when the cached manifest expires after 1 hour).
+
+## License
+
+The RunOS CLI is **source-available** under the [Elastic License 2.0](LICENSE):
+the source is published for transparency and security review, not as open
+source. Use is subject to the license terms. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE). Copyright 2026 RunOS.
