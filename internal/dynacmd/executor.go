@@ -353,7 +353,13 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// Handle --follow flag for commands that return jobs (detected by jobId in output)
 	if hasJobIdOutput(cmdDef) {
 		follow, _ := cmd.Flags().GetBool("follow")
-		if follow {
+		// Only follow when the response actually carries a jobId. Some commands
+		// are conditionally async: e.g. `nodes/delete` returns a jobId only with
+		// --delete-cloud-instance (the removeServer job); the plain delete
+		// completes synchronously and returns {success, nid} with no job. In that
+		// case fall through to normal result rendering rather than erroring on a
+		// missing jobId for an operation that actually succeeded.
+		if follow && responseHasJobID(respBody) {
 			return e.followJob(respBody)
 		}
 	}
@@ -1145,6 +1151,20 @@ func logEntryKey(it map[string]any) string {
 	ctr, _ := it["containerName"].(string)
 	msg, _ := it["message"].(string)
 	return ts + "\x00" + pod + "\x00" + ctr + "\x00" + msg
+}
+
+// responseHasJobID reports whether a response body carries a non-empty jobId, so
+// --follow only engages on genuinely async responses. Some commands are
+// conditionally async (e.g. nodes/delete returns a jobId only with
+// --delete-cloud-instance) and otherwise return a synchronous result with no
+// job; following those would fail on a missing jobId for a call that succeeded.
+func responseHasJobID(respBody []byte) bool {
+	var r map[string]any
+	if err := json.Unmarshal(respBody, &r); err != nil {
+		return false
+	}
+	id, ok := r["jobId"].(string)
+	return ok && id != ""
 }
 
 func (e *Executor) followJob(respBody []byte) error {
