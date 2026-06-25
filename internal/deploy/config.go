@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -118,19 +119,19 @@ type ServicePortMapping struct {
 // round-trip cleanly.
 type DeployConfig struct {
 	// --- AppSpec block (PulledApp-aligned) ---
-	App                        string               `yaml:"app" json:"app"`
-	DeployType                 string               `yaml:"deployType,omitempty" json:"deployType,omitempty"`
-	ID                         string               `yaml:"id,omitempty" json:"id,omitempty"`
-	CID                        string               `yaml:"cid,omitempty" json:"cid,omitempty"`
-	AID                        string               `yaml:"aid,omitempty" json:"aid,omitempty"`
+	App        string `yaml:"app" json:"app"`
+	DeployType string `yaml:"deployType,omitempty" json:"deployType,omitempty"`
+	ID         string `yaml:"id,omitempty" json:"id,omitempty"`
+	CID        string `yaml:"cid,omitempty" json:"cid,omitempty"`
+	AID        string `yaml:"aid,omitempty" json:"aid,omitempty"`
 	// SecretEnv points at the local file holding sensitive (Secret-backed)
 	// env vars. Default `.runos.{cid}.{id}.env`. The leading dot keeps it
 	// gitignored by default; the file must NEVER be committed to VCS.
-	SecretEnv                  string               `yaml:"secretEnv,omitempty" json:"secretEnv,omitempty"`
+	SecretEnv string `yaml:"secretEnv,omitempty" json:"secretEnv,omitempty"`
 	// Env points at the local file holding plain (ConfigMap-backed) env vars.
 	// Default `runos.{cid}.{id}.config.env`. No leading dot — this file IS
 	// committed to VCS.
-	Env                        string               `yaml:"env,omitempty" json:"env,omitempty"`
+	Env string `yaml:"env,omitempty" json:"env,omitempty"`
 	// SourceDir is the build-context path (relative to this yaml's
 	// directory) that `runos deploy` tarballs and uploads. Empty defaults
 	// to "." (the yaml's own directory). Set to ".." when the yaml lives
@@ -138,7 +139,7 @@ type DeployConfig struct {
 	// (project root). For VCS apps the cluster agent now reads this from
 	// the committed yaml at deploy time too, so monorepo VCS apps in a
 	// subdirectory work with the same `sourceDir: ..` shape.
-	SourceDir                  string               `yaml:"sourceDir,omitempty" json:"-"`
+	SourceDir string `yaml:"sourceDir,omitempty" json:"-"`
 	// ConfigPath is the repo-relative path of THIS yaml file. Optional —
 	// when omitted, `runos deploy` for VCS apps auto-derives it from the
 	// yaml's location relative to the git repo root, so the user normally
@@ -167,7 +168,7 @@ type DeployConfig struct {
 	// enforced client-side; the conductor is the source of truth and
 	// rejects unknown presets with a 400. Empty round-trips as "use
 	// server-side default", matching healthCheck's shape.
-	DeploymentStrategy         string               `yaml:"deploymentStrategy,omitempty" json:"deploymentStrategy,omitempty"`
+	DeploymentStrategy string `yaml:"deploymentStrategy,omitempty" json:"deploymentStrategy,omitempty"`
 
 	// NodeAffinityTags pins the app's pods to nodes carrying the same
 	// RunOS tags (rendered as a required nodeAffinity on the Deployment).
@@ -177,7 +178,7 @@ type DeployConfig struct {
 	// never auto-created from a deploy). Desired-state semantics
 	// server-side: omitting the field from the yaml clears the pin on the
 	// next deploy/sync, same as healthCheck/deploymentStrategy.
-	NodeAffinityTags           []string             `yaml:"nodeAffinityTags,omitempty" json:"nodeAffinityTags,omitempty"`
+	NodeAffinityTags []string `yaml:"nodeAffinityTags,omitempty" json:"nodeAffinityTags,omitempty"`
 
 	// BuildArgs is the declarative, committed Docker build-args map sourced
 	// from `runos.yaml`. Conductor parses this server-side on CLI deploys
@@ -196,10 +197,10 @@ type DeployConfig struct {
 	// under `servicePortMappings[].domains` so each domain binds to a
 	// specific port. The conductor still accepts top-level `domain` and
 	// folds it into the first mapping's `domains` for backwards compat.
-	Domain        StringOrSlice                 `yaml:"domain,omitempty" json:"domain,omitempty"`
-	Dockerfile    string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
-	StorageMb     *int                          `yaml:"storageMb,omitempty" json:"storageMb,omitempty"`
-	Requires      map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
+	Domain     StringOrSlice                 `yaml:"domain,omitempty" json:"domain,omitempty"`
+	Dockerfile string                        `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
+	StorageMb  *int                          `yaml:"storageMb,omitempty" json:"storageMb,omitempty"`
+	Requires   map[string]ServiceRequirement `yaml:"requires,omitempty" json:"requires,omitempty"`
 	// SecretFiles is the round-tripped declaration block from a pulled
 	// yaml AND the wire-side payload sent to prepare-cli-deployment.
 	// Each entry is `{filename, mountPath, local, md5?}` on disk; the
@@ -216,14 +217,14 @@ type DeployConfig struct {
 	// Pre-fix (I10-K CLI half) this field was both absent from the
 	// struct AND suppressed on the wire (`json:"-"`); the post-deploy
 	// SaveConfig stripped user-authored entries silently.
-	SecretFiles   []SecretFile                  `yaml:"secretFiles,omitempty" json:"secretFiles,omitempty"`
+	SecretFiles []SecretFile `yaml:"secretFiles,omitempty" json:"secretFiles,omitempty"`
 	// CustomSecretEnvVars holds the parsed contents of SecretEnv (sensitive,
 	// Secret-backed). Sent in the prepare-cli-deployment body and lands in
 	// the {osid}-user-secret-env-vars Secret on the cluster.
-	CustomSecretEnvVars map[string]string       `yaml:"-" json:"customSecretEnvVars,omitempty"`
+	CustomSecretEnvVars map[string]string `yaml:"-" json:"customSecretEnvVars,omitempty"`
 	// CustomEnvVars holds the parsed contents of Env (plain, ConfigMap-backed,
 	// VCS-committed). Lands in the {osid}-user-env-vars ConfigMap.
-	CustomEnvVars       map[string]string       `yaml:"-" json:"customEnvVars,omitempty"`
+	CustomEnvVars map[string]string `yaml:"-" json:"customEnvVars,omitempty"`
 	// BuildArgsCli carries the `--build-arg KEY=VALUE` entries from the
 	// command line as a structured list. Conductor merges these with the
 	// yaml-sourced BuildArgs map (CLI > yaml precedence) before forwarding
@@ -655,6 +656,17 @@ func ReconcileCID(callerCID, yamlCID string) (string, error) {
 type ResolvedEnvFiles struct {
 	Secret string
 	Plain  string
+
+	// SecretExplicit / PlainExplicit record whether the resolved path came
+	// from an explicit `secretEnv:` / `env:` field in the yaml (true) or
+	// was auto-derived from the canonical cid+id default (false). The
+	// distinction drives VerifyExplicitEnvFiles: an explicit reference that
+	// points at a missing file is an operator mistake and must fail loud
+	// (otherwise the deploy silently ships EMPTY env, e.g. disabling an
+	// app's in-app IP allowlist); an auto-derived default may legitimately
+	// be absent on first deploy (a placeholder is written post-deploy).
+	SecretExplicit bool
+	PlainExplicit  bool
 }
 
 // ResolveEnvFiles determines both env-file paths based on config state.
@@ -682,6 +694,7 @@ func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (Resolv
 	// Secret side (sensitive, gitignored).
 	if config.SecretEnv != "" {
 		paths.Secret = filepath.Join(configDir, config.SecretEnv)
+		paths.SecretExplicit = true
 	} else if config.ID != "" {
 		filename := fmt.Sprintf(".runos.%s.%s.env", cid, config.ID)
 		config.SecretEnv = filename
@@ -692,6 +705,7 @@ func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (Resolv
 	// Plain side (committed, no leading dot).
 	if config.Env != "" {
 		paths.Plain = filepath.Join(configDir, config.Env)
+		paths.PlainExplicit = true
 	} else if config.ID != "" {
 		filename := fmt.Sprintf("runos.%s.%s.config.env", cid, config.ID)
 		config.Env = filename
@@ -700,6 +714,44 @@ func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (Resolv
 	}
 
 	return paths, modified
+}
+
+// ErrMissingExplicitEnvFile signals that a path the yaml explicitly named
+// via `env:` / `secretEnv:` does not exist on disk. Callers wrap it with
+// the field and path; detect it with errors.Is.
+var ErrMissingExplicitEnvFile = errors.New("referenced env file does not exist")
+
+// VerifyExplicitEnvFiles fails loud when an explicitly-referenced env or
+// secret-env file is missing. An `env:` / `secretEnv:` field that names a
+// non-existent file is an operator mistake (typo, wrong relative path):
+// loading it silently as empty would deploy the app with EMPTY env vars,
+// e.g. wiping out ALLOWED_CIDRS and disabling the app's in-app source-IP
+// allowlist with no error. Auto-derived defaults are exempt — they're
+// legitimately absent on first deploy (a placeholder is written
+// post-deploy via writeDeployIaCArtifacts). Mirrors the fail-loud
+// treatment LoadSecretFileContents / LoadLocalOverrides already give
+// missing explicit references. Call it after ResolveEnvFiles, once any
+// pre-deploy server-state sync has had its chance to materialise the file.
+func VerifyExplicitEnvFiles(paths ResolvedEnvFiles) error {
+	if err := requireEnvFileExists("env:", paths.Plain, paths.PlainExplicit); err != nil {
+		return err
+	}
+	return requireEnvFileExists("secretEnv:", paths.Secret, paths.SecretExplicit)
+}
+
+// requireEnvFileExists errors when an explicitly-referenced env file is
+// absent. Non-explicit (auto-derived) paths and empty paths are no-ops.
+func requireEnvFileExists(field, path string, explicit bool) error {
+	if !explicit || path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s %q (referenced in runos.yaml): %w (create it, or drop the %s field if the app needs no env vars from that source)", field, path, ErrMissingExplicitEnvFile, field)
+		}
+		return fmt.Errorf("stat %s %q: %w", field, path, err)
+	}
+	return nil
 }
 
 // LegacyEnvFilename returns the cluster-scoped, app-agnostic env filename
