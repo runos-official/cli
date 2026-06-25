@@ -467,9 +467,9 @@ func (p *SyncPlan) HasChanges() bool {
 // readable and makes tests easy.
 type SyncInputs struct {
 	LocalApp           *PulledApp
-	LocalSecretEnvVars map[string]string  // sensitive (Secret-backed)
-	LocalEnvVars       map[string]string  // plain (ConfigMap-backed)
-	LocalSecretFiles   map[string][]byte  // filename -> raw decoded bytes
+	LocalSecretEnvVars map[string]string // sensitive (Secret-backed)
+	LocalEnvVars       map[string]string // plain (ConfigMap-backed)
+	LocalSecretFiles   map[string][]byte // filename -> raw decoded bytes
 	LocalOverrides     []LocalOverride
 
 	ServerRaw           map[string]any
@@ -1511,10 +1511,19 @@ func rejectAppsBodyEnvFields(data []byte) error {
 // when it materialises env values from server.
 //
 // Returns (empty map, false, nil) when neither envRef nor defaultRef is set,
-// or when the resolved file doesn't exist on disk. The caller treats
-// exists==false as "no local content for this side" — sync skips the push.
+// or when an auto-derived defaultRef file doesn't exist on disk. The caller
+// treats exists==false as "no local content for this side" — sync skips the
+// push.
+//
+// When envRef is set explicitly (the yaml named the file) but it's missing,
+// returns deploy.ErrMissingExplicitEnvFile rather than empty: apps sync is
+// replace-all per source, so silently treating a typo'd `env:` path as empty
+// would DELETE every server-side env var for that source. An explicit
+// reference must point at a real file — same fail-loud contract as
+// LoadLocalSecretFiles / LoadLocalOverrides.
 func LoadLocalEnv(yamlDir, envRef, defaultRef string) (map[string]string, bool, error) {
 	ref := envRef
+	explicit := envRef != ""
 	if ref == "" {
 		ref = defaultRef
 	}
@@ -1528,6 +1537,9 @@ func LoadLocalEnv(yamlDir, envRef, defaultRef string) (map[string]string, bool, 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if explicit {
+				return nil, false, fmt.Errorf("env file %q (referenced in runos.yaml): %w", path, deploy.ErrMissingExplicitEnvFile)
+			}
 			return map[string]string{}, false, nil
 		}
 		return nil, false, err

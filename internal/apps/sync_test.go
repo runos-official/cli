@@ -3,11 +3,14 @@ package apps
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/runos-official/cli/internal/deploy"
 )
 
 // Regression test for I2-4c (TEST_LOG.md): the pre-deploy "fields will
@@ -2072,4 +2075,57 @@ func TestRenderYAMLPatchAsDiff_ScalarsStayOnOneLine(t *testing.T) {
 			t.Errorf("expected line containing %q in:\n%s", want, got)
 		}
 	}
+}
+
+// Bug 102 (ts-64): apps sync is replace-all per env source, so an explicit
+// `env:` / `secretEnv:` reference naming a missing file must fail loud —
+// silently treating it as empty would DELETE every server-side env var for
+// that source. An auto-derived default file legitimately absent stays a
+// silent no-op (sync skips that source).
+func TestLoadLocalEnv(t *testing.T) {
+	t.Run("explicit ref missing -> error", func(t *testing.T) {
+		dir := t.TempDir()
+		_, exists, err := LoadLocalEnv(dir, "prod.config.env", "runos.cid1.app1.config.env")
+		if !errors.Is(err, deploy.ErrMissingExplicitEnvFile) {
+			t.Fatalf("got err=%v exists=%v, want ErrMissingExplicitEnvFile", err, exists)
+		}
+	})
+
+	t.Run("default ref missing -> empty no-op, no error", func(t *testing.T) {
+		dir := t.TempDir()
+		got, exists, err := LoadLocalEnv(dir, "", "runos.cid1.app1.config.env")
+		if err != nil {
+			t.Fatalf("default missing must not error, got %v", err)
+		}
+		if exists {
+			t.Errorf("exists: got true, want false")
+		}
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty map", got)
+		}
+	})
+
+	t.Run("explicit ref present -> loads", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "prod.config.env"), []byte("ALLOWED_CIDRS=10.0.0.0/8\n"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		got, exists, err := LoadLocalEnv(dir, "prod.config.env", "runos.cid1.app1.config.env")
+		if err != nil {
+			t.Fatalf("present explicit file must not error, got %v", err)
+		}
+		if !exists {
+			t.Errorf("exists: got false, want true")
+		}
+		if got["ALLOWED_CIDRS"] != "10.0.0.0/8" {
+			t.Errorf("got %v, want ALLOWED_CIDRS=10.0.0.0/8", got)
+		}
+	})
+
+	t.Run("neither ref set -> empty no-op", func(t *testing.T) {
+		got, exists, err := LoadLocalEnv(t.TempDir(), "", "")
+		if err != nil || exists || len(got) != 0 {
+			t.Fatalf("got=%v exists=%v err=%v, want empty/false/nil", got, exists, err)
+		}
+	})
 }

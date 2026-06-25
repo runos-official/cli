@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -737,6 +738,9 @@ func TestResolveEnvFiles(t *testing.T) {
 		if paths.Plain != filepath.Join(dir, "custom.env") {
 			t.Errorf("Plain: got %q, want %q", paths.Plain, filepath.Join(dir, "custom.env"))
 		}
+		if !paths.SecretExplicit || !paths.PlainExplicit {
+			t.Errorf("explicit flags: got Secret=%v Plain=%v, want both true", paths.SecretExplicit, paths.PlainExplicit)
+		}
 	})
 
 	t.Run("default uses CID and ID for both files", func(t *testing.T) {
@@ -746,6 +750,9 @@ func TestResolveEnvFiles(t *testing.T) {
 		paths, changed := ResolveEnvFiles(dir, config, "cid1")
 		if !changed {
 			t.Fatal("expected changed=true for default paths")
+		}
+		if paths.SecretExplicit || paths.PlainExplicit {
+			t.Errorf("explicit flags: got Secret=%v Plain=%v, want both false for auto-derived defaults", paths.SecretExplicit, paths.PlainExplicit)
 		}
 		if config.SecretEnv != ".runos.cid1.app123.env" {
 			t.Errorf("config.SecretEnv = %q, want %q", config.SecretEnv, ".runos.cid1.app123.env")
@@ -771,6 +778,79 @@ func TestResolveEnvFiles(t *testing.T) {
 		}
 		if paths.Secret != "" || paths.Plain != "" {
 			t.Errorf("expected empty paths, got %+v", paths)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// VerifyExplicitEnvFiles()
+// ---------------------------------------------------------------------------
+
+// Bug 102 (ts-64): an explicit `env:` / `secretEnv:` reference that names a
+// missing file must fail loud, not silently deploy EMPTY env (which would,
+// e.g., wipe ALLOWED_CIDRS and disable an app's in-app IP allowlist). An
+// auto-derived default may legitimately be absent on first deploy.
+func TestVerifyExplicitEnvFiles(t *testing.T) {
+	writeFile := func(t *testing.T, dir, name string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("K=v\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		return p
+	}
+
+	t.Run("explicit plain env missing -> error", func(t *testing.T) {
+		dir := t.TempDir()
+		err := VerifyExplicitEnvFiles(ResolvedEnvFiles{Plain: filepath.Join(dir, "missing.config.env"), PlainExplicit: true})
+		if !errors.Is(err, ErrMissingExplicitEnvFile) {
+			t.Fatalf("got %v, want ErrMissingExplicitEnvFile", err)
+		}
+		if !strings.Contains(err.Error(), "env:") {
+			t.Errorf("error should name the env: field, got %q", err.Error())
+		}
+	})
+
+	t.Run("explicit secret env missing -> error", func(t *testing.T) {
+		dir := t.TempDir()
+		err := VerifyExplicitEnvFiles(ResolvedEnvFiles{Secret: filepath.Join(dir, ".missing.env"), SecretExplicit: true})
+		if !errors.Is(err, ErrMissingExplicitEnvFile) {
+			t.Fatalf("got %v, want ErrMissingExplicitEnvFile", err)
+		}
+		if !strings.Contains(err.Error(), "secretEnv:") {
+			t.Errorf("error should name the secretEnv: field, got %q", err.Error())
+		}
+	})
+
+	t.Run("non-explicit (auto-derived default) missing -> no error", func(t *testing.T) {
+		dir := t.TempDir()
+		// First deploy: the canonical default files don't exist yet; a
+		// placeholder is written post-deploy. Must not block the deploy.
+		err := VerifyExplicitEnvFiles(ResolvedEnvFiles{
+			Secret: filepath.Join(dir, ".runos.cid1.app1.env"),
+			Plain:  filepath.Join(dir, "runos.cid1.app1.config.env"),
+		})
+		if err != nil {
+			t.Fatalf("auto-derived missing must not error, got %v", err)
+		}
+	})
+
+	t.Run("explicit present -> no error", func(t *testing.T) {
+		dir := t.TempDir()
+		err := VerifyExplicitEnvFiles(ResolvedEnvFiles{
+			Plain:          writeFile(t, dir, "prod.config.env"),
+			PlainExplicit:  true,
+			Secret:         writeFile(t, dir, ".prod.env"),
+			SecretExplicit: true,
+		})
+		if err != nil {
+			t.Fatalf("present explicit files must not error, got %v", err)
+		}
+	})
+
+	t.Run("empty paths -> no error", func(t *testing.T) {
+		if err := VerifyExplicitEnvFiles(ResolvedEnvFiles{}); err != nil {
+			t.Fatalf("empty paths must not error, got %v", err)
 		}
 	})
 }

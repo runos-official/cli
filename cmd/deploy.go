@@ -401,6 +401,16 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	//  - plain env file (runos.{cid}.{id}.config.env): committed to VCS;
 	//    populates customEnvVars and lands in the K8s ConfigMap.
 	envPaths, envConfigChanged := deploy.ResolveEnvFiles(configDir, deployConfig, cid)
+	// Fail loud if the yaml explicitly names an env/secretEnv file that
+	// doesn't exist. preDeploySync ran above, so a fresh checkout whose
+	// file is reconstructable from server state already has it on disk by
+	// now; a path still missing here is an operator typo that would
+	// otherwise ship EMPTY env (e.g. silently disabling an app's IP
+	// allowlist). Auto-derived defaults stay exempt (placeholder written
+	// post-deploy). Checked before SaveConfig so we don't persist on error.
+	if err := deploy.VerifyExplicitEnvFiles(envPaths); err != nil {
+		return err
+	}
 	if envConfigChanged {
 		if err := deploy.SaveConfig(configPath, deployConfig); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update config with env paths: %v\n", err)
