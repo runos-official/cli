@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.11.1
+
+Bug fixes and licensing.
+
+- **`runos deploy` / `runos apps sync` now fail loud when an explicit `env:` or `secretEnv:` file is missing.** A `runos.yaml` naming a non-existent env file previously deployed EMPTY env vars with no error, e.g. silently wiping `ALLOWED_CIDRS` and disabling an app's in-app source-IP allowlist. Both paths now hard-error on an explicit-but-missing reference (`apps sync` is replace-all, so a typo'd path would have deleted all server-side env vars). Auto-derived default env files stay exempt (legitimately absent on first deploy). Regression tests cover explicit-missing, default-missing, present, and empty cases.
+- **`runos nodes delete --follow` no longer errors on a successful synchronous delete.** A plain delete completes synchronously with no job; `--follow` now only waits when the response carries a real `jobId`, instead of failing with "response does not contain jobId" on a delete that actually succeeded.
+- **Licensing.** The repo now carries an explicit LICENSE (Elastic License 2.0, source-available) + NOTICE and a README License section; internal AI-assistant files (`.claude/`, `CLAUDE.md`) are no longer tracked, matching the agent repos. No CLI behavior change.
+
+Install via `https://get.runos.com/cli.sh?release=v1.11.1`.
+
 ## v1.11.0
 
 Friendlier first run. A fresh install (no `~/.runos`) previously printed two alarming blocks before `runos login` even opened the browser: `Unable to load manifest: config not found ...` and `Note: failed to fetch CLI manifest on first run ...`. Both were expected pre-login states dressed up as failures, with recovery jargon aimed at the wrong audience. The CLI now distinguishes "not signed in yet" from "set up but broken":
