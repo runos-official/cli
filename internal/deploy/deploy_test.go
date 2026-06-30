@@ -780,6 +780,79 @@ func TestResolveEnvFiles(t *testing.T) {
 			t.Errorf("expected empty paths, got %+v", paths)
 		}
 	})
+
+	// Bug 108 (ts-67): the first deploy auto-derives AND persists the
+	// canonical default into runos.yaml. On the SECOND deploy that persisted
+	// value must NOT read back as explicit, otherwise VerifyExplicitEnvFiles
+	// hard-fails on the gitignored secret file the CLI never created.
+	t.Run("persisted canonical default with ID is not explicit", func(t *testing.T) {
+		dir := t.TempDir()
+		config := &DeployConfig{
+			App: "myapp", Port: 8080, ID: "app123",
+			SecretEnv: DefaultSecretEnvFilename("cid1", "app123"),
+			Env:       DefaultEnvFilename("cid1", "app123"),
+		}
+
+		paths, changed := ResolveEnvFiles(dir, config, "cid1")
+		if changed {
+			t.Fatal("expected changed=false when fields already hold the defaults")
+		}
+		if paths.SecretExplicit || paths.PlainExplicit {
+			t.Errorf("persisted canonical defaults must be non-explicit, got Secret=%v Plain=%v", paths.SecretExplicit, paths.PlainExplicit)
+		}
+	})
+
+	// A genuinely custom path WITH an ID set stays explicit so the fail-loud
+	// protection (bug 102 / aef934f) still fires for operator typos.
+	t.Run("custom path with ID stays explicit", func(t *testing.T) {
+		dir := t.TempDir()
+		config := &DeployConfig{
+			App: "myapp", Port: 8080, ID: "app123",
+			SecretEnv: "prod-secret.env", Env: "prod.env",
+		}
+
+		paths, _ := ResolveEnvFiles(dir, config, "cid1")
+		if !paths.SecretExplicit || !paths.PlainExplicit {
+			t.Errorf("custom paths must stay explicit, got Secret=%v Plain=%v", paths.SecretExplicit, paths.PlainExplicit)
+		}
+	})
+}
+
+// TestDeployTwiceRoundTrip_DefaultSecretEnvExempt is the end-to-end pin for
+// bug 108: deploy #1 persists the auto-derived secretEnv into the config;
+// deploy #2 re-resolves that persisted config and VerifyExplicitEnvFiles must
+// pass even though the default secret file was never created (app has no
+// secret vars). Pre-fix, the second resolve marked the field explicit and the
+// check hard-failed.
+func TestDeployTwiceRoundTrip_DefaultSecretEnvExempt(t *testing.T) {
+	dir := t.TempDir()
+	// User starts with an explicit (existing) plain env file and no secretEnv.
+	if err := os.WriteFile(filepath.Join(dir, "app.env"), []byte("K=v\n"), 0o644); err != nil {
+		t.Fatalf("write app.env: %v", err)
+	}
+	config := &DeployConfig{App: "myapp", Port: 8080, ID: "app123", Env: "app.env"}
+
+	// Deploy #1: resolve auto-derives + persists the default secretEnv.
+	paths1, changed1 := ResolveEnvFiles(dir, config, "cid1")
+	if !changed1 {
+		t.Fatal("deploy #1: expected config mutation for the auto-derived secretEnv")
+	}
+	if config.SecretEnv != DefaultSecretEnvFilename("cid1", "app123") {
+		t.Fatalf("deploy #1: SecretEnv = %q, want persisted default", config.SecretEnv)
+	}
+	if err := VerifyExplicitEnvFiles(paths1); err != nil {
+		t.Fatalf("deploy #1: VerifyExplicitEnvFiles = %v, want nil", err)
+	}
+
+	// Deploy #2: same (now-persisted) config, fresh resolve. The persisted
+	// default must stay exempt; the never-created secret file must not block.
+	paths2, _ := ResolveEnvFiles(dir, config, "cid1")
+	if paths2.SecretExplicit {
+		t.Error("deploy #2: persisted default secretEnv must not be explicit")
+	}
+	if err := VerifyExplicitEnvFiles(paths2); err != nil {
+		t.Fatalf("deploy #2: VerifyExplicitEnvFiles = %v, want nil (regression: bug 108)", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
