@@ -657,14 +657,18 @@ type ResolvedEnvFiles struct {
 	Secret string
 	Plain  string
 
-	// SecretExplicit / PlainExplicit record whether the resolved path came
-	// from an explicit `secretEnv:` / `env:` field in the yaml (true) or
-	// was auto-derived from the canonical cid+id default (false). The
-	// distinction drives VerifyExplicitEnvFiles: an explicit reference that
-	// points at a missing file is an operator mistake and must fail loud
-	// (otherwise the deploy silently ships EMPTY env, e.g. disabling an
-	// app's in-app IP allowlist); an auto-derived default may legitimately
-	// be absent on first deploy (a placeholder is written post-deploy).
+	// SecretExplicit / PlainExplicit record whether the resolved path is a
+	// genuinely operator-authored, custom reference (true) or the canonical
+	// cid+id default (false). False covers both an absent field AND a field
+	// whose value equals the auto-derived default — because the CLI writes
+	// that default back into the yaml on first deploy, so on later deploys
+	// it is indistinguishable from (and must be treated identically to) a
+	// fresh auto-derive. The distinction drives VerifyExplicitEnvFiles: a
+	// custom reference that points at a missing file is an operator mistake
+	// and must fail loud (otherwise the deploy silently ships EMPTY env, e.g.
+	// disabling an app's in-app IP allowlist); a canonical default may
+	// legitimately be absent (no secret vars; plain placeholder is written
+	// post-deploy) and stays exempt.
 	SecretExplicit bool
 	PlainExplicit  bool
 }
@@ -694,20 +698,29 @@ func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (Resolv
 	// Secret side (sensitive, gitignored).
 	if config.SecretEnv != "" {
 		paths.Secret = filepath.Join(configDir, config.SecretEnv)
-		paths.SecretExplicit = true
+		// A configured value equal to the canonical auto-derived default is
+		// the CLI's OWN write-back from a prior deploy (round-trip), not an
+		// operator-authored reference. The default secret file is
+		// legitimately absent when the app has no secret vars, so it must
+		// stay exempt from VerifyExplicitEnvFiles — otherwise the second
+		// deploy fails on a file the CLI itself referenced but never created.
+		// A genuinely custom name keeps Explicit=true and the fail-loud
+		// protection (bug 102 / aef934f).
+		paths.SecretExplicit = config.ID == "" || config.SecretEnv != DefaultSecretEnvFilename(cid, config.ID)
 	} else if config.ID != "" {
-		filename := fmt.Sprintf(".runos.%s.%s.env", cid, config.ID)
+		filename := DefaultSecretEnvFilename(cid, config.ID)
 		config.SecretEnv = filename
 		paths.Secret = filepath.Join(configDir, filename)
 		modified = true
 	}
 
-	// Plain side (committed, no leading dot).
+	// Plain side (committed, no leading dot). Same canonical-default-is-not-
+	// explicit rule as the secret side above.
 	if config.Env != "" {
 		paths.Plain = filepath.Join(configDir, config.Env)
-		paths.PlainExplicit = true
+		paths.PlainExplicit = config.ID == "" || config.Env != DefaultEnvFilename(cid, config.ID)
 	} else if config.ID != "" {
-		filename := fmt.Sprintf("runos.%s.%s.config.env", cid, config.ID)
+		filename := DefaultEnvFilename(cid, config.ID)
 		config.Env = filename
 		paths.Plain = filepath.Join(configDir, filename)
 		modified = true
