@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.11.3
+
+Fixes `runos apps pull` / `runos apps sync` mishandling a port mapping whose `standardHttps` field is absent on the server (legacy app docs). The platform default is public routing (`standardHttps: true`), but the CLI zero-valued the missing field to `false`, so a pull materialized `standardHttps: false` in the local yaml and the next deploy persisted it, silently moving the app off standard HTTPS (443) onto the VPN-only entrypoint. `Port.StandardHttps` is now a pointer with the default resolved everywhere it is read (pull write-out, sync wire payload, drift compare), so absence means `true` and only an explicit `false` opts a port out of public routing. Conductor >= 1.5.2 also always sends the field explicitly; this fix keeps older conductors safe too. Regression tests cover pull materialization, drift compare in both directions, and the sync payload.
+
+Install via `https://get.runos.com/cli.sh?release=v1.11.3`.
+
 ## v1.11.2
 
 Fixes a deploy regression introduced by v1.11.1's "fail loud on a missing explicit env file" change: the *second* deploy of an app could fail on its own env file. On first deploy the CLI writes the canonical default `secretEnv:` / `env:` filenames back into `runos.yaml`. On the next deploy those written-back values looked like operator-authored explicit references, so the missing-file guard fired and aborted, even though the default secret file is legitimately absent when an app has no secret vars. A configured value that equals the canonical auto-derived default is now treated as the CLI's own round-trip (non-explicit) and stays exempt from the fail-loud check; a genuinely custom filename keeps the v1.11.1 protection. Regression tests cover the round-trip default, custom-name, and missing-file cases.

@@ -272,10 +272,25 @@ type MappingDomain struct {
 // the proxied flag from providerOptions.proxy) and round-trip cleanly
 // through `runos deploy`, so a pulled yaml can be deployed as-is.
 type Port struct {
-	Port          int             `yaml:"port"`
-	StandardHttps bool            `yaml:"standardHttps"`
+	Port int `yaml:"port"`
+	// StandardHttps is a pointer so "field absent" (hand-edited yaml or an
+	// older conductor that omitted it) stays distinguishable from an
+	// explicit false. The platform default is TRUE; the previous plain-bool
+	// field zero-valued absence to false, and a pull → deploy round-trip
+	// then persisted standardHttps: false upstream, silently moving the
+	// app off standard HTTPS routing. Resolve via StandardHTTPSValue().
+	StandardHttps *bool           `yaml:"standardHttps,omitempty"`
 	Domains       []MappingDomain `yaml:"domains,omitempty"`
 }
+
+// StandardHTTPSValue resolves the routing flag with the platform default
+// (true) when the field is absent.
+func (p Port) StandardHTTPSValue() bool {
+	return p.StandardHttps == nil || *p.StandardHttps
+}
+
+// BoolPtr returns a pointer to b; helper for composing Port literals.
+func BoolPtr(b bool) *bool { return &b }
 
 // BuildPulledApp projects a raw apps/:id response into a PulledApp. It is
 // tolerant of missing fields: anything absent is left at the zero value and
@@ -400,7 +415,13 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 				continue
 			}
 			port, _ := asInt(m["port"])
-			stdHTTPS, _ := m["standardHttps"].(bool)
+			// Default true when the server omits the field (legacy docs on
+			// older conductors); a bare type assertion zero-valued absence
+			// to false and flipped the app's routing on the next deploy.
+			stdHTTPS := true
+			if v, ok := m["standardHttps"].(bool); ok {
+				stdHTTPS = v
+			}
 			var domains []MappingDomain
 			if rawDomains, ok := m["domains"].([]any); ok {
 				for _, d := range rawDomains {
@@ -421,7 +442,7 @@ func BuildPulledApp(raw map[string]any, cid, aid string) *PulledApp {
 			}
 			p.ServicePortMappings = append(p.ServicePortMappings, Port{
 				Port:          port,
-				StandardHttps: stdHTTPS,
+				StandardHttps: &stdHTTPS,
 				Domains:       domains,
 			})
 		}

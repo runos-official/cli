@@ -475,7 +475,7 @@ func TestBuildPulledApp_CliDeploy_RRCPreset(t *testing.T) {
 	if p.CPURequestMc != nil || p.CPULimitMc != nil || p.MemoryRequestMb != nil || p.MemoryLimitMb != nil {
 		t.Errorf("cpu/mem pointers should be nil when rrc preset is set")
 	}
-	if len(p.ServicePortMappings) != 1 || p.ServicePortMappings[0].Port != 8080 || !p.ServicePortMappings[0].StandardHttps {
+	if len(p.ServicePortMappings) != 1 || p.ServicePortMappings[0].Port != 8080 || !p.ServicePortMappings[0].StandardHTTPSValue() {
 		t.Errorf("Ports = %+v, want [{8080 true}]", p.ServicePortMappings)
 	}
 	if p.HealthCheck != "" {
@@ -1017,7 +1017,7 @@ func TestSaveYAML_WritesMarshaledFileWith0644(t *testing.T) {
 		CID:                 "k1",
 		AID:                 "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)
 
@@ -1055,7 +1055,7 @@ func TestSaveYAML_WritesMarshaledFileWith0644(t *testing.T) {
 	if round.App != app.App || round.ID != app.ID || round.CID != app.CID {
 		t.Errorf("round-trip mismatch: %+v", round)
 	}
-	if len(round.ServicePortMappings) != 1 || round.ServicePortMappings[0].Port != 3000 || !round.ServicePortMappings[0].StandardHttps {
+	if len(round.ServicePortMappings) != 1 || round.ServicePortMappings[0].Port != 3000 || !round.ServicePortMappings[0].StandardHTTPSValue() {
 		t.Errorf("ports round-trip mismatch: %+v", round.ServicePortMappings)
 	}
 	// Sanity: output should use the expected camelCase top-level keys.
@@ -1076,7 +1076,7 @@ func TestSaveYAML_OverwritesExistingFile(t *testing.T) {
 		CID:                 "k1",
 		AID:                 "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)
 
@@ -1085,7 +1085,7 @@ func TestSaveYAML_OverwritesExistingFile(t *testing.T) {
 	}
 
 	// Mutate the in-memory app so the second write is distinguishable.
-	app.ServicePortMappings = []Port{{Port: 9000, StandardHttps: true}}
+	app.ServicePortMappings = []Port{{Port: 9000, StandardHttps: BoolPtr(true)}}
 	res, err := SaveYAML(dir, base, app)
 	if err != nil {
 		t.Fatalf("second save: %v", err)
@@ -1559,7 +1559,7 @@ func TestSaveYAML_InSyncWhenContentMatches(t *testing.T) {
 		CID:                 "k1",
 		AID:                 "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}},
 	}
 	base := DefaultBaseName(app.CID, app.ID)
 
@@ -2382,7 +2382,7 @@ func TestSaveYAMLSuffixed_AlwaysWritesSuffixed(t *testing.T) {
 		CID:                 "k1",
 		AID:                 "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}},
 	}
 	res, err := SaveYAMLSuffixed(dir, "", app)
 	if err != nil {
@@ -2407,12 +2407,12 @@ func TestSaveYAMLSuffixed_AlwaysWritesSuffixed(t *testing.T) {
 func TestSaveYAMLSuffixed_ConcurrentWritesDoNotRace(t *testing.T) {
 	dir := t.TempDir()
 	apps := []*PulledApp{
-		{App: "a", ID: "aaaaa", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
-		{App: "b", ID: "bbbbb", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
-		{App: "c", ID: "ccccc", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
-		{App: "d", ID: "ddddd", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
-		{App: "e", ID: "eeeee", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
-		{App: "f", ID: "fffff", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: true}}},
+		{App: "a", ID: "aaaaa", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
+		{App: "b", ID: "bbbbb", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
+		{App: "c", ID: "ccccc", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
+		{App: "d", ID: "ddddd", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
+		{App: "e", ID: "eeeee", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
+		{App: "f", ID: "fffff", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}},
 	}
 
 	errs := make([]error, len(apps))
@@ -2576,5 +2576,30 @@ func TestSaveEnvAtPath_EmptyPathRejected(t *testing.T) {
 	}
 	if _, err := SaveEnvAtPath("", map[string]string{"A": "1"}); err == nil {
 		t.Error("expected error on empty env path")
+	}
+}
+
+// TestBuildPulledApp_MissingStandardHttpsDefaultsTrue guards the pull-side
+// default: a server mapping without standardHttps (legacy doc) must
+// materialize as true in the pulled yaml, not the Go zero value false.
+// Pre-fix a pull → deploy round-trip persisted standardHttps: false and
+// silently moved the app off standard HTTPS routing (test session 2026-07-06,
+// app dx8jw).
+func TestBuildPulledApp_MissingStandardHttpsDefaultsTrue(t *testing.T) {
+	raw := map[string]any{
+		"id":       "appid9",
+		"name":     "legacy-mapping",
+		"replicas": float64(1),
+		"servicePortMappings": []any{
+			map[string]any{"port": float64(3000)},
+		},
+	}
+	p := BuildPulledApp(raw, "k1", "acc-1")
+	if len(p.ServicePortMappings) != 1 {
+		t.Fatalf("mappings = %+v, want 1 entry", p.ServicePortMappings)
+	}
+	m := p.ServicePortMappings[0]
+	if m.StandardHttps == nil || !*m.StandardHttps {
+		t.Errorf("StandardHttps = %v, want explicit true", m.StandardHttps)
 	}
 }

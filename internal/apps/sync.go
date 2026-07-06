@@ -1305,7 +1305,7 @@ func portsToWire(local []Port) []map[string]any {
 	for _, p := range local {
 		entry := map[string]any{
 			"port":          p.Port,
-			"standardHttps": p.StandardHttps,
+			"standardHttps": p.StandardHTTPSValue(),
 		}
 		if len(p.Domains) > 0 {
 			domains := make([]map[string]any, 0, len(p.Domains))
@@ -1341,8 +1341,14 @@ func portsDiffer(local []Port, server any) bool {
 			return true
 		}
 		port, _ := asInt(m["port"])
-		stdHTTPS, _ := m["standardHttps"].(bool)
-		if local[i].Port != port || local[i].StandardHttps != stdHTTPS {
+		// Both sides resolve absence to the platform default (true) so a
+		// legacy server doc without the field doesn't read as drift against
+		// a local yaml that spells the default out (or vice versa).
+		stdHTTPS := true
+		if v, ok := m["standardHttps"].(bool); ok {
+			stdHTTPS = v
+		}
+		if local[i].Port != port || local[i].StandardHTTPSValue() != stdHTTPS {
 			return true
 		}
 		serverDomains := decodeServerMappingDomains(m["domains"])

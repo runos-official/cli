@@ -29,7 +29,7 @@ func TestComputeYAMLDiff_InSyncWhenBytesMatch(t *testing.T) {
 		CID:                 "k1",
 		AID:                 "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}},
 	}
 	data, err := yaml.Marshal(p)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestComputeYAMLDiff_DriftProducesUnifiedDiff(t *testing.T) {
 	local := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}},
 	}
 	localBytes, _ := yaml.Marshal(local)
 	path := filepath.Join(dir, "svc.yaml")
@@ -86,7 +86,7 @@ func TestComputeYAMLDiff_DriftProducesUnifiedDiff(t *testing.T) {
 
 func TestComputeYAMLDiff_LocalMissing(t *testing.T) {
 	dir := t.TempDir()
-	server := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: true}}}
+	server := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}}}
 	path := filepath.Join(dir, "missing.yaml")
 
 	got, err := ComputeYAMLDiff(path, server)
@@ -586,7 +586,7 @@ func TestComputeYAMLDiff_AdditiveOnlyWhenServerHasMore(t *testing.T) {
 	local := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}},
 	}
 	localBytes, _ := yaml.Marshal(local)
 	path := filepath.Join(dir, "svc.yaml")
@@ -622,7 +622,7 @@ func TestComputeYAMLDiff_LocalIsSupersetOnNestedArrayAddition(t *testing.T) {
 	server := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}},
 		SecretFiles:         []SecretFile{{Filename: "a", MountPath: "/a", Local: ".s/a", MD5: "m1"}},
 	}
 
@@ -663,7 +663,7 @@ func TestValuesAdditive_ReorderedArrayStillTripsGate(t *testing.T) {
 	server := &PulledApp{
 		App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1",
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 80, StandardHttps: true}},
+		ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}},
 		SecretFiles: []SecretFile{
 			{Filename: "a", MountPath: "/a", Local: ".s/a", MD5: "m1"},
 			{Filename: "b", MountPath: "/b", Local: ".s/b", MD5: "m2"},
@@ -715,7 +715,7 @@ func TestValuesAdditive_ReorderedArrayStillTripsGate(t *testing.T) {
 
 func TestComputeYAMLDiff_NotAdditiveWhenLocalDiverges(t *testing.T) {
 	dir := t.TempDir()
-	local := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: true}}}
+	local := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}}}
 	localBytes, _ := yaml.Marshal(local)
 	path := filepath.Join(dir, "svc.yaml")
 	_ = os.WriteFile(path, localBytes, 0644)
@@ -749,7 +749,7 @@ servicePortMappings:
       standardHttps: true
 `), 0644)
 
-	server := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: true}}}
+	server := &PulledApp{App: "svc", DeployType: "cli", ID: "x", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}}}
 
 	got, err := ComputeYAMLDiff(path, server)
 	if err != nil {
@@ -1259,7 +1259,7 @@ func TestBuildDiffReport_404OnAppGetSurfacesAsTypedAPIError(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	svc := NewService(srv.URL, "tok", "k1", "acc-1")
-	local := &PulledApp{App: "svc", DeployType: "cli", ID: "appid1", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: true}}}
+	local := &PulledApp{App: "svc", DeployType: "cli", ID: "appid1", CID: "k1", AID: "acc-1", Replicas: 1, ServicePortMappings: []Port{{Port: 80, StandardHttps: BoolPtr(true)}}}
 
 	_, err := BuildDiffReport(svc, local, "/tmp/x.yaml", "acc-1", "k1")
 	if err == nil {

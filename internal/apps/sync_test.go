@@ -549,7 +549,7 @@ func TestComputeYAMLPatch_BodyIsFullLocalYAMLOnDrift(t *testing.T) {
 		Replicas:                   3, // the only field that differs
 		ClusterDomainID:            "elpfn",
 		ResourceRequirementClassID: "app.sl1.beff",
-		ServicePortMappings:        []Port{{Port: 8080, StandardHttps: true}},
+		ServicePortMappings:        []Port{{Port: 8080, StandardHttps: BoolPtr(true)}},
 	}
 	server := map[string]any{
 		"name":                       "my-app",
@@ -864,7 +864,7 @@ func TestComputeYAMLPatch_HealthCheckClearedByOmission(t *testing.T) {
 func TestComputeYAMLPatch_PortsTranslateStandardHttps(t *testing.T) {
 	local := &PulledApp{
 		Replicas:            1,
-		ServicePortMappings: []Port{{Port: 8080, StandardHttps: false}},
+		ServicePortMappings: []Port{{Port: 8080, StandardHttps: BoolPtr(false)}},
 	}
 	server := map[string]any{
 		"replicas": float64(1),
@@ -889,7 +889,7 @@ func TestComputeYAMLPatch_PortsTranslateStandardHttps(t *testing.T) {
 // local side surfaces as drift even when fqdn + port match the server.
 func TestPortsDiffer_DomainProxiedFlip(t *testing.T) {
 	local := []Port{{
-		Port: 8080, StandardHttps: true,
+		Port: 8080, StandardHttps: BoolPtr(true),
 		Domains: []MappingDomain{{Fqdn: "app.example.com", EnableCloudflareProxy: true}},
 	}}
 	server := []any{
@@ -910,7 +910,7 @@ func TestPortsDiffer_DomainProxiedFlip(t *testing.T) {
 // doesn't trigger a false positive (set-equal compare).
 func TestPortsDiffer_DomainOrderingNoDrift(t *testing.T) {
 	local := []Port{{
-		Port: 8080, StandardHttps: true,
+		Port: 8080, StandardHttps: BoolPtr(true),
 		Domains: []MappingDomain{
 			{Fqdn: "b.example.com", EnableCloudflareProxy: false},
 			{Fqdn: "a.example.com", EnableCloudflareProxy: true},
@@ -937,7 +937,7 @@ func TestComputeYAMLPatch_DomainsCarryProxied(t *testing.T) {
 	local := &PulledApp{
 		Replicas: 1,
 		ServicePortMappings: []Port{{
-			Port: 8080, StandardHttps: true,
+			Port: 8080, StandardHttps: BoolPtr(true),
 			Domains: []MappingDomain{{Fqdn: "app.example.com", EnableCloudflareProxy: true}},
 		}},
 	}
@@ -1441,7 +1441,7 @@ func TestComputeSyncPlan_AggregatesAllSections(t *testing.T) {
 			CID:                 "k1",
 			AID:                 "acc-1",
 			Replicas:            3, // changed
-			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
+			ServicePortMappings: []Port{{Port: 8080, StandardHttps: BoolPtr(true)}},
 		},
 		LocalEnvVars:     map[string]string{"NEW": "yes", "SAME": "ok"},
 		LocalSecretFiles: map[string][]byte{"new.pem": []byte("brand-new\n")},
@@ -1496,7 +1496,7 @@ func TestComputeSyncPlan_NoChangesProducesEmptyPlan(t *testing.T) {
 		LocalApp: &PulledApp{
 			App: "my-app", ID: "ab12c", CID: "k1", AID: "acc-1",
 			Replicas:            1,
-			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
+			ServicePortMappings: []Port{{Port: 8080, StandardHttps: BoolPtr(true)}},
 		},
 		LocalEnvVars:     map[string]string{"A": "1"},
 		LocalSecretFiles: map[string][]byte{},
@@ -1538,7 +1538,7 @@ func TestComputeSyncPlan_HasChangesFieldTrueOnChanges(t *testing.T) {
 		LocalApp: &PulledApp{
 			ID: "ab12c", CID: "k1", AID: "acc-1", App: "web",
 			Replicas:            2,
-			ServicePortMappings: []Port{{Port: 8080, StandardHttps: true}},
+			ServicePortMappings: []Port{{Port: 8080, StandardHttps: BoolPtr(true)}},
 		},
 		LocalEnvVars: map[string]string{"NEW_KEY": "value"},
 		ServerRaw: map[string]any{
@@ -2128,4 +2128,42 @@ func TestLoadLocalEnv(t *testing.T) {
 			t.Fatalf("got=%v exists=%v err=%v, want empty/false/nil", got, exists, err)
 		}
 	})
+}
+
+// TestPortsDiffer_MissingStandardHttpsDefaultsTrue guards the standardHttps
+// default resolution: a legacy server doc that omits the field must compare
+// equal to a local mapping carrying the platform default (true), and a
+// local yaml that omits the field (nil pointer) must resolve to true too.
+// Pre-fix both sides zero-valued absence to false, so pull → deploy
+// round-trips persisted standardHttps: false and flipped the app's routing.
+func TestPortsDiffer_MissingStandardHttpsDefaultsTrue(t *testing.T) {
+	// Server omits standardHttps; local spells out the default.
+	local := []Port{{Port: 3000, StandardHttps: BoolPtr(true)}}
+	server := []any{map[string]any{"port": float64(3000)}}
+	if portsDiffer(local, server) {
+		t.Error("expected no drift: server-omitted standardHttps must default to true")
+	}
+
+	// Local omits the field entirely (hand-edited yaml); server says true.
+	local = []Port{{Port: 3000}}
+	server = []any{map[string]any{"port": float64(3000), "standardHttps": true}}
+	if portsDiffer(local, server) {
+		t.Error("expected no drift: local nil standardHttps must default to true")
+	}
+
+	// Explicit false still counts as drift against the default.
+	local = []Port{{Port: 3000, StandardHttps: BoolPtr(false)}}
+	server = []any{map[string]any{"port": float64(3000)}}
+	if !portsDiffer(local, server) {
+		t.Error("expected drift: explicit false vs server default true")
+	}
+}
+
+// TestPortsToWire_NilStandardHttpsSendsTrue ensures the sync payload never
+// materializes the Go zero value for an absent standardHttps.
+func TestPortsToWire_NilStandardHttpsSendsTrue(t *testing.T) {
+	wire := portsToWire([]Port{{Port: 3000}})
+	if len(wire) != 1 || wire[0]["standardHttps"] != true {
+		t.Errorf("portsToWire = %+v, want standardHttps true", wire)
+	}
 }

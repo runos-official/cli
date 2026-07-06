@@ -869,7 +869,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 		serverState.ID = target.ID
 	}
 	if len(serverState.ServicePortMappings) == 0 && target.Port > 0 {
-		serverState.ServicePortMappings = []apps.Port{{Port: target.Port, StandardHttps: true}}
+		serverState.ServicePortMappings = []apps.Port{{Port: target.Port, StandardHttps: apps.BoolPtr(true)}}
 	}
 
 	// Compute the same diff the `apps diff` command produces so we can
