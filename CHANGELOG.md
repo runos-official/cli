@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.12.0
+
+Lowers the MCP read server's documentation gate from 3 topics to 2. After `mcp_bootstrap`, other read tools now unlock once the LLM has read 2 distinct topics (platform-overview plus one task topic is sufficient context; the bootstrap's topic router pulls further reads in via `see also:` links). Pairs with the slimmer conductor bootstrap payload (manifest 32.0.0, `topicKeys` instead of the full topic index) to cut per-session token overhead for MCP-driven assistants.
+
+Install via `https://get.runos.com/cli.sh?release=v1.12.0`.
+
 ## v1.11.3
 
 Fixes `runos apps pull` / `runos apps sync` mishandling a port mapping whose `standardHttps` field is absent on the server (legacy app docs). The platform default is public routing (`standardHttps: true`), but the CLI zero-valued the missing field to `false`, so a pull materialized `standardHttps: false` in the local yaml and the next deploy persisted it, silently moving the app off standard HTTPS (443) onto the VPN-only entrypoint. `Port.StandardHttps` is now a pointer with the default resolved everywhere it is read (pull write-out, sync wire payload, drift compare), so absence means `true` and only an explicit `false` opts a port out of public routing. Conductor >= 1.5.2 also always sends the field explicitly; this fix keeps older conductors safe too. Regression tests cover pull materialization, drift compare in both directions, and the sync payload.

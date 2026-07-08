@@ -137,8 +137,10 @@ type ContentBlock struct {
 
 // minTopicsRead is the number of distinct documentation topics the LLM must
 // consume (via mcp_topics_search or mcp_topics_show) after bootstrap before
-// other tools become available on the read server.
-const minTopicsRead = 3
+// other tools become available on the read server. Kept low deliberately:
+// platform-overview plus one task topic is enough context, and the bootstrap's
+// topic router pulls further reads in naturally via `see also:` links.
+const minTopicsRead = 2
 
 // Server instructions by category
 var serverInstructions = map[string]string{
@@ -148,7 +150,7 @@ Query clusters, services, apps, and infrastructure state. No modifications.
 
 REQUIRED FIRST STEPS (in order):
 1. Call mcp_bootstrap to receive critical instructions and the topic index.
-2. Read documentation for at least 3 distinct topics relevant to the user's task using mcp_topics_search (preferred, by keywords) or mcp_topics_show (by exact key). Other tools are blocked until this is satisfied.
+2. Read documentation for at least 2 distinct topics relevant to the user's task using mcp_topics_search (preferred, by keywords) or mcp_topics_show (by exact key). Other tools are blocked until this is satisfied.
 
 Do not guess or invent values. The documentation tells you the correct ones.`,
 

@@ -105,12 +105,11 @@ func TestBootstrapGate_ReadServerAllowsToolsAfterBootstrapAndTopics(t *testing.T
 	}
 }
 
-func TestTopicsGate_ReadServerBlocksUntilThreeTopicsRead(t *testing.T) {
+func TestTopicsGate_ReadServerBlocksUntilMinTopicsRead(t *testing.T) {
 	srv := newTestServer("read", &mockExecutor{result: "cluster data"})
 	srv.bootstrapped = true
 	srv.topicsRead = map[string]struct{}{
 		"deploying-apps": {},
-		"runos-yaml":     {},
 	}
 
 	resp := srv.handleToolsCall(makeToolCallRequest("clusters_list"))
@@ -120,10 +119,10 @@ func TestTopicsGate_ReadServerBlocksUntilThreeTopicsRead(t *testing.T) {
 		t.Fatal("expected CallToolResult")
 	}
 	if !result.IsError {
-		t.Fatal("expected IsError to be true when fewer than 3 topics have been read")
+		t.Fatal("expected IsError to be true when fewer than minTopicsRead topics have been read")
 	}
-	if !strings.Contains(result.Content[0].Text, "2/3") {
-		t.Errorf("expected error to report 2/3 topics read, got: %s", result.Content[0].Text)
+	if !strings.Contains(result.Content[0].Text, "1/2") {
+		t.Errorf("expected error to report 1/2 topics read, got: %s", result.Content[0].Text)
 	}
 }
 
