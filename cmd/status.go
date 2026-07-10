@@ -3,6 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -115,6 +118,39 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Enrich with account profile (company name, website) and the default
+	// cluster's name. Best-effort: a network or auth failure just leaves
+	// the fields out so `runos status` keeps working offline.
+	if authenticated, _ := status["authenticated"].(bool); authenticated {
+		if profile := fetchAccountProfile(cfg); profile != nil {
+			if profile.CompanyName != "" {
+				status["companyName"] = profile.CompanyName
+			}
+			if profile.Website != "" {
+				status["website"] = profile.Website
+			}
+		}
+		if defaultCID != "" {
+			if clusters, err := fetchClusters(cfg); err == nil {
+				found := false
+				for _, c := range clusters {
+					if c.CID == defaultCID {
+						found = true
+						if c.Name != "" {
+							status["defaultClusterName"] = c.Name
+						}
+						break
+					}
+				}
+				// The list fetch succeeded and the cid isn't in it: the
+				// configured default is stale (e.g. account switch).
+				if !found {
+					status["defaultClusterMissing"] = true
+				}
+			}
+		}
+	}
+
 	if jsonOutput {
 		output, err := json.MarshalIndent(status, "", "  ")
 		if err != nil {
@@ -144,10 +180,16 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Account ID:     %s\n", accountID)
 	}
 
-	// Environment and URLs
-	if env, ok := status["environment"].(string); ok {
-		fmt.Printf("Environment:    %s\n", env)
+	// Company profile (when set on the account)
+	if companyName, ok := status["companyName"].(string); ok {
+		fmt.Printf("Company:        %s\n", companyName)
 	}
+	if website, ok := status["website"].(string); ok {
+		fmt.Printf("Website:        %s\n", website)
+	}
+
+	// URLs. The environment is deliberately not shown: users are always
+	// on prod, so the line was noise (it remains in --json output).
 	if apiURL, ok := status["apiUrl"].(string); ok {
 		fmt.Printf("API:            %s\n", apiURL)
 	}
@@ -155,9 +197,16 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Console:        %s\n", consoleURL)
 	}
 
-	// Default cluster
+	// Default cluster: "name (cid)" when the name could be resolved,
+	// bare cid otherwise.
 	if cid, ok := status["defaultClusterId"].(string); ok {
-		fmt.Printf("Default Cluster: %s (change with 'runos config set cid <id>')\n", cid)
+		label := cid
+		if name, ok := status["defaultClusterName"].(string); ok {
+			label = fmt.Sprintf("%s (%s)", name, cid)
+		} else if missing, _ := status["defaultClusterMissing"].(bool); missing {
+			label = fmt.Sprintf("%s (not found on this account)", cid)
+		}
+		fmt.Printf("Default Cluster: %s (change with 'runos config set cid <id>')\n", label)
 	} else {
 		fmt.Println("Default Cluster: (not set, use 'runos config set cid <id>')")
 	}
@@ -182,6 +231,85 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// accountProfile is the subset of GET /:aid/account/profile that
+// `runos status` displays. Unset fields come back as empty strings.
+type accountProfile struct {
+	CompanyName string `json:"companyName"`
+	Website     string `json:"website"`
+}
+
+// statusGetJSON performs an authenticated GET against conductor and
+// decodes the JSON body into out. Returns an error on any failure so
+// callers can treat enrichment as best-effort.
+func statusGetJSON(cfg *config.Config, path string, out any) error {
+	baseURL := cfg.GetAPIURL()
+	if baseURL == "" {
+		return fmt.Errorf("no API URL configured")
+	}
+	token, err := auth.ResolveToken(cfg)
+	if err != nil {
+		return fmt.Errorf("not authenticated: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API error (%d)", resp.StatusCode)
+	}
+	return json.Unmarshal(body, out)
+}
+
+// fetchAccountProfile reads the account's company profile. Returns nil
+// when the account id is missing or the request fails.
+func fetchAccountProfile(cfg *config.Config) *accountProfile {
+	aid := cfg.GetAccountID()
+	if aid == "" {
+		return nil
+	}
+	var profile accountProfile
+	if err := statusGetJSON(cfg, "/"+url.PathEscape(aid)+"/account/profile", &profile); err != nil {
+		return nil
+	}
+	return &profile
+}
+
+// statusClusterRow is the cid+name subset of a `/:aid/clusters` row
+// that `runos status` needs to label the default cluster.
+type statusClusterRow struct {
+	CID  string `json:"cid"`
+	Name string `json:"name"`
+}
+
+// fetchClusters lists the account's clusters (cid + name only).
+func fetchClusters(cfg *config.Config) ([]statusClusterRow, error) {
+	aid := cfg.GetAccountID()
+	if aid == "" {
+		return nil, fmt.Errorf("no account id configured")
+	}
+	var envelope struct {
+		Clusters []statusClusterRow `json:"clusters"`
+	}
+	if err := statusGetJSON(cfg, "/"+url.PathEscape(aid)+"/clusters", &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Clusters, nil
 }
 
 // authMethodLabel renders the parenthetical credential hint for the

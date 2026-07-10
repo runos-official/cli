@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.12.1
+
+Richer `runos status` output. When signed in, status now shows the account's company name and website (from the account profile) and resolves the default cluster's display name, rendering `Default Cluster: <name> (<cid>)`. If the configured default cid no longer exists on the account (e.g. after an account switch), status flags it as `(not found on this account)` instead of silently printing a stale id. The Environment line is removed from the human-readable output (users are always on prod, so it was noise); `--json` still includes `environment` and gains `companyName`, `website`, `defaultClusterName`, and `defaultClusterMissing`. All enrichment calls are best-effort with a 10s timeout, so `runos status` keeps working offline.
+
+Install via `https://get.runos.com/cli.sh?release=v1.12.1`.
+
 ## v1.12.0
 
 Lowers the MCP read server's documentation gate from 3 topics to 2. After `mcp_bootstrap`, other read tools now unlock once the LLM has read 2 distinct topics (platform-overview plus one task topic is sufficient context; the bootstrap's topic router pulls further reads in via `see also:` links). Pairs with the slimmer conductor bootstrap payload (manifest 32.0.0, `topicKeys` instead of the full topic index) to cut per-session token overhead for MCP-driven assistants.
