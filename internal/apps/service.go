@@ -516,9 +516,16 @@ func (s *Service) UpdateAppFull(appID string, fields map[string]any, merge bool)
 // app with newVars. Server returns a jobId because this triggers a rollout
 // restart.
 // Endpoint: POST /:aid/:cid/apps/:id/secret-env-vars
+//
+// Sets allowDrop: apps_sync is a declarative full replacement computed from the
+// local secret-env file, so keys the server has but the local set lacks are
+// intentional deletions (already surfaced in the sync plan's Remove list). The
+// server's partial-drop guard would otherwise 400 those legitimate removals;
+// the guard exists to catch the interactive/MCP `set` command sending a partial
+// map by accident, not this path.
 func (s *Service) ReplaceSecretEnvVars(appID string, newVars map[string]string) (string, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/secret-env-vars", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
-	ack, err := s.writeJSON(http.MethodPost, reqURL, map[string]any{"envVars": newVars}, nil)
+	ack, err := s.writeJSON(http.MethodPost, reqURL, map[string]any{"envVars": newVars, "allowDrop": true}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -580,6 +587,10 @@ func (s *Service) UpdateSecrets(
 	body := map[string]any{}
 	if secretEnvVars != nil {
 		body["secretEnvVars"] = secretEnvVars
+		// Declarative full-replace from apps_sync: omitted keys are intentional
+		// drops (shown in the sync plan). Opt past the server's partial-drop
+		// guard, which targets accidental partial `set` payloads, not this path.
+		body["allowDrop"] = true
 	}
 	if envVars != nil {
 		body["envVars"] = envVars
