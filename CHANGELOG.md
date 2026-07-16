@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.12.2
+
+`apps_sync` no longer 400s when it removes secret/env keys. Sync is a declarative full replace computed from your local files, so a key the server has but your local set lacks is an intentional deletion (already shown in the sync plan's Remove list). Conductor's partial-drop guard (live since conductor 1.9.0) was rejecting those legitimate removals; the CLI now sends `allowDrop` on the full-replace secret/env update so declared deletions apply, while the guard still catches an accidental partial `set`.
+
+Install via `https://get.runos.com/cli.sh?release=v1.12.2`.
+
 ## v1.12.1
 
 Richer `runos status` output. When signed in, status now shows the account's company name and website (from the account profile) and resolves the default cluster's display name, rendering `Default Cluster: <name> (<cid>)`. If the configured default cid no longer exists on the account (e.g. after an account switch), status flags it as `(not found on this account)` instead of silently printing a stale id. The Environment line is removed from the human-readable output (users are always on prod, so it was noise); `--json` still includes `environment` and gains `companyName`, `website`, `defaultClusterName`, and `defaultClusterMissing`. All enrichment calls are best-effort with a 10s timeout, so `runos status` keeps working offline.
