@@ -7,9 +7,9 @@
 // three of its rules are security properties that belong in one tested
 // place rather than repeated per command:
 //
-//   - a PAT may INVOKE a `direct_caller_authority` Procedure and may
-//     never APPROVE, REJECT or REVOKE one, nor release a control
-//     (auth.Kind(cfg).IsPAT(); see RefuseStoredSecret);
+//   - a PAT may invoke, approve, reject and revoke (Q&A 131) and may not
+//     release a kill switch or a scope freeze, which Q&A 131 left as they
+//     were (auth.Kind(cfg).IsPAT(); see RefuseStoredSecret);
 //   - a decision names the exact plan hash the human was shown, which is
 //     the whole content of "the decision is bound to the exact plan";
 //   - the approval render carries no url, token, link, button or image,

@@ -8,16 +8,16 @@ import (
 	"github.com/runos-official/cli/internal/auth"
 )
 
-// Q&A 120 and 130's first consequence: a CLI session authenticated only
-// by a PAT must refuse the approval command, and the refusal must not
-// read as a role problem. A message saying "wrong role" sends the user
-// to ask an admin for a permission that cannot help: no role turns a
-// stored secret into a person.
+// Q&A 131 narrowed this to the two control RELEASES; approving no longer
+// refuses a PAT. What the test still pins is that BOTH PAT shapes are
+// caught (env and on-disk, the drift this whole predicate exists to
+// prevent) and that the refusal does not read as a role problem, since
+// no role turns a stored secret into a person.
 func TestRefuseStoredSecretRefusesBothPATShapes(t *testing.T) {
 	for _, kind := range []auth.CredentialKind{auth.CredentialEnvPAT, auth.CredentialStoredPAT} {
 		t.Run(string(kind), func(t *testing.T) {
 			client := &Client{kind: kind}
-			err := client.RefuseStoredSecret("approve a Procedure operation")
+			err := client.RefuseStoredSecret("release a Procedure kill switch")
 			if err == nil {
 				t.Fatal("a PAT was not refused")
 			}
@@ -31,10 +31,10 @@ func TestRefuseStoredSecretRefusesBothPATShapes(t *testing.T) {
 			if strings.Contains(strings.ToLower(message), "role not authorized") {
 				t.Error("the refusal reads as a role error and sends the user to fix the wrong thing")
 			}
-			// The distinction Q&A 130 asks the implementation to keep
-			// apart: a PAT may still INVOKE.
-			if !strings.Contains(message, "procedures run") {
-				t.Error("the refusal does not tell the user that invoking is a different act still open to them")
+			// A PAT keeps every other act on this surface, and the
+			// refusal says so rather than implying a blanket ban.
+			if !strings.Contains(message, "stay available under a PAT") {
+				t.Error("the refusal does not tell the user which acts remain open to them")
 			}
 		})
 	}
@@ -45,7 +45,7 @@ func TestRefuseStoredSecretRefusesBothPATShapes(t *testing.T) {
 // and make the whole surface unusable.
 func TestRefuseStoredSecretAllowsAnInteractiveSession(t *testing.T) {
 	client := &Client{kind: auth.CredentialInteractive}
-	if err := client.RefuseStoredSecret("approve a Procedure operation"); err != nil {
+	if err := client.RefuseStoredSecret("release a Procedure kill switch"); err != nil {
 		t.Fatalf("an interactive session was refused: %v", err)
 	}
 }

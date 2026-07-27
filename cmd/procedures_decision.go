@@ -25,19 +25,16 @@ var proceduresApproveCmd = &cobra.Command{
 	Short: "Approve a plan, as a freshly signed-in human",
 	Long: `Approve the exact plan Conductor renders, binding the decision to its plan hash.
 
-REQUIRES AN INTERACTIVE LOGIN. A personal access token is refused before anything
-is sent: a stored secret is evidence of possession, never of a person being
-present, and no account role changes that.
-
-REQUIRES A RECENT LOGIN. Conductor reads the interactive authentication instant
-from the credential, and that instant does NOT move when a token is refreshed. A
-Procedure declaring five minutes of freshness will refuse a session that signed
-in ten minutes ago, correctly. The recovery is 'runos login', not a retry.
+Any authenticated session may approve, provided it holds an account role the
+Procedure declares. A personal access token decides exactly as an interactive
+login does.
 
 The plan is printed in full and confirmed in the terminal before anything is
-sent. --yes skips only the terminal confirmation; it does not skip the login
-requirement, the freshness requirement or the role check, none of which this CLI
-can waive.`,
+sent. --yes skips that confirmation, so a script approves without a prompt;
+it does not skip the role check, which is the server's and is not waivable here.
+
+What no approval can do, whatever the credential: waive a deterministic check
+that failed or could not be evaluated.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error { return runProceduresDecide(cmd, args[0], "approve") },
 }
@@ -48,8 +45,7 @@ var proceduresRejectCmd = &cobra.Command{
 	Long: `Reject the exact plan Conductor renders.
 
 A rejection is a decision and is recorded as one, so it carries the same
-requirements as an approval: an interactive login, a recent one, and a role the
-Procedure declares.`,
+requirement as an approval: a role the Procedure declares.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error { return runProceduresDecide(cmd, args[0], "reject") },
 }
@@ -62,11 +58,9 @@ var proceduresRevokeCmd = &cobra.Command{
 Rejecting and revoking are both "no" and they are not the same no: a rejection is
 the first answer, a revocation withdraws an answer already given.
 
-A personal access token is refused, because a credential that cannot grant an
-approval must not be able to take one back either. Freshness is deliberately NOT
-required: freshness exists so a stale session cannot GRANT authority, and making
-an operator sign in again before they can stop something is a rule that costs
-most exactly when it matters.`,
+The same principals that may approve may revoke, which under Q&A 131 is any
+authenticated session holding a role the Procedure declares. Two rules would let
+a credential grant an authorization it could not then take back.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProceduresRevoke,
 }
@@ -115,13 +109,11 @@ func runProceduresDecide(cmd *cobra.Command, operationID, decision string) error
 	if err != nil {
 		return err
 	}
-	// FIRST, before the network. Q&A 120: "A CLI session authenticated
-	// only by PAT must refuse the approval command and require
-	// interactive login." Refusing here rather than reporting the
-	// server's 403 is what makes that a property of this CLI.
-	if err := client.RefuseStoredSecret(decision + " a Procedure operation"); err != nil {
-		return err
-	}
+	// NO CREDENTIAL REFUSAL HERE, under Q&A 131, which supersedes Q&A 120.
+	// A PAT, an API key and an interactively signed-in session all decide
+	// alike; a developer running this CLI under a PAT is a person at a
+	// keyboard. The deliberate act is the confirmation below, not the
+	// credential. The role check is the server's and is unchanged.
 	cid, err := procedureCid()
 	if err != nil {
 		return err
@@ -162,9 +154,6 @@ func runProceduresRevoke(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	client, err := procedureClient()
 	if err != nil {
-		return err
-	}
-	if err := client.RefuseStoredSecret("revoke a Procedure authorization"); err != nil {
 		return err
 	}
 	cid, err := procedureCid()
@@ -231,14 +220,6 @@ func confirmDecision(operation *procedures.Operation, decision string) error {
 // retrying a command that cannot start working.
 func decisionError(err error, result *api.Result) error {
 	switch procedures.DecisionCode(result) {
-	case "reauthentication_required", "authentication_instant_unknown":
-		return fmt.Errorf("%w\n\n"+
-			"This is a freshness refusal, not a permission problem. Conductor reads the instant you\n"+
-			"last authenticated INTERACTIVELY, and that instant does not move when a token is\n"+
-			"refreshed, so retrying will be refused in exactly the same way.\n\n"+
-			"Sign in again, then re-run the command:\n\n  runos login", err)
-	case "approval_requires_interactive_human":
-		return fmt.Errorf("%w\n\nSign in interactively with 'runos login' and retry", err)
 	case "role_not_authorized", "membership_recheck_failed":
 		return fmt.Errorf("%w\n\n"+
 			"An account owner or admin must grant you a role this Procedure declares. The role is\n"+

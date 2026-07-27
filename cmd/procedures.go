@@ -22,15 +22,14 @@ import (
 //     executor REFUSES body-file keys the manifest does not declare
 //     (refuseUnknownBodyFileKeys), so there is no manifest shape that
 //     carries `runos.valkey.delete`'s arguments and the next Procedure's.
-//  2. `approve` must refuse a PAT BEFORE the request travels (Q&A 120:
-//     "a CLI session authenticated only by PAT must refuse the approval
-//     command"). dynacmd has no refusal hook, and a command that reached
-//     the server for its refusal would be relying on the boundary rather
-//     than being one.
+//  2. The decision commands print the full plan and confirm before they
+//     send, which under Q&A 131 is the deliberate act that stands in for
+//     the credential check that used to be here. dynacmd's generic
+//     confirmation is keyed on a verb list, not on a rendered plan.
 //  3. MCP tools are generated FROM manifest entries (internal/mcp
-//     buildTools). Q&A 120 says MCP cannot approve. Absent from the
-//     manifest, there is no mechanism by which it could; present with an
-//     empty mcp list, the property would depend on a field staying empty.
+//     buildTools). Q&A 131 lets any authenticated caller approve, so
+//     absence from the manifest is what still keeps an MCP tool from
+//     appearing for `approve` without somebody deciding to add one.
 //  4. The approval render is a security object needing a renderer that
 //     provably emits no url, token, link, button or image. That is a
 //     tested function, not a generic table formatter.
@@ -55,9 +54,8 @@ decides whether a human must approve it before a reconciler executes it.
   runos procedures kill-switches ...         stop and resume Procedure work
   runos procedures freezes ...               list and release scope freezes
 
-Approving, rejecting and revoking require an interactive login and refuse a
-personal access token. Invoking a Procedure is a different act and works under a
-PAT exactly as 'runos deploy' does.`,
+Approving, rejecting and revoking require an account role the Procedure declares.
+Any authenticated session may do so, including one using a personal access token.`,
 }
 
 var (

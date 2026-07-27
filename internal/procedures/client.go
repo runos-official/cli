@@ -44,15 +44,20 @@ func NewClient(cfg *config.Config) (*Client, error) {
 func (c *Client) Kind() auth.CredentialKind { return c.kind }
 
 // RefuseStoredSecret returns a refusal when this client is authenticated
-// by a PAT, for the acts a PAT may never perform: approving, rejecting
-// and revoking a decision, and releasing a kill switch or scope freeze.
+// by a PAT.
+//
+// SCOPE NARROWED BY Q&A 131, which supersedes Q&A 120: approving,
+// rejecting and revoking no longer refuse a PAT, because a developer
+// running this CLI under a PAT is a person at a keyboard. What still
+// refuses is RELEASING a kill switch or a scope freeze, which Q&A 131
+// deliberately left undecided and where conductor still mounts
+// `denyApiKey`. Those refuse for a different stated reason: releasing is
+// the direction that restores the ability to mutate.
 //
 // THE REFUSAL IS CLIENT-SIDE ON PURPOSE. Conductor refuses these too, so
-// this is not the security boundary; it is Q&A 120's "a CLI session
-// authenticated only by PAT must refuse the approval command", which is
-// a statement about the CLI and not about the server. A command that let
-// the request travel and reported the server's 403 would be relying on
-// the boundary rather than being one.
+// this is not the security boundary; a command that let the request
+// travel and reported the server's 403 would be relying on the boundary
+// rather than being one.
 //
 // THE WORDING MATTERS AS MUCH AS THE REFUSAL. A message that reads as
 // "wrong role" sends the user to fix a permission, which will not help:
@@ -69,10 +74,10 @@ func (c *Client) RefuseStoredSecret(act string) error {
 	return fmt.Errorf(
 		"a personal access token cannot %s.\n\n"+
 			"This session authenticates with %s. A stored secret is evidence of possession, never of a\n"+
-			"person being present, so no account role makes it able to decide: PATs, API keys, workload\n"+
-			"identities, models, MCP and notifications cannot approve, reject or revoke.\n\n"+
+			"person being present, and releasing a control is the direction that restores the ability\n"+
+			"to mutate, so it is the half a stored secret does not reach.\n\n"+
 			"This is not a permission problem. Sign in interactively with 'runos login' and retry.\n"+
-			"(Invoking a Procedure is a different act and stays available under a PAT: see 'runos procedures run'.)",
+			"(Approving, rejecting, revoking and invoking all stay available under a PAT.)",
 		act, where)
 }
 
