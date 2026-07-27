@@ -28,6 +28,7 @@ vendor/
 # Local AI-assistant / agent state (never shipped publicly)
 .claude/
 CLAUDE.md
+CLAUDE.md
 AGENTS.md
 *.swp
 *.swo

@@ -45,20 +45,70 @@ func ValidateAuthEnvVars(lookup func(string) (string, bool)) error {
 	return nil
 }
 
+// CredentialKind names WHICH credential ResolveToken will actually send
+// for a given config. It exists because "is this caller a PAT?" is a
+// security question on the Procedure approval path (Goal 15 Q&A 120: a
+// CLI session authenticated only by a PAT must refuse the approval
+// command), and a second predicate that re-derived the answer could
+// drift from the one that picks the token. ResolveToken switches on this
+// function, so the command that REFUSES a PAT and the code that SENDS
+// one read the same decision.
+type CredentialKind string
+
+const (
+	// CredentialNone means no credential is available at all.
+	CredentialNone CredentialKind = "none"
+	// CredentialEnvPAT means RUNOS_API_KEY is set in the environment.
+	CredentialEnvPAT CredentialKind = "env_pat"
+	// CredentialStoredPAT means a PAT is persisted in ~/.runos/config.json
+	// by `runos login --api-key`.
+	CredentialStoredPAT CredentialKind = "stored_pat"
+	// CredentialInteractive means the Firebase refresh-token session set
+	// up by an interactive `runos login`. This is the ONLY kind that
+	// carries an `auth_time` claim, which is what makes a decision
+	// checkably fresh.
+	CredentialInteractive CredentialKind = "interactive"
+)
+
+// IsPAT reports whether this kind is a stored secret rather than an
+// interactively authenticated human. Both PAT kinds are stored secrets:
+// presenting one is evidence of possession, never of a person being
+// present, and neither carries an authentication instant.
+func (k CredentialKind) IsPAT() bool {
+	return k == CredentialEnvPAT || k == CredentialStoredPAT
+}
+
+// Kind returns the credential ResolveToken will send, in the same
+// priority order ResolveToken applies. Pure and network-free: it reports
+// which PATH will be taken, not whether the credential is still valid.
+func Kind(cfg *config.Config) CredentialKind {
+	if strings.TrimSpace(os.Getenv(APIKeyEnvVar)) != "" {
+		return CredentialEnvPAT
+	}
+	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
+		return CredentialStoredPAT
+	}
+	if cfg != nil && cfg.Firebase != nil {
+		return CredentialInteractive
+	}
+	return CredentialNone
+}
+
 // ResolveToken returns the bearer token to send in Authorization headers.
-// Three paths, in priority order:
+// Three paths, in the priority order Kind reports:
 //
-//  1. If RUNOS_API_KEY is set in the environment, return it verbatim.
-//     This is the CI/CD path: a PAT minted via account/api-keys/add
-//     authenticates directly, no Firebase round-trip, no on-disk
-//     credentials. cfg may be nil or partially populated in this mode.
+//  1. CredentialEnvPAT: RUNOS_API_KEY set in the environment, returned
+//     verbatim. This is the CI/CD path: a PAT minted via
+//     account/api-keys/add authenticates directly, no Firebase
+//     round-trip, no on-disk credentials. cfg may be nil or partially
+//     populated in this mode.
 //
-//  2. If a PAT is persisted on disk (cfg.APIKey, set by
-//     `runos login --api-key`), return it. This is the developer who
-//     forced a PAT instead of the browser flow. The env var still wins
-//     over the stored key so a CI runner can override a local default.
+//  2. CredentialStoredPAT: a PAT persisted on disk (cfg.APIKey, set by
+//     `runos login --api-key`). This is the developer who forced a PAT
+//     instead of the browser flow. The env var still wins over the
+//     stored key so a CI runner can override a local default.
 //
-//  3. Otherwise, fall back to the Firebase refresh-token exchange the
+//  3. CredentialInteractive: the Firebase refresh-token exchange the
 //     interactive `runos login` flow set up. This is the human-developer
 //     path: refresh token + Firebase API key live in ~/.runos/config.json
 //     and produce a fresh ID token (~1h lifetime) per call.
@@ -73,18 +123,16 @@ func ResolveToken(cfg *config.Config) (string, error) {
 	// case silently passed (asymmetric). TrimSpace canonicalises both so
 	// the user sees the same clean result either way. The same trim
 	// covers a stored PAT for parity.
-	if pat := strings.TrimSpace(os.Getenv(APIKeyEnvVar)); pat != "" {
-		return pat, nil
-	}
-	if cfg != nil {
-		if pat := strings.TrimSpace(cfg.APIKey); pat != "" {
-			return pat, nil
-		}
-	}
-	if cfg == nil || cfg.Firebase == nil {
+	switch Kind(cfg) {
+	case CredentialEnvPAT:
+		return strings.TrimSpace(os.Getenv(APIKeyEnvVar)), nil
+	case CredentialStoredPAT:
+		return strings.TrimSpace(cfg.APIKey), nil
+	case CredentialInteractive:
+		return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
+	default:
 		return "", fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <pat>') or set %s", ErrNotAuthenticated, APIKeyEnvVar)
 	}
-	return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 }
 
 // HasCredentials reports whether any auth path is available WITHOUT a
@@ -103,15 +151,25 @@ func HasCredentials(cfg *config.Config) bool {
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		return true
 	}
+	// Deliberately stricter than Kind's CredentialInteractive, which asks
+	// only whether the Firebase PATH would be taken. This asks whether a
+	// credential is actually present to take it with, so a config holding
+	// Firebase settings and no refresh token reads as signed out.
 	return cfg.Firebase != nil && strings.TrimSpace(cfg.RefreshToken) != ""
 }
 
 // UsingAPIKey reports whether the current process is configured to use
-// a PAT (RUNOS_API_KEY env var). Callers that need to skip Firebase-
-// specific setup (e.g. config-required gates that don't apply when a
-// PAT is the credential) check this rather than re-reading the env.
+// a PAT via the RUNOS_API_KEY ENV VAR only. Callers that need to skip
+// Firebase-specific setup (e.g. config-required gates that don't apply
+// when a PAT is the credential) check this rather than re-reading the env.
 // Mirrors ResolveToken's TrimSpace so a whitespace-only PAT (issue 110)
 // doesn't trip the "using a PAT" predicate.
+//
+// NOT the credential-kind predicate: it misses a PAT stored on disk by
+// `runos login --api-key`. Anything asking "is this caller a stored
+// secret rather than a person?" must use Kind(cfg).IsPAT(), which covers
+// both PAT paths. Answering that question with this function is how a
+// command comes to refuse one PAT shape and accept the other.
 func UsingAPIKey() bool {
 	return strings.TrimSpace(os.Getenv(APIKeyEnvVar)) != ""
 }
