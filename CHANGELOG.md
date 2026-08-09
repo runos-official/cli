@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+`runos vms ssh <vmid>` opens an interactive SSH session on a virtual machine, or runs one command on it. RunOS never gives a VM a public address, so this tunnels to the guest's SSH port through the RunOS API and works from anywhere the API is reachable, with nothing configured on the guest and no VPN.
+
+The key RunOS manages for that VM is fetched for the session, written to a private temporary file that is deleted when the session ends, and never added to your agent or your SSH config.
+
+The tunnel is an ssh `ProxyCommand` rather than a local listening port, which means there is no port to collide, nothing left behind if the process dies, and no window where a port is open to everything else on the machine. It also means `scp`, `sftp` and `rsync` work over the same route with no extra machinery:
+
+```
+scp -o ProxyCommand="runos vms proxy myvm" file runos-admin@vm:/tmp/
+```
+
+Host key checking is off for these sessions on purpose: every VM answers as the same placeholder host through its own proxy, so recording keys would file one VM's under the next VM's name. The transport is already authenticated end to end by a single-use session ticket and the platform's own mTLS to the cluster.
+
+Requires conductor with manifest 35.20.0 or newer.
+
 ## v1.12.2
 
 `apps_sync` no longer 400s when it removes secret/env keys. Sync is a declarative full replace computed from your local files, so a key the server has but your local set lacks is an intentional deletion (already shown in the sync plan's Remove list). Conductor's partial-drop guard (live since conductor 1.9.0) was rejecting those legitimate removals; the CLI now sends `allowDrop` on the full-replace secret/env update so declared deletions apply, while the guard still catches an accidental partial `set`.

@@ -231,6 +231,9 @@ func init() {
 	rootCmd.AddCommand(servicesCmd)
 	rootCmd.AddCommand(appsCmd)
 	rootCmd.AddCommand(jobsCmd)
+	// Static parent so `vms ssh` and `vms proxy` can sit beside the manifest-driven verbs; the
+	// dynamic builder merges its own `vms` children onto this one rather than making a second.
+	rootCmd.AddCommand(vmsCmd)
 
 	// Attach the hand-written services/harbor subtree BEFORE the dynamic
 	// builder runs. The conductor manifest carries a services/harbor/build-image
@@ -296,7 +299,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)
