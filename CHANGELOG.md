@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.13.0
 
 `runos vms ssh <vmid>` opens an interactive SSH session on a virtual machine, or runs one command on it. RunOS never gives a VM a public address, so this tunnels to the guest's SSH port through the RunOS API and works from anywhere the API is reachable, with nothing configured on the guest and no VPN.
 
