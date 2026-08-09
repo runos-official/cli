@@ -16,6 +16,20 @@ Host key checking is off for these sessions on purpose: every VM answers as the 
 
 Requires conductor with manifest 35.20.0 or newer.
 
+A failed API call now prints what the server said, not the envelope it arrived in. Before:
+
+```
+Error: API error (404): {"error":"VM nope1 not found on this cluster.","code":"vm.not_found","traceId":"a136..."}
+```
+
+After:
+
+```
+Error: VM nope1 not found on this cluster. (HTTP 404, vm.not_found)
+```
+
+The message, the status and the machine-readable code survive; the trace id stays in the body and in `--json`, where it is useful, rather than on every error line. A body that is not the expected JSON (a proxy's HTML error page, say) is still printed in full, because it is the only evidence there is.
+
 ## v1.12.2
 
 `apps_sync` no longer 400s when it removes secret/env keys. Sync is a declarative full replace computed from your local files, so a key the server has but your local set lacks is an intentional deletion (already shown in the sync plan's Remove list). Conductor's partial-drop guard (live since conductor 1.9.0) was rejecting those legitimate removals; the CLI now sends `allowDrop` on the full-replace secret/env update so declared deletions apply, while the guard still catches an accidental partial `set`.

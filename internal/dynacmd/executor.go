@@ -58,10 +58,10 @@ type APIError struct {
 	Body       []byte
 }
 
-// Error renders the same one-liner the historic Execute path emitted, so
-// behaviour is unchanged for callers that don't unwrap.
+// Error renders the failure as one line a person can act on. The formatting lives in
+// apierror_message.go; see there for what survives and why.
 func (e *APIError) Error() string {
-	return fmt.Sprintf("API error (%d): %s", e.StatusCode, string(e.Body))
+	return describeAPIError(e.StatusCode, e.Body)
 }
 
 // BuildAPIErrorEnvelope returns the canonical JSON-error envelope shape
