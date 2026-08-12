@@ -64,6 +64,13 @@ func TestIsDestructiveCommand(t *testing.T) {
 		{"POST maintenance-scripts run is destructive", manifest.Command{Command: "maintenance-scripts/node-apt-upgrade-reboot/run", Method: "POST"}, true},
 		{"POST hypothetical other maintenance-scripts run is destructive (future scripts inherit)", manifest.Command{Command: "maintenance-scripts/some-future-script/run", Method: "POST"}, true},
 		{"POST unrelated path ending in run is NOT destructive", manifest.Command{Command: "apps/{id}/run", Method: "POST"}, false},
+		// Goal 23 F11 bonus. `nodes/delete-preflight` is a GET, documented "Advisory only, never
+		// blocks the delete", and confirmed read-only on live hardware: run with --yes it
+		// returned etcd parity advice and both nodes were still present afterwards. The
+		// `delete-` prefix match gated it as a write. A read behind a destructive prompt trains
+		// operators to type --yes without reading, which is the opposite of what the prompt is for.
+		{"GET delete-preflight is a read, never gated", manifest.Command{Command: "nodes/{nid}/delete-preflight", Method: "GET"}, false},
+		{"GET with any destructive-looking verb stays a read", manifest.Command{Command: "services/minio/{id}/delete-bucket-preview", Method: "GET"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,5 +268,34 @@ func TestConfirmDestructive_NonTTYRefusesWithoutYes(t *testing.T) {
 	err = confirmDestructive(c3, cmdDef, []string{"d2eow"})
 	if err == nil {
 		t.Fatalf("--json alone (no --yes) should still refuse in non-TTY mode")
+	}
+}
+
+// Goal 23 F8 item 3: the CLI and the console disagreed about which verbs are dangerous.
+// `vms stop` takes a customer's machine down and reached the wire on the first keystroke, while
+// `nodes delete` and `clusters reset` were gated. The console had already gained confirmations
+// for stop and restart.
+func TestVmPowerVerbsAreGated(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		want bool
+	}{
+		{"vms stop is gated", manifest.Command{Command: "vms/{vmid}/stop", Method: "PATCH"}, true},
+		{"vms restart is gated", manifest.Command{Command: "vms/{vmid}/restart", Method: "PATCH"}, true},
+		{"vms pause is gated", manifest.Command{Command: "vms/{vmid}/pause", Method: "PATCH"}, true},
+		// Bringing a machine up harms nothing.
+		{"vms start is not gated", manifest.Command{Command: "vms/{vmid}/start", Method: "PATCH"}, false},
+		{"vms resume is not gated", manifest.Command{Command: "vms/{vmid}/resume", Method: "PATCH"}, false},
+		// Scoped to vms/ deliberately: a service restart is a process back in seconds, and CI
+		// workflows expect to run it unattended.
+		{"service restart stays ungated", manifest.Command{Command: "services/kafka/{id}/restart", Method: "PATCH"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDestructiveCommand(tc.cmd); got != tc.want {
+				t.Errorf("isDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
 	}
 }

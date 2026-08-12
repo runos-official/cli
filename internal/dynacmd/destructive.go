@@ -41,6 +41,14 @@ var destructiveVerbSuffixes = []string{
 	"purge",
 }
 
+// vmPowerVerbs are the `vms/` verbs that interrupt a running guest. `start` and `resume` are
+// deliberately absent: bringing a machine up harms nothing.
+var vmPowerVerbs = map[string]bool{
+	"stop":    true,
+	"restart": true,
+	"pause":   true,
+}
+
 // destructiveVerbPrefixes are leading-token matches used when the final
 // segment carries a sub-resource name (e.g. `delete-bucket`,
 // `delete-object`, `revoke-database`, `revoke-bucket`, `remove-peer`,
@@ -70,6 +78,14 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 	if strings.EqualFold(cmdDef.Method, "DELETE") {
 		return true
 	}
+	// A GET changes nothing, whatever its path reads like (goal 23, F11 bonus).
+	// `nodes/delete-preflight` is documented "Advisory only, never blocks the delete" and was
+	// confirmed read-only on live hardware, and the `delete-` prefix match gated it behind a
+	// destructive prompt. A read behind that prompt trains operators to type --yes without
+	// reading it, which is the opposite of what the prompt exists for.
+	if strings.EqualFold(cmdDef.Method, "GET") {
+		return false
+	}
 	last := lastPathSegment(cmdDef.Command)
 	if last == "" {
 		return false
@@ -83,6 +99,15 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 	// hypothetical future ones) aren't falsely gated. Regression target:
 	// foreman #37 / Story 50.
 	if last == "run" && strings.Contains(cmdDef.Command, "maintenance-scripts/") {
+		return true
+	}
+	// Goal 23 F8 item 3. `vms stop`, `vms restart` and `vms pause` take a customer's machine down
+	// and required no confirmation, while `nodes delete` and `clusters reset` did. The console
+	// gained confirmations for stop and restart; the CLI did not, so the two surfaces disagreed
+	// about which verbs are dangerous. Scoped to `vms/` on purpose: a service restart is a
+	// process coming back in seconds and CI workflows expect to run it unattended, while a guest
+	// operating system being cut off is not the same event.
+	if strings.HasPrefix(cmdDef.Command, "vms/") && vmPowerVerbs[last] {
 		return true
 	}
 	for _, suffix := range destructiveVerbSuffixes {
