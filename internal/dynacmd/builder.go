@@ -1218,7 +1218,13 @@ func addFieldFlags(cmd *cobra.Command, fields []manifest.Field, cmdPath string) 
 		// `:cid` already gets a dedicated `--cid` flag registered
 		// below in buildLeafCommand. Don't double-register.
 		flagName := flagNameFor(field.Name)
-		description := sanitizeFlagDescription(field.Description) + descriptionSuffixFor(cmdPath, field.Name)
+		// The manifest's own constraints go into the help text (goal 21, O1). Without this the
+		// enum was declared, carried, and dropped at the last step, so the only way to learn the
+		// allowed values was to send a wrong one and read the refusal: one wasted round trip per
+		// enum field, every time, for every agent.
+		description := sanitizeFlagDescription(field.Description) +
+			describeConstraints(field) +
+			descriptionSuffixFor(cmdPath, field.Name)
 		if field.Positional {
 			if field.Name == "cid" {
 				continue
