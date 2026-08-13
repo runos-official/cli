@@ -193,6 +193,11 @@ var rootCmd = &cobra.Command{
 // non-zero code without bypassing cobra's error-formatting flow.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		// An unknown command is very often a stale cached command list rather than a command
+		// that does not exist, and the two are indistinguishable from the error alone. This
+		// says which, and refreshes the cache when it is the cause (goal 21, O10). It never
+		// changes the exit code: the command still failed.
+		explainPossiblyStaleManifest(err)
 		var ec interface{ ExitCode() int }
 		if errors.As(err, &ec) {
 			os.Exit(ec.ExitCode())

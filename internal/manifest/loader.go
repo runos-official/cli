@@ -109,6 +109,16 @@ func (l *Loader) LoadLocal() (*Manifest, error) {
 	return l.loadLocal()
 }
 
+// ServerVersion reports the manifest version the API is currently serving, without
+// downloading or caching the manifest itself.
+//
+// Exists so an "unknown command" can be told apart from "your cached command list is
+// stale" (goal 21, O10). That distinction had been guessed wrong eight separate times,
+// because the two failures look identical from the outside.
+func (l *Loader) ServerVersion() (string, error) {
+	return l.fetchVersion()
+}
+
 // ForceUpdate fetches and saves the latest manifest, bypassing all caches
 func (l *Loader) ForceUpdate() (*Manifest, error) {
 	rawJSON, err := l.fetchManifestRaw()

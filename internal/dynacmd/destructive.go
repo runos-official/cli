@@ -58,6 +58,14 @@ var destructiveVerbPrefixes = []string{
 	"revoke-",
 	"remove-",
 	"drop-",
+	// Goal 23 F26. `storage-groups/wipe-device` destroys every byte on a disk irreversibly and
+	// was the ONLY destructive storage verb that executed on first ask, while remove-device and
+	// remove-node (which merely edit records) both demanded --yes. The suffix list already had
+	// "wipe", but the final segment here is "wipe-device", so neither list matched it. Measured
+	// on a live cluster: it took a disk holding a running VM's DRBD replica and reported success.
+	"wipe-",
+	"flush-",
+	"purge-",
 }
 
 // isDestructiveCommand reports whether cmdDef needs a confirmation

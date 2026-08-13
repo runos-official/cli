@@ -47,6 +47,17 @@ func TestIsDestructiveCommand(t *testing.T) {
 		// prefix also future-proofs any further drop-* verb.
 		{"PATCH drop-user is destructive (drop- prefix)", manifest.Command{Command: "services/postgresql/{id}/drop-user", Method: "PATCH"}, true},
 		{"PATCH drop-database is destructive (drop- prefix)", manifest.Command{Command: "services/postgresql/{id}/drop-database", Method: "PATCH"}, true},
+		// Goal 23 F26. `storage-groups/wipe-device` destroys every byte on a
+		// disk irreversibly and was the ONLY destructive storage verb that ran
+		// on the first ask: remove-device and remove-node, which merely edit
+		// records, both demanded --yes. The suffix list already carried "wipe",
+		// but the final segment is "wipe-device", so neither list matched.
+		// Measured on live hardware: it wiped a disk holding a running VM's
+		// DRBD replica and reported success. The prefix now covers the whole
+		// family so a later wipe-* / flush-* / purge-* inherits the guard.
+		{"POST wipe-device is destructive (wipe- prefix)", manifest.Command{Command: "storage-groups/wipe-device", Method: "POST"}, true},
+		{"POST flush-cache is destructive (flush- prefix)", manifest.Command{Command: "services/valkey/{id}/flush-cache", Method: "POST"}, true},
+		{"POST purge-queue is destructive (purge- prefix)", manifest.Command{Command: "services/kafka/{id}/purge-queue", Method: "POST"}, true},
 		// Non-destructive POST/PATCH should NOT trip the guard. The
 		// safety net cuts the wrong way only on these few verbs.
 		{"POST add is not destructive", manifest.Command{Command: "services/postgresql/add", Method: "POST"}, false},
