@@ -198,6 +198,9 @@ func Execute() {
 		// says which, and refreshes the cache when it is the cause (goal 21, O10). It never
 		// changes the exit code: the command still failed.
 		explainPossiblyStaleManifest(err)
+		// Same shape, different cause: a cluster-not-found is often a stale CONFIGURED DEFAULT
+		// rather than a broken cluster, and the bare message points at the wrong one (O2).
+		explainStaleDefaultCluster(err)
 		var ec interface{ ExitCode() int }
 		if errors.As(err, &ec) {
 			os.Exit(ec.ExitCode())
