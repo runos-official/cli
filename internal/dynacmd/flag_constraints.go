@@ -47,6 +47,17 @@ func describeConstraints(field manifest.Field) string {
 		parts = append(parts, def)
 	}
 
+	// A REQUIRED BOOLEAN'S FALSE FORM IS INVISIBLE OTHERWISE (goal 21, O21). Cobra renders a bool
+	// as a bare `--flag` with no `=value` hint, so presence reads as the only thing it can express
+	// and the false case looks impossible. That is not an edge: on `nodes/configure-virt-shape`
+	// it is half the command's purpose, since `vmHost` is required with no default precisely so
+	// the absence of a choice cannot be mistaken for one.
+	//
+	// Only for REQUIRED booleans. An optional bool defaults sensibly and does not need the noise.
+	if field.Type == "boolean" && field.Required {
+		parts = append(parts, "pass =true or =false")
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}

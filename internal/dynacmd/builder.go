@@ -83,6 +83,15 @@ func formatMissingFieldHint(c *cobra.Command, field manifest.Field, flagName str
 	if c.Flags().Lookup(flagName) == nil {
 		return fmt.Sprintf("%s (include %s: in -f file; this field accepts no flag form, pass `-f body.yaml` with `%s: <value>`)", field.Name, field.Name, field.Name)
 	}
+	// A REQUIRED BOOLEAN MUST NAME ITS FALSE FORM (goal 21, O21). Saying only "pass --vm-host"
+	// reads as though the flag can only ever set true, so opting a node OUT of hosting VMs, which
+	// is half of what configure-virt-shape is for, looks impossible from the CLI. `--flag=false`
+	// has always worked and appeared in neither the help nor this error. The failure is silent in
+	// the worst direction: an agent that concludes it cannot be set false simply does not do it.
+	if field.Type == "boolean" {
+		return fmt.Sprintf("%s (pass --%s=true or --%s=false, or include %s: in -f file)",
+			field.Name, flagName, flagName, field.Name)
+	}
 	return fmt.Sprintf("%s (pass --%s, or include %s: in -f file)", field.Name, flagName, field.Name)
 }
 

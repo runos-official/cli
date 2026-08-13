@@ -118,3 +118,28 @@ func TestDescribeConstraintsIsAppendable(t *testing.T) {
 		t.Errorf("an unconstrained field must not change the description, got %q", withNothing)
 	}
 }
+
+func TestRequiredBooleanNamesItsFalseForm(t *testing.T) {
+	// O21: cobra renders a bool as a bare `--flag` with no `=value` hint, so the false case
+	// looked impossible. On nodes/configure-virt-shape that is half the command's purpose.
+	required := describeConstraints(manifest.Field{
+		Name:     "vmHost",
+		Type:     "boolean",
+		Required: true,
+	})
+	if !strings.Contains(required, "=false") {
+		t.Errorf("a required boolean must name its false form, got %q", required)
+	}
+
+	// An optional bool defaults sensibly; the hint would just be noise on every one of them.
+	optional := describeConstraints(manifest.Field{Name: "force", Type: "boolean"})
+	if strings.Contains(optional, "=false") {
+		t.Errorf("an optional boolean should not carry the hint, got %q", optional)
+	}
+
+	// A required NON-boolean is unaffected.
+	str := describeConstraints(manifest.Field{Name: "name", Type: "string", Required: true})
+	if str != "" {
+		t.Errorf("a required string should be unchanged, got %q", str)
+	}
+}
