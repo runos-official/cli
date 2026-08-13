@@ -84,3 +84,53 @@ func explainStaleDefaultCluster(err error) {
 			"Run `runos clusters list` to see what is there, then `runos clusters default <cid>` to point at one,\n"+
 			"or pass `--cid <cid>` for a single command.\n", defaultCid)
 }
+
+// nullFlagName returns the flag a caller tried to clear by passing `null`, or "".
+//
+// GOAL 21, O11. Several numeric fields document three distinct instructions: a number sets a
+// limit, `null` REMOVES it, and `0` is a real limit meaning nothing more may be created. The CLI
+// renders them as int flags, and an int flag cannot carry null, so the documented instruction
+// cannot be issued:
+//
+//	Error: invalid argument "null" for "--max-vcpus" flag: strconv.ParseInt: parsing "null": invalid syntax
+//
+// The dangerous part is that the plausible next guess is wrong in the WORST direction:
+// `--max-vcpus 0` parses fine and does the opposite of what was wanted, freezing the group instead
+// of unbounding it. So the caller who guessed RIGHT gets a parse error and the caller who guessed
+// WRONG gets silent damage.
+//
+// Matched on pflag's own message. Narrow on purpose: only a literal `null` argument counts.
+func nullFlagName(errMsg string) string {
+	if !strings.Contains(errMsg, `invalid argument "null"`) {
+		return ""
+	}
+	const marker = `for "`
+	i := strings.Index(errMsg, marker)
+	if i == -1 {
+		return ""
+	}
+	rest := errMsg[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j == -1 {
+		return ""
+	}
+	return rest[:j]
+}
+
+// explainNullNotAcceptedByFlag tells a caller who tried `--flag null` how to actually clear it.
+//
+// Writes to stderr and never changes the exit code.
+func explainNullNotAcceptedByFlag(err error) {
+	if err == nil {
+		return
+	}
+	flag := nullFlagName(err.Error())
+	if flag == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"\nA flag cannot carry `null`, so clearing this value needs the file form:\n"+
+			"  runos <command> ... -f body.yaml     with `<fieldName>: null` inside it\n"+
+			"DO NOT pass `%s 0` instead. Zero is a real limit meaning nothing more may be\n"+
+			"created, which is the opposite of removing the limit.\n", flag)
+}

@@ -70,3 +70,48 @@ func TestJudgeStaleCluster(t *testing.T) {
 		})
 	}
 }
+
+func TestNullFlagName(t *testing.T) {
+	// O11: the caller who guessed RIGHT (`null`) gets a parse error, while the caller who guessed
+	// wrong (`0`) silently freezes the group instead of unbounding it.
+	tests := []struct {
+		name   string
+		errMsg string
+		want   string
+	}{
+		{
+			name:   "pflag's message for the exact command in the finding",
+			errMsg: `invalid argument "null" for "--max-vcpus" flag: strconv.ParseInt: parsing "null": invalid syntax`,
+			want:   "--max-vcpus",
+		},
+		{
+			name:   "another nullable quota field",
+			errMsg: `invalid argument "null" for "--max-memory-mi" flag: strconv.ParseInt: parsing "null": invalid syntax`,
+			want:   "--max-memory-mi",
+		},
+		{
+			// A different bad value is an ordinary mistake, not the nullable trap.
+			name:   "a non-null parse failure is left alone",
+			errMsg: `invalid argument "abc" for "--max-vcpus" flag: strconv.ParseInt: parsing "abc": invalid syntax`,
+			want:   "",
+		},
+		{
+			name:   "an unrelated error is left alone",
+			errMsg: "failed to reach the API: connection refused",
+			want:   "",
+		},
+		{
+			name:   "a truncated message does not panic or invent a flag",
+			errMsg: `invalid argument "null" for `,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nullFlagName(tt.errMsg); got != tt.want {
+				t.Errorf("nullFlagName(%q) = %q, want %q", tt.errMsg, got, tt.want)
+			}
+		})
+	}
+}

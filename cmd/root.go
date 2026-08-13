@@ -201,6 +201,9 @@ func Execute() {
 		// Same shape, different cause: a cluster-not-found is often a stale CONFIGURED DEFAULT
 		// rather than a broken cluster, and the bare message points at the wrong one (O2).
 		explainStaleDefaultCluster(err)
+		// `--flag null` is the RIGHT guess for a nullable numeric and pflag refuses it, while the
+		// wrong guess (`--flag 0`) parses and does the opposite. Name the route that works (O11).
+		explainNullNotAcceptedByFlag(err)
 		var ec interface{ ExitCode() int }
 		if errors.As(err, &ec) {
 			os.Exit(ec.ExitCode())
