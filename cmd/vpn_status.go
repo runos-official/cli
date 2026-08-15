@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/runos-official/cli/internal/vpn"
@@ -46,7 +47,40 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	for _, c := range status.Clusters {
 		fmt.Fprintf(out, "  %s\n", clusterStatusLine(c))
 	}
+	if note := peeringNote(status.Clusters); note != "" {
+		fmt.Fprintf(out, "\n%s\n", note)
+	}
 	return nil
+}
+
+// peeringNote says what a peering does NOT give the device: a cluster peered with a connected
+// one is still neither routed nor steered for DNS until the device connects to it too (peering
+// is never transit, and only connected clusters' zones are split). Measured on the Mac: the
+// peered cluster's names answered publicly and its overlay address was not routed. Silent when
+// no connected cluster is peered with a disconnected one.
+func peeringNote(clusters []vpn.ClusterStatus) string {
+	connected := map[string]bool{}
+	for _, c := range clusters {
+		if c.Connected {
+			connected[c.CID] = true
+		}
+	}
+	var lines []string
+	for _, c := range clusters {
+		if !c.Connected {
+			continue
+		}
+		for _, peer := range c.PeeredWith {
+			if !connected[peer] {
+				lines = append(lines, fmt.Sprintf("  %s is peered with %s, but %s's names and addresses stay public and unrouted here until you 'runos vpn connect %s'.",
+					c.CID, peer, peer, peer))
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Peerings:\n" + strings.Join(lines, "\n")
 }
 
 // clusterStatusLine is one cluster's summary: name, connection state, and either the live

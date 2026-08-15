@@ -47,6 +47,26 @@ func TestClusterStatusLineReflectsEachState(t *testing.T) {
 	}
 }
 
+// A peering never routes the peer's addresses (peering is not transit); status must say so, and
+// only when a connected cluster is peered with one the device is NOT connected to.
+func TestPeeringNoteNamesUnroutedPeers(t *testing.T) {
+	both := []vpn.ClusterStatus{
+		{CID: "wm2", Connected: true, PeeredWith: []string{"g4v"}},
+		{CID: "g4v", Connected: false, PeeredWith: []string{"wm2"}},
+	}
+	note := peeringNote(both)
+	if !strings.Contains(note, "wm2 is peered with g4v") || !strings.Contains(note, "unrouted") || !strings.Contains(note, "connect g4v") {
+		t.Fatalf("note = %q", note)
+	}
+	both[1].Connected = true
+	if got := peeringNote(both); got != "" {
+		t.Fatalf("both connected must be silent, got %q", got)
+	}
+	if got := peeringNote([]vpn.ClusterStatus{{CID: "a"}, {CID: "b", Connected: true}}); got != "" {
+		t.Fatalf("no peering must be silent, got %q", got)
+	}
+}
+
 func TestBytesHumanUsesBinaryUnits(t *testing.T) {
 	cases := map[int64]string{0: "0 B", 512: "512 B", 1024: "1.0 KiB", 1048576: "1.0 MiB"}
 	for n, want := range cases {
