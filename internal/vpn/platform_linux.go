@@ -15,6 +15,11 @@ import (
 // present the daemon does NOT rewrite /etc/resolv.conf (that is a machine-wide file other things
 // own); it reports split DNS as unavailable and the tunnel still carries traffic, names just
 // resolve publicly.
+//
+// `resolvectl domain LINK ...` sets the link's WHOLE domain list (measured: a second call with a
+// new zone replaced the first), so the per-zone Set/Remove below read the link's current list
+// back and write the full list every time. Resolvers() parses the same read-back, so the daemon's
+// diff sees what resolved really holds.
 
 // defaultTunName is the interface the engine creates on Linux.
 const defaultTunName = "runos0"
@@ -67,35 +72,77 @@ func (linuxPlatform) RemoveRoute(iface string, prefix netip.Prefix) error {
 	return nil
 }
 
-// Resolvers returns nothing: resolvectl's per-link state is set wholesale by SetResolvers-style
-// calls, so the daemon reconciles the whole link's DNS at once in setLinkDNS rather than diffing
-// zone by zone. DiffResolvers on an empty current set therefore always re-applies the full plan,
-// which resolvectl accepts idempotently.
-func (linuxPlatform) Resolvers() (map[string]netip.Addr, error) {
-	return map[string]netip.Addr{}, nil
+// Resolvers reads the link's routing domains and DNS server back from resolved. Every routing
+// domain on the link maps to the link's (single) resolver: the daemon steers all of a link's
+// zones to one tunnel resolver per cluster, and two clusters on one link share the DNS server
+// list, so the first server is what every zone gets.
+func (p linuxPlatform) Resolvers() (map[string]netip.Addr, error) {
+	found := map[string]netip.Addr{}
+	if !p.resolved {
+		return found, nil
+	}
+	dnsOut, err := run("resolvectl", "dns", defaultTunName)
+	if err != nil {
+		return found, nil // link not known to resolved yet: nothing steered
+	}
+	servers := parseResolvectlLinkValues(string(dnsOut))
+	if len(servers) == 0 {
+		return found, nil
+	}
+	resolver, err := netip.ParseAddr(servers[0])
+	if err != nil {
+		return found, nil
+	}
+	domOut, err := run("resolvectl", "domain", defaultTunName)
+	if err != nil {
+		return found, nil
+	}
+	for _, zone := range routingZones(parseResolvectlLinkValues(string(domOut))) {
+		found[zone] = resolver
+	}
+	return found, nil
 }
 
 func (p linuxPlatform) SetResolver(zone string, resolver netip.Addr) error {
 	if !p.resolved {
-		// No resolved: report once, do not touch resolv.conf. The tunnel works; the name resolves
-		// publicly. Returning nil keeps the daemon converging routes even without split DNS.
+		// No resolved: do not touch resolv.conf. The tunnel works; the name resolves publicly.
+		// Returning nil keeps the daemon converging routes even without split DNS.
 		return nil
 	}
-	// resolvectl domain with a leading ~ is a ROUTING domain: only this zone goes to the link's
-	// resolver, everything else is untouched. The resolver is set per-link too.
 	if out, err := run("resolvectl", "dns", defaultTunName, resolver.String()); err != nil {
 		return fmt.Errorf("set link dns: %w: %s", err, out)
 	}
-	if out, err := run("resolvectl", "domain", defaultTunName, "~"+zone); err != nil {
-		return fmt.Errorf("set link domain %s: %w: %s", zone, err, out)
-	}
-	return nil
+	return p.setDomains(addZone(p.currentZones(), zone))
 }
 
 func (p linuxPlatform) RemoveResolver(zone string) error {
-	// A per-link routing domain is cleared by resetting the link's domains; the daemon reapplies
-	// the wanted set on the next converge, so a stale zone is dropped when the whole link is reset
-	// in Teardown. Nothing to do per-zone here.
+	if !p.resolved {
+		return nil
+	}
+	return p.setDomains(removeZone(p.currentZones(), zone))
+}
+
+func (p linuxPlatform) currentZones() []string {
+	out, err := run("resolvectl", "domain", defaultTunName)
+	if err != nil {
+		return nil
+	}
+	return routingZones(parseResolvectlLinkValues(string(out)))
+}
+
+// setDomains writes the link's whole routing-domain list. An empty list clears it (resolvectl
+// wants one empty argument for that).
+func (p linuxPlatform) setDomains(zones []string) error {
+	args := []string{"domain", defaultTunName}
+	if len(zones) == 0 {
+		args = append(args, "")
+	}
+	for _, zone := range zones {
+		args = append(args, "~"+zone)
+	}
+	if out, err := run("resolvectl", args...); err != nil {
+		return fmt.Errorf("set link domains: %w: %s", err, out)
+	}
 	return nil
 }
 

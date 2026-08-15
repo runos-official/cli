@@ -3,6 +3,7 @@ package vpn
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -212,9 +213,11 @@ func (d *Daemon) startTunnelLocked() error {
 
 func (d *Daemon) stopTunnelLocked() {
 	if d.cancelPoll != nil {
+		// Cancel only, never wait here: the loop goroutine takes d.mu, which this caller holds, so
+		// waiting on it under the lock is a deadlock the moment a tick and a stop coincide. The
+		// goroutine sees its context cancelled the next time it wakes and exits on its own.
 		d.cancelPoll()
 		d.cancelPoll = nil
-		d.wg.Wait()
 	}
 	if d.engine != nil {
 		_ = d.platform.Teardown(d.engine.InterfaceName())
@@ -247,6 +250,14 @@ func (d *Daemon) pollAndApplyLocked() error {
 		return nil
 	}
 	if res.notModified {
+		// Unchanged document, but the machine may have changed under it: sleep/wake and a network
+		// change drop routes on macOS and can reset resolver state. Every call below is idempotent,
+		// so re-asserting the current plan on each tick is how the tunnel comes back on its own
+		// without a wake listener per OS.
+		if err := d.convergeRoutesAndDNSLocked(nil, d.plan); err != nil {
+			d.lastErr = err.Error()
+			return err
+		}
 		d.lastErr = ""
 		return nil
 	}
@@ -295,9 +306,25 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 	if err := d.engine.ApplyPlan(privHex, plan); err != nil {
 		return err
 	}
+	if err := d.convergeRoutesAndDNSLocked(d.plan.Routes, plan); err != nil {
+		return err
+	}
+	d.doc = doc
+	d.plan = plan
+	d.revision = doc.Revision
+	return nil
+}
 
-	// Routes: add the plan's routes, remove any the previous plan had that this one drops.
-	routeDiff := DiffPrefixes(d.plan.Routes, plan.Routes)
+// convergeRoutesAndDNSLocked brings the routes and the split DNS to the plan. haveRoutes is what
+// the daemon believes is on the machine: the previous plan's routes when a document changed
+// (so dropped clusters lose their route), nil to re-assert every route (AddRoute is idempotent
+// on every platform). Resolvers are always read back from the platform.
+func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan) error {
+	if d.engine == nil {
+		return nil
+	}
+	iface := d.engine.InterfaceName()
+	routeDiff := DiffPrefixes(haveRoutes, plan.Routes)
 	for _, prefix := range routeDiff.Add {
 		if err := d.platform.AddRoute(iface, prefix); err != nil {
 			return err
@@ -309,7 +336,6 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 		}
 	}
 
-	// DNS: converge the resolver files to the plan's zones.
 	have, err := d.platform.Resolvers()
 	if err != nil {
 		return err
@@ -331,10 +357,6 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 	if changed {
 		_ = d.platform.FlushDNS()
 	}
-
-	d.doc = doc
-	d.plan = plan
-	d.revision = doc.Revision
 	return nil
 }
 
@@ -355,8 +377,10 @@ func (d *Daemon) startPollLoop() {
 				return
 			case <-ticker.C:
 				d.mu.Lock()
-				// A login-required teardown cancels the loop, so this only runs while up.
-				if d.client != nil {
+				// The tunnel may have been stopped or replaced while this tick waited for the lock;
+				// a cancelled context means this loop belongs to a dead tunnel and must not touch
+				// the new one.
+				if ctx.Err() == nil && d.client != nil {
 					_ = d.pollAndApplyLocked()
 				}
 				d.mu.Unlock()
@@ -369,6 +393,9 @@ func (d *Daemon) startPollLoop() {
 // a daemon stopped for an update or a reboot should resume the same session on restart.
 func (d *Daemon) Close() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.stopTunnelLocked()
+	d.mu.Unlock()
+	// Outside the lock, so a loop goroutine waiting on d.mu can take it, see its cancelled
+	// context and exit.
+	d.wg.Wait()
 }

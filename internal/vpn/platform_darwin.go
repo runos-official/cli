@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -165,9 +164,4 @@ func parseResolverNameserver(data []byte) (netip.Addr, bool) {
 		}
 	}
 	return netip.Addr{}, false
-}
-
-func run(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
-	return cmd.CombinedOutput()
 }
