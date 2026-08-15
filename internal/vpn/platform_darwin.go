@@ -27,6 +27,9 @@ const (
 	resolverMarker = "# managed by runos-vpn"
 )
 
+// defaultTunName is the interface the engine requests on macOS; the kernel appends the number.
+const defaultTunName = "utun"
+
 type darwinPlatform struct{}
 
 func newPlatform() platform { return darwinPlatform{} }

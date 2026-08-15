@@ -192,7 +192,7 @@ func (d *Daemon) handleSetMembershipLocked(cid string, connect bool) Response {
 // first poll+apply. Safe to call when a tunnel is already up (it replaces it).
 func (d *Daemon) startTunnelLocked() error {
 	d.stopTunnelLocked()
-	eng, err := newEngine("utun", d.verbose)
+	eng, err := newEngine(defaultTunName, d.verbose)
 	if err != nil {
 		return err
 	}
