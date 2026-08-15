@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +23,10 @@ type vpnDeviceView struct {
 	PublicKey string `json:"publicKey"`
 }
 
+// errKeyRevoked is enrolDevice's answer when conductor refuses the key because it was revoked
+// (409 `vpn.key_revoked`): the machine needs a new keypair, which `up` asks the daemon for.
+var errKeyRevoked = errors.New("this machine's VPN key was revoked")
+
 // enrolDevice enrols this machine's public key, idempotent on the key. Returns the device.
 func enrolDevice(cfg *config.Config, token, publicKey, name, osName string) (*vpnDeviceView, error) {
 	client := api.NewClient(cfg.GetAPIURL())
@@ -31,6 +36,9 @@ func enrolDevice(cfg *config.Config, token, publicKey, name, osName string) (*vp
 	})
 	if err != nil {
 		return nil, err
+	}
+	if result.StatusCode == http.StatusConflict && vpnErrorCode(result) == "vpn.key_revoked" {
+		return nil, errKeyRevoked
 	}
 	if !result.OK() {
 		return nil, fmt.Errorf("%s", vpnErrorMessage(result, "enrol this device"))

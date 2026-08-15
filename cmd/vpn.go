@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -107,6 +108,17 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		hostname = "this-machine"
 	}
 	device, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
+	if errors.Is(err, errKeyRevoked) {
+		// The key was revoked (console, or an admin) and can never enrol again: rotate it in the
+		// daemon and enrol the new one, so a revoked machine is one `up` from working again
+		// rather than stuck forever. The old device row stays revoked in the account.
+		fmt.Fprintln(cmd.ErrOrStderr(), "This machine's previous VPN key was revoked; enrolling a new one.")
+		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey})
+		if rErr != nil {
+			return rErr
+		}
+		device, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+	}
 	if err != nil {
 		return err
 	}

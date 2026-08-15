@@ -36,6 +36,9 @@ const (
 	// OpLogout is down plus forgetting the device key and enrolment on this machine. The device
 	// row stays in the account until it is revoked.
 	OpLogout Op = "logout"
+	// OpRotateKey tears the tunnel down and replaces the device keypair, for a key conductor
+	// refuses to enrol again (revoked). Returns the new identity.
+	OpRotateKey Op = "rotate-key"
 )
 
 // Request is what the CLI writes to the socket, one JSON object per line.

@@ -89,6 +89,8 @@ func (d *Daemon) Handle(req Request) Response {
 		return d.handleDownLocked(false)
 	case OpLogout:
 		return d.handleDownLocked(true)
+	case OpRotateKey:
+		return d.handleRotateKeyLocked()
 	case OpConnect:
 		return d.handleSetMembershipLocked(req.CID, true)
 	case OpDisconnect:
@@ -152,6 +154,19 @@ func (d *Daemon) handleDownLocked(forget bool) Response {
 		return Response{Error: err.Error()}
 	}
 	return Response{Status: d.statusLocked()}
+}
+
+// handleRotateKeyLocked drops the tunnel and the old identity and mints a new device keypair.
+// No server-side call: the old key is already refused there, which is why the CLI asked.
+func (d *Daemon) handleRotateKeyLocked() Response {
+	d.stopTunnelLocked()
+	if err := d.state.RotateKey(); err != nil {
+		return Response{Error: err.Error()}
+	}
+	if err := SaveState(d.stateDir, d.state); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{Identity: d.identityLocked()}
 }
 
 // handleSetMembershipLocked adds or removes one cluster from the connected set through Conductor,

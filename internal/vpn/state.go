@@ -97,6 +97,19 @@ func (s *State) ClearIdentity() {
 	s.SessionExpiresAt = time.Time{}
 }
 
+// RotateKey replaces the device keypair and forgets the enrolment and session that belonged to
+// the old key: a revoked key can never enrol again, so the machine needs a new identity.
+func (s *State) RotateKey() error {
+	priv, pub, err := generateKeypair()
+	if err != nil {
+		return err
+	}
+	s.PrivateKey = priv
+	s.PublicKey = pub
+	s.ClearIdentity()
+	return nil
+}
+
 // ClearSession forgets only the session, for `down`.
 func (s *State) ClearSession() {
 	s.SessionToken = ""
