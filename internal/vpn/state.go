@@ -21,9 +21,6 @@ import (
 // is /var/root, so the two are deliberately separate files. Conductor's URL, account and device
 // arrive from the CLI over the socket (OpUp), never read from the user's config by the daemon.
 
-// StateDir is where the daemon keeps its state on a unix host.
-const StateDir = "/var/lib/runos-vpn"
-
 // State is the persisted daemon state.
 type State struct {
 	// The device keypair. The private key is base64 (WireGuard's own encoding); it never leaves

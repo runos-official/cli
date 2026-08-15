@@ -251,6 +251,9 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 	if err := replaceBinary(extractedBinary, currentBinary); err != nil {
 		return err
 	}
+	if err := replaceSidecars(filepath.Dir(extractedBinary), currentBinary); err != nil {
+		return err
+	}
 
 	if runtime.GOOS == "darwin" {
 		if err := exec.Command("xattr", "-c", currentBinary).Run(); err != nil {
@@ -390,6 +393,11 @@ func extractTarGz(archivePath, destDir string) (string, error) {
 	return binaryPath, nil
 }
 
+// sidecarFiles are shipped beside the binary in an archive and must be replaced with it. Today
+// that is wintun.dll in the Windows zip: wireguard-go loads it from runos.exe's directory, so a
+// binary updated without its DLL would be a VPN that cannot create an interface.
+var sidecarFiles = map[string]bool{"wintun.dll": true}
+
 func extractZip(archivePath, destDir string) (string, error) {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -400,31 +408,18 @@ func extractZip(archivePath, destDir string) (string, error) {
 	var binaryPath string
 	for _, f := range r.File {
 		name := filepath.Base(f.Name)
-		if name == "runos" || name == "runos.exe" {
-			binaryPath = filepath.Join(destDir, name)
-			// Guard against path traversal (zip-slip)
-			if !strings.HasPrefix(binaryPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-				return "", fmt.Errorf("illegal file path in archive: %s", f.Name)
-			}
-
-			rc, err := f.Open()
-			if err != nil {
-				return "", err
-			}
-
-			outFile, err := os.OpenFile(binaryPath, os.O_CREATE|os.O_WRONLY, 0755)
-			if err != nil {
-				rc.Close()
-				return "", err
-			}
-
-			_, err = io.Copy(outFile, rc)
-			outFile.Close()
-			rc.Close()
-			if err != nil {
-				return "", err
-			}
-			break
+		isBinary := name == "runos" || name == "runos.exe"
+		if !isBinary && !sidecarFiles[name] {
+			continue
+		}
+		target := filepath.Join(destDir, name)
+		mode := os.FileMode(0644)
+		if isBinary {
+			binaryPath = target
+			mode = 0755
+		}
+		if err := extractZipEntry(f, target, destDir, mode); err != nil {
+			return "", err
 		}
 	}
 
@@ -433,6 +428,42 @@ func extractZip(archivePath, destDir string) (string, error) {
 	}
 
 	return binaryPath, nil
+}
+
+func extractZipEntry(f *zip.File, target, destDir string, mode os.FileMode) error {
+	// Guard against path traversal (zip-slip)
+	if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+		return fmt.Errorf("illegal file path in archive: %s", f.Name)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, rc)
+	return err
+}
+
+// replaceSidecars installs every extracted sidecar file beside the binary, with the same
+// rename-into-place as the binary (a DLL loaded by the running daemon cannot be overwritten on
+// Windows, but it can be renamed). An archive without sidecars is not an error: older releases
+// had none.
+func replaceSidecars(extractDir, currentBinary string) error {
+	for name := range sidecarFiles {
+		src := filepath.Join(extractDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := replaceBinary(src, filepath.Join(filepath.Dir(currentBinary), name)); err != nil {
+			return fmt.Errorf("install %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func replaceBinary(newBinary, currentBinary string) error {

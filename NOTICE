@@ -4,3 +4,20 @@ This software is licensed under the Elastic License 2.0 (see LICENSE).
 It is source-available, not open source: the source is published for
 transparency and security review, and use is subject to the terms in LICENSE.
 "Licensor" in the LICENSE refers to RunOS.
+
+Third-party components
+----------------------
+
+The RunOS VPN client (`runos vpn`) embeds and ships the following:
+
+- wireguard-go (golang.zx2c4.com/wireguard), Copyright (C) 2017-2023 WireGuard LLC.
+  MIT License. Used as a library for the WireGuard protocol and the tunnel interface.
+- golang.org/x/sys and golang.org/x/crypto, Copyright The Go Authors. BSD-3-Clause.
+- Wintun (wintun.dll), Copyright (C) WireGuard LLC. Shipped ONLY in the Windows archives,
+  unmodified, as the prebuilt binary downloaded from https://www.wintun.net, under the Wintun
+  Prebuilt Binaries License (LICENSE.wintun.txt beside runos.exe), which permits redistribution
+  alongside software that uses Wintun only through its documented API. Wintun's source is GPLv2
+  and is not part of this program.
+
+"WireGuard" is a registered trademark of Jason A. Donenfeld. RunOS is not affiliated with or
+endorsed by WireGuard LLC.

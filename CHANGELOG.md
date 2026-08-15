@@ -14,9 +14,11 @@ runos vpn down             # disconnect and end the session
 
 The client asks conductor what it should reach and converges to it: one WireGuard interface, one peer per connected cluster, routes for each cluster's overlay range, and split DNS so a cluster's names resolve over the tunnel while everything else resolves normally. A cluster with no VPN server, or one you are not connected to, is shown as such rather than hidden.
 
-A tunnel is a person's session, so a personal access token cannot bring it up; `runos vpn up` runs the browser sign-in. macOS first; Linux and Windows follow.
+A tunnel is a person's session, so a personal access token cannot bring it up; `runos vpn up` runs the browser sign-in.
 
-Requires conductor with manifest 38.12.0 or newer.
+The service runs as a launchd daemon on macOS, a systemd unit on Linux (split DNS through systemd-resolved) and a Windows service (split DNS through NRPT rules); the Windows archive ships `wintun.dll` beside `runos.exe`, and `runos update` keeps the two together. When an operator moves a cluster's VPN server to another node (`runos services wireguard <id> move`), a connected client follows the new endpoint on its next poll without a command.
+
+Requires conductor with manifest 38.12.0 or newer (39.1.0 for `services wireguard move`).
 
 ## v1.13.0
 

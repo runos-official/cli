@@ -27,6 +27,24 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # wintun.dll ships beside runos.exe in the Windows zips (goal 27, V8): wireguard-go's
+      # Windows tun loads it from the executable's directory. It is downloaded from wintun.net
+      # at release time, never renamed, never rebuilt (its prebuilt licence allows redistribution
+      # beside software that uses only its API; the source is GPL and stays out), and the zip is
+      # checked against the sha256 wintun.net publishes for this exact version, so a tampered
+      # download fails the release rather than shipping.
+      - name: Fetch wintun (Windows tun driver)
+        env:
+          WINTUN_VERSION: "0.14.1"
+          WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+        run: |
+          curl -fsSL -o wintun.zip "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
+          echo "${WINTUN_SHA256}  wintun.zip" | sha256sum -c -
+          unzip -q wintun.zip -d wintun-src
+          test -f wintun-src/wintun/bin/amd64/wintun.dll
+          test -f wintun-src/wintun/bin/arm64/wintun.dll
+          test -f wintun-src/wintun/LICENSE.txt
+
       - name: Build all platforms
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -58,7 +76,11 @@ jobs:
 
             archive="runos-${GOOS}-${GOARCH}.${ext}"
             if [ "$ext" = "zip" ]; then
-              (cd dist && zip -q "../dist/${archive}" "${output}")
+              # runos.exe + wintun.dll (per arch) + the wintun prebuilt-binary licence.
+              cp "wintun-src/wintun/bin/${GOARCH}/wintun.dll" dist/wintun.dll
+              cp wintun-src/wintun/LICENSE.txt dist/LICENSE.wintun.txt
+              (cd dist && zip -q "../dist/${archive}" "${output}" wintun.dll LICENSE.wintun.txt)
+              rm dist/wintun.dll dist/LICENSE.wintun.txt
             else
               tar -czf "dist/${archive}" -C dist "${output}"
             fi

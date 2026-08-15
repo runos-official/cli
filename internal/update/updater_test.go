@@ -1,6 +1,9 @@
 package update
 
 import (
+	"archive/zip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -193,5 +196,64 @@ func TestGetPlatformInfo(t *testing.T) {
 		if ext == "" {
 			t.Error("ext is empty")
 		}
+	}
+}
+
+// The Windows zip carries wintun.dll beside runos.exe (V8); an update that replaced the binary
+// but not the DLL would leave a VPN daemon that cannot create an interface. extractZip must pull
+// both, and replaceSidecars must place the DLL beside the binary.
+func TestExtractZipPullsSidecarsAndReplaceSidecarsInstallsThem(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "runos-windows-amd64.zip")
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for name, body := range map[string]string{"runos.exe": "exe", "wintun.dll": "dll", "LICENSE.wintun.txt": "lic"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	extractDir := filepath.Join(dir, "extract")
+	if err := os.Mkdir(extractDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := extractZip(archive, extractDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(binary) != "runos.exe" {
+		t.Fatalf("binary %q", binary)
+	}
+	if got, _ := os.ReadFile(filepath.Join(extractDir, "wintun.dll")); string(got) != "dll" {
+		t.Fatalf("wintun.dll not extracted, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(extractDir, "LICENSE.wintun.txt")); err == nil {
+		t.Fatal("a non-sidecar, non-binary entry must not be extracted")
+	}
+
+	installDir := filepath.Join(dir, "install")
+	if err := os.Mkdir(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(installDir, "runos.exe")
+	if err := os.WriteFile(current, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceSidecars(extractDir, current); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(installDir, "wintun.dll")); string(got) != "dll" {
+		t.Fatalf("wintun.dll not installed beside the binary, got %q", got)
 	}
 }

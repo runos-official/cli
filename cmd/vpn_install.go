@@ -3,9 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"os/user"
-	"syscall"
+	"strings"
 
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/runos-official/cli/version"
@@ -48,8 +47,8 @@ func init() {
 
 func runVPNInstall(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("installing the VPN service needs admin: re-run with 'sudo runos vpn install'")
+	if !vpn.IsAdmin() {
+		return fmt.Errorf("installing the VPN service needs admin: %s", vpn.AdminHint)
 	}
 	execPath, err := os.Executable()
 	if err != nil {
@@ -69,8 +68,8 @@ func runVPNInstall(cmd *cobra.Command, args []string) error {
 
 func runVPNUninstall(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("removing the VPN service needs admin: re-run with 'sudo runos vpn uninstall'")
+	if !vpn.IsAdmin() {
+		return fmt.Errorf("removing the VPN service needs admin: %s", strings.Replace(vpn.AdminHint, "install", "uninstall", 1))
 	}
 	if err := vpn.NewService().Uninstall(); err != nil {
 		return err
@@ -80,35 +79,34 @@ func runVPNUninstall(cmd *cobra.Command, args []string) error {
 }
 
 // runVPNDaemon is the root process: it builds the daemon, resumes any live session, serves the
-// socket, and runs until signalled. It skips the CLI's config/manifest bootstrap (see root.go),
-// because as root its home is /var/root, not the user's, and it never needs the manifest.
+// socket, and runs until the host (launchd, systemd, the Windows SCM, or a terminal) stops it. It
+// skips the CLI's config/manifest bootstrap (see root.go), because as root its home is not the
+// user's, and it never needs the manifest.
 func runVPNDaemon(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	socketGroup, _ := cmd.Flags().GetString("socket-group")
 	verbose, _ := cmd.Flags().GetBool("verbose")
-
+	socket, _ := cmd.Flags().GetString("socket")
 	stateDir, _ := cmd.Flags().GetString("state-dir")
 	if stateDir == "" {
 		stateDir = vpn.StateDir
 	}
-	d, err := vpn.NewDaemon(stateDir, version.Version, verbose)
-	if err != nil {
-		return err
-	}
-	d.Resume()
-
-	socket, _ := cmd.Flags().GetString("socket")
-	listener, err := vpn.Serve(d, orDefaultSocket(socket), socketGroup)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	d.Close()
-	return nil
+	return vpn.RunDaemonHost(func() (func(), error) {
+		d, err := vpn.NewDaemon(stateDir, version.Version, verbose)
+		if err != nil {
+			return nil, err
+		}
+		d.Resume()
+		listener, err := vpn.Serve(d, orDefaultSocket(socket), socketGroup)
+		if err != nil {
+			d.Close()
+			return nil, err
+		}
+		return func() {
+			listener.Close()
+			d.Close()
+		}, nil
+	})
 }
 
 func orDefaultSocket(path string) string {

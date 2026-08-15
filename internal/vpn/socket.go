@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -17,9 +15,6 @@ import (
 // readable so the installing user's CLI can reach it without sudo; a stricter peer-credential
 // check can be layered on later (the ops that matter server-side already require a session token
 // the CLI must fetch through a sign-in).
-
-// SocketPath is the daemon's unix socket.
-const SocketPath = "/var/run/runos-vpn.sock"
 
 // Serve listens on the socket and dispatches each connection to the daemon until ctx-style stop.
 // It replaces a stale socket file left by a crashed daemon. The returned listener is closed by
@@ -36,19 +31,12 @@ func Serve(d *Daemon, socketPath, socketGroup string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", socketPath, err)
 	}
-	// 0660 plus a group the installing user belongs to, so their CLI reaches the socket without
-	// sudo. Found on real hardware: without the chown the socket is root:root and every non-root
-	// `runos vpn` call is a permission error.
-	if err := os.Chmod(socketPath, 0o660); err != nil {
+	// The installing user's CLI must reach the socket without admin rights: on unix that is 0660
+	// plus their group (found on real hardware: without the chown the socket is root:root and every
+	// non-root `runos vpn` call is a permission error); on Windows it is an ACL grant to Users.
+	if err := grantSocketAccess(socketPath, socketGroup); err != nil {
 		_ = listener.Close()
-		return nil, fmt.Errorf("chmod socket: %w", err)
-	}
-	if socketGroup != "" {
-		if grp, err := user.LookupGroup(socketGroup); err == nil {
-			if gid, convErr := strconv.Atoi(grp.Gid); convErr == nil {
-				_ = os.Chown(socketPath, -1, gid)
-			}
-		}
+		return nil, err
 	}
 	go func() {
 		for {
