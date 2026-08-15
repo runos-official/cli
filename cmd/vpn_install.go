@@ -83,8 +83,7 @@ func runVPNUninstall(cmd *cobra.Command, args []string) error {
 // because as root its home is /var/root, not the user's, and it never needs the manifest.
 func runVPNDaemon(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
-	group, _ := cmd.Flags().GetString("socket-group")
-	_ = group // reserved: the service already chowns the socket group at install
+	socketGroup, _ := cmd.Flags().GetString("socket-group")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 
 	stateDir, _ := cmd.Flags().GetString("state-dir")
@@ -98,7 +97,7 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 	d.Resume()
 
 	socket, _ := cmd.Flags().GetString("socket")
-	listener, err := vpn.Serve(d, orDefaultSocket(socket))
+	listener, err := vpn.Serve(d, orDefaultSocket(socket), socketGroup)
 	if err != nil {
 		return err
 	}

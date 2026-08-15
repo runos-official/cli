@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -22,7 +24,7 @@ const SocketPath = "/var/run/runos-vpn.sock"
 // Serve listens on the socket and dispatches each connection to the daemon until ctx-style stop.
 // It replaces a stale socket file left by a crashed daemon. The returned listener is closed by
 // the caller to stop serving.
-func Serve(d *Daemon, socketPath string) (net.Listener, error) {
+func Serve(d *Daemon, socketPath, socketGroup string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
@@ -34,11 +36,19 @@ func Serve(d *Daemon, socketPath string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", socketPath, err)
 	}
-	// 0660: owner (root) and group can read/write. `runos vpn install` sets the group to the
-	// installing user so their CLI reaches it without sudo.
+	// 0660 plus a group the installing user belongs to, so their CLI reaches the socket without
+	// sudo. Found on real hardware: without the chown the socket is root:root and every non-root
+	// `runos vpn` call is a permission error.
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		_ = listener.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
+	}
+	if socketGroup != "" {
+		if grp, err := user.LookupGroup(socketGroup); err == nil {
+			if gid, convErr := strconv.Atoi(grp.Gid); convErr == nil {
+				_ = os.Chown(socketPath, -1, gid)
+			}
+		}
 	}
 	go func() {
 		for {

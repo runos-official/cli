@@ -30,7 +30,7 @@ func TestSocketRoundTripReturnsTheDaemonResponse(t *testing.T) {
 	d := &Daemon{stateDir: dir, version: "test", state: state, platform: newPlatform(), pollInterval: PollInterval}
 
 	sock := shortSocketPath(t, "runos-vpn-test.sock")
-	listener, err := Serve(d, sock)
+	listener, err := Serve(d, sock, "")
 	if err != nil {
 		t.Fatal(err)
 	}
