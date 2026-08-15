@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,19 @@ type PollDeviceAuthResponse struct {
 }
 
 // InitiateDeviceAuth starts a new device authorization flow and returns the device ID and token.
+
+// BaseURL returns the client's base URL, for the few callers that must build a request the
+// generic Do helper cannot express (a conditional GET carrying If-None-Match). Prefer Do.
+func (c *Client) BaseURL() string {
+	return strings.TrimRight(c.baseURL, "/")
+}
+
+// HTTP exposes the underlying client so a caller building its own *http.Request (again, only for
+// headers Do does not set) shares this client's timeout and transport.
+func (c *Client) HTTP() *http.Client {
+	return c.httpClient
+}
+
 func (c *Client) InitiateDeviceAuth() (*InitiateDeviceAuthResponse, error) {
 	url := fmt.Sprintf("%s/auth/device/initiate", c.baseURL)
 	req, err := http.NewRequest(http.MethodPost, url, nil)

@@ -1,0 +1,91 @@
+package cmd
+
+import (
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/runos-official/cli/internal/api"
+	"github.com/runos-official/cli/internal/config"
+)
+
+// The CLI half of the RunOS VPN's conductor calls: enrolment and the session mint. Both need the
+// PERSON's interactive Firebase token (the daemon holds only a device session token), so they
+// live here in the CLI process, not in the root daemon. The daemon does state polling and PUT
+// clusters with its session token; see internal/vpn/conductor.go.
+
+// vpnDeviceView is the device shape the enrol endpoint returns (a subset; the CLI needs the id).
+type vpnDeviceView struct {
+	ID        string `json:"id"`
+	Address   string `json:"address"`
+	PublicKey string `json:"publicKey"`
+}
+
+// enrolDevice enrols this machine's public key, idempotent on the key. Returns the device.
+func enrolDevice(cfg *config.Config, token, publicKey, name, osName string) (*vpnDeviceView, error) {
+	client := api.NewClient(cfg.GetAPIURL())
+	path := "/" + url.PathEscape(cfg.GetAccountID()) + "/vpn/devices"
+	result, err := client.Do(http.MethodPost, path, token, map[string]any{
+		"publicKey": publicKey, "name": name, "os": osName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !result.OK() {
+		return nil, fmt.Errorf("%s", vpnErrorMessage(result, "enrol this device"))
+	}
+	var body struct {
+		Device vpnDeviceView `json:"device"`
+	}
+	if err := result.Decode(&body); err != nil {
+		return nil, err
+	}
+	return &body.Device, nil
+}
+
+// mintedSession is what the session endpoint returns.
+type mintedSession struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// mintSession mints a 24-hour session for a device. Conductor requires the caller's Firebase
+// auth_time to be within 5 minutes; signInRequired reports the refusal so `up` can re-sign-in
+// and retry, rather than the caller decoding auth_time itself.
+func mintSession(cfg *config.Config, token, deviceID string) (*mintedSession, bool, error) {
+	client := api.NewClient(cfg.GetAPIURL())
+	path := "/" + url.PathEscape(cfg.GetAccountID()) + "/vpn/devices/" + url.PathEscape(deviceID) + "/session"
+	result, err := client.Do(http.MethodPost, path, token, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if result.StatusCode == http.StatusForbidden && vpnErrorCode(result) == "vpn.sign_in_required" {
+		return nil, true, nil
+	}
+	if !result.OK() {
+		return nil, false, fmt.Errorf("%s", vpnErrorMessage(result, "start a VPN session"))
+	}
+	var session mintedSession
+	if err := result.Decode(&session); err != nil {
+		return nil, false, err
+	}
+	return &session, false, nil
+}
+
+// vpnErrorMessage renders a conductor error envelope, falling back to the status code.
+func vpnErrorMessage(result *api.Result, action string) string {
+	if msg := result.ErrorMessage(); msg != "" {
+		return msg
+	}
+	return fmt.Sprintf("could not %s (HTTP %d)", action, result.StatusCode)
+}
+
+// vpnErrorCode extracts the stable machine `code` from a conductor error envelope.
+func vpnErrorCode(result *api.Result) string {
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	_ = result.Decode(&envelope)
+	return envelope.Code
+}

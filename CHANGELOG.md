@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.14.0
+
+`runos vpn` connects this machine to your RunOS clusters over a WireGuard-compatible tunnel, with no config file to manage. Each machine is a device with its own key (generated on the machine, never uploaded) and its own address. A sign-in lasts 24 hours; after that the tunnel is cut and `runos vpn up` signs you in again in the browser.
+
+```
+sudo runos vpn install     # once: installs the background service (needs admin)
+runos vpn up               # sign in and connect to your default cluster
+runos vpn connect <cid>    # reach another cluster
+runos vpn status           # the tunnel and each cluster
+runos vpn down             # disconnect and end the session
+```
+
+The client asks conductor what it should reach and converges to it: one WireGuard interface, one peer per connected cluster, routes for each cluster's overlay range, and split DNS so a cluster's names resolve over the tunnel while everything else resolves normally. A cluster with no VPN server, or one you are not connected to, is shown as such rather than hidden.
+
+A tunnel is a person's session, so a personal access token cannot bring it up; `runos vpn up` runs the browser sign-in. macOS first; Linux and Windows follow.
+
+Requires conductor with manifest 38.12.0 or newer.
+
 ## v1.13.0
 
 `runos vms ssh <vmid>` opens an interactive SSH session on a virtual machine, or runs one command on it. RunOS never gives a VM a public address, so this tunnels to the guest's SSH port through the RunOS API and works from anywhere the API is reachable, with nothing configured on the guest and no VPN.

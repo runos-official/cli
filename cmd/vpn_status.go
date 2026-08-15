@@ -1,0 +1,96 @@
+package cmd
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/runos-official/cli/internal/vpn"
+
+	"github.com/spf13/cobra"
+)
+
+// printVPNStatus renders the human view of a daemon status: the session state first (it is what
+// lapses), then one line per cluster with its connection, reachability and live traffic.
+func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
+	out := cmd.OutOrStdout()
+	if status == nil {
+		fmt.Fprintln(out, "The VPN is not running.")
+		return nil
+	}
+
+	if !status.Running {
+		fmt.Fprintln(out, "VPN: down")
+	} else {
+		fmt.Fprintf(out, "VPN: up on %s", status.Interface)
+		if status.Address != "" {
+			fmt.Fprintf(out, " (%s)", status.Address)
+		}
+		fmt.Fprintln(out)
+	}
+
+	switch {
+	case status.Session.LoginRequired:
+		fmt.Fprintln(out, "Session: expired - run 'runos vpn up' to sign in again")
+	case status.Session.Present:
+		fmt.Fprintf(out, "Session: valid until %s (%s from now)\n",
+			status.Session.ExpiresAt.Local().Format("2006-01-02 15:04"),
+			roundDuration(time.Until(status.Session.ExpiresAt)))
+	default:
+		fmt.Fprintln(out, "Session: none - run 'runos vpn up'")
+	}
+
+	if len(status.Clusters) == 0 {
+		return nil
+	}
+	fmt.Fprintln(out)
+	for _, c := range status.Clusters {
+		fmt.Fprintf(out, "  %s\n", clusterStatusLine(c))
+	}
+	return nil
+}
+
+// clusterStatusLine is one cluster's summary: name, connection state, and either the live
+// handshake/traffic or the reason it is not reachable.
+func clusterStatusLine(c vpn.ClusterStatus) string {
+	label := fmt.Sprintf("%-8s %s", c.CID, c.Name)
+	switch {
+	case c.Connected && c.PeerUp && !c.LastHandshake.IsZero():
+		return fmt.Sprintf("%s  connected, last handshake %s ago, %s down / %s up",
+			label, roundDuration(time.Since(c.LastHandshake)), bytesHuman(c.RxBytes), bytesHuman(c.TxBytes))
+	case c.Connected && c.PeerUp:
+		return fmt.Sprintf("%s  connected, no handshake yet", label)
+	case c.Connected && !c.Reachable:
+		return fmt.Sprintf("%s  connected but unreachable: %s", label, c.Reason)
+	case c.Connected:
+		return fmt.Sprintf("%s  connecting...", label)
+	case !c.Reachable:
+		return fmt.Sprintf("%s  available but no VPN server (%s)", label, c.Reason)
+	default:
+		return fmt.Sprintf("%s  available (not connected)", label)
+	}
+}
+
+// roundDuration trims a duration to a readable whole unit.
+func roundDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d >= time.Hour {
+		return d.Round(time.Minute).String()
+	}
+	return d.Round(time.Second).String()
+}
+
+// bytesHuman renders a byte count in binary units.
+func bytesHuman(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for x := n / unit; x >= unit; x /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}

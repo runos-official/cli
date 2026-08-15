@@ -105,6 +105,11 @@ var rootCmd = &cobra.Command{
 		if cmdName == "config" || cmdName == "env" || cmdName == "version" || cmdName == "help" || cmdName == "update" {
 			return nil
 		}
+		// The VPN daemon runs as root under launchd: its home is /var/root, it never needs the
+		// manifest, and a CDN/config fetch on every boot would write a stray /var/root/.runos.
+		if cmdName == "daemon" && cmd.Parent() != nil && cmd.Parent().Name() == "vpn" {
+			return nil
+		}
 		// Also skip for parent commands that have their own subcommands
 		if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
 			return nil
@@ -310,7 +315,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)
