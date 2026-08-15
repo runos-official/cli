@@ -7,8 +7,24 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 )
+
+// restartServiceHint names the exact command that restarts the VPN service on this OS, for the
+// version-skew error below. The service runs the same binary the CLI updates in place, so a
+// restart alone picks up the current build; reinstall is only the fallback.
+func restartServiceHint() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "  sudo launchctl kickstart -k system/com.runos.vpn\nIf that fails, re-run `sudo runos vpn install`."
+	case "windows":
+		return "  (admin) sc stop RunOSVPN && sc start RunOSVPN\nIf that fails, re-run `runos vpn install` from an elevated prompt."
+	default:
+		return "  sudo systemctl restart runos-vpn\nIf that fails, re-run `sudo runos vpn install`."
+	}
+}
 
 // The control socket between the CLI (a person's process) and the daemon (root). One JSON request
 // per line, one JSON response per line, then the connection closes. The socket file is group
@@ -108,6 +124,17 @@ func (c *Client) Call(req Request) (*Response, error) {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	if resp.Error != "" {
+		// "unknown op" is the daemon telling us it predates this CLI: the service process was
+		// started from an older build (the binary on disk may already be new, since the
+		// LaunchDaemon/systemd unit runs the same file the CLI updates). Measured 2026-08-15:
+		// a key revoke left `vpn up` failing with the bare `unknown op "rotate-key"`, which
+		// names the internal protocol and no way forward. Say what actually fixes it.
+		if strings.HasPrefix(resp.Error, "unknown op") {
+			return &resp, fmt.Errorf(
+				"the RunOS VPN service on this machine is running an older build than this CLI (%s).\n"+
+					"Restart it to pick up the current binary:\n%s",
+				resp.Error, restartServiceHint())
+		}
 		return &resp, fmt.Errorf("%s", resp.Error)
 	}
 	return &resp, nil

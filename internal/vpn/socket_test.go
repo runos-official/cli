@@ -3,6 +3,7 @@ package vpn
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,9 +54,14 @@ func TestSocketRoundTripReturnsTheDaemonResponse(t *testing.T) {
 		t.Errorf("status = %+v, want not running", status.Status)
 	}
 
-	// An unknown op is an error carried in the response, surfaced as a Go error.
+	// An unknown op is an error carried in the response, surfaced as a Go error. It means the
+	// daemon predates this CLI (measured 2026-08-15: a bare `unknown op "rotate-key"` was the
+	// whole message after a key revoke), so the error must say how to restart the service
+	// rather than leak only the internal op name.
 	if _, err := client.Call(Request{Op: "bogus"}); err == nil {
 		t.Error("an unknown op must be an error")
+	} else if !strings.Contains(err.Error(), "older build") || !strings.Contains(err.Error(), "restart") && !strings.Contains(err.Error(), "Restart") {
+		t.Errorf("unknown-op error must explain the version skew and the restart remedy, got: %v", err)
 	}
 }
 
