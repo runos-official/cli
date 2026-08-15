@@ -18,9 +18,8 @@ func NewService() service { return systemdService{} }
 
 type systemdService struct{}
 
-func (systemdService) Describe(execPath string) string {
-	return fmt.Sprintf("a systemd service 'runos-vpn' at %s running %q, plus the socket at %s (remove with 'sudo runos vpn uninstall')",
-		systemdUnitPath, execPath+" vpn daemon", SocketPath)
+func (systemdService) Describe() string {
+	return "It runs in the background as the systemd service runos-vpn and starts at boot."
 }
 
 func (s systemdService) Install(execPath, socketGroup string) error {

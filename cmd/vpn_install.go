@@ -60,9 +60,10 @@ func runVPNInstall(cmd *cobra.Command, args []string) error {
 	if err := svc.Install(execPath, group); err != nil {
 		return err
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "RunOS VPN service installed:")
-	fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", svc.Describe(execPath))
-	fmt.Fprintln(cmd.OutOrStdout(), "Next: run 'runos vpn up' to sign in and connect.")
+	fmt.Fprintln(cmd.OutOrStdout(), "RunOS VPN service installed.")
+	fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", svc.Describe())
+	fmt.Fprintln(cmd.OutOrStdout(), "  Next: runos vpn up   (signs you in and connects; no sudo needed from here on)")
+	fmt.Fprintln(cmd.OutOrStdout(), "  Remove later with: sudo runos vpn uninstall")
 	return nil
 }
 

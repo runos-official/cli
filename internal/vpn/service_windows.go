@@ -19,6 +19,6 @@ func errWindowsService() error {
 func (windowsService) Install(string, string) error { return errWindowsService() }
 func (windowsService) Uninstall() error             { return errWindowsService() }
 func (windowsService) Running() (bool, error)       { return false, nil }
-func (windowsService) Describe(string) string {
-	return "the RunOS VPN service installer is not available on Windows yet"
+func (windowsService) Describe() string {
+	return "The RunOS VPN service installer is not available on Windows yet."
 }

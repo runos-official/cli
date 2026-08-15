@@ -24,9 +24,8 @@ func NewService() service { return launchdService{} }
 
 type launchdService struct{}
 
-func (launchdService) Describe(execPath string) string {
-	return fmt.Sprintf("a launchd daemon %q at %s running %q, plus the socket at %s (remove with 'sudo runos vpn uninstall')",
-		launchdLabel, launchdPlistPath(), execPath+" vpn daemon", SocketPath)
+func (launchdService) Describe() string {
+	return "It runs in the background as a launchd daemon (" + launchdLabel + ") and starts at boot."
 }
 
 func (s launchdService) Install(execPath, socketGroup string) error {

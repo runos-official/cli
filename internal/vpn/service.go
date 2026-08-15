@@ -15,6 +15,8 @@ type service interface {
 	Uninstall() error
 	// Running reports whether the service is loaded.
 	Running() (bool, error)
-	// Describe returns a human line naming what Install writes, for the command to print.
-	Describe(execPath string) string
+	// Describe returns one plain sentence saying how the service runs on this OS, for the install
+	// command to print under its headline. No paths: a person installing a VPN wants to know it
+	// runs in the background and starts at boot, not where the unit file lives.
+	Describe() string
 }
