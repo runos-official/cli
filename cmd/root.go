@@ -107,7 +107,10 @@ var rootCmd = &cobra.Command{
 		}
 		// The VPN daemon runs as root under launchd: its home is /var/root, it never needs the
 		// manifest, and a CDN/config fetch on every boot would write a stray /var/root/.runos.
-		if cmdName == "daemon" && cmd.Parent() != nil && cmd.Parent().Name() == "vpn" {
+		// `sudo runos vpn install|uninstall` run as root too and touch only the OS service, so
+		// they skip as well (measured: they printed "You're not signed in" for root's empty home).
+		if cmd.Parent() != nil && cmd.Parent().Name() == "vpn" &&
+			(cmdName == "daemon" || cmdName == "install" || cmdName == "uninstall") {
 			return nil
 		}
 		// Also skip for parent commands that have their own subcommands
