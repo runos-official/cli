@@ -46,6 +46,16 @@ func TestFor(t *testing.T) {
 		{"another catalogue entry", manifest.Command{Command: "storage-groups/wipe-device"}, nil, LongRunning},
 		{"a tiny budget still gets the headroom", runCommand, map[string]any{"timeoutSeconds": 1}, 61 * time.Second},
 		{"a zero budget is ignored", runCommand, map[string]any{"timeoutSeconds": 0}, LongRunning},
+		// Review 2 item 8. vms/migrate is synchronous and reads live cluster
+		// state (VM status, the LINSTOR pin) before it accepts the move, so
+		// the 30 s default cut the caller off while conductor kept working.
+		{"vms/migrate is long-running", manifest.Command{Command: "vms/migrate"}, nil, LongRunning},
+		// storage-groups/delete evicts every replica of the pool per node in
+		// LINSTOR and answers with the result, no jobId.
+		{"storage-groups/delete is long-running", manifest.Command{Command: "storage-groups/delete"}, nil, LongRunning},
+		// nodes/drain returns a jobId, so the CALL is short. Only the job is
+		// long, and jobs are followed, not waited on.
+		{"nodes/drain returns a job and keeps the default", manifest.Command{Command: "nodes/drain"}, nil, Default},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

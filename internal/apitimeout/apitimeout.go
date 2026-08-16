@@ -43,12 +43,25 @@ const timeoutFieldName = "timeoutSeconds"
 // endpoint waits on cluster work and declares no `timeoutSeconds`.
 // Keyed on the exact manifest path so a rename surfaces as a lost
 // entry rather than a silently wrong match.
+// A command that answers with a jobId is deliberately absent: the CALL
+// returns as soon as the job is queued, and the job is followed, not
+// waited on. That is why nodes/drain, storage-groups/add-device,
+// remove-device and remove-node are not here.
 var longRunningCommands = map[string]bool{
-	"vms/nvlink-check":              true,
-	"vms/rotate-ssh-key":            true,
-	"vms/screenshot":                true,
-	"virt/reapply":                  true,
-	"vm-groups/reapply-policy":      true,
+	"vms/nvlink-check":   true,
+	"vms/rotate-ssh-key": true,
+	"vms/screenshot":     true,
+	// Review 2 item 8. vms/migrate is synchronous and reads live cluster
+	// state before it accepts the move: the VM's real state from the host,
+	// then the LINSTOR pin. On a slow or degraded cluster that ran past
+	// 30 s, and the caller was told the migration failed while conductor
+	// went on to accept it.
+	"vms/migrate":              true,
+	"virt/reapply":             true,
+	"vm-groups/reapply-policy": true,
+	// storage-groups/delete removes each replica of the pool from LINSTOR
+	// per node and answers with the result. No jobId, so the client waits.
+	"storage-groups/delete":         true,
 	"storage-groups/wipe-device":    true,
 	"storage-groups/evict-node":     true,
 	"storage-groups/inspect-device": true,
