@@ -117,6 +117,25 @@ func (windowsService) Running() (bool, error) {
 	return status.State == svc.Running, nil
 }
 
+func (windowsService) Restart() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("connect to the service manager (run from an elevated prompt): %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return fmt.Errorf("open the %s service (is it installed? try `runos vpn install`): %w", serviceName, err)
+	}
+	defer s.Close()
+	// A service already stopped is fine: the point is that the next start runs the current binary.
+	_ = stopService(s)
+	if err := s.Start(); err != nil {
+		return fmt.Errorf("start the %s service: %w", serviceName, err)
+	}
+	return nil
+}
+
 // stopService asks the service to stop and waits (bounded) for it, so Delete and a following
 // CreateService do not race a still-running instance.
 func stopService(s *mgr.Service) error {

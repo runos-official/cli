@@ -48,6 +48,13 @@ func (s systemdService) Uninstall() error {
 	return nil
 }
 
+func (s systemdService) Restart() error {
+	if out, err := run("systemctl", "restart", "runos-vpn.service"); err != nil {
+		return fmt.Errorf("restart runos-vpn (is it installed? try `sudo runos vpn install`): %w: %s", err, out)
+	}
+	return nil
+}
+
 func (s systemdService) Running() (bool, error) {
 	out, _ := run("systemctl", "is-active", "runos-vpn.service")
 	return strings.TrimSpace(string(out)) == "active", nil

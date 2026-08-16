@@ -28,6 +28,17 @@ var vpnUninstallCmd = &cobra.Command{
 	RunE:  runVPNUninstall,
 }
 
+var vpnRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the RunOS VPN service (needs admin), so it runs the current runos build",
+	Long: "Restart the RunOS VPN service. The service runs the same runos binary this CLI updates in\n" +
+		"place, so after an update the running daemon lags the binary on disk until it restarts;\n" +
+		"the symptom is a version-skew error naming this command. Needs admin, because the service\n" +
+		"runs as root. Keys, enrolment and the session survive a restart; the tunnel re-converges\n" +
+		"on its own within seconds.",
+	RunE: runVPNRestart,
+}
+
 var vpnDaemonCmd = &cobra.Command{
 	Use:    "daemon",
 	Short:  "Run the RunOS VPN daemon (managed by the service; not run by hand)",
@@ -42,7 +53,7 @@ func init() {
 	// A hidden --socket override on the parent, for tests and non-default installs.
 	vpnCmd.PersistentFlags().String("socket", "", "path to the daemon control socket (advanced)")
 	_ = vpnCmd.PersistentFlags().MarkHidden("socket")
-	vpnCmd.AddCommand(vpnInstallCmd, vpnUninstallCmd, vpnDaemonCmd)
+	vpnCmd.AddCommand(vpnInstallCmd, vpnUninstallCmd, vpnRestartCmd, vpnDaemonCmd)
 }
 
 func runVPNInstall(cmd *cobra.Command, args []string) error {
@@ -63,6 +74,19 @@ func runVPNInstall(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", svc.Describe())
 	fmt.Fprintln(cmd.OutOrStdout(), "  Next: runos vpn up   (signs you in and connects; no sudo needed from here on)")
 	fmt.Fprintln(cmd.OutOrStdout(), "  Remove later with: sudo runos vpn uninstall")
+	return nil
+}
+
+func runVPNRestart(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
+	if !vpn.IsAdmin() {
+		return fmt.Errorf("restarting the VPN service needs admin: %s", strings.Replace(vpn.AdminHint, "install", "restart", 1))
+	}
+	if err := vpn.NewService().Restart(); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "RunOS VPN service restarted; it now runs the current runos build.")
+	fmt.Fprintln(cmd.OutOrStdout(), "  The tunnel re-converges on its own. Check with: runos vpn status")
 	return nil
 }
 

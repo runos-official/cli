@@ -15,6 +15,10 @@ type service interface {
 	Uninstall() error
 	// Running reports whether the service is loaded.
 	Running() (bool, error)
+	// Restart stops and starts the service so it picks up the binary currently on disk. The
+	// service definition runs the same file the CLI self-updates, so after an update the
+	// PROCESS lags the binary until this runs; version skew ("unknown op") is the symptom.
+	Restart() error
 	// Describe returns one plain sentence saying how the service runs on this OS, for the install
 	// command to print under its headline. No paths: a person installing a VPN wants to know it
 	// runs in the background and starts at boot, not where the unit file lives.

@@ -12,18 +12,14 @@ import (
 	"time"
 )
 
-// restartServiceHint names the exact command that restarts the VPN service on this OS, for the
-// version-skew error below. The service runs the same binary the CLI updates in place, so a
-// restart alone picks up the current build; reinstall is only the fallback.
+// restartServiceHint names the command that restarts the VPN service, for the version-skew
+// error below. One wrapped command on every OS (it maps to launchctl/systemctl/SCM inside
+// `vpn restart`), so the error never leaks platform plumbing; reinstall is only the fallback.
 func restartServiceHint() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "  sudo launchctl kickstart -k system/com.runos.vpn\nIf that fails, re-run `sudo runos vpn install`."
-	case "windows":
-		return "  (admin) sc stop RunOSVPN && sc start RunOSVPN\nIf that fails, re-run `runos vpn install` from an elevated prompt."
-	default:
-		return "  sudo systemctl restart runos-vpn\nIf that fails, re-run `sudo runos vpn install`."
+	if runtime.GOOS == "windows" {
+		return "  runos vpn restart   (from an elevated prompt)\nIf that fails, re-run `runos vpn install` the same way."
 	}
+	return "  sudo runos vpn restart\nIf that fails, re-run `sudo runos vpn install`."
 }
 
 // The control socket between the CLI (a person's process) and the daemon (root). One JSON request

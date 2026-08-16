@@ -52,6 +52,14 @@ func (s launchdService) Uninstall() error {
 	return nil
 }
 
+func (s launchdService) Restart() error {
+	// kickstart -k kills and restarts in place, keeping the loaded definition; no plist rewrite.
+	if out, err := run("launchctl", "kickstart", "-k", "system/"+launchdLabel); err != nil {
+		return fmt.Errorf("restart launchd daemon (is it installed? try `sudo runos vpn install`): %w: %s", err, out)
+	}
+	return nil
+}
+
 func (s launchdService) Running() (bool, error) {
 	out, err := exec.Command("launchctl", "print", "system/"+launchdLabel).CombinedOutput()
 	if err != nil {
