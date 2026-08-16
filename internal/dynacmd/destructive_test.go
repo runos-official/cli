@@ -154,6 +154,23 @@ func TestDestructiveSummary(t *testing.T) {
 			{Name: "MODE", Type: "string"},
 		}},
 	}
+	setData := manifest.Command{
+		Command: "services/valkey/{id}/set-data",
+		Method:  "PATCH",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+			{Name: "key", Type: "string", Required: true},
+			{Name: "value", Type: "string", Required: true},
+		}},
+	}
+	execSQL := manifest.Command{
+		Command: "services/postgresql/{id}/exec-sql",
+		Method:  "PATCH",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+			{Name: "query", Type: "string", Required: true},
+		}},
+	}
 	cases := []struct {
 		name string
 		cmd  manifest.Command
@@ -176,6 +193,12 @@ func TestDestructiveSummary(t *testing.T) {
 		{name: "wipe-device with only nid lists nid", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": ""}, want: "nid=n1abc"},
 		{name: "maintenance script names the node via --nid", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": ""}, want: "nid=n1abc"},
 		{name: "maintenance script with two flags", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": "bind"}, want: "nid=n1abc mode=bind"},
+		// Adversarial review, finding 4: the flag list printed every value, so `set-data --value
+		// SECRET` and `exec-sql --query "... password ..."` echoed the secret to the terminal.
+		// Secret-shaped field names are redacted; ids, paths and hostnames stay readable.
+		{name: "set-data redacts value and keeps the key", cmd: setData, args: []string{}, flags: map[string]string{"key": "db-pass", "value": "hunter2"}, want: "key=db-pass value=<redacted>"},
+		{name: "exec-sql redacts the query", cmd: execSQL, args: []string{}, flags: map[string]string{"query": "UPDATE users SET password='x'"}, want: "query=<redacted>"},
+		{name: "wipe-device shows nid and device path in full", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": "/dev/sdb"}, want: "nid=n1abc device-path=/dev/sdb"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -195,6 +218,48 @@ func TestDestructiveSummary(t *testing.T) {
 				t.Errorf("destructiveSummary(%s, %v) = %q, want %q", tc.cmd.Command, tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+// Adversarial review, finding 5: the positional-by-flag lookup used GetString, which errors on
+// an Int flag, so `account notify-keys delete --id 42` read as "no target given". The summary
+// reads the flag's rendered value whatever its type.
+func TestDestructiveSummary_IntPositionalFlag(t *testing.T) {
+	notifyKeyDelete := manifest.Command{
+		Command: "account/notify-keys/{id}/delete",
+		Method:  "DELETE",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "integer", Positional: true, Required: true},
+		}},
+	}
+	c := &cobra.Command{Use: "x"}
+	c.Flags().Int("id", 0, "")
+	if err := c.Flags().Set("id", "42"); err != nil {
+		t.Fatalf("seed flag: %v", err)
+	}
+	if got, want := destructiveSummary(c, notifyKeyDelete, nil), "id=42"; got != want {
+		t.Errorf("destructiveSummary int --id = %q, want %q", got, want)
+	}
+	// An unset int flag renders "0", which is not a target.
+	c2 := &cobra.Command{Use: "x"}
+	c2.Flags().Int("id", 0, "")
+	if got, want := destructiveSummary(c2, notifyKeyDelete, nil), "account notify-keys delete (no target given)"; got != want {
+		t.Errorf("destructiveSummary unset int --id = %q, want %q", got, want)
+	}
+}
+
+// TestRedactedFlagName pins the secret-shaped field names the summary redacts (finding 4).
+func TestRedactedFlagName(t *testing.T) {
+	for _, name := range []string{"value", "query", "password", "secret", "token", "api-key", "apiKey", "credential", "credentials", "clientSecret", "sshKey", "read-write-password"} {
+		if !redactedFlagName(name) {
+			t.Errorf("redactedFlagName(%q) = false, want true", name)
+		}
+	}
+	// A bare `key` is a name (Valkey key, build-arg key, tag key), never a secret.
+	for _, name := range []string{"nid", "id", "device-path", "hostname", "cid", "keyspace", "mode", "name", "key"} {
+		if redactedFlagName(name) {
+			t.Errorf("redactedFlagName(%q) = true, want false", name)
+		}
 	}
 }
 

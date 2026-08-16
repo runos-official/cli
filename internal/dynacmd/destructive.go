@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/runos-official/cli/internal/manifest"
@@ -206,6 +207,11 @@ func destructiveVerb(cmdPath string) string {
 // and `maintenance-scripts bind-gpu-vfio run` have no positional, and the
 // old description fallback printed a 250-word paragraph as the "target".
 // With no positional and no changed flag the line says so explicitly.
+//
+// A secret-shaped flag (see redactedFlagName) prints as `name=<redacted>`:
+// `set-data --value SECRET` and `exec-sql --query "... password ..."` used
+// to echo the secret back to the terminal. Ids, paths and hostnames stay
+// readable, because spotting a typo in them is the point of the line.
 func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
 	if cmdDef.Input == nil {
 		return destructiveVerb(cmdDef.Command) + " (no target given)"
@@ -219,9 +225,12 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 			return fmt.Sprintf("%s=%s", field.Name, args[idx])
 		}
 		if c != nil {
-			flagName := flagNameFor(field.Name)
-			if c.Flags().Lookup(flagName) != nil {
-				if v, _ := c.Flags().GetString(flagName); v != "" {
+			// f.Value.String(), not GetString: an integer positional
+			// (`account notify-keys delete --id 42`) is an Int flag, and
+			// GetString errors on it, which read as "no target given".
+			// An unset flag renders its zero value, which is not a target.
+			if f := c.Flags().Lookup(flagNameFor(field.Name)); f != nil && f.Changed {
+				if v := f.Value.String(); v != "" {
 					return fmt.Sprintf("%s=%s", field.Name, v)
 				}
 			}
@@ -239,13 +248,32 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 			if f == nil || !f.Changed || f.Value.String() == "" {
 				continue
 			}
-			parts = append(parts, fmt.Sprintf("%s=%s", flagName, f.Value.String()))
+			value := f.Value.String()
+			if redactedFlagName(flagName) {
+				value = "<redacted>"
+			}
+			parts = append(parts, fmt.Sprintf("%s=%s", flagName, value))
 		}
 	}
 	if len(parts) == 0 {
 		return destructiveVerb(cmdDef.Command) + " (no target given)"
 	}
 	return strings.Join(parts, " ")
+}
+
+// redactedFlagNamePattern matches (case-insensitively) a flag or field
+// name that carries a secret rather than a target: values, queries,
+// passwords, secrets, tokens, credentials, and a compound ending in
+// "key" (`api-key`, `sshKey`, `private-key`). A bare `key` is exempt: in
+// every manifest it is a name (a Valkey key, a build-arg or config key,
+// a tag key), which is exactly the kind of target the prompt exists to
+// show. `keyspace` does not end in key and stays visible.
+var redactedFlagNamePattern = regexp.MustCompile(`(?i)(value|query|password|secret|token|.key$|apikey|credential)`)
+
+// redactedFlagName reports whether destructiveSummary must print
+// `<redacted>` in place of this flag's value.
+func redactedFlagName(name string) bool {
+	return redactedFlagNamePattern.MatchString(name)
 }
 
 // confirmDestructive prompts on stderr for a y/N response before a

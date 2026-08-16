@@ -791,7 +791,10 @@ func hasNonPositionalInput(cmdDef manifest.Command) bool {
 // the script runner reads). The CLI spells the node id --nid everywhere
 // else, so the flag is --nid here too (goal 23 review). No manifest
 // command declares both NODE_NID and nid, so the override is unambiguous.
-// legacyFlagAliases keeps the old --node_nid spelling working.
+// legacyFlagAliases keeps the old --node_nid spelling working. The alias
+// is flag-only: a -f YAML body keys on the manifest field name, so the
+// file says `NODE_NID:`, not `nid:` (descriptionSuffixFor puts that in
+// the --nid help row).
 var flagSpellingOverrides = map[string]string{
 	"sourcePgOsid":   "source-osid",
 	"sourceDatabase": "source-db",
@@ -1241,6 +1244,9 @@ func descriptionSuffixFor(cmdPath, fieldName string) string {
 	switch {
 	case isPodLogsCommand(cmdPath) && fieldName == "tail":
 		return " (floors to 1 line at the k8s API minimum; pass 100+ for meaningful history)"
+	case fieldName == "NODE_NID":
+		// --nid is a flag-spelling alias (flagSpellingOverrides); the body key is unchanged.
+		return " (in a -f YAML body the key is NODE_NID, the manifest field name, not nid)"
 	}
 	return ""
 }

@@ -609,6 +609,10 @@ func TestDescriptionSuffixFor(t *testing.T) {
 		{"services/postgresql/{id}/show", "tail", ""},
 		{"builds/logs", "tail", ""},
 		{"", "", ""},
+		// Adversarial review, finding 6: --nid is an alias for NODE_NID on maintenance scripts,
+		// but a -f YAML body keys on the manifest field name. The help row says so.
+		{"maintenance-scripts/bind-gpu-vfio/run", "NODE_NID", " (in a -f YAML body the key is NODE_NID, the manifest field name, not nid)"},
+		{"maintenance-scripts/bind-gpu-vfio/run", "MODE", ""},
 	}
 	for _, tt := range cases {
 		t.Run(tt.cmdPath+"/"+tt.fieldName, func(t *testing.T) {
