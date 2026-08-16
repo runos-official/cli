@@ -85,6 +85,17 @@ func TestIsDestructiveCommand(t *testing.T) {
 		// operators to type --yes without reading, which is the opposite of what the prompt is for.
 		{"GET delete-preflight is a read, never gated", manifest.Command{Command: "nodes/{nid}/delete-preflight", Method: "GET"}, false},
 		{"GET with any destructive-looking verb stays a read", manifest.Command{Command: "services/minio/{id}/delete-bucket-preview", Method: "GET"}, false},
+		// Review 2 item 6. The matcher only tried the whole segment and its
+		// leading token, so a destructive verb sitting in the MIDDLE or at
+		// the END of a compound segment escaped both --yes and the MCP
+		// confirm. Measured against the live 41.0.0 manifest: these two
+		// commands were the only ones misclassified, and both destroy state.
+		{"PATCH etcd-remove-member is destructive (infix verb)", manifest.Command{Command: "clusters/etcd-remove-member", Method: "PATCH"}, true},
+		{"POST custom-rules-delete is destructive (trailing verb)", manifest.Command{Command: "services/prometheus/{id}/custom-rules-delete", Method: "POST"}, true},
+		// Token equality, not substring: a verb is a whole hyphen-delimited
+		// word. `list-deleted` reads records and must stay ungated.
+		{"POST list-deleted is not destructive (token equality)", manifest.Command{Command: "services/minio/{id}/list-deleted", Method: "POST"}, false},
+		{"POST undelete is not destructive (token equality)", manifest.Command{Command: "apps/{id}/undelete", Method: "POST"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

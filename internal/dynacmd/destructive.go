@@ -12,34 +12,25 @@ import (
 	"golang.org/x/term"
 )
 
-// destructiveVerbSuffixes is the curated set of command-path final
+// destructiveVerbSegments is the curated set of WHOLE command-path final
 // segments that imply destructive semantics regardless of HTTP method.
 // Pre-fix (#23) the guard fired only on Method=DELETE, but conductor
-// uses POST/PATCH for many irreversible ops:
+// uses POST/PATCH for many irreversible ops. These three read as
+// destructive only as a phrase, so they are matched whole:
 //   - clear-cache, set-data (Valkey/Redis-style state overwrites)
-//   - drain, reset, restart (cluster/service lifecycle)
-//   - exec-sql (postgres/mysql/clickhouse arbitrary SQL exec — destructive
-//     when --read-write is set, and the guard errs on the safe side
-//     by gating both modes)
-//   - revoke-* / remove-* / delete-* (granular sub-resource deletes
-//     under PATCH-shaped endpoints, e.g. minio/{id}/delete-bucket)
-//   - wipe / flush / purge (rare but unambiguous)
+//   - exec-sql (postgres/mysql/clickhouse arbitrary SQL exec, destructive
+//     when --read-write is set, and the guard errs on the safe side by
+//     gating both modes)
 //
 // The mcp signal isn't a reliable discriminator: clear-cache and set-
 // data report "write" alongside non-destructive ops like add/update,
-// while exec-sql reports "sensitive_write". The verb-suffix catalog is
-// what conductor's actual irreversibility classification looks like in
-// the manifest namespaces.
-var destructiveVerbSuffixes = []string{
-	"delete",
-	"drain",
-	"reset",
-	"clear-cache",
-	"set-data",
-	"exec-sql",
-	"wipe",
-	"flush",
-	"purge",
+// while exec-sql reports "sensitive_write". The verb catalogue is what
+// conductor's actual irreversibility classification looks like in the
+// manifest namespaces.
+var destructiveVerbSegments = map[string]bool{
+	"clear-cache": true,
+	"set-data":    true,
+	"exec-sql":    true,
 }
 
 // vmPowerVerbs are the `vms/` verbs that interrupt a running guest. `start` and `resume` are
@@ -50,26 +41,36 @@ var vmPowerVerbs = map[string]bool{
 	"pause":   true,
 }
 
-// destructiveVerbPrefixes are leading-token matches used when the final
-// segment carries a sub-resource name (e.g. `delete-bucket`,
-// `delete-object`, `revoke-database`, `revoke-bucket`, `remove-peer`,
-// `drop-user`, `drop-database`).
-var destructiveVerbPrefixes = []string{
-	"delete-",
-	"revoke-",
-	"remove-",
-	"drop-",
+// destructiveVerbTokens are the verbs that make a command destructive
+// wherever they sit in the final path segment, matched as whole
+// hyphen-delimited words.
+//
+// Review 2 item 6: the old matcher tried the whole segment and its
+// LEADING token only, so `clusters/etcd-remove-member` (a quorum member
+// dropped) and `services/prometheus/{id}/custom-rules-delete` escaped
+// both --yes and the MCP confirm, because their verb sits in the middle
+// or at the end. Measured against the live 41.0.0 manifest, tokenising
+// reclassifies exactly those two commands and nothing else.
+//
+// Whole words, never substrings: `list-deleted` reads records and must
+// stay ungated.
+var destructiveVerbTokens = map[string]bool{
+	"delete": true,
+	"drain":  true,
+	"reset":  true,
+	"revoke": true,
+	"remove": true,
+	"drop":   true,
 	// Goal 23 F26. `storage-groups/wipe-device` destroys every byte on a disk irreversibly and
 	// was the ONLY destructive storage verb that executed on first ask, while remove-device and
-	// remove-node (which merely edit records) both demanded --yes. The suffix list already had
-	// "wipe", but the final segment here is "wipe-device", so neither list matched it. Measured
-	// on a live cluster: it took a disk holding a running VM's DRBD replica and reported success.
-	"wipe-",
-	"flush-",
-	"purge-",
+	// remove-node (which merely edit records) both demanded --yes. Measured on a live cluster:
+	// it took a disk holding a running VM's DRBD replica and reported success.
+	"wipe":  true,
+	"flush": true,
+	"purge": true,
 	// Goal 23 review. `storage-groups/evict-node` runs `linstor node lost`, which drops every
 	// replica the node held. It must demand --yes exactly like wipe-device.
-	"evict-",
+	"evict": true,
 }
 
 // IsDestructiveCommand reports whether cmdDef needs a confirmation
@@ -77,11 +78,12 @@ var destructiveVerbPrefixes = []string{
 //
 //  1. Method=DELETE: every DELETE-method endpoint in the manifest is
 //     destructive by definition.
-//  2. Command path verb suffix: many destructive ops are POST or PATCH
-//     under conductor's REST shape (clear-cache, drain, reset, exec-sql,
-//     delete-bucket, revoke-database, ...). Match the final path
-//     segment against destructiveVerbSuffixes / destructiveVerbPrefixes
-//     so the guard catches them too.
+//  2. Command path verb: many destructive ops are POST or PATCH under
+//     conductor's REST shape (clear-cache, drain, reset, exec-sql,
+//     delete-bucket, revoke-database, etcd-remove-member, ...). The final
+//     path segment is matched whole against destructiveVerbSegments, then
+//     word by word against destructiveVerbTokens, so the verb is caught
+//     wherever it sits in a compound segment.
 //
 // Tagging on method + verb instead of an ad-hoc allow-list means new
 // destructive endpoints inherit the prompt automatically when the
@@ -127,13 +129,11 @@ func IsDestructiveCommand(cmdDef manifest.Command) bool {
 	if strings.HasPrefix(cmdDef.Command, "vms/") && vmPowerVerbs[last] {
 		return true
 	}
-	for _, suffix := range destructiveVerbSuffixes {
-		if last == suffix {
-			return true
-		}
+	if destructiveVerbSegments[last] {
+		return true
 	}
-	for _, prefix := range destructiveVerbPrefixes {
-		if strings.HasPrefix(last, prefix) {
+	for _, token := range strings.Split(last, "-") {
+		if destructiveVerbTokens[token] {
 			return true
 		}
 	}
