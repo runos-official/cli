@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/runos-official/cli/internal/config"
@@ -19,9 +20,9 @@ var configCmd = &cobra.Command{
 }
 
 var configEnvCmd = &cobra.Command{
-	Use:   "env <environment>",
-	Short: "Set the target environment",
-	Long: `Set the target environment for the CLI.
+	Use:   "env [environment]",
+	Short: "Set the target environment, or list the environments",
+	Long: `Set the target environment for the CLI, or list them when given no argument.
 
 This fetches the environment configuration from the RunOS CDN and applies
 the specified environment preset. You will need to login again after switching.
@@ -30,9 +31,13 @@ To use custom URLs (e.g. for local development), use:
   runos config set api-url http://localhost:3025
   runos config set console-url http://localhost:5177
 
-Example:
+Examples:
+  runos config env          # list the environments and their URLs
   runos config env beta`,
-	Args: cobra.ExactArgs(1),
+	// Zero args LISTS rather than fails (B3). ExactArgs(1) printed a usage
+	// block that named no environment, so the one thing the caller was
+	// missing was the one thing the error withheld.
+	Args: cobra.MaximumNArgs(1),
 	RunE: runConfigEnv,
 }
 
@@ -65,7 +70,48 @@ func init() {
 	configGetCmd.Flags().BoolVarP(&configGetJSON, "json", "j", false, "Output as JSON")
 }
 
+// formatEnvironmentList renders the CDN's environments with their URLs,
+// marking the one in force and the CDN's own default. Pure so the
+// rendering is testable without a network call.
+func formatEnvironmentList(rc *config.RemoteConfig, currentEnv string) string {
+	names := make([]string, 0, len(rc.Environments))
+	for name := range rc.Environments {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var sb strings.Builder
+	sb.WriteString("Environments:\n")
+	for _, name := range names {
+		marks := ""
+		if name == currentEnv {
+			marks += " (current)"
+		}
+		if name == rc.Default {
+			marks += " (default)"
+		}
+		sb.WriteString(fmt.Sprintf("  %s%s\n", name, marks))
+		sb.WriteString(fmt.Sprintf("    Console: %s\n", rc.Environments[name].Domains.Console))
+		sb.WriteString(fmt.Sprintf("    API:     %s\n", rc.Environments[name].Domains.APIURL()))
+	}
+	sb.WriteString("\nSwitch with: runos config env <environment>\n")
+	return sb.String()
+}
+
 func runConfigEnv(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
+	if len(args) == 0 {
+		rc, err := config.FetchRemoteConfig()
+		if err != nil {
+			return err
+		}
+		current := ""
+		if cfg, cerr := config.Load(); cerr == nil {
+			current = cfg.GetEnv()
+		}
+		fmt.Fprint(cmd.OutOrStdout(), formatEnvironmentList(rc, current))
+		return nil
+	}
 	envName := args[0]
 
 	fmt.Printf("Fetching configuration for %s...\n", envName)
@@ -197,7 +243,10 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		if err := validateConfigSet(key, value); err != nil {
 			return err
 		}
-		cfg.ConductorURL = value
+		// SetAPIURL, not a bare assignment: a URL that diverges from the
+		// one `config env <name>` wrote makes the stored env label a lie,
+		// so setting one clears the other (B3).
+		cfg.SetAPIURL(value)
 	default:
 		// Read-only keys appear in `config get` (configGettableKeys) but
 		// can't be mutated directly via `config set`. Pre-fix the catch-
@@ -231,7 +280,9 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 
 	all := map[string]string{
-		"env":         cfg.Env,
+		// GetEnv, not the stored field: the label is only true while the
+		// URLs are the ones that environment wrote (B3).
+		"env":         cfg.GetEnv(),
 		"account-id":  cfg.AccountID,
 		"cid":         cfg.DefaultClusterID,
 		"console-url": cfg.GetConsoleURL(),

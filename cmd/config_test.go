@@ -3,6 +3,8 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/runos-official/cli/internal/config"
 )
 
 // Regression test for the config-key-name drift: `runos status` used
@@ -168,5 +170,49 @@ func TestValidateConfigSet(t *testing.T) {
 				t.Fatalf("validateConfigSet(%q, %q): unexpected error %v", tt.key, tt.value, err)
 			}
 		})
+	}
+}
+
+// TestFormatEnvironmentList is the goal-21 B3 regression. `runos config
+// env` with no argument failed cobra's ExactArgs(1) and printed a usage
+// block naming no environment, so the one thing the caller needed (which
+// names are valid) was the one thing the error withheld.
+func TestFormatEnvironmentList(t *testing.T) {
+	rc := &config.RemoteConfig{
+		Default: "prod",
+		Environments: map[string]config.RemoteEnvironment{
+			"prod": {Domains: config.RemoteDomains{Console: "https://console.example", API: "https://api.example"}},
+			"beta": {Domains: config.RemoteDomains{Console: "https://console.beta.example", API: "https://api.beta.example"}},
+		},
+	}
+	got := formatEnvironmentList(rc, "beta")
+
+	for _, want := range []string{"prod", "beta", "https://api.example", "https://api.beta.example", "runos config env <environment>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in the listing, got:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "beta (current)") {
+		t.Errorf("the current environment must be marked, got:\n%s", got)
+	}
+	if !strings.Contains(got, "prod (default)") {
+		t.Errorf("the CDN default must be marked, got:\n%s", got)
+	}
+	// Sorted, so the listing does not shuffle between runs.
+	if strings.Index(got, "beta") > strings.Index(got, "prod") {
+		t.Errorf("environments must be listed in a stable order, got:\n%s", got)
+	}
+}
+
+// A custom endpoint is not one of the CDN environments, so nothing is
+// marked current.
+func TestFormatEnvironmentListWithCustomCurrent(t *testing.T) {
+	rc := &config.RemoteConfig{
+		Default:      "prod",
+		Environments: map[string]config.RemoteEnvironment{"prod": {Domains: config.RemoteDomains{API: "https://api.example"}}},
+	}
+	got := formatEnvironmentList(rc, config.EnvCustom)
+	if strings.Contains(got, "(current)") {
+		t.Errorf("a custom endpoint matches no environment, got:\n%s", got)
 	}
 }
