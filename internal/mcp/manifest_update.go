@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/runos-official/cli/internal/manifest"
 )
@@ -25,6 +26,11 @@ import (
 // manifestUpdateToolName is the tool an agent calls to refresh the
 // command list without restarting the server.
 const manifestUpdateToolName = "manifest_update"
+
+// versionProbeInterval is the shortest gap between two tools/list version
+// probes. 30 s is far below any realistic conductor deploy cadence and
+// far above a client's burst of tools/list calls.
+const versionProbeInterval = 30 * time.Second
 
 // ManifestReloader refreshes the CLI manifest from the API. Implemented
 // by internal/manifest.Loader; an interface so the server can be tested
@@ -64,25 +70,27 @@ func isManifestUpdateTool(toolName string) bool {
 }
 
 // handleManifestUpdate refreshes the manifest in place and reports the
-// version change.
+// version change. The bool says whether the tool list actually changed,
+// which is the only case the client has to be told about (review 2 item
+// 22).
 //
 // The manifest is updated THROUGH the pointer rather than reassigned:
 // the executor holds the same *manifest.Manifest, so one write updates
 // both and no plumbing has to reach into the executor.
-func (s *Server) handleManifestUpdate() (string, error) {
+func (s *Server) handleManifestUpdate() (string, bool, error) {
 	if s.reloader == nil {
-		return "", fmt.Errorf("%s: this server was started without a manifest loader, so it cannot refresh. Restart the MCP server to pick up a new command list", manifestUpdateToolName)
+		return "", false, fmt.Errorf("%s: this server was started without a manifest loader, so it cannot refresh. Restart the MCP server to pick up a new command list", manifestUpdateToolName)
 	}
 	before := s.manifest.Version
 	updated, err := s.reloader.ForceUpdate()
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", manifestUpdateToolName, err)
+		return "", false, fmt.Errorf("%s: %w", manifestUpdateToolName, err)
 	}
 	*s.manifest = *updated
 	if before == updated.Version {
-		return fmt.Sprintf("Command list is already current at %s. Nothing changed.", updated.Version), nil
+		return fmt.Sprintf("Command list is already current at %s. Nothing changed.", updated.Version), false, nil
 	}
-	return fmt.Sprintf("Command list refreshed from %s to %s. The tool list has changed; re-read it.", before, updated.Version), nil
+	return fmt.Sprintf("Command list refreshed from %s to %s. The tool list has changed; re-read it.", before, updated.Version), true, nil
 }
 
 // refreshManifestIfDrifted compares the loaded manifest version against
@@ -93,10 +101,19 @@ func (s *Server) handleManifestUpdate() (string, error) {
 // manifest_update. Reports whether the list actually changed. Every
 // failure is silent: an offline version check must not break tools/list,
 // and the stale list is still better than no list.
+//
+// At most one probe per versionProbeInterval, whatever the outcome. A
+// client that lists tools repeatedly (they do, on every reconnect and
+// after every list_changed) otherwise paid the loader's 10 s timeout
+// every time the API was unreachable (review 2 item 22).
 func (s *Server) refreshManifestIfDrifted() bool {
 	if s.reloader == nil || s.manifest == nil {
 		return false
 	}
+	if !s.lastVersionProbe.IsZero() && time.Since(s.lastVersionProbe) < versionProbeInterval {
+		return false
+	}
+	s.lastVersionProbe = time.Now()
 	serverVersion, err := s.reloader.ServerVersion()
 	if err != nil || serverVersion == "" || serverVersion == s.manifest.Version {
 		return false

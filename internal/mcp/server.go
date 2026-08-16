@@ -158,8 +158,8 @@ var serverInstructions = map[string]string{
 Query clusters, services, apps, and infrastructure state. No modifications.
 
 REQUIRED FIRST STEPS (in order):
-1. Call mcp_bootstrap to receive critical instructions and the topic index.
-2. Read documentation for at least 2 distinct topics relevant to the user's task using mcp_topics_search (preferred, by keywords) or mcp_topics_show (by exact key). Other tools are blocked until this is satisfied.
+1. Call mcp_bootstrap to receive critical instructions and the topic index. It counts as the first of the two documentation reads below.
+2. READ at least one more topic with mcp_topics_show, using an exact key from the bootstrap index. Use mcp_topics_search first to find the key by keywords; a search finds topics but does not read them, so it does not count. Other tools are blocked until 2 documents have been read.
 
 Do not guess or invent values. The documentation tells you the correct ones.`,
 
@@ -189,6 +189,14 @@ type Server struct {
 	version      string
 	category     string // "read", "sensitive_read", "write", "sensitive_write"
 	bootstrapped bool   // true after mcp_bootstrap has been called successfully
+	// bootstrapFailed is true once an mcp_bootstrap attempt has come back
+	// with an error and none has since succeeded. It downgrades the
+	// bootstrap gate from a refusal to a warning, because a caller that
+	// cannot bootstrap cannot open the gate either (review 2 item 2).
+	bootstrapFailed bool
+	// bootstrapErr is the last bootstrap failure, repeated in that warning
+	// so the caller sees WHY the instructions are missing.
+	bootstrapErr string
 	// topicsRead is the set of distinct topic keys the LLM has consumed via
 	// mcp_topics_search or mcp_topics_show during this session. Used to gate
 	// non-topic tools on the read server until minTopicsRead is reached.
@@ -213,6 +221,11 @@ type Server struct {
 	// driftChecked keeps the 4xx manifest-drift comparison to one network
 	// call per process (B7).
 	driftChecked bool
+	// lastVersionProbe is when the tools/list version check last asked the
+	// API. The probe carries the manifest loader's 10 s timeout, so an
+	// unreachable API used to stall every tools/list for 10 s (review 2
+	// item 22).
+	lastVersionProbe time.Time
 	// defaultClusterID is the cluster the CLI falls back to when a tool
 	// call names none. Empty means there is no fallback, and then a
 	// cluster-scoped tool genuinely REQUIRES cid: the schema says so
@@ -457,9 +470,15 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	}
 
 	// Bootstrap gate: handle mcp_bootstrap specially and enforce bootstrap-first on read server
-	if params.Name == "mcp_bootstrap" {
+	if params.Name == bootstrapToolName {
 		result, err := s.executor.Execute(params.Name, params.Arguments)
 		if err != nil {
+			// An attempt that failed is what downgrades the gate below. The
+			// caller did as it was told; the credential or the API is what
+			// is broken, and refusing every later call teaches it nothing
+			// (review 2 item 2).
+			s.bootstrapFailed = true
+			s.bootstrapErr = err.Error()
 			return &Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
@@ -470,6 +489,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			}
 		}
 		s.bootstrapped = true
+		s.bootstrapFailed = false
+		s.bootstrapErr = ""
 		s.topicKeys = topicKeysFromBootstrap(result)
 		// Bootstrap returns the instructions every session must follow,
 		// which is documentation. Counting it toward the read-at-least-N
@@ -495,15 +516,24 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// server is its own process with its own flag, so an agent calls
 	// mcp_bootstrap once per server it uses; the tool is listed on all of
 	// them so the gate is always satisfiable.
-	if !s.bootstrapped && bootstrapRequired(s.category) {
-		return &Response{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: "ERROR: You must call the mcp_bootstrap tool before using any other tools. Call mcp_bootstrap now (no arguments needed) to receive critical instructions for correct RunOS usage."}},
-				IsError: true,
-			},
+	//
+	// A gate is only a gate while the caller can open it. Once a bootstrap
+	// attempt has FAILED (expired sign-in, conductor unreachable), every
+	// later refusal is a lockout of the whole server, so the gate becomes a
+	// warning the caller carries on its results (review 2 item 2).
+	gateWarning := ""
+	if !s.bootstrapped && bootstrapRequired(s.category) && !isGateExemptTool(params.Name) {
+		if !s.bootstrapFailed {
+			return &Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: CallToolResult{
+					Content: []ContentBlock{{Type: "text", Text: "ERROR: You must call the mcp_bootstrap tool before using any other tools. Call mcp_bootstrap now (no arguments needed) to receive critical instructions for correct RunOS usage."}},
+					IsError: true,
+				},
+			}
 		}
+		gateWarning = bootstrapGateWarning(s.bootstrapErr)
 	}
 
 	// Topic-reading tools (mcp_topics_search, mcp_topics_show) are always allowed
@@ -537,16 +567,20 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: result}},
+				Content: []ContentBlock{{Type: "text", Text: gateWarning + result}},
 			},
 		}
 	}
 
 	// Topic-read gate: on the read server, require minTopicsRead distinct topic
 	// keys to have been consumed before any non-topic, non-bootstrap tool runs.
-	if s.category == "read" && len(s.topicsRead) < minTopicsRead {
+	// It stands down for the same two reasons the bootstrap gate does: the
+	// tools that open a gate are never behind it, and a bootstrap that
+	// failed took the topic tools with it, so holding the gate shut would
+	// leave the read server unusable rather than uninformed.
+	if s.category == "read" && len(s.topicsRead) < minTopicsRead && !isGateExemptTool(params.Name) && !s.bootstrapFailed {
 		msg := fmt.Sprintf(
-			"ERROR: You have read %d/%d required topics. Before using other tools, read documentation for at least %d distinct topics relevant to the user's task. Use mcp_topics_search with keywords (e.g. \"deploy\", \"postgresql\", \"dockerfile\"), or mcp_topics_show with an exact key from the bootstrap topic index. This ensures you follow correct RunOS procedures instead of guessing.",
+			"ERROR: You have read %d/%d required documents. Before using other tools, READ at least %d documents relevant to the user's task: mcp_bootstrap counts as one, and each mcp_topics_show counts as one. Call mcp_topics_show with an exact key from the bootstrap topic index. mcp_topics_search finds the key by keywords (e.g. \"deploy\", \"postgresql\", \"dockerfile\") but does not read anything, so it does not count. This ensures you follow correct RunOS procedures instead of guessing.",
 			len(s.topicsRead), minTopicsRead, minTopicsRead,
 		)
 		return &Response{
@@ -566,8 +600,12 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	if params.Name == "deploy" {
 		result, err = s.handleDeploy(params.Arguments)
 	} else if isManifestUpdateTool(params.Name) {
-		result, err = s.handleManifestUpdate()
-		if err == nil {
+		var changed bool
+		result, changed, err = s.handleManifestUpdate()
+		// Only a list that actually changed is announced. Notifying on
+		// every refresh made the client re-read hundreds of tool
+		// definitions to find nothing new (review 2 item 22).
+		if err == nil && changed {
 			s.sendNotification("notifications/tools/list_changed")
 		}
 	} else if isStaticRunTool(params.Name) {
@@ -605,9 +643,9 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// drift instead of silently consuming stale cli_version-check
 	// answers / out-of-date tool descriptions. Once tripped, the flag
 	// stays sticky for the session.
-	stalePrefix := ""
+	stalePrefix := gateWarning
 	if s.checkStaleBinary() {
-		stalePrefix = s.staleBinaryWarning()
+		stalePrefix += s.staleBinaryWarning()
 	}
 
 	if err != nil {
@@ -633,36 +671,25 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	}
 }
 
-// recordTopicsRead records the distinct topic keys consumed by a successful
-// mcp_topics_search or mcp_topics_show call. For search, it parses topic keys
-// out of the response. For show, it uses the requested key argument.
+// recordTopicsRead records the distinct topic keys the LLM has actually
+// read.
+//
+// Only mcp_topics_show counts. A search answers with keys, titles and
+// content LENGTHS, so counting its hits opened the whole read server on
+// one call that delivered no documentation at all, and a search matching
+// two topics satisfied a gate that exists to make the agent read two
+// (review 2 item 18). The gate stays satisfiable in one step: mcp_bootstrap
+// counts as one read, mcp_topics_show is never gated, and the bootstrap
+// hands over the key index to show.
 func (s *Server) recordTopicsRead(toolName string, args map[string]any, result string) {
+	if toolName != "mcp_topics_show" {
+		return
+	}
 	if s.topicsRead == nil {
 		s.topicsRead = make(map[string]struct{})
 	}
-	switch toolName {
-	case "mcp_topics_show":
-		if k, ok := args["key"].(string); ok && k != "" {
-			s.topicsRead[k] = struct{}{}
-		}
-	case "mcp_topics_search":
-		var resp map[string]any
-		if err := json.Unmarshal([]byte(result), &resp); err != nil {
-			return
-		}
-		topics, ok := resp["topics"].([]any)
-		if !ok {
-			return
-		}
-		for _, item := range topics {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if k, ok := m["key"].(string); ok && k != "" {
-				s.topicsRead[k] = struct{}{}
-			}
-		}
+	if k, ok := args["key"].(string); ok && k != "" {
+		s.topicsRead[k] = struct{}{}
 	}
 }
 
@@ -830,7 +857,7 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 				Description: "Cluster ID (the bare id, e.g. 'mycluster2'). Get from user or use clusters_list. Falls back to the CLI's configured default cluster when omitted, and there is no default configured unless this parameter is optional.",
 			}
 			if s.defaultClusterID == "" {
-				tool.InputSchema.Required = append(tool.InputSchema.Required, "cid")
+				tool.InputSchema.Required = requireOnce(tool.InputSchema.Required, "cid")
 			}
 		}
 
@@ -844,7 +871,11 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 				Type:        "boolean",
 				Description: "Must be true. This verb is destructive and cannot be undone: set confirm=true only after the user has agreed to this exact target. The CLI asks a human the same question through --yes.",
 			}
-			tool.InputSchema.Required = append(tool.InputSchema.Required, confirmArgName)
+			tool.InputSchema.Required = requireOnce(tool.InputSchema.Required, confirmArgName)
+			// The description is what an LLM reads while it decides what to
+			// call. Saying it only in the property description cost a
+			// round trip on every destructive verb (review 2 item 6).
+			tool.Description = withConfirmNotice(cmd.Description)
 		}
 
 		if cmd.Input != nil {
@@ -887,7 +918,7 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 				tool.InputSchema.Properties[field.Name] = prop
 
 				if field.Required {
-					tool.InputSchema.Required = append(tool.InputSchema.Required, field.Name)
+					tool.InputSchema.Required = requireOnce(tool.InputSchema.Required, field.Name)
 				}
 			}
 

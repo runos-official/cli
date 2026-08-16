@@ -29,8 +29,9 @@ const bootstrapTopicKey = "mcp-bootstrap"
 // topicKeySuggestions returns the topic keys that match any of the
 // caller's keywords, in the order the keys were given.
 //
-// Matching is substring in both directions against the whole key and
-// against its hyphen-split words, so the plural and singular an agent
+// A term matches when it appears anywhere in the key, or when a
+// hyphen-split word of the key of at least minReverseMatchLength
+// characters appears in the term, so the plural and singular an agent
 // types both land ("gpu" finds `gpu-passthrough`, "gpus" finds it too).
 // Abbreviations that share no letters with the spelled-out key go
 // through termSynonyms.
@@ -59,18 +60,37 @@ var termSynonyms = map[string][]string{
 	"vms": {"virtual", "machine"},
 }
 
+// minTermLength is the shortest string treated as a search term. A single
+// letter is not one: matched as a substring it selects most of the index,
+// and the caller reads whatever it is handed (review 2 item 18).
+const minTermLength = 2
+
+// minReverseMatchLength is the shortest topic-key WORD allowed to match by
+// being contained in the caller's term. The rule is asymmetric on purpose:
+// `gpu` inside `gpus` is a plural, while `a` inside `database` is a
+// coincidence, and the old symmetric match made every key holding a
+// one-letter word answer almost every search.
+const minReverseMatchLength = 3
+
 // splitSearchTerms splits a keywords argument the same way conductor
 // does (on commas, whitespace, or both) and adds any synonyms.
+//
+// A plural also contributes its singular, so `vms` still finds
+// `vm-storage` by the forward match now that the reverse one requires a
+// three-letter word.
 func splitSearchTerms(keywords string) []string {
 	var terms []string
 	for _, raw := range strings.FieldsFunc(strings.ToLower(keywords), func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n'
 	}) {
-		if raw == "" {
+		if len(raw) < minTermLength {
 			continue
 		}
 		terms = append(terms, raw)
 		terms = append(terms, termSynonyms[raw]...)
+		if singular := strings.TrimSuffix(raw, "s"); singular != raw && len(singular) >= minTermLength {
+			terms = append(terms, singular)
+		}
 	}
 	return terms
 }
@@ -84,7 +104,10 @@ func keyMatchesAnyTerm(key string, terms []string) bool {
 			return true
 		}
 		for _, word := range words {
-			if strings.Contains(word, term) || strings.Contains(term, word) {
+			if len(word) < minReverseMatchLength {
+				continue
+			}
+			if strings.Contains(term, word) {
 				return true
 			}
 		}

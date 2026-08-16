@@ -149,7 +149,10 @@ func TestTopicsGate_TopicsShowAlwaysAllowedAndRecordsKey(t *testing.T) {
 	}
 }
 
-func TestTopicsGate_TopicsSearchExtractsKeysFromResponse(t *testing.T) {
+// A search answers with titles and summaries, not topic bodies, so it
+// runs but records nothing. Review 2 item 18: counting search hits let
+// one call open a gate that exists to make the agent READ something.
+func TestTopicsGate_TopicsSearchRunsButRecordsNothing(t *testing.T) {
 	searchResult := `{"topics":[{"key":"deploying-apps","title":"Deploying"},{"key":"dockerfile-templates","title":"Dockerfile"},{"key":"runos-yaml","title":"YAML"}],"count":3}`
 	srv := newTestServer("read", &mockExecutor{result: searchResult})
 	srv.bootstrapped = true
@@ -168,13 +171,8 @@ func TestTopicsGate_TopicsSearchExtractsKeysFromResponse(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected mcp_topics_search to succeed, got: %s", result.Content[0].Text)
 	}
-	for _, want := range []string{"deploying-apps", "dockerfile-templates", "runos-yaml"} {
-		if _, ok := srv.topicsRead[want]; !ok {
-			t.Errorf("expected %q to be recorded, topicsRead=%v", want, srv.topicsRead)
-		}
-	}
-	if len(srv.topicsRead) != 3 {
-		t.Errorf("expected 3 topics recorded, got %d", len(srv.topicsRead))
+	if len(srv.topicsRead) != 0 {
+		t.Errorf("a search must record no read topic, got %v", srv.topicsRead)
 	}
 }
 
@@ -665,9 +663,13 @@ type fakeReloader struct {
 	updated       *manifest.Manifest
 	updateErr     error
 	updateCalls   int
+	versionCalls  int
 }
 
-func (f *fakeReloader) ServerVersion() (string, error) { return f.serverVersion, f.serverErr }
+func (f *fakeReloader) ServerVersion() (string, error) {
+	f.versionCalls++
+	return f.serverVersion, f.serverErr
+}
 func (f *fakeReloader) ForceUpdate() (*manifest.Manifest, error) {
 	f.updateCalls++
 	return f.updated, f.updateErr
@@ -701,9 +703,12 @@ func TestManifestUpdateTool(t *testing.T) {
 			updated:       &manifest.Manifest{Version: "40.7.0", Commands: []manifest.Command{{Command: "vms/list"}}},
 		})
 
-		out, err := srv.handleManifestUpdate()
+		out, changed, err := srv.handleManifestUpdate()
 		if err != nil {
 			t.Fatalf("manifest_update: %v", err)
+		}
+		if !changed {
+			t.Error("a version change must be reported as changed")
 		}
 		if live.Version != "40.7.0" {
 			t.Errorf("the shared manifest must be updated in place, got %s", live.Version)
