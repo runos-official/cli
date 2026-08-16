@@ -93,3 +93,49 @@ func TestSetAPIURL(t *testing.T) {
 		t.Errorf("re-setting the same URL keeps the env label, got %q", same.Env)
 	}
 }
+
+// The stored label is only true while the URL the environment wrote is
+// still the URL in force. Recording that URL is what makes the check
+// exact rather than a guess.
+func TestGetEnvAgainstTheRecordedEnvironmentURL(t *testing.T) {
+	t.Setenv("RUNOS_API_URL", "")
+
+	t.Run("URL still matches the environment", func(t *testing.T) {
+		c := &Config{Env: "beta", ConductorURL: "https://api.beta.example", EnvAPIURL: "https://api.beta.example"}
+		if got := c.GetEnv(); got != "beta" {
+			t.Errorf("GetEnv() = %q, want beta", got)
+		}
+	})
+	t.Run("URL was changed away from the environment", func(t *testing.T) {
+		c := &Config{Env: "beta", ConductorURL: "https://api.dev.example", EnvAPIURL: "https://api.beta.example"}
+		if got := c.GetEnv(); got != EnvCustom {
+			t.Errorf("GetEnv() = %q, want %q", got, EnvCustom)
+		}
+	})
+	t.Run("legacy config with nothing recorded reports the stored label", func(t *testing.T) {
+		c := &Config{Env: "beta", ConductorURL: "https://api.dev.example"}
+		if got := c.GetEnv(); got != "beta" {
+			t.Errorf("with nothing to compare against the stored label stands, got %q", got)
+		}
+	})
+	t.Run("ApplyEnvironment records the pair", func(t *testing.T) {
+		c := &Config{Env: "beta", ConductorURL: "https://api.dev.example"}
+		c.ApplyEnvironment("prod", "https://console.example", "https://api.example")
+		if c.Env != "prod" || c.ConductorURL != "https://api.example" || c.EnvAPIURL != "https://api.example" {
+			t.Errorf("ApplyEnvironment left %+v", c)
+		}
+		if got := c.GetEnv(); got != "prod" {
+			t.Errorf("GetEnv() = %q right after applying prod", got)
+		}
+	})
+	t.Run("SetAPIURL clears the recorded environment URL", func(t *testing.T) {
+		c := &Config{Env: "beta", ConductorURL: "https://api.beta.example", EnvAPIURL: "https://api.beta.example"}
+		c.SetAPIURL("http://localhost:3025")
+		if c.EnvAPIURL != "" {
+			t.Errorf("EnvAPIURL should be cleared, got %q", c.EnvAPIURL)
+		}
+		if got := c.GetEnv(); got != EnvCustom {
+			t.Errorf("GetEnv() = %q, want %q", got, EnvCustom)
+		}
+	})
+}

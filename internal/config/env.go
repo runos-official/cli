@@ -22,6 +22,17 @@ const EnvCustom = "custom"
 
 // GetEnv returns the environment label that matches the URLs actually in
 // force, rather than the last one `config env` stamped in.
+//
+// Three ways the label stops being true, all caught here:
+//
+//   - RUNOS_API_URL overrides the stored URL for this process,
+//   - the stored URL is not the one the environment wrote (EnvAPIURL),
+//   - no environment was ever applied.
+//
+// One case it cannot judge: a config written before EnvAPIURL was
+// recorded has nothing to compare against, so the stored label is
+// reported as-is. The next `config env <name>` or `config set api-url`
+// records the pair and the check becomes exact.
 func (c *Config) GetEnv() string {
 	if c == nil {
 		return ""
@@ -30,6 +41,9 @@ func (c *Config) GetEnv() string {
 		return EnvCustom
 	}
 	if c.Env == "" {
+		return EnvCustom
+	}
+	if c.EnvAPIURL != "" && c.EnvAPIURL != c.ConductorURL {
 		return EnvCustom
 	}
 	return c.Env
@@ -42,6 +56,16 @@ func (c *Config) GetEnv() string {
 func (c *Config) SetAPIURL(url string) {
 	if url != c.ConductorURL {
 		c.Env = EnvCustom
+		c.EnvAPIURL = ""
 	}
 	c.ConductorURL = url
+}
+
+// ApplyEnvironment records the URLs a named environment wrote, so a
+// later divergence is detectable. Used by applyRemoteEnv.
+func (c *Config) ApplyEnvironment(name, consoleURL, apiURL string) {
+	c.Env = name
+	c.ConsoleURL = consoleURL
+	c.ConductorURL = apiURL
+	c.EnvAPIURL = apiURL
 }

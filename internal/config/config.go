@@ -64,9 +64,14 @@ type RemoteConfig struct {
 
 // Config represents the persisted CLI configuration stored in ~/.runos/config.json.
 type Config struct {
-	Env              string          `json:"env,omitempty"`
-	ConsoleURL       string          `json:"console_url,omitempty"`
-	ConductorURL     string          `json:"conductor_url,omitempty"`
+	Env          string `json:"env,omitempty"`
+	ConsoleURL   string `json:"console_url,omitempty"`
+	ConductorURL string `json:"conductor_url,omitempty"`
+	// EnvAPIURL is the API URL the named environment wrote. GetEnv
+	// compares it against ConductorURL, so an api-url set by hand cannot
+	// leave the `env` label naming an environment the CLI no longer talks
+	// to (B3). Empty on a config written before this field existed.
+	EnvAPIURL        string          `json:"env_api_url,omitempty"`
 	AccountID        string          `json:"account_id,omitempty"`
 	DefaultClusterID string          `json:"default_cluster_id,omitempty"`
 	RefreshToken     string          `json:"refresh_token,omitempty"`
@@ -151,9 +156,7 @@ func Load() (*Config, error) {
 			cfg := &Config{}
 			if rc, rerr := FetchRemoteConfig(); rerr == nil {
 				if env, ok := rc.Environments[rc.Default]; ok {
-					cfg.Env = rc.Default
-					cfg.ConsoleURL = env.Domains.Console
-					cfg.ConductorURL = env.Domains.APIURL()
+					cfg.ApplyEnvironment(rc.Default, env.Domains.Console, env.Domains.APIURL())
 				}
 			}
 			return cfg, nil
@@ -318,9 +321,7 @@ func applyRemoteEnv(rc *RemoteConfig, envName string) (*Config, error) {
 		cfg = &Config{}
 	}
 
-	cfg.Env = envName
-	cfg.ConsoleURL = env.Domains.Console
-	cfg.ConductorURL = env.Domains.APIURL()
+	cfg.ApplyEnvironment(envName, env.Domains.Console, env.Domains.APIURL())
 
 	if err := cfg.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)
