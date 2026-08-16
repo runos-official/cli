@@ -30,13 +30,32 @@ type Loader struct {
 	httpClient *http.Client
 }
 
+// DefaultTimeout is the deadline for a manifest fetch or version probe.
+const DefaultTimeout = 10 * time.Second
+
+// AdvisoryTimeout is the deadline for a probe made only to EXPLAIN a
+// failure the user already has, not to do the work they asked for.
+//
+// The drift check after a 4xx costs one extra round trip on a command
+// that has already failed, and at DefaultTimeout an unreachable API added
+// ten seconds to every failure, including in a loop. A warm conductor
+// answers /cli/manifest-version in well under a second; when it does not,
+// the guidance is dropped and the original error stands alone.
+const AdvisoryTimeout = 3 * time.Second
+
 // NewLoader creates a new manifest loader
 func NewLoader(baseURL, configDir string) *Loader {
+	return NewLoaderWithTimeout(baseURL, configDir, DefaultTimeout)
+}
+
+// NewLoaderWithTimeout creates a manifest loader whose HTTP calls carry
+// the given deadline. Used for advisory probes, see AdvisoryTimeout.
+func NewLoaderWithTimeout(baseURL, configDir string, timeout time.Duration) *Loader {
 	return &Loader{
 		baseURL:   baseURL,
 		configDir: configDir,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

@@ -74,9 +74,13 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		status["accountId"] = cfg.AccountID
 	}
 
-	// URLs
-	if cfg.Env != "" {
-		status["environment"] = cfg.Env
+	// URLs. GetEnv, never the stored `env` field: the label is only true
+	// while the URLs are the ones that environment wrote, and `runos
+	// config set api-url` or RUNOS_API_URL makes it `custom` (B3). Status
+	// reporting the stale label was the one place that still claimed an
+	// environment the CLI no longer talks to.
+	if env := cfg.GetEnv(); env != "" {
+		status["environment"] = env
 	}
 	if apiURL := cfg.GetAPIURL(); apiURL != "" {
 		status["apiUrl"] = apiURL

@@ -61,7 +61,10 @@ func explainManifestDriftOn4xx(err error) {
 		return
 	}
 	driftCheckOnce.Do(func() {
-		loader, lerr := newManifestLoader()
+		// Advisory deadline: this probe explains a failure the caller
+		// already has, so it must not add the full timeout to every failed
+		// command.
+		loader, lerr := newAdvisoryManifestLoader()
 		if lerr != nil {
 			return
 		}

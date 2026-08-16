@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
@@ -93,6 +94,16 @@ func unknownSubject(err error) string {
 
 // newManifestLoader builds a loader against the configured API, as the manifest command does.
 func newManifestLoader() (*manifest.Loader, error) {
+	return manifestLoaderWithTimeout(manifest.DefaultTimeout)
+}
+
+// newAdvisoryManifestLoader builds a loader for a probe whose only job is
+// to explain a failure the user already has, so it gives up quickly.
+func newAdvisoryManifestLoader() (*manifest.Loader, error) {
+	return manifestLoaderWithTimeout(manifest.AdvisoryTimeout)
+}
+
+func manifestLoaderWithTimeout(timeout time.Duration) (*manifest.Loader, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -101,7 +112,7 @@ func newManifestLoader() (*manifest.Loader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return manifest.NewLoader(cfg.GetAPIURL(), filepath.Join(home, ".runos")), nil
+	return manifest.NewLoaderWithTimeout(cfg.GetAPIURL(), filepath.Join(home, ".runos"), timeout), nil
 }
 
 // explainPossiblyStaleManifest prints guidance after an unknown-command failure, and refreshes
