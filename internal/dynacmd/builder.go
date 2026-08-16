@@ -20,20 +20,24 @@ import (
 // so the regression test can assert the exact derivation.
 const defaultAPIKeyExpiryDays = 90
 
-// buildLongDescription extends cobra's Long-help with a discoverability
-// note for body fields the manifest declares but the builder doesn't
-// register a flag for (object-typed fields, currently). Pre-fix
-// (I26-P), `runos apps update --requires <...>` was the user's
-// natural reach for setting service dependencies — but `requires` is
-// object-typed, has no flag form, and the only valid surface is
-// `-f body.yaml`. With no flag visible in --help and no missing-
-// required error firing on optional PATCH endpoints, the body-file
-// path was effectively undiscoverable. The Long block now lists each
-// object-typed body field with a one-line "must be supplied via -f"
-// hint so `runos <verb> --help` surfaces the full input surface.
+// buildLongDescription is cobra's Long help: the command's FULL manifest
+// description, plus a shape note for map-shaped body fields.
+//
+// It carries the whole description because Short carries only the first
+// sentence (A12): manifest descriptions are written for agents and run to
+// thousands of characters, which made `runos vms --help` unreadable. The
+// full text has to remain reachable from `runos <verb> --help`, and this
+// is where it lives.
+//
+// The map-field note replaces the older "no flag form, pass via -f"
+// hint (I26-P): object-typed fields now DO have a repeatable key=value
+// flag (A9 / B10), so the note names the shapes rather than claiming the
+// field is unreachable.
 func buildLongDescription(cmdDef manifest.Command) string {
+	var sb strings.Builder
+	sb.WriteString(cmdDef.Description)
 	if cmdDef.Input == nil {
-		return ""
+		return sb.String()
 	}
 	var objectFields []manifest.Field
 	for _, field := range cmdDef.Input.Fields {
@@ -42,14 +46,12 @@ func buildLongDescription(cmdDef manifest.Command) string {
 		}
 	}
 	if len(objectFields) == 0 {
-		return ""
+		return sb.String()
 	}
-	var sb strings.Builder
-	if cmdDef.Description != "" {
-		sb.WriteString(cmdDef.Description)
+	if sb.Len() > 0 {
 		sb.WriteString("\n\n")
 	}
-	sb.WriteString("Body fields without a flag form (pass via -f body.yaml):\n")
+	sb.WriteString("Map-shaped body fields. Repeat the flag once per entry as key=value, or pass one JSON object, or put them in a -f body.yaml:\n")
 	for _, field := range objectFields {
 		sb.WriteString("  ")
 		sb.WriteString(field.Name)
@@ -57,7 +59,7 @@ func buildLongDescription(cmdDef manifest.Command) string {
 			sb.WriteString(" (required)")
 		}
 		if field.Description != "" {
-			sb.WriteString(" — ")
+			sb.WriteString(": ")
 			sb.WriteString(field.Description)
 		}
 		sb.WriteString("\n")
@@ -340,8 +342,11 @@ func (b *Builder) buildCommandTree(cmdDef manifest.Command, parents map[string]*
 
 func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   b.buildUseLine(name, cmdDef),
-		Short: cmdDef.Description,
+		Use: b.buildUseLine(name, cmdDef),
+		// First sentence only: the whole description runs to thousands of
+		// characters on VM commands and made `runos vms --help` unreadable
+		// (A12). Long, below, keeps all of it.
+		Short: firstSentence(cmdDef.Description),
 		Long:  buildLongDescription(cmdDef),
 		// SilenceUsage on runtime errors: the user got far enough to dispatch,
 		// so the long usage block is noise. Without this, every API error
@@ -396,8 +401,9 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 			// delete`, ...) reached the wire on the first keystroke
 			// with no prompt and no --yes flag; a typo on the id was
 			// unrecoverable. Mirrors `runos deploy`'s -y/--yes surface.
-			// Auto-skips when stdin is not a TTY (CI) or --json is set
-			// (machine consumers).
+			// With no TTY to answer the prompt (CI, MCP, --json) the call is
+			// REFUSED unless --yes is set: see confirmDestructive. It does NOT
+			// auto-skip, which an earlier version of this comment claimed (B14).
 			if destructivePromptApplies(c, cmdDef) {
 				if err := confirmDestructive(c, cmdDef, args); err != nil {
 					return wrapJSONIfSet(err)
@@ -593,7 +599,7 @@ func (b *Builder) buildLeafCommand(name string, cmdDef manifest.Command) *cobra.
 	// itself fires inside the RunE based on TTY detection +
 	// --json/--yes flags; the flag declaration just exposes the
 	// surface so cobra accepts the syntax.
-	if isDestructiveCommand(cmdDef) {
+	if IsDestructiveCommand(cmdDef) {
 		cmd.Flags().BoolP("yes", "y", false, "skip the destructive-action confirmation prompt")
 	}
 
@@ -1051,6 +1057,14 @@ func conveniencePositionalFields(cmdDef manifest.Command) []string {
 	switch cmdDef.Command {
 	case "tools/domain-check":
 		return []string{"domain"}
+	case "vm-images/capture":
+		// The endpoint is POST /vm-images with vmid in the BODY, so the
+		// manifest cannot mark it positional (a positional field must also
+		// be a path param). Without a slot here, `runos vm-images capture
+		// myvm --name x` was refused by cobra's arity check, which names no
+		// field at all, so the obvious shape looked unsupported.
+		// Regression target: goal 19 A10.
+		return []string{"vmid"}
 	}
 	return nil
 }
@@ -1329,6 +1343,13 @@ func addFieldFlags(cmd *cobra.Command, fields []manifest.Field, cmdPath string) 
 				}
 			}
 			cmd.Flags().Int(flagName, defaultVal, description)
+
+		case "object":
+			// Repeatable `--<flag> key=value`, or one JSON object. Pre-fix
+			// an object field got no flag at all, so `labels` was reachable
+			// only via `-f body.yaml` (A9 / B10). StringArray because each
+			// invocation must survive verbatim: a value may contain commas.
+			cmd.Flags().StringArray(flagName, nil, description+objectFlagUsageSuffix)
 
 		case "array":
 			// I25-B: pflag's StringSlice splits on commas inside the value,

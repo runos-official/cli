@@ -19,8 +19,15 @@ import (
 // fires, whichever comes first, and returns the streamed progress as a
 // single text payload. Read-only — the verb just watches the job, it
 // doesn't mutate cluster state.
+// Registered on every server that can create a job, not just the read
+// one. Pre-fix only `read` carried it, so the write servers dispatched
+// async work they had no way to watch, and an agent driving a write
+// server had to fall back to polling jobs_show. Regression target:
+// goal 19 A13.
 func staticJobsTools(category string) []Tool {
-	if category != "read" {
+	switch category {
+	case "read", "write", "sensitive_write":
+	default:
 		return nil
 	}
 
@@ -33,7 +40,7 @@ Blocks for the duration of the job — useful when an LLM dispatched an async op
 
 Most async operations return a jobId in their response (apps_sync's "Follow rollout: runos follow <id>" hint, deploy's job id, etc.). Pass that jobId here and wait for terminal state. The 10-minute subprocess timeout fires if the job hasn't finished.
 
-This is the canonical "wait until done" verb for orchestrations — preferable to polling jobs_show in a loop (cheaper, doesn't burn the LLM's prompt cache).`,
+This is the canonical "wait until done" verb for orchestrations, preferable to polling jobs_show in a loop (cheaper, doesn't burn the LLM's prompt cache).`,
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{

@@ -72,7 +72,7 @@ var destructiveVerbPrefixes = []string{
 	"evict-",
 }
 
-// isDestructiveCommand reports whether cmdDef needs a confirmation
+// IsDestructiveCommand reports whether cmdDef needs a confirmation
 // guard before reaching the wire. Two signals contribute:
 //
 //  1. Method=DELETE: every DELETE-method endpoint in the manifest is
@@ -86,7 +86,12 @@ var destructiveVerbPrefixes = []string{
 // Tagging on method + verb instead of an ad-hoc allow-list means new
 // destructive endpoints inherit the prompt automatically when the
 // conductor manifest grows.
-func isDestructiveCommand(cmdDef manifest.Command) bool {
+//
+// Exported because internal/mcp asks the same question: an MCP caller
+// has to state confirm=true on the same set of verbs the CLI demands
+// --yes for, and one classifier is the only way the two surfaces cannot
+// disagree about what is dangerous (goal 19 A14).
+func IsDestructiveCommand(cmdDef manifest.Command) bool {
 	if strings.EqualFold(cmdDef.Method, "DELETE") {
 		return true
 	}
@@ -137,7 +142,7 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 
 // destructivePromptApplies decides whether confirmDestructive should
 // actually fire for a given cobra invocation. It starts from
-// isDestructiveCommand (which still drives --yes flag registration in
+// IsDestructiveCommand (which still drives --yes flag registration in
 // buildLeafCommand) and adds per-command runtime carve-outs:
 //
 //   - exec-sql (postgresql / mysql / clickhouse) is only destructive in
@@ -149,7 +154,7 @@ func isDestructiveCommand(cmdDef manifest.Command) bool {
 // Other destructive verbs (delete / drain / reset / clear-cache / ...)
 // have no read-only mode and stay gated unconditionally.
 func destructivePromptApplies(c *cobra.Command, cmdDef manifest.Command) bool {
-	if !isDestructiveCommand(cmdDef) {
+	if !IsDestructiveCommand(cmdDef) {
 		return false
 	}
 	if lastPathSegment(cmdDef.Command) == "exec-sql" {
@@ -165,7 +170,7 @@ func destructivePromptApplies(c *cobra.Command, cmdDef manifest.Command) bool {
 
 // lastPathSegment returns the final `/`-delimited segment of a manifest
 // command path, e.g. "services/postgresql/{id}/exec-sql" -> "exec-sql".
-// Used by isDestructiveCommand's verb-pattern matcher.
+// Used by IsDestructiveCommand's verb-pattern matcher.
 func lastPathSegment(cmd string) string {
 	if i := strings.LastIndex(cmd, "/"); i >= 0 {
 		return cmd[i+1:]

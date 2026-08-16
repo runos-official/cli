@@ -841,12 +841,13 @@ func TestFormatMissingFieldHint(t *testing.T) {
 	})
 }
 
-// TestBuildLongDescription pins the I26-P discoverability fix: object-
-// typed body fields (no flag form) get listed in the Long help so
-// `runos <verb> --help` surfaces the full input surface, including
-// fields only reachable via -f body.yaml.
+// TestBuildLongDescription pins two contracts. I26-P: map-shaped body
+// fields are listed in the Long help so `runos <verb> --help` surfaces
+// the full input surface. A12: Long carries the WHOLE manifest
+// description, because Short now carries only its first sentence, so
+// this is the only place the full text remains reachable.
 func TestBuildLongDescription(t *testing.T) {
-	t.Run("no object fields → empty Long", func(t *testing.T) {
+	t.Run("no object fields still keeps the full description", func(t *testing.T) {
 		cmdDef := manifest.Command{
 			Description: "Update an app's metadata.",
 			Input: &manifest.Input{Fields: []manifest.Field{
@@ -855,21 +856,21 @@ func TestBuildLongDescription(t *testing.T) {
 			}},
 		}
 		got := buildLongDescription(cmdDef)
-		if got != "" {
-			t.Errorf("expected empty Long when no object fields, got: %s", got)
+		if got != "Update an app's metadata." {
+			t.Errorf("Long must carry the whole description, got: %s", got)
 		}
 	})
 
-	t.Run("requires field listed with -f hint", func(t *testing.T) {
+	t.Run("map-shaped field listed with its shapes", func(t *testing.T) {
 		cmdDef := manifest.Command{
 			Description: "Update an app.",
 			Input: &manifest.Input{Fields: []manifest.Field{
 				{Name: "name", Type: "string"},
-				{Name: "requires", Type: "object", Description: "Service dependencies (alias → {id, type, config, env})."},
+				{Name: "requires", Type: "object", Description: "Service dependencies."},
 			}},
 		}
 		got := buildLongDescription(cmdDef)
-		for _, want := range []string{"Update an app.", "Body fields without a flag form", "-f body.yaml", "requires", "Service dependencies"} {
+		for _, want := range []string{"Update an app.", "key=value", "JSON object", "-f body.yaml", "requires", "Service dependencies"} {
 			if !contains(got, want) {
 				t.Errorf("expected %q in Long, got:\n%s", want, got)
 			}
@@ -903,8 +904,8 @@ func TestBuildLongDescription(t *testing.T) {
 			}},
 		}
 		got := buildLongDescription(cmdDef)
-		if got != "" {
-			t.Errorf("expected positional object to be skipped, got:\n%s", got)
+		if got != "weird" {
+			t.Errorf("expected the description alone with no map-field block, got:\n%s", got)
 		}
 	})
 }
@@ -1064,4 +1065,144 @@ func TestMakeFlagNormalizer(t *testing.T) {
 			t.Errorf("normalize(%q) = %q; #82 moved alias off the normalizer, so app must stay app", "app", got)
 		}
 	})
+}
+
+// TestObjectFieldGetsARepeatableFlag is the goal-19 A9 / goal-21 B10
+// regression. An `object`-typed manifest field got no flag at all, so
+// `labels` on vms create/update/restore (and every other map-shaped
+// field) was reachable only through `-f body.yaml`. Both surfaces
+// advertised the field; only one of them could take a value.
+func TestObjectFieldGetsARepeatableFlag(t *testing.T) {
+	cmdDef := manifest.Command{
+		Command:  "vms/create",
+		Endpoint: "/:aid/:cid/vms",
+		Method:   "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "labels", Type: "object", Description: "Your own metadata."},
+		}},
+	}
+	c := &cobra.Command{Use: "create"}
+	addFieldFlags(c, cmdDef.Input.Fields, cmdDef.Command)
+
+	f := c.Flags().Lookup("labels")
+	if f == nil {
+		t.Fatal("expected a --labels flag for an object-typed field")
+	}
+	if f.Value.Type() != "stringArray" {
+		t.Errorf("--labels should be repeatable (stringArray), got %s", f.Value.Type())
+	}
+	if !strings.Contains(f.Usage, "key=value") {
+		t.Errorf("usage should name the key=value shape, got %q", f.Usage)
+	}
+}
+
+// TestParseObjectFlagValues pins the accepted shapes for an object-typed
+// flag: repeated key=value pairs, or one whole JSON object.
+func TestParseObjectFlagValues(t *testing.T) {
+	t.Run("repeated key=value", func(t *testing.T) {
+		got, err := parseObjectFlagValues("labels", []string{"env=prod", "team=core"}, manifest.Field{Name: "labels", Type: "object"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]any{"env": "prod", "team": "core"}
+		if len(got) != 2 || got["env"] != want["env"] || got["team"] != want["team"] {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+	t.Run("value keeps every = after the first", func(t *testing.T) {
+		got, err := parseObjectFlagValues("labels", []string{"cert=abc==="}, manifest.Field{Name: "labels", Type: "object"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["cert"] != "abc===" {
+			t.Errorf("got %+v, want cert=abc===", got)
+		}
+	})
+	t.Run("one JSON object", func(t *testing.T) {
+		got, err := parseObjectFlagValues("labels", []string{`{"env":"prod","replicas":2}`}, manifest.Field{Name: "labels", Type: "object"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["env"] != "prod" {
+			t.Errorf("got %+v, want env=prod", got)
+		}
+	})
+	t.Run("empty stays empty so the field is omitted", func(t *testing.T) {
+		got, err := parseObjectFlagValues("labels", nil, manifest.Field{Name: "labels", Type: "object"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for no values, got %+v", got)
+		}
+	})
+	t.Run("a bare word is refused and names both shapes", func(t *testing.T) {
+		_, err := parseObjectFlagValues("labels", []string{"prod"}, manifest.Field{Name: "labels", Type: "object"})
+		if err == nil {
+			t.Fatal("expected a refusal for a value with no =")
+		}
+		for _, want := range []string{"--labels", "key=value", "-f "} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal should mention %q, got: %s", want, err.Error())
+			}
+		}
+	})
+	t.Run("a non-string value shape demands JSON", func(t *testing.T) {
+		field := manifest.Field{Name: "requires", Type: "object", ValueType: "object"}
+		_, err := parseObjectFlagValues("requires", []string{"db=abc12"}, field)
+		if err == nil {
+			t.Fatal("expected a refusal: the map values are objects, not strings")
+		}
+		if !strings.Contains(err.Error(), "JSON") {
+			t.Errorf("refusal should point at JSON, got: %s", err.Error())
+		}
+	})
+}
+
+// TestShortIsOneSentence is the goal-19 A12 regression. Short was the
+// WHOLE manifest description, and several VM descriptions run to 2000+
+// characters, so `runos vms --help` rendered at ~25 kB and the command
+// list was unreadable. Long still carries the full text.
+func TestShortIsOneSentence(t *testing.T) {
+	long := "Create a virtual machine (async job). Sized EITHER by `size` OR by `cpu` and `memoryMi`, never both, because an instance type fixes its own cpu and memory."
+	cmdDef := manifest.Command{Command: "vms/create", Description: long, Endpoint: "/:aid/:cid/vms", Method: "POST"}
+	b := &Builder{}
+	cmd := b.buildLeafCommand("create", cmdDef)
+
+	if cmd.Short != "Create a virtual machine (async job)." {
+		t.Errorf("Short = %q, want the first sentence only", cmd.Short)
+	}
+	if !strings.Contains(cmd.Long, "memoryMi") {
+		t.Errorf("Long must keep the whole description, got %q", cmd.Long)
+	}
+}
+
+func TestFirstSentence(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"One sentence only", "One sentence only"},
+		{"First. Second.", "First."},
+		{"Ends in an id like abc12. Then more.", "Ends in an id like abc12."},
+		{"Numbered 3.5 GiB is not a sentence end. Next.", "Numbered 3.5 GiB is not a sentence end."},
+		{"Refused with vm.not_found. Retry.", "Refused with vm.not_found."},
+		{"Question first? Then more.", "Question first?"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := firstSentence(c.in); got != c.want {
+				t.Errorf("firstSentence(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestCapturePositional is the goal-19 A10 regression. `vm-images
+// capture` requires vmid as a body field with no positional slot, so
+// `runos vm-images capture myvm --name x` was refused by cobra's arity
+// check, which names no field at all.
+func TestCapturePositional(t *testing.T) {
+	got := conveniencePositionalFields(manifest.Command{Command: "vm-images/capture"})
+	if len(got) != 1 || got[0] != "vmid" {
+		t.Errorf("conveniencePositionalFields(vm-images/capture) = %v, want [vmid]", got)
+	}
 }

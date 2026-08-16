@@ -155,6 +155,9 @@ func runMCPServe(category string) error {
 
 	executor := mcp.NewCommandExecutor(m, cfg.GetAPIURL())
 	server := mcp.NewServer(m, executor, version.Version, category)
+	// Without a default cluster the tool schema has to mark `cid`
+	// required, since there is nothing to fall back on (B13).
+	server.SetDefaultClusterID(cfg.GetDefaultClusterID())
 
 	return server.Run()
 }

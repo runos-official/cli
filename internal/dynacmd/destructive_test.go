@@ -11,7 +11,7 @@ import (
 // Regression: pre-fix, `runos apps delete <id>` (and every services
 // delete sibling) reached the wire on the first keystroke with no
 // confirmation prompt and no --yes flag, mirroring `runos deploy`
-// gives users a recoverable typo path. isDestructiveCommand is the
+// gives users a recoverable typo path. IsDestructiveCommand is the
 // single classifier the builder uses to gate both the flag
 // registration and the prompt; pin its behaviour by method.
 func TestIsDestructiveCommand(t *testing.T) {
@@ -88,8 +88,8 @@ func TestIsDestructiveCommand(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isDestructiveCommand(tc.cmd); got != tc.want {
-				t.Errorf("isDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
+			if got := IsDestructiveCommand(tc.cmd); got != tc.want {
+				t.Errorf("IsDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
 	}
@@ -397,8 +397,8 @@ func TestVmPowerVerbsAreGated(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isDestructiveCommand(tc.cmd); got != tc.want {
-				t.Errorf("isDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
+			if got := IsDestructiveCommand(tc.cmd); got != tc.want {
+				t.Errorf("IsDestructiveCommand(%+v) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
 	}

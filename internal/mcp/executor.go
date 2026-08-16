@@ -14,6 +14,7 @@ import (
 	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
+	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 )
 
@@ -119,6 +120,14 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 		return "", fmt.Errorf("unknown command: %s", toolName)
 	}
 
+	// Destructive parity with the CLI's --yes (A14). `confirm` is a
+	// tool-schema argument, not a manifest field, so it is read here and
+	// never reaches the wire: buildBody and the query builder both
+	// iterate the manifest's own fields.
+	if err := refuseUnconfirmedDestructive(*cmdDef, args, dynacmd.IsDestructiveCommand); err != nil {
+		return "", err
+	}
+
 	// Extract cid from args if provided (will be used in endpoint building)
 	// cid can be in format "xyz" or "xyz (Cluster Name)" - extract short ID before space.
 	// Mirror the stripped value back into args so any body-field path that reads
@@ -199,7 +208,7 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 
 	// Check for errors
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+		return "", apiErrorEnvelope(resp.StatusCode, respBody)
 	}
 
 	// Empty-body 2xx (typical for DELETE and other no-content endpoints,

@@ -738,3 +738,55 @@ func TestFormatArray_PostgresUsersMultiKeyEnvelope(t *testing.T) {
 		t.Errorf("expected row containing harbor_kmb6g, got:\n%s", got)
 	}
 }
+
+// TestEmptyArrayRendersAsZeroEntries is the goal-19 A17 regression. An
+// empty array rendered as a blank cell, which reads as "the server did
+// not answer this field" rather than "there are none". A non-empty array
+// of objects already renders as "N entries" plus a sub-table, so the
+// empty case was the only one that said nothing.
+func TestEmptyArrayRendersAsZeroEntries(t *testing.T) {
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{
+		{Name: "vmid"}, {Name: "gpus"}, {Name: "disks"},
+	}}
+	body := []byte(`{"vmid":"vm-1","gpus":[],"disks":[{"name":"root","sizeGi":20}]}`)
+
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	if !strings.Contains(out, "gpus") || !strings.Contains(out, "0 entries") {
+		t.Errorf("expected `gpus: 0 entries`, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 entry") {
+		t.Errorf("expected the non-empty array to keep its `1 entry` summary, got:\n%s", out)
+	}
+}
+
+// TestNestedSubTableExpandsStructuredCells is the goal-19 A18
+// regression. `vm-usage` renders per-VM rows in a sub-table, and each row
+// carries `segments` and `shapeSeconds` arrays of objects. A table cell
+// cannot hold a nested table, so those collapsed to `[1 entry]` and the
+// only numbers the report exists to deliver were unreachable without
+// --json. Rows carrying nested structure now render as blocks instead of
+// table rows.
+func TestNestedSubTableExpandsStructuredCells(t *testing.T) {
+	f := NewFormatter(false)
+	def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{{Name: "vms"}}}
+	body := []byte(`{"vms":[{"vmid":"vm-1","name":"web","shapeSeconds":[{"cpu":2,"seconds":3600,"state":"running"}]}]}`)
+
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	if strings.Contains(out, "[1 entry]") {
+		t.Errorf("nested structure must not collapse to `[1 entry]`, got:\n%s", out)
+	}
+	for _, want := range []string{"vm-1", "3600", "running"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the rendered report, got:\n%s", want, out)
+		}
+	}
+}

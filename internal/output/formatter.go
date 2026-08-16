@@ -395,6 +395,13 @@ func (f *Formatter) formatObject(data []byte, fields []string) error {
 			}
 		}
 		raw := getNestedValue(item, field)
+		// A17: an empty array rendered as a blank cell, which reads as
+		// "the server did not answer" rather than "there are none". The
+		// non-empty case already says "N entries", so say "0 entries".
+		if arr, ok := raw.([]any); ok && len(arr) == 0 {
+			fmt.Printf("%-*s: 0 entries\n", maxLen, displayNames[i])
+			continue
+		}
 		if rows, ok := arrayOfObjects(raw); ok && len(rows) > 0 {
 			label := "entries"
 			if len(rows) == 1 {
@@ -484,6 +491,18 @@ func printIndentedObject(obj map[string]any, indent string) {
 }
 
 func printIndentedSubTable(rows []map[string]any, indent string) {
+	// A18: `vm-usage` puts per-VM rows in this sub-table and each row
+	// carries `segments` and `shapeSeconds` arrays of objects, which
+	// collapsed to `[1 entry]` and hid the only numbers the report
+	// exists to deliver. Render such rows as blocks, where
+	// printIndentedObject can recurse into them.
+	if rowsCarryNestedStructure(rows) {
+		for _, r := range rows {
+			printIndentedObject(r, indent)
+			fmt.Println()
+		}
+		return
+	}
 	keys := map[string]bool{}
 	for _, r := range rows {
 		for k := range r {

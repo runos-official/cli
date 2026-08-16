@@ -1408,6 +1408,15 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 					}
 					result[field.Name] = coerceArrayFlagValue(val, field.ItemType)
 				}
+			case "object":
+				val, _ := cmd.Flags().GetStringArray(flagName)
+				obj, err := parseObjectFlagValues(flagName, val, field)
+				if err != nil {
+					return nil, err
+				}
+				if obj != nil {
+					result[field.Name] = obj
+				}
 			case "boolean":
 				val, _ := cmd.Flags().GetBool(flagName)
 				result[field.Name] = val

@@ -178,10 +178,15 @@ func TestTopicsGate_TopicsSearchExtractsKeysFromResponse(t *testing.T) {
 	}
 }
 
+// The read-at-least-N-topics gate stays on the read server alone. The
+// write servers gate on bootstrap (B16) but not on topic reads: an agent
+// that has already read its topics on the read server should not have to
+// read them twice to act on what it learned.
 func TestTopicsGate_NonReadServerSkipsTopicsGate(t *testing.T) {
 	for _, category := range []string{"sensitive_read", "write", "sensitive_write"} {
 		t.Run(category, func(t *testing.T) {
 			srv := newTestServer(category, &mockExecutor{result: "ok"})
+			srv.bootstrapped = true
 
 			resp := srv.handleToolsCall(makeToolCallRequest("some_tool"))
 
@@ -196,21 +201,21 @@ func TestTopicsGate_NonReadServerSkipsTopicsGate(t *testing.T) {
 	}
 }
 
-func TestBootstrapGate_NonReadServerSkipsGuard(t *testing.T) {
-	for _, category := range []string{"sensitive_read", "write", "sensitive_write"} {
-		t.Run(category, func(t *testing.T) {
-			srv := newTestServer(category, &mockExecutor{result: "ok"})
+// sensitive_read is the one server with no bootstrap gate: it exists to
+// hand a credential to a caller that already knows what it wants, and it
+// changes nothing. The write servers ARE gated, see
+// TestBootstrapGate_WriteServerAlsoGated (B16).
+func TestBootstrapGate_SensitiveReadSkipsGuard(t *testing.T) {
+	srv := newTestServer("sensitive_read", &mockExecutor{result: "ok"})
 
-			resp := srv.handleToolsCall(makeToolCallRequest("some_tool"))
+	resp := srv.handleToolsCall(makeToolCallRequest("some_tool"))
 
-			result, ok := resp.Result.(CallToolResult)
-			if !ok {
-				t.Fatal("expected CallToolResult")
-			}
-			if result.IsError {
-				t.Fatalf("expected no error for %s server before bootstrap", category)
-			}
-		})
+	result, ok := resp.Result.(CallToolResult)
+	if !ok {
+		t.Fatal("expected CallToolResult")
+	}
+	if result.IsError {
+		t.Fatalf("expected no error for the sensitive_read server before bootstrap, got: %s", result.Content[0].Text)
 	}
 }
 
@@ -526,6 +531,128 @@ func TestContentBlockMarshalsTextEvenWhenEmpty(t *testing.T) {
 			}
 			if !strings.Contains(string(got), `"text"`) {
 				t.Errorf("text field omitted from %s; MCP spec requires it", got)
+			}
+		})
+	}
+}
+
+// TestJobsFollowOnWriteServers is the goal-19 A13 regression. The write
+// servers create the jobs, and jobs_follow was registered only on the
+// read server, so the surface that starts async work could not watch it.
+func TestJobsFollowOnWriteServers(t *testing.T) {
+	for _, category := range []string{"read", "write", "sensitive_write"} {
+		t.Run(category, func(t *testing.T) {
+			tools := staticJobsTools(category)
+			if len(tools) != 1 || tools[0].Name != "jobs_follow" {
+				t.Errorf("expected jobs_follow on the %s server, got %+v", category, tools)
+			}
+		})
+	}
+	if got := staticJobsTools("sensitive_read"); got != nil {
+		t.Errorf("sensitive_read creates no jobs, expected none, got %+v", got)
+	}
+}
+
+// TestDestructiveToolsRequireConfirm is the goal-19 A14 regression. The
+// CLI refuses a destructive verb without --yes when no human can answer
+// the prompt; MCP dispatched the same verb on the first ask. The two
+// surfaces now agree: an MCP caller states the intent with confirm=true.
+func TestDestructiveToolsRequireConfirm(t *testing.T) {
+	m := &manifest.Manifest{Commands: []manifest.Command{
+		{Command: "vms/delete", Endpoint: "/:aid/:cid/vms/:vmid", Method: "DELETE", MCP: []string{"write"},
+			Input: &manifest.Input{Fields: []manifest.Field{{Name: "vmid", Type: "string", Required: true, Positional: true}}}},
+		{Command: "vms/show", Endpoint: "/:aid/:cid/vms/:vmid", Method: "GET", MCP: []string{"write"},
+			Input: &manifest.Input{Fields: []manifest.Field{{Name: "vmid", Type: "string", Required: true, Positional: true}}}},
+	}}
+	srv := &Server{manifest: m, executor: &mockExecutor{result: "ok"}, version: "test", category: "write"}
+	tools := srv.buildTools()
+
+	byName := map[string]Tool{}
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+	del, ok := byName["vms_delete"]
+	if !ok {
+		t.Fatal("vms_delete missing from the write server")
+	}
+	if _, ok := del.InputSchema.Properties["confirm"]; !ok {
+		t.Error("expected a confirm property on a destructive tool")
+	}
+	if !contains(del.InputSchema.Required, "confirm") {
+		t.Errorf("expected confirm in Required, got %v", del.InputSchema.Required)
+	}
+	show := byName["vms_show"]
+	if _, ok := show.InputSchema.Properties["confirm"]; ok {
+		t.Error("a read verb must not ask for confirm")
+	}
+}
+
+// TestInjectedCIDRequiredWithoutADefault is the goal-21 B13 regression.
+// The injected cid property was never in Required, so the schema said
+// optional while the call failed with "cluster ID required" whenever no
+// default cluster was configured.
+func TestInjectedCIDRequiredWithoutADefault(t *testing.T) {
+	m := &manifest.Manifest{Commands: []manifest.Command{
+		{Command: "vms/list", Endpoint: "/:aid/:cid/vms", Method: "GET", MCP: []string{"read"}},
+		{Command: "vm-usage", Endpoint: "/:aid/vm-usage", Method: "GET", MCP: []string{"read"}},
+	}}
+
+	t.Run("no default cluster: cid is required", func(t *testing.T) {
+		srv := &Server{manifest: m, executor: &mockExecutor{}, category: "read"}
+		tools := srv.buildTools()
+		if !contains(tools[0].InputSchema.Required, "cid") {
+			t.Errorf("expected cid required with no configured default, got %v", tools[0].InputSchema.Required)
+		}
+		if contains(tools[1].InputSchema.Required, "cid") {
+			t.Error("an account-scoped endpoint must not require cid")
+		}
+	})
+
+	t.Run("default cluster configured: cid stays optional", func(t *testing.T) {
+		srv := &Server{manifest: m, executor: &mockExecutor{}, category: "read", defaultClusterID: "abc12"}
+		tools := srv.buildTools()
+		if contains(tools[0].InputSchema.Required, "cid") {
+			t.Errorf("a working default makes cid optional, got %v", tools[0].InputSchema.Required)
+		}
+	})
+}
+
+// TestBootstrapGate_WriteServerAlsoGated is the goal-21 B16 regression.
+// The gate ran only on the read server, so the servers that CHANGE things
+// accepted an unbootstrapped caller, which is the wrong way round.
+func TestBootstrapGate_WriteServerAlsoGated(t *testing.T) {
+	for _, category := range []string{"write", "sensitive_write"} {
+		t.Run(category, func(t *testing.T) {
+			srv := newTestServer(category, &mockExecutor{result: "ok"})
+			resp := srv.handleToolsCall(makeToolCallRequest("vms_delete"))
+			result := resp.Result.(CallToolResult)
+			if !result.IsError {
+				t.Fatalf("expected the %s server to refuse before bootstrap", category)
+			}
+			if !strings.Contains(result.Content[0].Text, "mcp_bootstrap") {
+				t.Errorf("refusal must name mcp_bootstrap, got: %s", result.Content[0].Text)
+			}
+		})
+	}
+}
+
+// TestBootstrapToolOnEveryServer pairs with B16: a gate the caller cannot
+// satisfy is a lockout, so mcp_bootstrap has to be listed everywhere the
+// gate runs.
+func TestBootstrapToolOnEveryServer(t *testing.T) {
+	m := &manifest.Manifest{Commands: []manifest.Command{
+		{Command: "mcp/bootstrap", Endpoint: "/:aid/mcp-docs/bootstrap", Method: "GET", MCP: []string{"read"}},
+		{Command: "mcp/topics/search", Endpoint: "/:aid/mcp-docs/topics/search", Method: "GET", MCP: []string{"read"}},
+	}}
+	for _, category := range []string{"read", "write", "sensitive_write", "sensitive_read"} {
+		t.Run(category, func(t *testing.T) {
+			srv := &Server{manifest: m, executor: &mockExecutor{}, category: category}
+			var names []string
+			for _, tool := range srv.buildTools() {
+				names = append(names, tool.Name)
+			}
+			if !contains(names, "mcp_bootstrap") {
+				t.Errorf("mcp_bootstrap must be listed on the %s server, got %v", category, names)
 			}
 		})
 	}

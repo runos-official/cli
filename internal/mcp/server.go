@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/version"
 )
@@ -194,6 +195,18 @@ type Server struct {
 	startupBinaryMtime  time.Time
 	startupBinaryPath   string
 	staleBinaryDetected bool
+	// defaultClusterID is the cluster the CLI falls back to when a tool
+	// call names none. Empty means there is no fallback, and then a
+	// cluster-scoped tool genuinely REQUIRES cid: the schema says so
+	// rather than letting the call fail at dispatch with "cluster ID
+	// required" (goal 21 B13).
+	defaultClusterID string
+}
+
+// SetDefaultClusterID records the configured default cluster, so the
+// tool schema can mark `cid` required only when there is no fallback.
+func (s *Server) SetDefaultClusterID(cid string) {
+	s.defaultClusterID = cid
 }
 
 // ToolExecutor defines the interface for executing MCP tools against the API.
@@ -441,7 +454,13 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 	}
 
-	if !s.bootstrapped && s.category == "read" {
+	// The bootstrap gate runs on every server that can act, not just the
+	// read one. Pre-fix the servers that CHANGE things were the two with
+	// no gate at all, which is the wrong way round (goal 21 B16). Each
+	// server is its own process with its own flag, so an agent calls
+	// mcp_bootstrap once per server it uses; the tool is listed on all of
+	// them so the gate is always satisfiable.
+	if !s.bootstrapped && bootstrapRequired(s.category) {
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -647,8 +666,11 @@ func (s *Server) buildTools() []Tool {
 	var tools []Tool
 
 	for _, cmd := range s.manifest.Commands {
-		// Skip if command doesn't belong to this MCP server category
-		if !contains(cmd.MCP, s.category) {
+		// Skip if command doesn't belong to this MCP server category.
+		// The bootstrap and topic tools are the exception: every server
+		// gates on bootstrap (B16), so every server has to list the tool
+		// that satisfies the gate and the topic tools it points at.
+		if !contains(cmd.MCP, s.category) && !isGateTool(cmd.Command) {
 			continue
 		}
 
@@ -744,12 +766,31 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 			},
 		}
 
-		// Add cid parameter if endpoint requires it
+		// Add cid parameter if endpoint requires it. It is REQUIRED when
+		// the CLI has no default cluster to fall back on: saying optional
+		// there made the call fail at dispatch with "cluster ID required"
+		// for a value the schema said could be left out (B13).
 		if strings.Contains(cmd.Endpoint, ":cid") {
 			tool.InputSchema.Properties["cid"] = Property{
 				Type:        "string",
-				Description: "Cluster ID (the bare id, e.g. 'mycluster2'). Get from user or use clusters_list.",
+				Description: "Cluster ID (the bare id, e.g. 'mycluster2'). Get from user or use clusters_list. Falls back to the CLI's configured default cluster when omitted, and there is no default configured unless this parameter is optional.",
 			}
+			if s.defaultClusterID == "" {
+				tool.InputSchema.Required = append(tool.InputSchema.Required, "cid")
+			}
+		}
+
+		// Destructive verbs take an explicit confirm, mirroring the
+		// CLI's --yes. Pre-fix the CLI refused a delete that no human
+		// could confirm while MCP dispatched the same delete on the
+		// first ask, so the safer surface was the one a person drives
+		// and the unguarded one was the LLM's (A14).
+		if dynacmd.IsDestructiveCommand(cmd) {
+			tool.InputSchema.Properties[confirmArgName] = Property{
+				Type:        "boolean",
+				Description: "Must be true. This verb is destructive and cannot be undone: set confirm=true only after the user has agreed to this exact target. The CLI asks a human the same question through --yes.",
+			}
+			tool.InputSchema.Required = append(tool.InputSchema.Required, confirmArgName)
 		}
 
 		if cmd.Input != nil {
