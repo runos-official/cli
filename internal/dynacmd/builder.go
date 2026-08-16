@@ -786,10 +786,25 @@ func hasNonPositionalInput(cmdDef manifest.Command) bool {
 // command, so a name-keyed override is unambiguous. sourceCid (->
 // --source-cid) and owner (-> --owner) already kebab naturally and need
 // no override. Regression target: clone-database flag spelling.
+//
+// maintenance-scripts/*/run: every script declares NODE_NID (the body key
+// the script runner reads). The CLI spells the node id --nid everywhere
+// else, so the flag is --nid here too (goal 23 review). No manifest
+// command declares both NODE_NID and nid, so the override is unambiguous.
+// legacyFlagAliases keeps the old --node_nid spelling working.
 var flagSpellingOverrides = map[string]string{
 	"sourcePgOsid":   "source-osid",
 	"sourceDatabase": "source-db",
 	"targetDatabase": "target-db",
+	"NODE_NID":       "nid",
+}
+
+// legacyFlagAliases maps a flag spelling that older scripts used to the
+// canonical flag. normalizeCamelToKebab consults it before the kebab
+// rewrite. `node_nid` was the pre-fix rendering of NODE_NID (goal 23
+// review); the override above moved that flag to --nid.
+var legacyFlagAliases = map[string]string{
+	"node_nid": "nid",
 }
 
 // flagNameFor returns the kebab-case flag form of a manifest field
@@ -813,6 +828,12 @@ var flagSpellingOverrides = map[string]string{
 // produce. A flagSpellingOverrides hit short-circuits all of this.
 // Regression target: I2-3c (TEST_LOG.md), I13-D / I13-G (acronym
 // handling for `minIOOsid` and similar).
+//
+// `_` is a word boundary and becomes `-` (`REBOOT_TIMEOUT_SECONDS` →
+// `reboot-timeout-seconds`, `shared_buffers` → `shared-buffers`). Pre-fix
+// (goal 23 review) the maintenance-script and postgres/vllm config fields
+// were the only underscore flags on the surface. normalizeCamelToKebab
+// still accepts the underscore spelling so old scripts keep working.
 func flagNameFor(name string) string {
 	if name == "" {
 		return name
@@ -831,6 +852,10 @@ func flagNameFor(name string) string {
 	}
 	var b strings.Builder
 	for i, r := range runes {
+		if r == '_' {
+			b.WriteByte('-')
+			continue
+		}
 		if i > 0 && isUpper(r) {
 			prev := runes[i-1]
 			switch {
@@ -857,8 +882,17 @@ func flagNameFor(name string) string {
 // instead of hitting "unknown flag". The kebab form remains canonical
 // for help text and conflict resolution; camelCase is purely an alias
 // at lookup time. Regression target: I9-L.
+//
+// Underscore spellings (`--node_nid`, `--checkpoint_completion_target`)
+// are aliases too: they were the canonical flags before flagNameFor
+// learned to split on `_` (goal 23 review), and scripts written against
+// them must keep working. legacyFlagAliases handles the one spelling
+// that a plain kebab rewrite cannot reach (`node_nid` → `nid`).
 func normalizeCamelToKebab(_ *pflag.FlagSet, name string) pflag.NormalizedName {
-	if !containsUpper(name) {
+	if alias, ok := legacyFlagAliases[name]; ok {
+		return pflag.NormalizedName(alias)
+	}
+	if !containsUpper(name) && !strings.Contains(name, "_") {
 		return pflag.NormalizedName(name)
 	}
 	return pflag.NormalizedName(flagNameFor(name))
@@ -1112,7 +1146,7 @@ func isAppsScopedCommand(cmdDef manifest.Command) bool {
 }
 
 // containsUpper reports whether s has any ASCII uppercase rune. Used
-// by normalizeCamelToKebab as a fast no-op gate.
+// by normalizeCamelToKebab (with an underscore check) as a fast no-op gate.
 func containsUpper(s string) bool {
 	for _, r := range s {
 		if r >= 'A' && r <= 'Z' {

@@ -66,6 +66,9 @@ var destructiveVerbPrefixes = []string{
 	"wipe-",
 	"flush-",
 	"purge-",
+	// Goal 23 review. `storage-groups/evict-node` runs `linstor node lost`, which drops every
+	// replica the node held. It must demand --yes exactly like wipe-device.
+	"evict-",
 }
 
 // isDestructiveCommand reports whether cmdDef needs a confirmation
@@ -189,38 +192,60 @@ func destructiveVerb(cmdPath string) string {
 }
 
 // destructiveSummary returns the human-readable target line shown in
-// the confirmation prompt. Falls back to the manifest description
-// when no positional id can be derived. Used so the user can spot a
-// typo'd id before answering y/N.
+// the confirmation prompt so the user can spot a typo'd id before
+// answering y/N.
 //
 // Positional fields are resolved from either the positional slot (args)
 // or the matching `--<flag>` value, in declaration order. The flag
 // fallback matters because some endpoints (e.g. `clusters/{cid}/reset`)
 // accept the URL-bound id exclusively via `--cid` in everyday use, so
-// the positional args slice is empty and the summary would otherwise
-// leak the manifest description (foreman #131).
+// the positional args slice is empty (foreman #131).
+//
+// Without a positional the target is every changed non-positional flag as
+// `flag=value` in field order. Goal 23 review: `storage-groups wipe-device`
+// and `maintenance-scripts bind-gpu-vfio run` have no positional, and the
+// old description fallback printed a 250-word paragraph as the "target".
+// With no positional and no changed flag the line says so explicitly.
 func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
-	if cmdDef.Input != nil {
-		idx := 0
-		for _, field := range cmdDef.Input.Fields {
-			if !field.Positional {
-				continue
-			}
-			if idx < len(args) && args[idx] != "" {
-				return fmt.Sprintf("%s=%s", field.Name, args[idx])
-			}
-			if c != nil {
-				flagName := flagNameFor(field.Name)
-				if c.Flags().Lookup(flagName) != nil {
-					if v, _ := c.Flags().GetString(flagName); v != "" {
-						return fmt.Sprintf("%s=%s", field.Name, v)
-					}
+	if cmdDef.Input == nil {
+		return destructiveVerb(cmdDef.Command) + " (no target given)"
+	}
+	idx := 0
+	for _, field := range cmdDef.Input.Fields {
+		if !field.Positional {
+			continue
+		}
+		if idx < len(args) && args[idx] != "" {
+			return fmt.Sprintf("%s=%s", field.Name, args[idx])
+		}
+		if c != nil {
+			flagName := flagNameFor(field.Name)
+			if c.Flags().Lookup(flagName) != nil {
+				if v, _ := c.Flags().GetString(flagName); v != "" {
+					return fmt.Sprintf("%s=%s", field.Name, v)
 				}
 			}
-			idx++
+		}
+		idx++
+	}
+	var parts []string
+	if c != nil {
+		for _, field := range cmdDef.Input.Fields {
+			if field.Positional {
+				continue
+			}
+			flagName := flagNameFor(field.Name)
+			f := c.Flags().Lookup(flagName)
+			if f == nil || !f.Changed || f.Value.String() == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s=%s", flagName, f.Value.String()))
 		}
 	}
-	return cmdDef.Description
+	if len(parts) == 0 {
+		return destructiveVerb(cmdDef.Command) + " (no target given)"
+	}
+	return strings.Join(parts, " ")
 }
 
 // confirmDestructive prompts on stderr for a y/N response before a

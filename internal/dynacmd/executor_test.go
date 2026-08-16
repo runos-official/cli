@@ -1616,6 +1616,14 @@ func TestNormalizeCamelToKebab(t *testing.T) {
 		// one word; "FOO" is a single all-uppercase acronym → "foo",
 		// not the prior naive "f-o-o" split.
 		{"FOO", "foo"},
+		// Goal 23 review: the old underscore spellings keep working so
+		// scripts written against --node_nid / --checkpoint_completion_target
+		// do not break when the canonical flag became --nid / kebab.
+		{"node_nid", "nid"},
+		{"NODE_NID", "nid"},
+		{"checkpoint_completion_target", "checkpoint-completion-target"},
+		{"REBOOT_TIMEOUT_SECONDS", "reboot-timeout-seconds"},
+		{"reboot_timeout_seconds", "reboot-timeout-seconds"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.in, func(t *testing.T) {

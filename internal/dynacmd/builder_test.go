@@ -25,8 +25,16 @@ func TestFlagNameFor(t *testing.T) {
 		{"id", "id"},
 		{"cid", "cid"},
 		{"bucket", "bucket"},
-		// snake_case passes through (already non-camel).
-		{"checkpoint_completion_target", "checkpoint_completion_target"},
+		// Goal 23 review: `_` is a word boundary, so snake_case and
+		// SCREAMING_SNAKE both kebab. Pre-fix NODE_NID rendered as
+		// --node_nid, the only underscore flag on the whole surface.
+		{"checkpoint_completion_target", "checkpoint-completion-target"},
+		{"REBOOT_TIMEOUT_SECONDS", "reboot-timeout-seconds"},
+		{"VLLM_LOGGING_LEVEL", "vllm-logging-level"},
+		{"CONTINUE_ON_DRAIN_FAIL", "continue-on-drain-fail"},
+		// NODE_NID takes the standard --nid spelling via flagSpellingOverrides;
+		// the body key stays NODE_NID.
+		{"NODE_NID", "nid"},
 		// Two-word camelCase: I2-3c canonical case.
 		{"publicRead", "public-read"},
 		{"appId", "app-id"},

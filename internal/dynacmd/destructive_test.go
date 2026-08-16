@@ -56,6 +56,9 @@ func TestIsDestructiveCommand(t *testing.T) {
 		// DRBD replica and reported success. The prefix now covers the whole
 		// family so a later wipe-* / flush-* / purge-* inherits the guard.
 		{"POST wipe-device is destructive (wipe- prefix)", manifest.Command{Command: "storage-groups/wipe-device", Method: "POST"}, true},
+		// Goal 23 review. evict-node runs `linstor node lost`, which drops every replica the node
+		// held. It must demand --yes exactly like wipe-device.
+		{"POST evict-node is destructive (evict- prefix)", manifest.Command{Command: "storage-groups/evict-node", Method: "POST"}, true},
 		{"POST flush-cache is destructive (flush- prefix)", manifest.Command{Command: "services/valkey/{id}/flush-cache", Method: "POST"}, true},
 		{"POST purge-queue is destructive (purge- prefix)", manifest.Command{Command: "services/kafka/{id}/purge-queue", Method: "POST"}, true},
 		// Non-destructive POST/PATCH should NOT trip the guard. The
@@ -94,8 +97,9 @@ func TestIsDestructiveCommand(t *testing.T) {
 
 // destructiveSummary lifts the resolved primary positional id into
 // the confirmation prompt so a typo on the id is visible before the
-// user answers y/N. Falls back to the manifest description when no
-// positional is available.
+// user answers y/N. Without a positional it lists the changed flags,
+// and without those it says "no target given"; it never prints the
+// manifest description.
 func TestDestructiveSummary(t *testing.T) {
 	cmdWithID := manifest.Command{
 		Command:     "apps/{id}/delete",
@@ -132,6 +136,24 @@ func TestDestructiveSummary(t *testing.T) {
 			{Name: "cid", Type: "string", Positional: true, Required: true},
 		}},
 	}
+	wipeDevice := manifest.Command{
+		Command:     "storage-groups/wipe-device",
+		Description: "Wipe a device. This is a very long description that must never be shown as the target.",
+		Method:      "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "nid", Type: "string", Required: true},
+			{Name: "devicePath", Type: "string", Required: true},
+		}},
+	}
+	bindGPU := manifest.Command{
+		Command:     "maintenance-scripts/bind-gpu-vfio/run",
+		Description: "Bind a GPU to vfio-pci. Long description.",
+		Method:      "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "NODE_NID", Type: "string", Required: true},
+			{Name: "MODE", Type: "string"},
+		}},
+	}
 	cases := []struct {
 		name string
 		cmd  manifest.Command
@@ -143,11 +165,17 @@ func TestDestructiveSummary(t *testing.T) {
 		want  string
 	}{
 		{name: "single positional present", cmd: cmdWithID, args: []string{"d2eow"}, want: "id=d2eow"},
-		{name: "positional absent falls back to description", cmd: cmdWithID, args: []string{}, want: "Delete an application"},
-		{name: "no positional fields uses description", cmd: noPositional, args: []string{}, want: "Cleanup orphaned resources"},
+		{name: "positional absent says no target", cmd: cmdWithID, args: []string{}, want: "apps delete (no target given)"},
+		{name: "no positional fields and no flags says no target", cmd: noPositional, args: []string{}, want: "tools cleanup (no target given)"},
 		{name: "first positional wins on multi", cmd: multiPositional, args: []string{"postgresql", "lw0vp"}, want: "type=postgresql"},
 		{name: "flag-only cid surfaces in target (#131)", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": "mycluster3"}, want: "cid=mycluster3"},
-		{name: "flag empty falls back to description", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": ""}, want: "Reset a cluster to unconfigured state"},
+		{name: "flag empty says no target", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": ""}, want: "clusters reset (no target given)"},
+		// Goal 23 review. wipe-device has no positional field, so the prompt printed the 250-word
+		// manifest description as the "target". The changed non-positional flags are the target.
+		{name: "wipe-device lists changed flags in field order", cmd: wipeDevice, args: []string{}, flags: map[string]string{"device-path": "/dev/sdb", "nid": "n1abc"}, want: "nid=n1abc device-path=/dev/sdb"},
+		{name: "wipe-device with only nid lists nid", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": ""}, want: "nid=n1abc"},
+		{name: "maintenance script names the node via --nid", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": ""}, want: "nid=n1abc"},
+		{name: "maintenance script with two flags", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": "bind"}, want: "nid=n1abc mode=bind"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
