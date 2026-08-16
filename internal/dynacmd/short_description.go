@@ -27,11 +27,33 @@ func firstSentence(description string) string {
 		if next >= len(trimmed) {
 			return trimmed
 		}
-		if isASCIISpace(trimmed[next]) {
-			return trimmed[:next]
+		if !isASCIISpace(trimmed[next]) {
+			continue
 		}
+		if endsWithAbbreviation(trimmed[:next]) {
+			continue
+		}
+		return trimmed[:next]
 	}
 	return trimmed
+}
+
+// sentenceAbbreviations are the abbreviations that end in a full stop and
+// do NOT end a sentence. RunOS manifest descriptions introduce an example
+// in nearly every field, so `Set a label, e.g.` was the whole `Short` on
+// those commands.
+var sentenceAbbreviations = []string{"e.g.", "i.e."}
+
+// endsWithAbbreviation reports whether text ends with one of those
+// abbreviations, case-insensitively.
+func endsWithAbbreviation(text string) bool {
+	lower := strings.ToLower(text)
+	for _, abbreviation := range sentenceAbbreviations {
+		if strings.HasSuffix(lower, abbreviation) {
+			return true
+		}
+	}
+	return false
 }
 
 // isASCIISpace reports whether b is a space, tab or newline. Byte-wise

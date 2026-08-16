@@ -724,6 +724,17 @@ func (b *Builder) buildUseLine(name string, cmdDef manifest.Command) string {
 		}
 	}
 
+	// A convenience positional is a slot the CLI accepts although the
+	// manifest keeps the field non-positional (`vm-images capture <vmid>`,
+	// `tools domain-check <domain>`). Left out of the use line, the shape
+	// the CLI accepts was invisible in --help. Bracketed because the
+	// `--flag` form satisfies the same slot.
+	for _, name := range conveniencePositionalFields(cmdDef) {
+		if !strings.Contains(useLine, "["+name+"]") && !strings.Contains(useLine, "<"+name+">") {
+			useLine += " [" + name + "]"
+		}
+	}
+
 	return useLine
 }
 
@@ -1349,7 +1360,7 @@ func addFieldFlags(cmd *cobra.Command, fields []manifest.Field, cmdPath string) 
 			// an object field got no flag at all, so `labels` was reachable
 			// only via `-f body.yaml` (A9 / B10). StringArray because each
 			// invocation must survive verbatim: a value may contain commas.
-			cmd.Flags().StringArray(flagName, nil, description+objectFlagUsageSuffix)
+			cmd.Flags().StringArray(flagName, nil, description+objectFlagUsage(field))
 
 		case "array":
 			// I25-B: pflag's StringSlice splits on commas inside the value,
