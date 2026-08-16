@@ -49,12 +49,17 @@ func (c *Config) GetEnv() string {
 	return c.Env
 }
 
-// SetAPIURL records a new API URL, clearing the environment label when
-// the URL diverges from the one the named environment wrote. Callers use
-// this instead of assigning ConductorURL directly, so the label cannot be
-// left describing an environment the CLI no longer talks to.
+// SetAPIURL records a new API URL, keeping the environment label ONLY
+// when the URL is still the one that environment wrote. Callers use this
+// instead of assigning ConductorURL directly, so the label cannot be left
+// describing an environment the CLI no longer talks to.
+//
+// The comparison is against EnvAPIURL rather than the current
+// ConductorURL, which is what heals a config written before EnvAPIURL
+// existed: there the CLI has no evidence the label holds, so any
+// `config set api-url` on it reports `custom` from then on.
 func (c *Config) SetAPIURL(url string) {
-	if url != c.ConductorURL {
+	if url != c.EnvAPIURL {
 		c.Env = EnvCustom
 		c.EnvAPIURL = ""
 	}

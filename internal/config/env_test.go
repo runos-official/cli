@@ -87,10 +87,21 @@ func TestSetAPIURL(t *testing.T) {
 		t.Errorf("ConductorURL = %q", c.ConductorURL)
 	}
 
-	same := &Config{Env: "beta", ConductorURL: "https://api.beta.example"}
+	// Re-setting exactly what the environment wrote keeps the label: the
+	// URL is still that environment's.
+	same := &Config{Env: "beta", ConductorURL: "https://api.beta.example", EnvAPIURL: "https://api.beta.example"}
 	same.SetAPIURL("https://api.beta.example")
 	if same.Env != "beta" {
-		t.Errorf("re-setting the same URL keeps the env label, got %q", same.Env)
+		t.Errorf("re-setting the environment's own URL keeps the label, got %q", same.Env)
+	}
+
+	// A config with no recorded environment URL cannot support the label,
+	// so any explicit set makes it custom. This is the heal path for a
+	// config written before EnvAPIURL existed.
+	legacy := &Config{Env: "beta", ConductorURL: "https://api.dev.example"}
+	legacy.SetAPIURL("https://api.dev.example")
+	if legacy.Env != EnvCustom {
+		t.Errorf("a legacy config heals to %q on an explicit set, got %q", EnvCustom, legacy.Env)
 	}
 }
 
