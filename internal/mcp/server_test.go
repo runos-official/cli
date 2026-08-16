@@ -657,3 +657,175 @@ func TestBootstrapToolOnEveryServer(t *testing.T) {
 		})
 	}
 }
+
+// fakeReloader stands in for internal/manifest.Loader.
+type fakeReloader struct {
+	serverVersion string
+	serverErr     error
+	updated       *manifest.Manifest
+	updateErr     error
+	updateCalls   int
+}
+
+func (f *fakeReloader) ServerVersion() (string, error) { return f.serverVersion, f.serverErr }
+func (f *fakeReloader) ForceUpdate() (*manifest.Manifest, error) {
+	f.updateCalls++
+	return f.updated, f.updateErr
+}
+
+// TestManifestUpdateTool is the goal-21 B2 regression. The MCP server
+// loaded the manifest once at startup and had no way to refresh it, so a
+// conductor deploy that added a command left every running MCP session
+// blind to it until the operator restarted the IDE host. There was no
+// manifest_update tool and ListChanged was false, so the client was never
+// told to re-read the list either.
+func TestManifestUpdateTool(t *testing.T) {
+	t.Run("registered on every server", func(t *testing.T) {
+		for _, category := range []string{"read", "sensitive_read", "write", "sensitive_write"} {
+			srv := &Server{manifest: &manifest.Manifest{}, executor: &mockExecutor{}, category: category}
+			var names []string
+			for _, tool := range srv.buildTools() {
+				names = append(names, tool.Name)
+			}
+			if !contains(names, "manifest_update") {
+				t.Errorf("manifest_update missing on the %s server", category)
+			}
+		}
+	})
+
+	t.Run("refreshes the manifest in place", func(t *testing.T) {
+		live := &manifest.Manifest{Version: "40.1.0"}
+		srv := &Server{manifest: live, executor: &mockExecutor{}, category: "read", bootstrapped: true}
+		srv.SetManifestReloader(&fakeReloader{
+			serverVersion: "40.7.0",
+			updated:       &manifest.Manifest{Version: "40.7.0", Commands: []manifest.Command{{Command: "vms/list"}}},
+		})
+
+		out, err := srv.handleManifestUpdate()
+		if err != nil {
+			t.Fatalf("manifest_update: %v", err)
+		}
+		if live.Version != "40.7.0" {
+			t.Errorf("the shared manifest must be updated in place, got %s", live.Version)
+		}
+		for _, want := range []string{"40.1.0", "40.7.0"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("expected %q in the result, got %s", want, out)
+			}
+		}
+	})
+
+	t.Run("tools/list re-checks the version and refreshes on drift", func(t *testing.T) {
+		live := &manifest.Manifest{Version: "40.1.0"}
+		srv := &Server{manifest: live, executor: &mockExecutor{}, category: "read"}
+		reloader := &fakeReloader{serverVersion: "40.7.0", updated: &manifest.Manifest{Version: "40.7.0"}}
+		srv.SetManifestReloader(reloader)
+
+		srv.handleToolsList(&Request{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+
+		if reloader.updateCalls != 1 {
+			t.Errorf("expected one refresh on drift, got %d", reloader.updateCalls)
+		}
+		if live.Version != "40.7.0" {
+			t.Errorf("expected the manifest refreshed to 40.7.0, got %s", live.Version)
+		}
+	})
+
+	t.Run("tools/list does not refetch when the versions agree", func(t *testing.T) {
+		live := &manifest.Manifest{Version: "40.7.0"}
+		srv := &Server{manifest: live, executor: &mockExecutor{}, category: "read"}
+		reloader := &fakeReloader{serverVersion: "40.7.0"}
+		srv.SetManifestReloader(reloader)
+
+		srv.handleToolsList(&Request{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+
+		if reloader.updateCalls != 0 {
+			t.Errorf("expected no refresh when the versions agree, got %d", reloader.updateCalls)
+		}
+	})
+
+	t.Run("an unreachable server is not an error", func(t *testing.T) {
+		live := &manifest.Manifest{Version: "40.1.0"}
+		srv := &Server{manifest: live, executor: &mockExecutor{}, category: "read"}
+		srv.SetManifestReloader(&fakeReloader{serverErr: fmt.Errorf("dial tcp: lookup failed")})
+
+		resp := srv.handleToolsList(&Request{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+		if resp.Error != nil {
+			t.Errorf("an offline version check must not fail tools/list, got %+v", resp.Error)
+		}
+	})
+}
+
+// TestListChangedAdvertised pairs with B2: a client only re-reads the
+// tool list when the server said it might change.
+func TestListChangedAdvertised(t *testing.T) {
+	srv := newTestServer("read", &mockExecutor{})
+	resp := srv.handleInitialize(&Request{JSONRPC: "2.0", ID: 1, Method: "initialize"})
+	result := resp.Result.(InitializeResult)
+	if result.Capabilities.Tools == nil || !result.Capabilities.Tools.ListChanged {
+		t.Errorf("expected tools.listChanged true, got %+v", result.Capabilities.Tools)
+	}
+}
+
+// TestTopicKeySuggestions is half of the goal-21 B1 fix. Conductor's
+// topic search matched the `keywords` column only, so "vm", "vms",
+// "virtual machine" and "gpu" all returned 0 while the topics existed
+// under keys that plainly contain those words. On the read server that
+// is a lockout: no topics found means the gate never opens.
+func TestTopicKeySuggestions(t *testing.T) {
+	keys := []string{"virtual-machines", "vm-storage", "deploying-apps", "gpu-passthrough", "runos-yaml"}
+	cases := []struct {
+		keywords string
+		want     []string
+	}{
+		{"vm", []string{"virtual-machines", "vm-storage"}},
+		{"vms", []string{"virtual-machines", "vm-storage"}},
+		{"virtual machine", []string{"virtual-machines"}},
+		{"gpu", []string{"gpu-passthrough"}},
+		{"deploy,apps", []string{"deploying-apps"}},
+		{"nothing-like-this", nil},
+		{"", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.keywords, func(t *testing.T) {
+			got := topicKeySuggestions(c.keywords, keys)
+			if len(got) != len(c.want) {
+				t.Fatalf("topicKeySuggestions(%q) = %v, want %v", c.keywords, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("topicKeySuggestions(%q) = %v, want %v", c.keywords, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSearchReturnedNothing(t *testing.T) {
+	if !searchReturnedNothing(`{"topics":[],"count":0,"mode":"summary"}`) {
+		t.Error("an empty search must be recognised")
+	}
+	if searchReturnedNothing(`{"topics":[{"key":"a"}],"count":1,"mode":"summary"}`) {
+		t.Error("a search with hits must not be treated as empty")
+	}
+	if searchReturnedNothing("not json at all") {
+		t.Error("an unparseable result is not a known-empty search")
+	}
+}
+
+// TestBootstrapCountsTowardTheTopicGate is the other half of B1.
+// mcp_bootstrap returns instructions, which is documentation, and it did
+// not count toward the read-at-least-N-topics gate, so a session whose
+// searches came back empty could never reach any tool.
+func TestBootstrapCountsTowardTheTopicGate(t *testing.T) {
+	srv := newTestServer("read", &mockExecutor{result: `{"instructions":"read this","topicKeys":["virtual-machines","deploying-apps"]}`})
+
+	srv.handleToolsCall(makeToolCallRequest("mcp_bootstrap"))
+
+	if _, ok := srv.topicsRead["mcp-bootstrap"]; !ok {
+		t.Errorf("bootstrap must count as one documentation read, got %v", srv.topicsRead)
+	}
+	if len(srv.topicKeys) != 2 {
+		t.Errorf("bootstrap's topic index must be kept for the search fallback, got %v", srv.topicKeys)
+	}
+}

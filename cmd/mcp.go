@@ -158,6 +158,9 @@ func runMCPServe(category string) error {
 	// Without a default cluster the tool schema has to mark `cid`
 	// required, since there is nothing to fall back on (B13).
 	server.SetDefaultClusterID(cfg.GetDefaultClusterID())
+	// The loader is how manifest_update and the tools/list version
+	// re-check refresh the command list without a restart (B2).
+	server.SetManifestReloader(loader)
 
 	return server.Run()
 }

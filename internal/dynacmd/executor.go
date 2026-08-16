@@ -2092,8 +2092,23 @@ func validateInputValues(args []string, cmdDef manifest.Command, body map[string
 	if cmdDef.Input == nil {
 		return nil
 	}
+	// Either-or rules the manifest schema cannot express (B12).
+	if err := refuseUnlessExactlyOne(cmdDef, body); err != nil {
+		return err
+	}
 	posIndex := 0
 	for _, field := range cmdDef.Input.Fields {
+		// A page size of zero asks for nothing. Pre-fix only negatives
+		// were refused, so `--limit 0` reached conductor, where zero
+		// means "no rows" on one endpoint and "the default page" on the
+		// next; neither is what a caller who typed 0 asked for (B17).
+		// Scoped to `limit` on purpose: zero is a meaningful value for
+		// most other integer fields.
+		if field.Type == "integer" && field.Name == "limit" {
+			if n, ok := integerBodyValue(body, field.Name); ok && n == 0 {
+				return fmt.Errorf("--%s must be at least 1; omit it for the endpoint's default page size", flagNameFor(field.Name))
+			}
+		}
 		// Negative-integer rule.
 		if field.Type == "integer" {
 			if v, ok := body[field.Name]; ok {
@@ -2513,8 +2528,12 @@ func annotateDefaultCluster(data []byte, defaultCID string, appendAsterisk bool)
 		return data
 	}
 
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
+	// `clusters/list` answers `{"clusters":[...]}`, not a bare array.
+	// Pre-fix this unmarshalled straight into []map and returned on the
+	// error, so the caller's own default was never marked in either mode
+	// and the whole helper was dead against the live response (B4).
+	envelopeKey, items, ok := clusterListItems(data)
+	if !ok {
 		return data
 	}
 
@@ -2529,11 +2548,40 @@ func annotateDefaultCluster(data []byte, defaultCID string, appendAsterisk bool)
 		}
 	}
 
-	result, err := json.Marshal(items)
+	var (
+		result []byte
+		err    error
+	)
+	if envelopeKey == "" {
+		result, err = json.Marshal(items)
+	} else {
+		result, err = json.Marshal(map[string]any{envelopeKey: items})
+	}
 	if err != nil {
 		return data
 	}
 	return result
+}
+
+// clusterListItems decodes a clusters/list response into its rows,
+// accepting both the bare array and the single-key envelope conductor
+// actually returns. The envelope key is reported back so the annotated
+// rows can be re-wrapped in the shape the formatter expects.
+func clusterListItems(data []byte) (envelopeKey string, items []map[string]any, ok bool) {
+	if err := json.Unmarshal(data, &items); err == nil {
+		return "", items, true
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope) != 1 {
+		return "", nil, false
+	}
+	for key, raw := range envelope {
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return "", nil, false
+		}
+		return key, items, true
+	}
+	return "", nil, false
 }
 
 // isEmptyString reports whether v is a string-typed empty value. Used by

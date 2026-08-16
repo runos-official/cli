@@ -10,15 +10,19 @@ type Manifest struct {
 
 // Command defines a single CLI command
 type Command struct {
-	Command     string   `yaml:"command" json:"command"` // e.g., "services/add/valkey"
-	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	Endpoint    string   `yaml:"endpoint" json:"endpoint"`                       // e.g., "/api/v1/services/valkey"
-	Method      string   `yaml:"method" json:"method"`                           // GET, POST, DELETE, etc.
-	Sensitive   bool     `yaml:"sensitive,omitempty" json:"sensitive,omitempty"` // Contains sensitive data (credentials, secrets)
-	MCP         []string `yaml:"mcp,omitempty" json:"mcp,omitempty"`             // MCP servers: read, sensitive_read, write, sensitive_write
-	Input       *Input   `yaml:"input,omitempty" json:"input,omitempty"`
-	Output      *Output  `yaml:"output,omitempty" json:"output,omitempty"`
-	ReturnsJob  bool     `yaml:"returnsJob,omitempty" json:"returnsJob,omitempty"` // Supports --wait flag
+	Command     string `yaml:"command" json:"command"` // e.g., "services/add/valkey"
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Endpoint    string `yaml:"endpoint" json:"endpoint"` // e.g., "/api/v1/services/valkey"
+	Method      string `yaml:"method" json:"method"`     // GET, POST, DELETE, etc.
+	// Sensitivity is carried by MCP, not by a separate flag: a command
+	// that returns a credential declares `sensitive_read` and one that
+	// takes a credential declares `sensitive_write`. A `Sensitive bool`
+	// field used to sit here, parsed on every load and read by nothing,
+	// and conductor never emitted the key (B15).
+	MCP        []string `yaml:"mcp,omitempty" json:"mcp,omitempty"` // MCP servers: read, sensitive_read, write, sensitive_write
+	Input      *Input   `yaml:"input,omitempty" json:"input,omitempty"`
+	Output     *Output  `yaml:"output,omitempty" json:"output,omitempty"`
+	ReturnsJob bool     `yaml:"returnsJob,omitempty" json:"returnsJob,omitempty"` // Supports --wait flag
 }
 
 // Input defines the input schema for a command

@@ -107,6 +107,14 @@ type Property struct {
 	Required   []string            `json:"required,omitempty"`
 }
 
+// Notification is a JSON-RPC 2.0 notification: a method with no id, so
+// the receiver sends no response. The server emits
+// `notifications/tools/list_changed` after a manifest refresh.
+type Notification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+}
+
 // ToolsListResult represents the response to a tools/list request.
 type ToolsListResult struct {
 	Tools []Tool `json:"tools"`
@@ -195,6 +203,16 @@ type Server struct {
 	startupBinaryMtime  time.Time
 	startupBinaryPath   string
 	staleBinaryDetected bool
+	// topicKeys is the topic index mcp_bootstrap returned. Kept so a
+	// keyword search that finds nothing can fall back to matching the
+	// caller's words against the keys (B1).
+	topicKeys []string
+	// reloader refreshes the manifest without restarting the server. Nil
+	// disables the refresh paths (B2).
+	reloader ManifestReloader
+	// driftChecked keeps the 4xx manifest-drift comparison to one network
+	// call per process (B7).
+	driftChecked bool
 	// defaultClusterID is the cluster the CLI falls back to when a tool
 	// call names none. Empty means there is no fallback, and then a
 	// cluster-scoped tool genuinely REQUIRES cid: the schema says so
@@ -373,7 +391,10 @@ func (s *Server) handleInitialize(req *Request) *Response {
 		Result: InitializeResult{
 			ProtocolVersion: protocolVersion,
 			Capabilities: Capabilities{
-				Tools: &ToolsCapability{},
+				// listChanged: manifest_update and the tools/list version
+				// re-check both change the tool list mid-session, so the
+				// client has to be told it may need to re-read it (B2).
+				Tools: &ToolsCapability{ListChanged: true},
 			},
 			ServerInfo: ServerInfo{
 				Name:    s.getServerName(),
@@ -385,6 +406,10 @@ func (s *Server) handleInitialize(req *Request) *Response {
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
+	// A client asking what exists is the right moment to check whether
+	// the answer has changed since startup (B2). Silent on failure: an
+	// offline version check must not break tools/list.
+	s.refreshManifestIfDrifted()
 	tools := s.buildTools()
 	return &Response{
 		JSONRPC: "2.0",
@@ -445,6 +470,16 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			}
 		}
 		s.bootstrapped = true
+		s.topicKeys = topicKeysFromBootstrap(result)
+		// Bootstrap returns the instructions every session must follow,
+		// which is documentation. Counting it toward the read-at-least-N
+		// gate matters most in the case that gate handles worst: a search
+		// that comes back empty leaves the agent unable to open it at all
+		// (B1).
+		if s.topicsRead == nil {
+			s.topicsRead = make(map[string]struct{})
+		}
+		s.topicsRead[bootstrapTopicKey] = struct{}{}
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -486,6 +521,17 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 				},
 			}
 		}
+		// Client-side fallback: a search that found nothing is answered
+		// from the bootstrap topic index by key match, rather than with
+		// an empty list the caller cannot act on (B1).
+		if params.Name == "mcp_topics_search" && searchReturnedNothing(result) {
+			keywords, _ := params.Arguments["keywords"].(string)
+			if matches := topicKeySuggestions(keywords, s.topicKeys); len(matches) > 0 {
+				if fallback := topicFallbackResult(keywords, matches); fallback != "" {
+					result = fallback
+				}
+			}
+		}
 		s.recordTopicsRead(params.Name, params.Arguments, result)
 		return &Response{
 			JSONRPC: "2.0",
@@ -519,6 +565,11 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// Special handling for deploy (calls runos deploy subprocess)
 	if params.Name == "deploy" {
 		result, err = s.handleDeploy(params.Arguments)
+	} else if isManifestUpdateTool(params.Name) {
+		result, err = s.handleManifestUpdate()
+		if err == nil {
+			s.sendNotification("notifications/tools/list_changed")
+		}
 	} else if isStaticRunTool(params.Name) {
 		result, err = s.handleRun(params.Arguments)
 	} else if isStaticAppsTool(params.Name) {
@@ -560,11 +611,14 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	}
 
 	if err != nil {
+		// A 4xx can be manifest drift rather than a bad request: a route
+		// this server still remembers and conductor has renamed. The CLI
+		// says so on its own dispatch path; MCP said nothing (B7).
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: stalePrefix + err.Error()}},
+				Content: []ContentBlock{{Type: "text", Text: stalePrefix + err.Error() + s.manifestDriftNote(err)}},
 				IsError: true,
 			},
 		}
@@ -858,6 +912,9 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 	// Append jobs_follow — long-poll streaming until terminal state,
 	// shape the manifest dispatcher doesn't model.
 	tools = append(tools, staticJobsTools(s.category)...)
+	// Append manifest_update: every category can be the one holding a
+	// command list that predates the last conductor deploy (B2).
+	tools = append(tools, manifestUpdateTool())
 	// Append `run` — blocks streaming container output and exits with
 	// the container's real exit code; a shape the manifest's one-call
 	// dispatcher can't model. Only surfaces under sensitive_write
@@ -999,6 +1056,18 @@ func (s *Server) sendResponse(resp *Response) {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "MCP: failed to marshal response: %v\n", err)
+		return
+	}
+	fmt.Println(string(data))
+}
+
+// sendNotification writes a JSON-RPC notification: a method call with no
+// id, which the client must not answer. Used to tell the client the tool
+// list changed after a manifest refresh (B2).
+func (s *Server) sendNotification(method string) {
+	data, err := json.Marshal(Notification{JSONRPC: "2.0", Method: method})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "MCP: failed to marshal notification: %v\n", err)
 		return
 	}
 	fmt.Println(string(data))

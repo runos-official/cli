@@ -66,13 +66,29 @@ func judgeStaleManifest(cachedVersion, serverVersion string, serverErr error) st
 // check. Deliberately narrow: an unrecognised shape is treated as an ordinary error, because
 // re-fetching the manifest in response to an unrelated failure would be worse than useless.
 func isUnknownCommandError(err error) bool {
+	return unknownSubject(err) != ""
+}
+
+// unknownSubject reports WHAT cobra did not recognise: "command",
+// "flag", or "" for any other error.
+//
+// The two need different wording. A stale command list explains a missing
+// command; it explains a missing flag too, since a flag arrives with the
+// command it belongs to. But telling an operator "this command really
+// does not exist" when the command exists and only the flag was wrong
+// sends them to look for a failed deploy. Regression target: goal 21 B6.
+func unknownSubject(err error) string {
 	if err == nil {
-		return false
+		return ""
 	}
 	msg := err.Error()
-	return strings.HasPrefix(msg, "unknown command") ||
-		strings.HasPrefix(msg, "unknown flag") ||
-		strings.HasPrefix(msg, "unknown shorthand flag")
+	switch {
+	case strings.HasPrefix(msg, "unknown command"):
+		return "command"
+	case strings.HasPrefix(msg, "unknown flag"), strings.HasPrefix(msg, "unknown shorthand flag"):
+		return "flag"
+	}
+	return ""
 }
 
 // newManifestLoader builds a loader against the configured API, as the manifest command does.
@@ -112,23 +128,30 @@ func explainPossiblyStaleManifest(err error) {
 
 	server, serr := loader.ServerVersion()
 
+	subject := unknownSubject(err)
 	switch judgeStaleManifest(cached, server, serr) {
 	case verdictCacheStale:
 		fmt.Fprintf(os.Stderr,
 			"\nYour cached command list is out of date (it has %s, the server is serving %s).\n"+
-				"That is very likely why this command was not found.\n", cached, server)
+				"That is very likely why this %s was not found.\n", cached, server, subject)
 		if _, uerr := loader.ForceUpdate(); uerr != nil {
 			fmt.Fprintf(os.Stderr, "Run `runos manifest update` to refresh it, then try again.\n")
 			return
 		}
 		fmt.Fprintf(os.Stderr, "RunOS has refreshed it to %s. Run your command again.\n", server)
 	case verdictCommandUnknown:
+		if subject == "flag" {
+			fmt.Fprintf(os.Stderr,
+				"\nYour cached command list is current (%s), so this flag really does not exist on this command.\n"+
+					"The COMMAND is fine; run it with --help to see the flags it does take.\n", cached)
+			return
+		}
 		fmt.Fprintf(os.Stderr,
 			"\nYour cached command list is current (%s), so this command really does not exist.\n"+
 				"Run `runos --help` to see what does.\n", cached)
 	case verdictCannotTell:
 		fmt.Fprintf(os.Stderr,
 			"\nRunOS could not reach the API to check whether your cached command list is current.\n"+
-				"If you expected this command to exist, run `runos manifest update` once you are online.\n")
+				"If you expected this %s to exist, run `runos manifest update` once you are online.\n", subject)
 	}
 }

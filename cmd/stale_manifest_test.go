@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +118,73 @@ func TestIsUnknownCommandError(t *testing.T) {
 				t.Errorf("isUnknownCommandError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestUnknownSubjectWording is the goal-21 B6 regression. An unknown
+// FLAG got the unknown-COMMAND wording, "this command really does not
+// exist", while the command plainly did exist and only the flag was
+// wrong. An agent reading that goes and looks for a missing deploy.
+func TestUnknownSubjectWording(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"unknown command", errors.New("unknown command \"virt\" for \"runos\""), "command"},
+		{"unknown flag", errors.New("unknown flag: --gpus"), "flag"},
+		{"unknown shorthand flag", errors.New("unknown shorthand flag: 'z' in -z"), "flag"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := unknownSubject(c.err); got != c.want {
+				t.Errorf("unknownSubject(%v) = %q, want %q", c.err, got, c.want)
+			}
+		})
+	}
+	if got := unknownSubject(errors.New("some other failure")); got != "" {
+		t.Errorf("an unrelated error names no subject, got %q", got)
+	}
+}
+
+// TestManifestDriftGuidance is the goal-21 B7 regression. A 4xx from a
+// dispatch (a route the server does not have, a field it does not know)
+// looked identical whether the CLI's cached command list was current or
+// months behind, and nothing compared the two.
+func TestManifestDriftGuidance(t *testing.T) {
+	t.Run("drift produces guidance naming both versions", func(t *testing.T) {
+		got := manifestDriftGuidance("40.1.0", "40.7.0")
+		for _, want := range []string{"40.1.0", "40.7.0", "manifest update"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("expected %q in the guidance, got: %s", want, got)
+			}
+		}
+	})
+	t.Run("no drift produces nothing", func(t *testing.T) {
+		if got := manifestDriftGuidance("40.7.0", "40.7.0"); got != "" {
+			t.Errorf("expected no guidance when the versions agree, got: %s", got)
+		}
+	})
+	t.Run("an unknown version produces nothing", func(t *testing.T) {
+		if got := manifestDriftGuidance("", "40.7.0"); got != "" {
+			t.Errorf("expected no guidance without a cached version, got: %s", got)
+		}
+		if got := manifestDriftGuidance("40.7.0", ""); got != "" {
+			t.Errorf("expected no guidance without a server version, got: %s", got)
+		}
+	})
+}
+
+// The drift check only runs for a client error. A 500 says nothing about
+// the command list, and a 200 has nothing to explain.
+func TestDriftCheckAppliesToClientErrors(t *testing.T) {
+	cases := []struct {
+		status int
+		want   bool
+	}{{400, true}, {404, true}, {409, true}, {422, true}, {401, false}, {403, false}, {500, false}, {200, false}}
+	for _, c := range cases {
+		if got := driftCheckApplies(c.status); got != c.want {
+			t.Errorf("driftCheckApplies(%d) = %v, want %v", c.status, got, c.want)
+		}
 	}
 }

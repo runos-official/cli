@@ -219,7 +219,7 @@ func destructiveVerb(cmdPath string) string {
 // readable, because spotting a typo in them is the point of the line.
 func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
 	if cmdDef.Input == nil {
-		return destructiveVerb(cmdDef.Command) + " (no target given)"
+		return destructiveVerb(cmdDef.Command) + noTargetGiven(cmdDef)
 	}
 	idx := 0
 	for _, field := range cmdDef.Input.Fields {
@@ -261,7 +261,7 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 		}
 	}
 	if len(parts) == 0 {
-		return destructiveVerb(cmdDef.Command) + " (no target given)"
+		return destructiveVerb(cmdDef.Command) + noTargetGiven(cmdDef)
 	}
 	return strings.Join(parts, " ")
 }
@@ -322,4 +322,20 @@ func confirmDestructive(c *cobra.Command, cmdDef manifest.Command, args []string
 		return fmt.Errorf("%s cancelled", verb)
 	}
 	return nil
+}
+
+// noTargetGiven renders the "no target" tail of a destructive prompt.
+// When the command has an either-or rule (B12) it names the flags,
+// because `storage-groups evict-node (no target given)` told the
+// operator nothing about what was missing and the call went out anyway.
+func noTargetGiven(cmdDef manifest.Command) string {
+	names := exactlyOneOfFields(cmdDef.Command)
+	if len(names) == 0 {
+		return " (no target given)"
+	}
+	flags := make([]string, 0, len(names))
+	for _, name := range names {
+		flags = append(flags, "--"+flagNameFor(name))
+	}
+	return " (no target given: pass exactly one of " + strings.Join(flags, " or ") + ")"
 }

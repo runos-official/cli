@@ -2823,3 +2823,127 @@ func TestFollowJobProgressWriter(t *testing.T) {
 		t.Fatal("expected an error when the response carries no jobId")
 	}
 }
+
+// TestAnnotateDefaultClusterEnvelope is the goal-21 B4 regression.
+// `clusters/list` answers `{"clusters":[...]}`, but the annotator
+// unmarshalled into a bare []map and bailed on the first error, so the
+// caller's own default cluster was never marked in either mode. The
+// `*` and the isDefault field were both silently absent.
+func TestAnnotateDefaultClusterEnvelope(t *testing.T) {
+	body := []byte(`{"clusters":[{"cid":"abc12","name":"prod"},{"cid":"def34","name":"staging"}]}`)
+
+	t.Run("json mode marks the default inside the envelope", func(t *testing.T) {
+		got := annotateDefaultCluster(body, "abc12", false)
+		var envelope struct {
+			Clusters []map[string]any `json:"clusters"`
+		}
+		if err := json.Unmarshal(got, &envelope); err != nil {
+			t.Fatalf("the envelope shape must survive: %v (got %s)", err, got)
+		}
+		if len(envelope.Clusters) != 2 {
+			t.Fatalf("expected both clusters back, got %s", got)
+		}
+		if envelope.Clusters[0]["isDefault"] != true {
+			t.Errorf("expected isDefault on the matching cluster, got %s", got)
+		}
+		if envelope.Clusters[0]["cid"] != "abc12" {
+			t.Errorf("json mode must not touch the cid, got %s", got)
+		}
+		if _, marked := envelope.Clusters[1]["isDefault"]; marked {
+			t.Errorf("only the default cluster is marked, got %s", got)
+		}
+	})
+
+	t.Run("text mode appends the asterisk inside the envelope", func(t *testing.T) {
+		got := annotateDefaultCluster(body, "abc12", true)
+		if !contains(string(got), `"abc12*"`) {
+			t.Errorf("expected the text-mode marker, got %s", got)
+		}
+	})
+
+	t.Run("a bare array still works", func(t *testing.T) {
+		got := annotateDefaultCluster([]byte(`[{"cid":"abc12"}]`), "abc12", false)
+		if !contains(string(got), `"isDefault":true`) {
+			t.Errorf("the pre-envelope shape must keep working, got %s", got)
+		}
+	})
+}
+
+// TestLimitZeroRefused is the goal-21 B17 regression. The integer gate
+// refused negatives only, so `--limit 0` passed the client and reached
+// conductor, where a zero page size means "no rows" on some endpoints and
+// "the default" on others. Neither is what a caller who typed 0 wanted.
+func TestLimitZeroRefused(t *testing.T) {
+	cmdDef := manifest.Command{
+		Command: "vm-events",
+		Input:   &manifest.Input{Fields: []manifest.Field{{Name: "limit", Type: "integer"}}},
+	}
+	t.Run("zero refused", func(t *testing.T) {
+		err := validateInputValues(nil, cmdDef, map[string]any{"limit": 0})
+		if err == nil {
+			t.Fatal("expected --limit 0 to be refused")
+		}
+		if !contains(err.Error(), "--limit") {
+			t.Errorf("refusal should name the flag, got: %s", err.Error())
+		}
+	})
+	t.Run("one accepted", func(t *testing.T) {
+		if err := validateInputValues(nil, cmdDef, map[string]any{"limit": 1}); err != nil {
+			t.Errorf("--limit 1 is legitimate, got: %v", err)
+		}
+	})
+	t.Run("omitted accepted", func(t *testing.T) {
+		if err := validateInputValues(nil, cmdDef, map[string]any{}); err != nil {
+			t.Errorf("omitting --limit is legitimate, got: %v", err)
+		}
+	})
+	t.Run("other integer fields keep accepting zero", func(t *testing.T) {
+		other := manifest.Command{
+			Command: "vms/update",
+			Input:   &manifest.Input{Fields: []manifest.Field{{Name: "bootOrder", Type: "integer"}}},
+		}
+		if err := validateInputValues(nil, other, map[string]any{"bootOrder": 0}); err != nil {
+			t.Errorf("zero is meaningful elsewhere, got: %v", err)
+		}
+	})
+}
+
+// TestEvictNodeEitherOrEnforced is the goal-21 B12 regression.
+// storage-groups/evict-node takes nid OR hostname, both optional in the
+// manifest, and the CLI sent a body with neither: the destructive prompt
+// read "(no target given)" and the call still went out.
+func TestEvictNodeEitherOrEnforced(t *testing.T) {
+	cmdDef := manifest.Command{
+		Command: "storage-groups/evict-node",
+		Method:  "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "nid", Type: "string"},
+			{Name: "hostname", Type: "string"},
+		}},
+	}
+	t.Run("neither given is refused", func(t *testing.T) {
+		err := validateInputValues(nil, cmdDef, map[string]any{})
+		if err == nil {
+			t.Fatal("expected a refusal when no target is named")
+		}
+		for _, want := range []string{"--nid", "--hostname"} {
+			if !contains(err.Error(), want) {
+				t.Errorf("refusal should name %s, got: %s", want, err.Error())
+			}
+		}
+	})
+	t.Run("both given is refused", func(t *testing.T) {
+		err := validateInputValues(nil, cmdDef, map[string]any{"nid": "n1", "hostname": "box"})
+		if err == nil {
+			t.Fatal("expected a refusal when both targets are named")
+		}
+	})
+	t.Run("exactly one is accepted", func(t *testing.T) {
+		if err := validateInputValues(nil, cmdDef, map[string]any{"nid": "n1"}); err != nil {
+			t.Errorf("nid alone is the documented shape, got: %v", err)
+		}
+		if err := validateInputValues(nil, cmdDef, map[string]any{"hostname": "box"}); err != nil {
+			t.Errorf("hostname alone is the documented shape, got: %v", err)
+		}
+	})
+}

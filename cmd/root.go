@@ -206,6 +206,11 @@ func Execute() {
 		// says which, and refreshes the cache when it is the cause (goal 21, O10). It never
 		// changes the exit code: the command still failed.
 		explainPossiblyStaleManifest(err)
+		// The next case along: the command WAS found and dispatched, and
+		// conductor refused it with a 4xx. That looks the same whether the
+		// cached command list is current or months behind, so compare the
+		// two once and say so when they differ (goal 21, B7).
+		explainManifestDriftOn4xx(err)
 		// Same shape, different cause: a cluster-not-found is often a stale CONFIGURED DEFAULT
 		// rather than a broken cluster, and the bare message points at the wrong one (O2).
 		explainStaleDefaultCluster(err)
