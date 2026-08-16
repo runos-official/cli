@@ -325,7 +325,7 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 				}
 			}
 			if ok {
-				valStr := fmt.Sprintf("%v", val)
+				valStr := dynacmd.QueryParamValue(val)
 				// Handle both placeholder styles: {name} and :name (URL-encode for safety)
 				escapedVal := url.PathEscape(valStr)
 				result = strings.ReplaceAll(result, "{"+field.Name+"}", escapedVal)
@@ -335,34 +335,49 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 	}
 
 	// For GET and DELETE requests, append non-positional fields as query parameters
-	if (cmdDef.Method == http.MethodGet || cmdDef.Method == http.MethodDelete) && cmdDef.Input != nil {
-		queryParams := url.Values{}
-		for _, field := range cmdDef.Input.Fields {
-			// Skip positional fields (already in URL path) and a cid the
-			// endpoint template binds as a path segment.
-			if field.Positional || skipFieldAsQueryParam(field.Name, endpoint) {
-				continue
-			}
-			if val, ok := args[field.Name]; ok {
-				queryParams.Set(field.Name, fmt.Sprintf("%v", val))
-			} else if field.Default != nil {
-				queryParams.Set(field.Name, fmt.Sprintf("%v", field.Default))
-			}
-		}
-		// For DELETE, also include flags as query parameters
-		if cmdDef.Method == http.MethodDelete {
-			for _, flag := range cmdDef.Input.Flags {
-				if val, ok := args[flag.Name]; ok {
-					queryParams.Set(flag.Name, fmt.Sprintf("%v", val))
-				}
-			}
-		}
-		if len(queryParams) > 0 {
+	if cmdDef.Method == http.MethodGet || cmdDef.Method == http.MethodDelete {
+		if queryParams := queryParamsFor(*cmdDef, args, endpoint); len(queryParams) > 0 {
 			result = result + "?" + queryParams.Encode()
 		}
 	}
 
 	return e.baseURL + result, nil
+}
+
+// queryParamsFor builds the GET / DELETE query string for one MCP tool
+// call, through the same builder the cobra surface uses.
+//
+// Two things are MCP's own. A cid the endpoint template binds as a path
+// segment must not be repeated as a filter (see skipFieldAsQueryParam),
+// and a manifest default has to be applied here, because MCP arguments
+// arrive exactly as the caller sent them while the cobra path has already
+// defaulted them in collectInput. Everything after that is dynacmd's
+// builder, so the two surfaces cannot disagree about what they asked for
+// (S4).
+//
+// endpoint is the raw manifest template, not the substituted URL, so the
+// `:cid` marker is still present when this runs.
+func queryParamsFor(cmdDef manifest.Command, args map[string]any, endpoint string) url.Values {
+	if cmdDef.Input == nil {
+		return url.Values{}
+	}
+	values := make(map[string]any, len(args))
+	for _, field := range cmdDef.Input.Fields {
+		if skipFieldAsQueryParam(field.Name, endpoint) {
+			continue
+		}
+		if val, ok := args[field.Name]; ok {
+			values[field.Name] = val
+		} else if field.Default != nil {
+			values[field.Name] = field.Default
+		}
+	}
+	for _, flag := range cmdDef.Input.Flags {
+		if val, ok := args[flag.Name]; ok {
+			values[flag.Name] = val
+		}
+	}
+	return dynacmd.QueryParams(cmdDef, values)
 }
 
 // skipFieldAsQueryParam reports whether a field must be left out of the

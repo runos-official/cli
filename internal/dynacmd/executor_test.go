@@ -1869,7 +1869,7 @@ func TestBuildQueryParams(t *testing.T) {
 	}
 
 	t.Run("GET drops positional, keeps fields and flag (I7-F repro)", func(t *testing.T) {
-		got := buildQueryParams(cmdLogs, map[string]any{
+		got := QueryParams(cmdLogs, map[string]any{
 			"id":       "appid1",
 			"tail":     50,
 			"previous": true,
@@ -1886,7 +1886,7 @@ func TestBuildQueryParams(t *testing.T) {
 	})
 
 	t.Run("GET with flag default false still emits", func(t *testing.T) {
-		got := buildQueryParams(cmdLogs, map[string]any{
+		got := QueryParams(cmdLogs, map[string]any{
 			"tail":     100,
 			"previous": false,
 		})
@@ -1896,7 +1896,7 @@ func TestBuildQueryParams(t *testing.T) {
 	})
 
 	t.Run("DELETE preserves prior symmetric behavior", func(t *testing.T) {
-		got := buildQueryParams(cmdDelete, map[string]any{
+		got := QueryParams(cmdDelete, map[string]any{
 			"id":    "appid1",
 			"force": true,
 		})
@@ -1909,7 +1909,7 @@ func TestBuildQueryParams(t *testing.T) {
 	})
 
 	t.Run("body missing key skips the param", func(t *testing.T) {
-		got := buildQueryParams(cmdLogs, map[string]any{"tail": 10})
+		got := QueryParams(cmdLogs, map[string]any{"tail": 10})
 		if got.Get("since") != "" {
 			t.Errorf("since should be absent when not in body, got %q", got.Get("since"))
 		}
@@ -1919,14 +1919,14 @@ func TestBuildQueryParams(t *testing.T) {
 	})
 
 	t.Run("nil Input returns empty", func(t *testing.T) {
-		got := buildQueryParams(cmdNoInput, map[string]any{"anything": "ignored"})
+		got := QueryParams(cmdNoInput, map[string]any{"anything": "ignored"})
 		if len(got) != 0 {
 			t.Errorf("nil Input should return empty params, got %v", got)
 		}
 	})
 
 	t.Run("no flags declared", func(t *testing.T) {
-		got := buildQueryParams(cmdFieldsOnly, map[string]any{})
+		got := QueryParams(cmdFieldsOnly, map[string]any{})
 		if len(got) != 0 {
 			t.Errorf("no body entries, no flags: empty; got %v", got)
 		}
@@ -1934,7 +1934,7 @@ func TestBuildQueryParams(t *testing.T) {
 
 	t.Run("encoded URL string is stable", func(t *testing.T) {
 		// Note: queryParams.Encode() sorts keys, so the order is deterministic.
-		got := buildQueryParams(cmdLogs, map[string]any{
+		got := QueryParams(cmdLogs, map[string]any{
 			"tail":     100,
 			"previous": true,
 		})

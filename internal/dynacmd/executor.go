@@ -366,12 +366,11 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if follow && responseHasJobID(respBody) {
 			// Render the response BEFORE polling: it carries the ids the
 			// caller needs (vmid, sid, gid, imgid) and --follow used to
-			// swallow it. Progress goes to stderr so `--follow -j` stdout
-			// stays a single parseable JSON document (A3 / B11).
+			// swallow it (A3 / B11).
 			if err := renderFollowResponse(cmdDef, respBody, jsonOutput); err != nil {
 				return err
 			}
-			return e.followJob(respBody, cmd.ErrOrStderr())
+			return e.followJob(respBody, followProgressWriter(cmd, jsonOutput))
 		}
 	}
 
@@ -1208,13 +1207,25 @@ func responseHasJobID(respBody []byte) bool {
 	return ok && id != ""
 }
 
+// followProgressWriter picks where `--follow` progress lines go.
+//
+// Text mode: stdout. The progress IS the output of a followed command, so
+// sending it to stderr made `runos vms create --follow > log` write an
+// empty log and put the only useful text on the terminal (review 2 item
+// 17). JSON mode: stderr, so stdout stays one parseable document for a
+// caller piping into jq (goal 19 A3 / B11).
+func followProgressWriter(cmd *cobra.Command, jsonOutput bool) io.Writer {
+	if jsonOutput {
+		return cmd.ErrOrStderr()
+	}
+	return cmd.OutOrStdout()
+}
+
 // followJob polls the job named in respBody until it terminates,
 // writing one progress line per state change to progress.
 //
-// progress is a parameter rather than os.Stdout because `--follow
-// --json` must keep stdout to the JSON payload alone: a script that
-// pipes `runos vms create --follow -j` into jq gets the create response
-// on stdout and the progress on stderr (goal 19 A3).
+// progress is a parameter rather than os.Stdout because the destination
+// depends on the output mode; see followProgressWriter.
 func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 	// Extract jobId from response
 	var response map[string]any
@@ -1523,7 +1534,7 @@ func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest
 				argIndex++
 			} else if val, ok := body[field.Name]; ok {
 				// Get value from body (flag input)
-				value = fmt.Sprintf("%v", val)
+				value = QueryParamValue(val)
 			}
 
 			if value != "" {
@@ -1543,7 +1554,7 @@ func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest
 	// `apps_logs --previous=true` arrived as `?tail=N` and the server's
 	// `if (previous)` gate never tripped. Regression target: I7-F.
 	if (cmdDef.Method == http.MethodGet || cmdDef.Method == http.MethodDelete) && cmdDef.Input != nil {
-		queryParams := buildQueryParams(cmdDef, body)
+		queryParams := QueryParams(cmdDef, body)
 		if len(queryParams) > 0 {
 			result = result + "?" + queryParams.Encode()
 		}
@@ -1727,38 +1738,6 @@ func loadYAMLFile(path string) (map[string]any, error) {
 	}
 
 	return result, nil
-}
-
-// buildQueryParams assembles the query string for GET/DELETE requests
-// from a manifest command's input definition + the resolved body map.
-// Includes every non-positional Field plus every Flag whose value is
-// present in body; positional Fields are skipped (they substitute into
-// the URL path elsewhere).
-//
-// Regression target: I7-F. Pre-fix the GET branch in buildEndpoint
-// only iterated Fields, silently dropping Flags. `apps_logs --previous`
-// reached the conductor without the previous=true query param, so the
-// server-side `if (previous)` gate never fired. The DELETE branch
-// already did include Flags; the helper makes both methods symmetric.
-func buildQueryParams(cmdDef manifest.Command, body map[string]any) url.Values {
-	queryParams := url.Values{}
-	if cmdDef.Input == nil {
-		return queryParams
-	}
-	for _, field := range cmdDef.Input.Fields {
-		if field.Positional {
-			continue
-		}
-		if val, ok := body[field.Name]; ok {
-			queryParams.Set(field.Name, fmt.Sprintf("%v", val))
-		}
-	}
-	for _, flag := range cmdDef.Input.Flags {
-		if val, ok := body[flag.Name]; ok {
-			queryParams.Set(flag.Name, fmt.Sprintf("%v", val))
-		}
-	}
-	return queryParams
 }
 
 // podLogsSinceCapSeconds is the upper bound on `--since` for pod-logs
