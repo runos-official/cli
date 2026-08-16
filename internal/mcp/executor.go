@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +10,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
+	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
@@ -27,13 +28,18 @@ type CommandExecutor struct {
 }
 
 // NewCommandExecutor creates a new CommandExecutor for the given manifest and base URL.
+//
+// The http.Client carries NO Timeout: each call sets its own deadline via
+// apitimeout.For, because a client-wide 30 s cut killed synchronous
+// endpoints conductor lets run for up to 600 s (goal 19 A4). MCP had the
+// worse half of that bug: an LLM asking for `vms_run-command` with
+// timeoutSeconds=120 was told the request failed while the guest command
+// ran on to completion.
 func NewCommandExecutor(m *manifest.Manifest, baseURL string) *CommandExecutor {
 	return &CommandExecutor{
-		manifest: m,
-		baseURL:  baseURL,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		manifest:   m,
+		baseURL:    baseURL,
+		httpClient: &http.Client{},
 	}
 }
 
@@ -53,8 +59,11 @@ func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]an
 	// Build full URL
 	url := e.baseURL + endpoint
 
-	// Make request
-	resp, err := e.doRequestWithCID(method, url, body, token, cid)
+	// Make request. ExecuteRaw has no manifest command to derive a
+	// deadline from, so it takes the ordinary one.
+	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.Default)
+	defer cancel()
+	resp, err := e.doRequestWithCID(ctx, method, url, body, token, cid)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -172,8 +181,11 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	// Build request body (for POST/PUT/PATCH) - exclude cid from body
 	body := e.buildBody(args, cmdDef)
 
-	// Make request
-	resp, err := e.doRequest(cmdDef.Method, endpoint, body, token)
+	// Make request under a deadline derived from this command. The cancel
+	// stays live until the body has been read below (A4).
+	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(*cmdDef, body))
+	defer cancel()
+	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, body, token)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -317,8 +329,9 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 	if (cmdDef.Method == http.MethodGet || cmdDef.Method == http.MethodDelete) && cmdDef.Input != nil {
 		queryParams := url.Values{}
 		for _, field := range cmdDef.Input.Fields {
-			// Skip positional fields (already in URL path) and cid (handled separately)
-			if field.Positional || field.Name == "cid" {
+			// Skip positional fields (already in URL path) and a cid the
+			// endpoint template binds as a path segment.
+			if field.Positional || skipFieldAsQueryParam(field.Name, endpoint) {
 				continue
 			}
 			if val, ok := args[field.Name]; ok {
@@ -341,6 +354,24 @@ func (e *CommandExecutor) buildEndpointWithCID(endpoint string, args map[string]
 	}
 
 	return e.baseURL + result, nil
+}
+
+// skipFieldAsQueryParam reports whether a field must be left out of the
+// GET / DELETE query string because the endpoint template already binds
+// it as a path segment.
+//
+// Only `cid` needs the rule, and only when the template carries `:cid`.
+// Pre-fix the skip was unconditional, which broke every ACCOUNT-scoped
+// endpoint that takes cid as a FILTER rather than a path segment
+// (`/:aid/vm-usage`, `/:aid/vm-events`, `/:aid/config/get`,
+// `/:aid/app-info/rrc`): the filter was dropped and the read silently
+// widened to the whole account. Measured on dev: vm-usage reported 152
+// VMs for a cluster holding 8. Regression target: goal 19 A2 / B5.
+//
+// endpoint is the raw manifest template, not the substituted URL, so the
+// `:cid` marker is still present when this runs.
+func skipFieldAsQueryParam(fieldName, endpoint string) bool {
+	return fieldName == "cid" && strings.Contains(endpoint, ":cid")
 }
 
 // coerceJSONString tries to recover from clients that ignored the manifest's
@@ -422,8 +453,10 @@ func (e *CommandExecutor) buildBody(args map[string]any, cmdDef *manifest.Comman
 	return body
 }
 
-func (e *CommandExecutor) doRequest(method, url string, body map[string]any, token string) (*http.Response, error) {
-	return e.doRequestWithCID(method, url, body, token, "")
+// doRequest issues one authenticated request under ctx's deadline. ctx
+// must stay live until the caller has read the response body.
+func (e *CommandExecutor) doRequest(ctx context.Context, method, url string, body map[string]any, token string) (*http.Response, error) {
+	return e.doRequestWithCID(ctx, method, url, body, token, "")
 }
 
 // unflattenBody converts dot-notation keys into nested objects.
@@ -461,7 +494,7 @@ func unflattenBody(body map[string]any) map[string]any {
 	return result
 }
 
-func (e *CommandExecutor) doRequestWithCID(method, url string, body map[string]any, token, cid string) (*http.Response, error) {
+func (e *CommandExecutor) doRequestWithCID(ctx context.Context, method, url string, body map[string]any, token, cid string) (*http.Response, error) {
 	var bodyReader io.Reader
 
 	if len(body) > 0 {
@@ -474,7 +507,7 @@ func (e *CommandExecutor) doRequestWithCID(method, url string, body map[string]a
 		bodyReader = bytes.NewReader(jsonBody)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return nil, err
 	}

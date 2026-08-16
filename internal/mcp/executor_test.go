@@ -371,3 +371,31 @@ func TestEmptyBodySuccessMessage(t *testing.T) {
 		})
 	}
 }
+
+// TestCIDIsAQueryParamOnAccountScopedEndpoints is the goal-19 A2
+// regression. buildEndpointWithCID skipped the `cid` field for every
+// GET/DELETE query string, on the assumption that cid is always a path
+// segment. On an ACCOUNT-scoped endpoint (`/:aid/vm-usage`,
+// `/:aid/vm-events`, `/:aid/config/get`) cid is a real filter, and
+// dropping it silently widened every read to the whole account: measured
+// 152 VMs reported where the caller asked about a cluster holding 8.
+func TestCIDIsAQueryParamOnAccountScopedEndpoints(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		field    string
+		want     bool
+	}{
+		{"cid on a cluster-scoped endpoint is a path segment", "/:aid/:cid/vms", "cid", true},
+		{"cid on an account-scoped endpoint is a filter", "/:aid/vm-usage", "cid", false},
+		{"cid on an account-scoped events feed is a filter", "/:aid/vm-events", "cid", false},
+		{"an ordinary field is never skipped", "/:aid/vm-usage", "from", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := skipFieldAsQueryParam(c.field, c.endpoint); got != c.want {
+				t.Errorf("skipFieldAsQueryParam(%q, %q) = %v, want %v", c.field, c.endpoint, got, c.want)
+			}
+		})
+	}
+}

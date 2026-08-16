@@ -19,9 +19,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/term"
 
+	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -39,13 +41,15 @@ type Executor struct {
 	httpClient *http.Client
 }
 
-// NewExecutor creates a new command executor
+// NewExecutor creates a new command executor.
+//
+// The http.Client carries NO Timeout: every dispatch sets its own
+// deadline via apitimeout.For, because a client-wide 30 s cut killed
+// synchronous endpoints conductor lets run for up to 600 s (goal 19 A4).
 func NewExecutor(baseURL string) *Executor {
 	return &Executor{
-		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		baseURL:    baseURL,
+		httpClient: &http.Client{},
 	}
 }
 
@@ -360,7 +364,14 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// case fall through to normal result rendering rather than erroring on a
 		// missing jobId for an operation that actually succeeded.
 		if follow && responseHasJobID(respBody) {
-			return e.followJob(respBody)
+			// Render the response BEFORE polling: it carries the ids the
+			// caller needs (vmid, sid, gid, imgid) and --follow used to
+			// swallow it. Progress goes to stderr so `--follow -j` stdout
+			// stays a single parseable JSON document (A3 / B11).
+			if err := renderFollowResponse(cmdDef, respBody, jsonOutput); err != nil {
+				return err
+			}
+			return e.followJob(respBody, cmd.ErrOrStderr())
 		}
 	}
 
@@ -730,25 +741,51 @@ func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []st
 // string)`. The k=v form was the I25-B workaround when CSV parsing
 // broke JSON; that workaround is obsolete now that StringArray +
 // coerceArrayFlagValue accept JSON natively. Steer users to the JSON
-// shape before the wire-level refusal so the error names the field and
-// the canonical form.
+// shape before the wire-level refusal so the error names the field, the
+// canonical form, and the `-f` file route.
 //
-// Detection: any element containing `=` that doesn't parse as JSON
-// trips the gate. Pure heuristic; legitimate bare-string lists
-// (`--tags one --tags two`) and JSON elements (`--flag '{"a":1}'`)
-// both pass.
-func refuseAmbiguousKeyValueArray(flagName string, raw []string) error {
+// Two guards keep the heuristic off fields that legitimately carry `=`
+// inside a plain string (goal 19 A1: every ECDSA and RSA public key ends
+// in base64 `=` padding, so `vms create --ssh-keys` was refused for any
+// key but ed25519):
+//
+//   - itemType `string` is never gated. The manifest declares the
+//     element shape, and a string-element field cannot want objects.
+//   - an element with whitespace anywhere before its first `=` is never
+//     gated. `key=value` has none, an SSH key has a space after the
+//     algorithm name, so the two shapes are distinguishable without
+//     knowing the field.
+//
+// Detection otherwise: any element containing `=` that doesn't parse as
+// JSON trips the gate.
+func refuseAmbiguousKeyValueArray(flagName string, raw []string, itemType string) error {
+	if itemType == "string" {
+		return nil
+	}
 	for _, elem := range raw {
-		if !strings.Contains(elem, "=") {
+		if !looksLikeKeyValueElement(elem) {
 			continue
 		}
 		var probe any
 		if err := json.Unmarshal([]byte(elem), &probe); err == nil {
 			continue
 		}
-		return fmt.Errorf("--%s: element %q looks like `key=value` shape, but this field expects structured objects. Pass JSON instead, e.g. --%s '{\"port\":3000,\"standardHttps\":true}' (single object) or --%s '[{...},{...}]' (array). Repeat the flag to add multiple elements.", flagName, elem, flagName, flagName)
+		return fmt.Errorf("--%s: element %q looks like `key=value` shape, but this field expects structured objects. Pass JSON instead, e.g. --%s '{\"port\":3000,\"standardHttps\":true}' (single object) or --%s '[{...},{...}]' (array). Repeat the flag to add multiple elements, or put the whole body in a YAML file and pass -f <file>.", flagName, elem, flagName, flagName)
 	}
 	return nil
+}
+
+// looksLikeKeyValueElement reports whether elem reads as `key=value`:
+// it carries an `=` and no whitespace before the first one. The
+// whitespace rule is what separates a real k=v pair from a string that
+// merely contains `=`, most acutely an SSH public key whose base64 body
+// ends in `=` padding and always has a space after the algorithm name.
+func looksLikeKeyValueElement(elem string) bool {
+	eq := strings.IndexByte(elem, '=')
+	if eq < 0 {
+		return false
+	}
+	return strings.IndexFunc(elem[:eq], unicode.IsSpace) < 0
 }
 
 func coerceArrayFlagValue(raw []string, itemType string) any {
@@ -947,7 +984,11 @@ func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[str
 		endpoint = appendMergeQuery(endpoint)
 	}
 	requestBody := filterPathParamsFromBody(body, cmdDef)
-	resp, err := e.doRequest(cmdDef.Method, endpoint, requestBody, token)
+	// The deadline covers the response read as well, so the cancel stays
+	// live until this function has drained the body (A4).
+	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, body))
+	defer cancel()
+	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, requestBody, token)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -1167,7 +1208,14 @@ func responseHasJobID(respBody []byte) bool {
 	return ok && id != ""
 }
 
-func (e *Executor) followJob(respBody []byte) error {
+// followJob polls the job named in respBody until it terminates,
+// writing one progress line per state change to progress.
+//
+// progress is a parameter rather than os.Stdout because `--follow
+// --json` must keep stdout to the JSON payload alone: a script that
+// pipes `runos vms create --follow -j` into jq gets the create response
+// on stdout and the progress on stderr (goal 19 A3).
+func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 	// Extract jobId from response
 	var response map[string]any
 	if err := json.Unmarshal(respBody, &response); err != nil {
@@ -1179,7 +1227,19 @@ func (e *Executor) followJob(respBody []byte) error {
 		return fmt.Errorf("response does not contain jobId")
 	}
 
-	return jobs.FollowJob(jobID)
+	return jobs.FollowJobToWriter(jobID, progress)
+}
+
+// renderFollowResponse prints the dispatch response before `--follow`
+// starts polling.
+//
+// Pre-fix the follow branch returned straight into the poll loop, so the
+// response body was never rendered at all. Every id an async create
+// returns (vmid, sid, gid, imgid) was lost, and `--json` was silently
+// ignored: the caller got progress text on stdout and nothing to parse.
+// Regression target: goal 19 A3 / goal 21 B11.
+func renderFollowResponse(cmdDef manifest.Command, respBody []byte, jsonOutput bool) error {
+	return output.NewFormatter(jsonOutput).Format(respBody, cmdDef.Output)
 }
 
 // getAuthToken resolves the bearer token for outgoing requests. Prefers
@@ -1343,7 +1403,7 @@ func (e *Executor) collectInput(cmd *cobra.Command, args []string, cmdDef manife
 				if field.Format == "key_value" {
 					result[field.Name] = parseKeyValueTags(val)
 				} else {
-					if err := refuseAmbiguousKeyValueArray(flagName, val); err != nil {
+					if err := refuseAmbiguousKeyValueArray(flagName, val, field.ItemType); err != nil {
 						return nil, err
 					}
 					result[field.Name] = coerceArrayFlagValue(val, field.ItemType)
@@ -1556,7 +1616,9 @@ func unflattenBody(body map[string]any) map[string]any {
 	return result
 }
 
-func (e *Executor) doRequest(method, url string, body map[string]any, token string) (*http.Response, error) {
+// doRequest issues one authenticated request under ctx's deadline. ctx
+// must stay live until the caller has read the response body.
+func (e *Executor) doRequest(ctx context.Context, method, url string, body map[string]any, token string) (*http.Response, error) {
 	var bodyReader io.Reader
 
 	if len(body) > 0 && (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) {
@@ -1569,7 +1631,7 @@ func (e *Executor) doRequest(method, url string, body map[string]any, token stri
 		bodyReader = bytes.NewReader(jsonBody)
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return nil, err
 	}

@@ -336,7 +336,7 @@ func TestParseKeyValueTags(t *testing.T) {
 func TestRefuseAmbiguousKeyValueArray(t *testing.T) {
 	t.Parallel()
 	t.Run("bare key=value element refused", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("service-port-mappings", []string{"port=3000"})
+		err := refuseAmbiguousKeyValueArray("service-port-mappings", []string{"port=3000"}, "object")
 		if err == nil {
 			t.Fatal("expected pre-network refusal")
 		}
@@ -347,41 +347,83 @@ func TestRefuseAmbiguousKeyValueArray(t *testing.T) {
 		}
 	})
 	t.Run("multiple comma-separated k=v elements refused", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("foo", []string{"port=3000,standardHttps=true"})
+		err := refuseAmbiguousKeyValueArray("foo", []string{"port=3000,standardHttps=true"}, "object")
 		if err == nil {
 			t.Fatal("expected pre-network refusal")
 		}
 	})
 	t.Run("JSON object element passes", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000,"standardHttps":true}`})
+		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000,"standardHttps":true}`}, "object")
 		if err != nil {
 			t.Errorf("JSON should pass, got: %v", err)
 		}
 	})
 	t.Run("JSON array element passes", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("foo", []string{`[{"port":3000}]`})
+		err := refuseAmbiguousKeyValueArray("foo", []string{`[{"port":3000}]`}, "object")
 		if err != nil {
 			t.Errorf("JSON array should pass, got: %v", err)
 		}
 	})
 	t.Run("bare string list with no = passes", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("tags", []string{"one", "two"})
+		err := refuseAmbiguousKeyValueArray("tags", []string{"one", "two"}, "object")
 		if err != nil {
 			t.Errorf("bare strings should pass, got: %v", err)
 		}
 	})
 	t.Run("empty slice passes", func(t *testing.T) {
-		if err := refuseAmbiguousKeyValueArray("foo", nil); err != nil {
+		if err := refuseAmbiguousKeyValueArray("foo", nil, "object"); err != nil {
 			t.Errorf("nil should pass, got: %v", err)
 		}
 	})
 	t.Run("mixed JSON + k=v refused on the k=v element", func(t *testing.T) {
-		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000}`, "port=9090"})
+		err := refuseAmbiguousKeyValueArray("foo", []string{`{"port":3000}`, "port=9090"}, "object")
 		if err == nil {
 			t.Fatal("expected refusal for mixed input")
 		}
 		if !contains(err.Error(), "port=9090") {
 			t.Errorf("error should name the offending element, got: %s", err.Error())
+		}
+	})
+}
+
+// TestRefuseAmbiguousKeyValueArray_SSHKeys is the goal-19 A1 regression.
+// An ECDSA or RSA public key ends in base64 `=` padding, so the k=v
+// heuristic refused every `vms create --ssh-keys` carrying one. Two
+// independent guards now let those through: the field declares
+// `itemType: string` (never a structured-object field), and a key has
+// whitespace before its `=` so it cannot be read as `key=value`.
+func TestRefuseAmbiguousKeyValueArray_SSHKeys(t *testing.T) {
+	t.Parallel()
+	rsa := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7vbqajDw== user@host"
+	ecdsa := "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY= me@laptop"
+
+	t.Run("itemType string never gates", func(t *testing.T) {
+		for _, key := range []string{rsa, ecdsa, "port=3000"} {
+			if err := refuseAmbiguousKeyValueArray("ssh-keys", []string{key}, "string"); err != nil {
+				t.Errorf("itemType string must never gate, got: %v", err)
+			}
+		}
+	})
+	t.Run("whitespace before = passes even without itemType", func(t *testing.T) {
+		for _, key := range []string{rsa, ecdsa} {
+			if err := refuseAmbiguousKeyValueArray("ssh-keys", []string{key}, ""); err != nil {
+				t.Errorf("a key with whitespace before = must pass, got: %v", err)
+			}
+		}
+	})
+	t.Run("k=v with no whitespace before = still refused", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("disks", []string{"name=root"}, "object")
+		if err == nil {
+			t.Fatal("expected refusal for a genuine key=value element")
+		}
+	})
+	t.Run("refusal names the -f route", func(t *testing.T) {
+		err := refuseAmbiguousKeyValueArray("disks", []string{"name=root"}, "object")
+		if err == nil {
+			t.Fatal("expected refusal")
+		}
+		if !contains(err.Error(), "-f ") {
+			t.Errorf("refusal should name the -f file route, got: %s", err.Error())
 		}
 	})
 }
@@ -2728,5 +2770,56 @@ func TestFilterPathParamsFromBody_CloneDatabase(t *testing.T) {
 func TestCloneDatabaseAutoFollow(t *testing.T) {
 	if !hasJobIdOutput(cloneDatabaseCommand()) {
 		t.Error("clone-database declares a jobId output; hasJobIdOutput must report true so --follow is auto-wired")
+	}
+}
+
+// TestRenderFollowResponse is the goal-19 A3 / goal-21 B11 regression.
+// `--follow` returned followJob(respBody) without ever rendering the
+// response, so every id the create returned (vmid, sid, gid, imgid) was
+// lost and `--json` was ignored on the one path a script most needs it.
+// The response is now rendered FIRST, in the mode the caller asked for.
+func TestRenderFollowResponse(t *testing.T) {
+	cmdDef := manifest.Command{
+		Command: "vms/create",
+		Output:  &manifest.Output{Type: "object", Fields: []manifest.OutputField{{Name: "jobId"}, {Name: "vmid"}}},
+	}
+	body := []byte(`{"jobId":"job-1","vmid":"vm-abc"}`)
+
+	t.Run("text mode prints the ids", func(t *testing.T) {
+		stdout, restore := captureStdout(t)
+		defer restore()
+		if err := renderFollowResponse(cmdDef, body, false); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		out := stdout()
+		if !contains(out, "vm-abc") {
+			t.Errorf("expected the vmid in the rendered response, got %q", out)
+		}
+	})
+
+	t.Run("json mode emits parseable JSON on stdout", func(t *testing.T) {
+		stdout, restore := captureStdout(t)
+		defer restore()
+		if err := renderFollowResponse(cmdDef, body, true); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(stdout()), &got); err != nil {
+			t.Fatalf("--follow --json stdout must be valid JSON: %v", err)
+		}
+		if got["vmid"] != "vm-abc" {
+			t.Errorf("expected vmid in the JSON envelope, got %+v", got)
+		}
+	})
+}
+
+// TestFollowJobProgressWriter pins that the follow progress stream is
+// addressable, so `--follow --json` can keep stdout to the JSON payload
+// and send per-state progress to stderr (A3). Only the writer plumbing
+// is asserted: the poll loop needs a live conductor.
+func TestFollowJobProgressWriter(t *testing.T) {
+	e := &Executor{}
+	if err := e.followJob([]byte(`{"noJobId":true}`), io.Discard); err == nil {
+		t.Fatal("expected an error when the response carries no jobId")
 	}
 }
