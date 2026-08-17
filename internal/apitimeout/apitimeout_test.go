@@ -53,6 +53,12 @@ func TestFor(t *testing.T) {
 		// storage-groups/delete evicts every replica of the pool per node in
 		// LINSTOR and answers with the result, no jobId.
 		{"storage-groups/delete is long-running", manifest.Command{Command: "storage-groups/delete"}, nil, LongRunning},
+		// vms/isolation-check runs a probe suite inside a guest plus control
+		// probes inside other guests, and every "blocked" probe waits out its
+		// budget on purpose. Measured 2026-08-17: the 30 s default cut the
+		// caller off while conductor finished the run and tore its fixtures
+		// down, so the operator was told a completed measurement had failed.
+		{"vms/isolation-check is long-running", manifest.Command{Command: "vms/isolation-check"}, nil, LongRunning},
 		// nodes/drain returns a jobId, so the CALL is short. Only the job is
 		// long, and jobs are followed, not waited on.
 		{"nodes/drain returns a job and keeps the default", manifest.Command{Command: "nodes/drain"}, nil, Default},

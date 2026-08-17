@@ -51,6 +51,15 @@ var longRunningCommands = map[string]bool{
 	"vms/nvlink-check":   true,
 	"vms/rotate-ssh-key": true,
 	"vms/screenshot":     true,
+	// vms/isolation-check runs a probe suite INSIDE a guest and, concurrently,
+	// control probes inside other guests, each over its own ssh session from a
+	// node. Every "blocked" probe deliberately waits out its budget, because a
+	// dropped packet is what it is looking for, so the call is slow by design.
+	// Measured 2026-08-17 on cluster ede: the 30 s Default cut it off with
+	// `context deadline exceeded` while conductor went on to finish the run and
+	// tear down every marker listener, so the operator saw a failure for a
+	// measurement that had actually completed.
+	"vms/isolation-check": true,
 	// Review 2 item 8. vms/migrate is synchronous and reads live cluster
 	// state before it accepts the move: the VM's real state from the host,
 	// then the LINSTOR pin. On a slow or degraded cluster that ran past
