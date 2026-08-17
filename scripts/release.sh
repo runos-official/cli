@@ -71,7 +71,7 @@ done
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
-NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+NWO="$(gh api 'repos/{owner}/{repo}' --jq .full_name)"
 ok "repo $NWO"
 
 # Tag must not already exist (locally or on the remote).
