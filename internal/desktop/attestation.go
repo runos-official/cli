@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -15,50 +14,39 @@ import (
 
 type attestationList struct {
 	Attestations []struct {
-		BundleURL string `json:"bundle_url"`
+		Bundle json.RawMessage `json:"bundle"`
 	} `json:"attestations"`
 }
 
-func (m *Manager) findAttestationBundle(digestHex string) (string, error) {
+func (m *Manager) findAttestationBundle(digestHex string) ([]byte, error) {
 	endpoint := m.AttestationsURL + "/sha256:" + digestHex
 	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("X-GitHub-Api-Version", "2026-03-10")
 	response, err := m.HTTPClient.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("fetch GitHub attestation: %w", err)
+		return nil, fmt.Errorf("fetch GitHub attestation: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub attestation API returned HTTP %d", response.StatusCode)
+		return nil, fmt.Errorf("GitHub attestation API returned HTTP %d", response.StatusCode)
 	}
 	var result attestationList
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(result.Attestations) == 0 || result.Attestations[0].BundleURL == "" {
-		return "", fmt.Errorf("GitHub has no public attestation for sha256:%s", digestHex)
+	if len(result.Attestations) == 0 || len(result.Attestations[0].Bundle) == 0 {
+		return nil, fmt.Errorf("GitHub has no public attestation for sha256:%s", digestHex)
 	}
-	return result.Attestations[0].BundleURL, nil
+	return result.Attestations[0].Bundle, nil
 }
 
-func (m *Manager) verifyGitHubAttestation(_ string, digestHex, version, bundleURL string) error {
-	temp, err := os.CreateTemp("", "runos-desktop-attestation-*.json")
-	if err != nil {
-		return err
-	}
-	path := temp.Name()
-	_ = temp.Close()
-	_ = os.Remove(path)
-	defer os.Remove(path)
-	if err := m.download(bundleURL, path, 16<<20); err != nil {
-		return fmt.Errorf("download Sigstore bundle: %w", err)
-	}
-	signedBundle, err := bundle.LoadJSONFromPath(path)
-	if err != nil {
+func (m *Manager) verifyGitHubAttestation(_ string, digestHex, version string, bundleJSON []byte) error {
+	var signedBundle bundle.Bundle
+	if err := signedBundle.UnmarshalJSON(bundleJSON); err != nil {
 		return fmt.Errorf("load Sigstore bundle: %w", err)
 	}
 	tufClient, err := tuf.New(tuf.DefaultOptions())
@@ -89,7 +77,7 @@ func (m *Manager) verifyGitHubAttestation(_ string, digestHex, version, bundleUR
 	if err != nil {
 		return err
 	}
-	result, err := verifier.Verify(signedBundle, verify.NewPolicy(
+	result, err := verifier.Verify(&signedBundle, verify.NewPolicy(
 		verify.WithArtifactDigest("sha256", digest),
 		verify.WithCertificateIdentity(identity),
 	))

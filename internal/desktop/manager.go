@@ -46,7 +46,7 @@ type Manager struct {
 	ReleaseBaseURL    string
 	ReleasesAPIURL    string
 	AttestationsURL   string
-	VerifyAttestation func(archivePath, digestHex, version, bundleURL string) error
+	VerifyAttestation func(archivePath, digestHex, version string, bundleJSON []byte) error
 	VerifyBundle      func(appPath string) error
 	ClearQuarantine   func(appPath string) error
 }
@@ -130,11 +130,11 @@ func (m *Manager) Install(version string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	bundleURL, err := m.findAttestationBundle(digestHex)
+	bundleJSON, err := m.findAttestationBundle(digestHex)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.VerifyAttestation(archivePath, digestHex, version, bundleURL); err != nil {
+	if err := m.VerifyAttestation(archivePath, digestHex, version, bundleJSON); err != nil {
 		return nil, fmt.Errorf("verify Desktop provenance: %w", err)
 	}
 

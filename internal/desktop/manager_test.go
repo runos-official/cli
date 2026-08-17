@@ -74,6 +74,22 @@ func TestExpectedWorkflowIdentityAcceptsReleaseCandidate(t *testing.T) {
 	}
 }
 
+func TestFindAttestationBundleReturnsEmbeddedBundle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(response, `{"attestations":[{"bundle":{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"},"bundle_url":"https://example.invalid/compressed"}]}`)
+	}))
+	defer server.Close()
+	manager := &Manager{HTTPClient: server.Client(), AttestationsURL: server.URL}
+
+	bundleJSON, err := manager.findAttestationBundle(strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(bundleJSON), `"mediaType"`) {
+		t.Fatalf("attestation bundle = %q", bundleJSON)
+	}
+}
+
 func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
 	home := t.TempDir()
 	archiveData := validApplicationZIP(t)
@@ -86,7 +102,7 @@ func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
 		case strings.HasSuffix(request.URL.Path, "/checksums.txt"):
 			fmt.Fprintf(response, "%s  %s\n", hex.EncodeToString(digest[:]), assetName)
 		case strings.Contains(request.URL.Path, "/attestations/"):
-			fmt.Fprintf(response, `{"attestations":[{"bundle_url":%q}]}`, serverURLPlaceholder(request))
+			fmt.Fprint(response, `{"attestations":[{"bundle":{"mediaType":"test"}}]}`)
 		default:
 			http.NotFound(response, request)
 		}
@@ -103,7 +119,7 @@ func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
 	manager := &Manager{
 		HTTPClient: server.Client(), HomeDir: home, ExecutablePath: "/usr/bin/true",
 		ReleaseBaseURL: server.URL, AttestationsURL: server.URL + "/attestations",
-		VerifyAttestation: func(_, _, _, _ string) error { return nil },
+		VerifyAttestation: func(_, _, _ string, _ []byte) error { return nil },
 		VerifyBundle:      func(string) error { return nil },
 		ClearQuarantine:   func(string) error { return fmt.Errorf("xattr failed") },
 	}
@@ -127,10 +143,6 @@ func TestValidateApplicationBundleRejectsWrongVersion(t *testing.T) {
 	if err := validateApplicationBundle(application, "2.0.0"); err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("version mismatch error = %v", err)
 	}
-}
-
-func serverURLPlaceholder(request *http.Request) string {
-	return "http://" + request.Host + "/bundle"
 }
 
 func validApplicationZIP(t *testing.T) []byte {
