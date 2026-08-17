@@ -90,6 +90,28 @@ func TestFindAttestationBundleReturnsEmbeddedBundle(t *testing.T) {
 	}
 }
 
+func TestFindAttestationBundleDownloadsAnonymousCompressedBundle(t *testing.T) {
+	const bundleJSON = `{"mediaType":"test"}`
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/bundle" {
+			_, _ = response.Write(append([]byte{0x14, 0x4c}, []byte(bundleJSON)...))
+			return
+		}
+		fmt.Fprintf(response, `{"attestations":[{"bundle_url":%q}]}`, server.URL+"/bundle")
+	}))
+	defer server.Close()
+	manager := &Manager{HTTPClient: server.Client(), AttestationsURL: server.URL + "/attestations"}
+
+	got, err := manager.findAttestationBundle(strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != bundleJSON {
+		t.Fatalf("attestation bundle = %q, want %q", got, bundleJSON)
+	}
+}
+
 func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
 	home := t.TempDir()
 	archiveData := validApplicationZIP(t)

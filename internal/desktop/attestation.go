@@ -4,8 +4,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
+	"github.com/golang/snappy"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
@@ -14,7 +16,8 @@ import (
 
 type attestationList struct {
 	Attestations []struct {
-		Bundle json.RawMessage `json:"bundle"`
+		Bundle    json.RawMessage `json:"bundle"`
+		BundleURL string          `json:"bundle_url"`
 	} `json:"attestations"`
 }
 
@@ -38,10 +41,48 @@ func (m *Manager) findAttestationBundle(digestHex string) ([]byte, error) {
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return nil, err
 	}
-	if len(result.Attestations) == 0 || len(result.Attestations[0].Bundle) == 0 {
+	if len(result.Attestations) == 0 {
 		return nil, fmt.Errorf("GitHub has no public attestation for sha256:%s", digestHex)
 	}
-	return result.Attestations[0].Bundle, nil
+	attestation := result.Attestations[0]
+	if len(attestation.Bundle) > 0 {
+		return attestation.Bundle, nil
+	}
+	if attestation.BundleURL == "" {
+		return nil, fmt.Errorf("GitHub has no public attestation for sha256:%s", digestHex)
+	}
+	return m.downloadAttestationBundle(attestation.BundleURL)
+}
+
+func (m *Manager) downloadAttestationBundle(source string) ([]byte, error) {
+	const sizeLimit = 16 << 20
+	response, err := m.HTTPClient.Get(source)
+	if err != nil {
+		return nil, fmt.Errorf("download GitHub attestation bundle: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub attestation bundle returned HTTP %d", response.StatusCode)
+	}
+	compressed, err := io.ReadAll(io.LimitReader(response.Body, sizeLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(compressed) > sizeLimit {
+		return nil, fmt.Errorf("GitHub attestation bundle exceeds %d bytes", sizeLimit)
+	}
+	if json.Valid(compressed) {
+		return compressed, nil
+	}
+	decodedLength, err := snappy.DecodedLen(compressed)
+	if err != nil || decodedLength > sizeLimit {
+		return nil, fmt.Errorf("decode GitHub attestation bundle: invalid Snappy data")
+	}
+	decoded, err := snappy.Decode(nil, compressed)
+	if err != nil || !json.Valid(decoded) {
+		return nil, fmt.Errorf("decode GitHub attestation bundle: invalid JSON")
+	}
+	return decoded, nil
 }
 
 func (m *Manager) verifyGitHubAttestation(_ string, digestHex, version string, bundleJSON []byte) error {
