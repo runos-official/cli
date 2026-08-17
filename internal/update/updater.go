@@ -38,6 +38,7 @@ type Updater struct {
 	httpClient *http.Client
 	token      string
 	cfg        *config.Config
+	progress   io.Writer
 }
 
 type configResponse struct {
@@ -63,9 +64,17 @@ func NewUpdater() (*Updater, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		token: token,
-		cfg:   cfg,
+		token:    token,
+		cfg:      cfg,
+		progress: os.Stdout,
 	}, nil
+}
+
+// SetProgress selects the writer for non-final update progress.
+func (u *Updater) SetProgress(writer io.Writer) {
+	if writer != nil {
+		u.progress = writer
+	}
 }
 
 // getAuthToken returns the bearer token for the update endpoints. Mirrors
@@ -193,7 +202,7 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 	binaryName := fmt.Sprintf("runos-%s-%s.%s", osName, arch, ext)
 	downloadURL := fmt.Sprintf("%s/v%s/%s", cdnBaseURL, latestVersion, binaryName)
 
-	fmt.Printf("Downloading from %s...\n", downloadURL)
+	fmt.Fprintf(u.progress, "Downloading from %s...\n", downloadURL)
 
 	resp, err := u.httpClient.Get(downloadURL)
 	if err != nil {
@@ -315,7 +324,6 @@ func verifyChecksum(version, binaryName, archivePath string) error {
 		return fmt.Errorf("binary tampered with or corrupted: expected sha256 %s, got %s", expectedHash, actualHash)
 	}
 
-	fmt.Println("Checksum verified.")
 	return nil
 }
 

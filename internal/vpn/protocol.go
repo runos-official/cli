@@ -19,6 +19,8 @@ const (
 	// OpIdentity returns the device's public key (generating a key on first use), and whatever
 	// enrolment the daemon already holds. Needs no session.
 	OpIdentity Op = "identity"
+	// OpIdentities lists locally known account identities without returning private keys.
+	OpIdentities Op = "identities"
 	// OpUp hands the daemon a freshly minted session and the account/device it belongs to; the
 	// daemon polls the state document at once and converges. Returns the status afterwards.
 	OpUp Op = "up"
@@ -39,6 +41,8 @@ const (
 	// OpRotateKey tears the tunnel down and replaces the device keypair, for a key conductor
 	// refuses to enrol again (revoked). Returns the new identity.
 	OpRotateKey Op = "rotate-key"
+	// OpForgetIdentity removes one account identity and leaves server records unchanged.
+	OpForgetIdentity Op = "forget-identity"
 )
 
 // Request is what the CLI writes to the socket, one JSON object per line.
@@ -56,9 +60,10 @@ type Request struct {
 
 // Response is what the daemon writes back. Exactly one of Error or the payload is meaningful.
 type Response struct {
-	Error    string    `json:"error,omitempty"`
-	Identity *Identity `json:"identity,omitempty"`
-	Status   *Status   `json:"status,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	Identity   *Identity  `json:"identity,omitempty"`
+	Identities []Identity `json:"identities,omitempty"`
+	Status     *Status    `json:"status,omitempty"`
 }
 
 // Identity is what the daemon knows about this device before or after enrolment.
@@ -69,17 +74,20 @@ type Identity struct {
 	AccountID string `json:"accountId,omitempty"`
 	// The daemon's binary version, so a CLI can tell when the daemon needs a restart after an
 	// update (the running inode stays old until launchd restarts it).
-	Version string `json:"version"`
+	Version          string    `json:"version"`
+	SessionPresent   bool      `json:"sessionPresent"`
+	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitempty"`
 }
 
 // Status is the daemon's view of the tunnel, shaped for `runos vpn status --json`.
 type Status struct {
-	Running   bool   `json:"running"`
-	Interface string `json:"interface,omitempty"`
-	Address   string `json:"address,omitempty"`
-	DeviceID  string `json:"deviceId,omitempty"`
-	AccountID string `json:"accountId,omitempty"`
-	Session   struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Running       bool   `json:"running"`
+	Interface     string `json:"interface,omitempty"`
+	Address       string `json:"address,omitempty"`
+	DeviceID      string `json:"deviceId,omitempty"`
+	AccountID     string `json:"accountId,omitempty"`
+	Session       struct {
 		Present       bool      `json:"present"`
 		ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 		LoginRequired bool      `json:"loginRequired"`

@@ -12,6 +12,7 @@ import (
 
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
+	"github.com/runos-official/cli/internal/vpn"
 
 	"github.com/spf13/cobra"
 )
@@ -66,12 +67,23 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 
 	status := map[string]any{
+		"schemaVersion": 1,
 		"authenticated": false,
 	}
 
 	// Account info
 	if cfg.AccountID != "" {
 		status["accountId"] = cfg.AccountID
+	}
+	if daemonStatus, daemonErr := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpStatus}); daemonErr == nil && daemonStatus.Status != nil {
+		vpnAccountID := daemonStatus.Status.AccountID
+		if vpnAccountID != "" {
+			status["vpnAccountId"] = vpnAccountID
+		}
+		status["vpnRunning"] = daemonStatus.Status.Running
+		if cfg.AccountID != "" && vpnAccountID != "" && cfg.AccountID != vpnAccountID {
+			status["vpnAccountMismatch"] = true
+		}
 	}
 
 	// URLs. GetEnv, never the stored `env` field: the label is only true
@@ -182,6 +194,10 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	// Account ID
 	if accountID, ok := status["accountId"].(string); ok {
 		fmt.Printf("Account ID:     %s\n", accountID)
+	}
+	if mismatch, _ := status["vpnAccountMismatch"].(bool); mismatch {
+		fmt.Printf("VPN Account ID: %s (does not match the CLI account)\n", status["vpnAccountId"])
+		fmt.Println("  Run 'runos vpn up' to synchronize the VPN account.")
 	}
 
 	// Company profile (when set on the account)

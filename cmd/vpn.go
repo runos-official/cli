@@ -92,7 +92,7 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 	daemon := vpnSocketClient(cmd)
 
 	// Ask the daemon for this machine's device key (it generates one on first use).
-	identity, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity})
+	identity, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity, AccountID: cfg.GetAccountID()})
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		// daemon and enrol the new one, so a revoked machine is one `up` from working again
 		// rather than stuck forever. The old device row stays revoked in the account.
 		fmt.Fprintln(cmd.ErrOrStderr(), "This machine's previous VPN key was revoked; enrolling a new one.")
-		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey})
+		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: cfg.GetAccountID()})
 		if rErr != nil {
 			return rErr
 		}

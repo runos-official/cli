@@ -39,7 +39,7 @@ var dynamicCmdsUnavailable bool
 // getting signed in or render their own guidance. Pure for testability.
 func loginNudgeApplies(cmdName string) bool {
 	switch cmdName {
-	case "runos", "login", "logout", "config", "env", "version", "help", "update", "mcp":
+	case "runos", "login", "logout", "config", "env", "version", "help", "update", "mcp", "desktop":
 		return false
 	}
 	return true
@@ -102,7 +102,7 @@ var rootCmd = &cobra.Command{
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config check for these commands
 		cmdName := cmd.Name()
-		if cmdName == "config" || cmdName == "env" || cmdName == "version" || cmdName == "help" || cmdName == "update" {
+		if cmdName == "config" || cmdName == "env" || cmdName == "version" || cmdName == "help" || cmdName == "update" || (cmd.Parent() != nil && cmd.Parent().Name() == "desktop") {
 			return nil
 		}
 		// The VPN daemon runs as root under launchd: its home is /var/root, it never needs the
@@ -247,6 +247,8 @@ func init() {
 	rootCmd.AddCommand(manifestCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(accountCmd)
+	rootCmd.AddCommand(desktopCmd)
 
 	// Static commands that will be merged with dynamic commands from manifest
 	// These commands have static subcommands (e.g., "clusters default") that coexist
@@ -323,7 +325,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)

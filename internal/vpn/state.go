@@ -13,33 +13,43 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// The daemon's on-disk state, root-owned and 0600. It holds the one secret the CLI must never
-// see (the device private key) plus the session token and the last document, so a daemon restart
-// or a machine reboot resumes without a new sign-in until the session lapses on its own.
-//
-// This is NOT the user's ~/.runos/config.json: under launchd the daemon runs as root, whose home
-// is /var/root, so the two are deliberately separate files. Conductor's URL, account and device
-// arrive from the CLI over the socket (OpUp), never read from the user's config by the daemon.
+const StateSchemaVersion = 1
 
-// State is the persisted daemon state.
+// AccountState stores one account VPN identity and its current device session.
+type AccountState struct {
+	AccountID        string    `json:"accountId"`
+	PrivateKey       string    `json:"privateKey"`
+	PublicKey        string    `json:"publicKey"`
+	DeviceID         string    `json:"deviceId,omitempty"`
+	ConductorURL     string    `json:"conductorUrl,omitempty"`
+	SessionToken     string    `json:"sessionToken,omitempty"`
+	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitempty"`
+	Enrolled         bool      `json:"enrolled"`
+}
+
+// State is the versioned, root-owned daemon account keyring.
 type State struct {
-	// The device keypair. The private key is base64 (WireGuard's own encoding); it never leaves
-	// this file or the daemon process.
-	PrivateKey string `json:"privateKey"`
-	PublicKey  string `json:"publicKey"`
-	// Enrolment, learned at the first successful up.
-	DeviceID     string `json:"deviceId,omitempty"`
-	AccountID    string `json:"accountId,omitempty"`
-	ConductorURL string `json:"conductorUrl,omitempty"`
-	// The live session. Empty token means signed out.
+	SchemaVersion   int                      `json:"schemaVersion"`
+	ActiveAccountID string                   `json:"activeAccountId,omitempty"`
+	Accounts        map[string]*AccountState `json:"accounts"`
+	Unassigned      *AccountState            `json:"unassignedIdentity,omitempty"`
+}
+
+type legacyState struct {
+	PrivateKey       string    `json:"privateKey"`
+	PublicKey        string    `json:"publicKey"`
+	DeviceID         string    `json:"deviceId,omitempty"`
+	AccountID        string    `json:"accountId,omitempty"`
+	ConductorURL     string    `json:"conductorUrl,omitempty"`
 	SessionToken     string    `json:"sessionToken,omitempty"`
 	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitempty"`
 }
 
-// PrivateKeyHex returns the device private key as the UAPI hex, or an error when it is not a
-// 32-byte base64 key.
-func (s *State) PrivateKeyHex() (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(s.PrivateKey)
+func (a *AccountState) PrivateKeyHex() (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("no active VPN identity")
+	}
+	raw, err := base64.StdEncoding.DecodeString(a.PrivateKey)
 	if err != nil {
 		return "", fmt.Errorf("device private key is not base64: %w", err)
 	}
@@ -49,11 +59,14 @@ func (s *State) PrivateKeyHex() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// statePath is the state file inside a state dir.
+func (a *AccountState) ClearSession() {
+	a.SessionToken = ""
+	a.SessionExpiresAt = time.Time{}
+}
+
 func statePath(dir string) string { return filepath.Join(dir, "state.json") }
 
-// LoadState reads the state from dir, generating a fresh device keypair and writing it when no
-// state exists yet: a daemon always has an identity, even before its first sign-in.
+// LoadState reads state and migrates every legacy single-identity shape.
 func LoadState(dir string) (*State, error) {
 	raw, err := os.ReadFile(statePath(dir))
 	if err != nil {
@@ -62,17 +75,58 @@ func LoadState(dir string) (*State, error) {
 		}
 		return nil, fmt.Errorf("read state: %w", err)
 	}
-	var state State
-	if err := json.Unmarshal(raw, &state); err != nil {
+	var probe struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
-	return &state, nil
+	if probe.SchemaVersion == StateSchemaVersion {
+		var state State
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return nil, fmt.Errorf("parse state: %w", err)
+		}
+		if state.Accounts == nil {
+			state.Accounts = map[string]*AccountState{}
+		}
+		return &state, nil
+	}
+	var old legacyState
+	if err := json.Unmarshal(raw, &old); err != nil {
+		return nil, fmt.Errorf("parse legacy state: %w", err)
+	}
+	identity := &AccountState{
+		AccountID: old.AccountID, PrivateKey: old.PrivateKey, PublicKey: old.PublicKey,
+		DeviceID: old.DeviceID, ConductorURL: old.ConductorURL, SessionToken: old.SessionToken,
+		SessionExpiresAt: old.SessionExpiresAt, Enrolled: old.DeviceID != "",
+	}
+	state := &State{SchemaVersion: StateSchemaVersion, Accounts: map[string]*AccountState{}}
+	if old.AccountID != "" && old.DeviceID != "" {
+		state.Accounts[old.AccountID] = identity
+		state.ActiveAccountID = old.AccountID
+	} else {
+		state.Unassigned = identity
+	}
+	if state.Unassigned != nil && state.Unassigned.PrivateKey == "" {
+		var keyErr error
+		state.Unassigned, keyErr = newAccountState("")
+		if keyErr != nil {
+			return nil, keyErr
+		}
+	}
+	if err := SaveState(dir, state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
-// SaveState writes the state atomically, 0600, creating the dir 0700.
 func SaveState(dir string, state *State) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
+	}
+	state.SchemaVersion = StateSchemaVersion
+	if state.Accounts == nil {
+		state.Accounts = map[string]*AccountState{}
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -88,48 +142,86 @@ func SaveState(dir string, state *State) error {
 	return nil
 }
 
-// ClearIdentity forgets the enrolment and session but KEEPS the device key, for `logout`: the
-// key is the device's identity and the same machine keeps it until the device row is revoked.
-func (s *State) ClearIdentity() {
-	s.DeviceID = ""
-	s.AccountID = ""
-	s.SessionToken = ""
-	s.SessionExpiresAt = time.Time{}
-}
-
-// RotateKey replaces the device keypair and forgets the enrolment and session that belonged to
-// the old key: a revoked key can never enrol again, so the machine needs a new identity.
-func (s *State) RotateKey() error {
-	priv, pub, err := generateKeypair()
-	if err != nil {
-		return err
+func (s *State) Active() *AccountState {
+	if s == nil || s.ActiveAccountID == "" {
+		return nil
 	}
-	s.PrivateKey = priv
-	s.PublicKey = pub
-	s.ClearIdentity()
-	return nil
+	return s.Accounts[s.ActiveAccountID]
 }
 
-// ClearSession forgets only the session, for `down`.
-func (s *State) ClearSession() {
-	s.SessionToken = ""
-	s.SessionExpiresAt = time.Time{}
+// IdentityForAccount returns a stable key for one account.
+func (s *State) IdentityForAccount(accountID string) (*AccountState, error) {
+	if accountID == "" {
+		if active := s.Active(); active != nil {
+			return active, nil
+		}
+		if s.Unassigned != nil {
+			return s.Unassigned, nil
+		}
+		return nil, fmt.Errorf("account ID is required")
+	}
+	if identity := s.Accounts[accountID]; identity != nil {
+		return identity, nil
+	}
+	var identity *AccountState
+	if s.Unassigned != nil {
+		identity = s.Unassigned
+		s.Unassigned = nil
+		identity.AccountID = accountID
+	} else {
+		var err error
+		identity, err = newAccountState(accountID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.Accounts[accountID] = identity
+	return identity, nil
 }
 
-func newStateWithKey(dir string) (*State, error) {
-	priv, pub, err := generateKeypair()
+func (s *State) RotateAccountKey(accountID string) (*AccountState, error) {
+	identity, err := newAccountState(accountID)
 	if err != nil {
 		return nil, err
 	}
-	state := &State{PrivateKey: priv, PublicKey: pub}
+	s.Accounts[accountID] = identity
+	if s.ActiveAccountID == accountID {
+		s.ActiveAccountID = ""
+	}
+	return identity, nil
+}
+
+func (s *State) ForgetAccount(accountID string) bool {
+	if _, ok := s.Accounts[accountID]; !ok {
+		return false
+	}
+	delete(s.Accounts, accountID)
+	if s.ActiveAccountID == accountID {
+		s.ActiveAccountID = ""
+	}
+	return true
+}
+
+func newStateWithKey(dir string) (*State, error) {
+	identity, err := newAccountState("")
+	if err != nil {
+		return nil, err
+	}
+	state := &State{SchemaVersion: StateSchemaVersion, Accounts: map[string]*AccountState{}, Unassigned: identity}
 	if err := SaveState(dir, state); err != nil {
 		return nil, err
 	}
 	return state, nil
 }
 
-// generateKeypair makes a Curve25519 keypair in WireGuard's clamped form, base64-encoded. The
-// clamping matches `wg genkey`; wireguard-go clamps again on use, so either form interoperates.
+func newAccountState(accountID string) (*AccountState, error) {
+	priv, pub, err := generateKeypair()
+	if err != nil {
+		return nil, err
+	}
+	return &AccountState{AccountID: accountID, PrivateKey: priv, PublicKey: pub}, nil
+}
+
 func generateKeypair() (privB64, pubB64 string, err error) {
 	var priv [32]byte
 	if _, err := rand.Read(priv[:]); err != nil {

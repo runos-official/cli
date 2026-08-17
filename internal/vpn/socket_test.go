@@ -38,12 +38,12 @@ func TestSocketRoundTripReturnsTheDaemonResponse(t *testing.T) {
 	defer listener.Close()
 
 	client := NewClient(sock)
-	resp, err := client.Call(Request{Op: OpIdentity})
+	resp, err := client.Call(Request{Op: OpIdentity, AccountID: "acct"})
 	if err != nil {
 		t.Fatalf("identity call: %v", err)
 	}
-	if resp.Identity == nil || resp.Identity.PublicKey != state.PublicKey || resp.Identity.Version != "test" {
-		t.Errorf("identity = %+v, want public key %s", resp.Identity, state.PublicKey)
+	if resp.Identity == nil || resp.Identity.PublicKey != state.Accounts["acct"].PublicKey || resp.Identity.Version != "test" {
+		t.Errorf("identity = %+v, want account identity", resp.Identity)
 	}
 
 	status, err := client.Call(Request{Op: OpStatus})

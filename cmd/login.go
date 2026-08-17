@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -86,12 +87,40 @@ func interactiveLogin() error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	session, err := browserAuthenticate(cfg, os.Stdout)
+	if err != nil {
+		return err
+	}
+	commitBrowserSession(cfg, session)
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("failed to save credentials: %w", err)
+	}
+	fmt.Printf("\nAuthenticated successfully!\n")
+	warmManifestCache(cfg)
+	return nil
+}
+
+type browserSession struct {
+	AccountID    string
+	Firebase     *config.FirebaseConfig
+	RefreshToken string
+	SignedInAt   string
+}
+
+var authenticateInBrowser = browserAuthenticate
+
+func commitBrowserSession(cfg *config.Config, session browserSession) {
+	cfg.ApplySessionLogin(session.AccountID, session.Firebase, session.RefreshToken, session.SignedInAt)
+}
+
+// browserAuthenticate completes browser authentication without changing local context.
+func browserAuthenticate(cfg *config.Config, progress io.Writer) (browserSession, error) {
 
 	// Initiate device auth with Conductor API
 	conductorClient := api.NewClient(cfg.GetAPIURL())
 	initResp, err := conductorClient.InitiateDeviceAuth()
 	if err != nil {
-		return fmt.Errorf("failed to initiate device auth: %w", err)
+		return browserSession{}, fmt.Errorf("failed to initiate device auth: %w", err)
 	}
 
 	deviceID := initResp.DeviceID
@@ -104,80 +133,72 @@ func interactiveLogin() error {
 		token,
 	)
 
-	fmt.Printf("Opening browser to authenticate...\n")
-	fmt.Printf("Device ID: %s - verify this matches the browser\n", deviceID)
+	fmt.Fprintf(progress, "Opening browser to authenticate...\n")
+	fmt.Fprintf(progress, "Device ID: %s - verify this matches the browser\n", deviceID)
 
 	if err := openBrowser(browserURL); err != nil {
-		fmt.Printf("\nCouldn't open browser automatically (this is normal on remote servers).\n")
-		fmt.Printf("Please open this URL in your browser:\n\n  %s\n\n", browserURL)
+		fmt.Fprintf(progress, "\nCouldn't open browser automatically (this is normal on remote servers).\n")
+		fmt.Fprintf(progress, "Please open this URL in your browser:\n\n  %s\n\n", browserURL)
 	} else {
-		fmt.Printf("If the browser doesn't open, visit: %s\n\n", browserURL)
+		fmt.Fprintf(progress, "If the browser doesn't open, visit: %s\n\n", browserURL)
 	}
 
-	fmt.Printf("Waiting for authorization")
+	fmt.Fprintf(progress, "Waiting for authorization")
 
 	deadline := time.Now().Add(pollTimeout)
 
 	for time.Now().Before(deadline) {
 		resp, err := conductorClient.PollDeviceAuth(deviceID, token)
 		if err != nil {
-			fmt.Printf("\n")
-			return fmt.Errorf("failed to check authorization: %w", err)
+			fmt.Fprintln(progress)
+			return browserSession{}, fmt.Errorf("failed to check authorization: %w", err)
 		}
 
 		if resp.Success {
-			fmt.Printf("\n\nExchanging token...")
+			fmt.Fprintf(progress, "\n\nExchanging token...")
 
 			if resp.Firebase == nil {
-				return fmt.Errorf("missing firebase config in response")
+				return browserSession{}, fmt.Errorf("missing firebase config in response")
 			}
 
 			signIn, err := auth.ExchangeCustomToken(resp.CustomToken, resp.Firebase.APIKey)
 			if err != nil {
-				return fmt.Errorf("failed to exchange token: %w", err)
+				return browserSession{}, fmt.Errorf("failed to exchange token: %w", err)
 			}
-
-			cfg.ApplySessionLogin(
-				resp.AccountID,
-				&config.FirebaseConfig{
+			return browserSession{
+				AccountID: resp.AccountID,
+				Firebase: &config.FirebaseConfig{
 					APIKey:     resp.Firebase.APIKey,
 					AuthDomain: resp.Firebase.AuthDomain,
 					ProjectID:  resp.Firebase.ProjectID,
 				},
-				signIn.RefreshToken,
-				time.Now().UTC().Format(time.RFC3339),
-			)
-			if err := cfg.Save(); err != nil {
-				return fmt.Errorf("failed to save credentials: %w", err)
-			}
-
-			fmt.Printf("\nAuthenticated successfully!\n")
-			warmManifestCache(cfg)
-			return nil
+				RefreshToken: signIn.RefreshToken,
+				SignedInAt:   time.Now().UTC().Format(time.RFC3339),
+			}, nil
 		}
 
 		switch resp.Error {
 		case "authorization_pending":
-			fmt.Printf(".")
+			fmt.Fprint(progress, ".")
 			time.Sleep(pollInterval)
 			continue
 		case "expired":
-			fmt.Printf("\n")
-			return fmt.Errorf("authorization expired - please try again")
+			fmt.Fprintln(progress)
+			return browserSession{}, fmt.Errorf("authorization expired - please try again")
 		case "used":
-			fmt.Printf("\n")
-			return fmt.Errorf("token already used - please try again")
+			fmt.Fprintln(progress)
+			return browserSession{}, fmt.Errorf("token already used - please try again")
 		case "invalid":
-			fmt.Printf("\n")
-			return fmt.Errorf("invalid request: %s", resp.Message)
+			fmt.Fprintln(progress)
+			return browserSession{}, fmt.Errorf("invalid request: %s", resp.Message)
 		default:
-			fmt.Printf("\n")
-			return fmt.Errorf("authorization failed (error=%s): %s", resp.Error, resp.Message)
+			fmt.Fprintln(progress)
+			return browserSession{}, fmt.Errorf("authorization failed (error=%s): %s", resp.Error, resp.Message)
 		}
 	}
 
-	fmt.Printf("\n")
-	return fmt.Errorf("authorization timed out - please try again")
+	fmt.Fprintln(progress)
+	return browserSession{}, fmt.Errorf("authorization timed out - please try again")
 }
 
 // loginWithAPIKey persists a PAT to ~/.runos/config.json (0600) and
@@ -203,6 +224,7 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	cfg.RefreshToken = ""
 	cfg.Firebase = nil
 	cfg.SignedInAt = time.Now().UTC().Format(time.RFC3339)
+	cfg.RememberAccount(aid, cfg.SignedInAt)
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}

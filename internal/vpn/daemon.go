@@ -65,7 +65,8 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 func (d *Daemon) Resume() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.state.SessionToken == "" || d.state.SessionExpiresAt.Before(time.Now()) {
+	active := d.state.Active()
+	if active == nil || active.SessionToken == "" || active.SessionExpiresAt.Before(time.Now()) {
 		return
 	}
 	if err := d.startTunnelLocked(); err != nil {
@@ -80,7 +81,9 @@ func (d *Daemon) Handle(req Request) Response {
 
 	switch req.Op {
 	case OpIdentity:
-		return Response{Identity: d.identityLocked()}
+		return d.handleIdentityLocked(req.AccountID)
+	case OpIdentities:
+		return Response{Identities: d.identitiesLocked()}
 	case OpStatus:
 		return Response{Status: d.statusLocked()}
 	case OpUp:
@@ -90,7 +93,9 @@ func (d *Daemon) Handle(req Request) Response {
 	case OpLogout:
 		return d.handleDownLocked(true)
 	case OpRotateKey:
-		return d.handleRotateKeyLocked()
+		return d.handleRotateKeyLocked(req.AccountID)
+	case OpForgetIdentity:
+		return d.handleForgetIdentityLocked(req.AccountID)
 	case OpConnect:
 		return d.handleSetMembershipLocked(req.CID, true)
 	case OpDisconnect:
@@ -105,13 +110,31 @@ func (d *Daemon) Handle(req Request) Response {
 	}
 }
 
-func (d *Daemon) identityLocked() *Identity {
-	return &Identity{
-		PublicKey: d.state.PublicKey,
-		DeviceID:  d.state.DeviceID,
-		AccountID: d.state.AccountID,
-		Version:   d.version,
+func (d *Daemon) handleIdentityLocked(accountID string) Response {
+	identity, err := d.state.IdentityForAccount(accountID)
+	if err != nil {
+		return Response{Error: err.Error()}
 	}
+	if err := SaveState(d.stateDir, d.state); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{Identity: d.renderIdentity(identity)}
+}
+
+func (d *Daemon) renderIdentity(identity *AccountState) *Identity {
+	return &Identity{
+		PublicKey: identity.PublicKey, DeviceID: identity.DeviceID, AccountID: identity.AccountID,
+		Version: d.version, SessionPresent: identity.SessionToken != "" && identity.SessionExpiresAt.After(time.Now()),
+		SessionExpiresAt: identity.SessionExpiresAt,
+	}
+}
+
+func (d *Daemon) identitiesLocked() []Identity {
+	identities := make([]Identity, 0, len(d.state.Accounts))
+	for _, identity := range d.state.Accounts {
+		identities = append(identities, *d.renderIdentity(identity))
+	}
+	return identities
 }
 
 // handleUpLocked records a freshly minted session and enrolment (the CLI did the sign-in and the
@@ -120,11 +143,23 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	if req.SessionToken == "" || req.AccountID == "" || req.DeviceID == "" || req.ConductorURL == "" {
 		return Response{Error: "up needs a session token, account, device and conductor url"}
 	}
-	d.state.SessionToken = req.SessionToken
-	d.state.SessionExpiresAt = req.SessionExpiresAt
-	d.state.AccountID = req.AccountID
-	d.state.DeviceID = req.DeviceID
-	d.state.ConductorURL = req.ConductorURL
+	identity, err := d.state.IdentityForAccount(req.AccountID)
+	if err != nil {
+		return Response{Error: err.Error()}
+	}
+	// Keep the old tunnel until the target session arrives fully prepared.
+	if old := d.state.Active(); old != nil && old.AccountID != req.AccountID && d.client != nil {
+		if err := d.client.endSession(); err != nil {
+			d.lastErr = "end old session: " + err.Error()
+		}
+	}
+	d.stopTunnelLocked()
+	identity.SessionToken = req.SessionToken
+	identity.SessionExpiresAt = req.SessionExpiresAt
+	identity.DeviceID = req.DeviceID
+	identity.ConductorURL = req.ConductorURL
+	identity.Enrolled = true
+	d.state.ActiveAccountID = req.AccountID
 	if err := SaveState(d.stateDir, d.state); err != nil {
 		return Response{Error: err.Error()}
 	}
@@ -137,6 +172,7 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 // handleDownLocked tears the tunnel down and ends the session server-side. When forget is set
 // (logout) the enrolment is cleared too; the device key stays either way.
 func (d *Daemon) handleDownLocked(forget bool) Response {
+	active := d.state.Active()
 	if d.client != nil {
 		if err := d.client.endSession(); err != nil {
 			// Report but keep tearing down: a laptop the person told to go down must go down
@@ -145,10 +181,12 @@ func (d *Daemon) handleDownLocked(forget bool) Response {
 		}
 	}
 	d.stopTunnelLocked()
-	if forget {
-		d.state.ClearIdentity()
-	} else {
-		d.state.ClearSession()
+	if active != nil {
+		if forget {
+			d.state.ForgetAccount(active.AccountID)
+		} else {
+			active.ClearSession()
+		}
 	}
 	if err := SaveState(d.stateDir, d.state); err != nil {
 		return Response{Error: err.Error()}
@@ -158,15 +196,40 @@ func (d *Daemon) handleDownLocked(forget bool) Response {
 
 // handleRotateKeyLocked drops the tunnel and the old identity and mints a new device keypair.
 // No server-side call: the old key is already refused there, which is why the CLI asked.
-func (d *Daemon) handleRotateKeyLocked() Response {
-	d.stopTunnelLocked()
-	if err := d.state.RotateKey(); err != nil {
+func (d *Daemon) handleRotateKeyLocked(accountID string) Response {
+	if accountID == "" {
+		accountID = d.state.ActiveAccountID
+	}
+	if accountID == d.state.ActiveAccountID {
+		d.stopTunnelLocked()
+	}
+	identity, err := d.state.RotateAccountKey(accountID)
+	if err != nil {
 		return Response{Error: err.Error()}
 	}
 	if err := SaveState(d.stateDir, d.state); err != nil {
 		return Response{Error: err.Error()}
 	}
-	return Response{Identity: d.identityLocked()}
+	return Response{Identity: d.renderIdentity(identity)}
+}
+
+func (d *Daemon) handleForgetIdentityLocked(accountID string) Response {
+	if accountID == "" {
+		return Response{Error: "account ID is required"}
+	}
+	if accountID == d.state.ActiveAccountID {
+		if d.client != nil {
+			if err := d.client.endSession(); err != nil {
+				d.lastErr = "end session: " + err.Error()
+			}
+		}
+		d.stopTunnelLocked()
+	}
+	d.state.ForgetAccount(accountID)
+	if err := SaveState(d.stateDir, d.state); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{Status: d.statusLocked()}
 }
 
 // handleSetMembershipLocked adds or removes one cluster from the connected set through Conductor,
@@ -207,6 +270,10 @@ func (d *Daemon) handleSetMembershipLocked(cid string, connect bool) Response {
 // startTunnelLocked creates the engine and platform client from the current state and does the
 // first poll+apply. Safe to call when a tunnel is already up (it replaces it).
 func (d *Daemon) startTunnelLocked() error {
+	active := d.state.Active()
+	if active == nil {
+		return fmt.Errorf("no active VPN account")
+	}
 	d.stopTunnelLocked()
 	eng, err := newEngine(defaultTunName, d.verbose)
 	if err != nil {
@@ -217,7 +284,7 @@ func (d *Daemon) startTunnelLocked() error {
 		return err
 	}
 	d.engine = eng
-	d.client = newConductorClient(d.state.ConductorURL, d.state.AccountID, d.state.DeviceID, d.state.SessionToken)
+	d.client = newConductorClient(active.ConductorURL, active.AccountID, active.DeviceID, active.SessionToken)
 	d.revision = ""
 	if err := d.pollAndApplyLocked(); err != nil {
 		return err
@@ -286,7 +353,7 @@ func (d *Daemon) pollAndApplyLocked() error {
 
 func (d *Daemon) applyLoginRequiredLocked() {
 	if d.engine != nil {
-		if hex, err := d.state.PrivateKeyHex(); err == nil {
+		if hex, err := d.state.Active().PrivateKeyHex(); err == nil {
 			_ = d.engine.ApplyPlan(hex, Plan{})
 		}
 		_ = d.platform.Teardown(d.engine.InterfaceName())
@@ -307,7 +374,7 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 	if err != nil {
 		return err
 	}
-	privHex, err := d.state.PrivateKeyHex()
+	privHex, err := d.state.Active().PrivateKeyHex()
 	if err != nil {
 		return err
 	}

@@ -21,8 +21,16 @@ func runLogout(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Check if already logged out
-	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" && cfg.APIKey == "" {
+	hasActiveAccount := false
+	for _, account := range cfg.KnownAccounts {
+		if account.Active {
+			hasActiveAccount = true
+			break
+		}
+	}
+
+	// Report an existing logout only when no active account metadata remains.
+	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" && cfg.APIKey == "" && !hasActiveAccount {
 		fmt.Println("Already logged out.")
 		return nil
 	}
@@ -33,6 +41,7 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	cfg.AccountID = ""
 	cfg.SignedInAt = ""
 	cfg.APIKey = ""
+	cfg.ClearActiveAccount()
 
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)

@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.15.0
+
+RunOS accounts are now a CLI-wide local context. The new account commands manage known accounts without retaining inactive credentials.
+
+Every account addition or switch uses browser authentication. An account mismatch stops the change before RunOS stores the new credential.
+
+The VPN daemon now keeps a stable device identity for each account. An account switch preserves other identities.
+
+`runos status --json` reports a CLI and VPN account mismatch when synchronization needs recovery.
+
+RunOS Desktop can now be installed and managed through the CLI on macOS:
+
+```
+runos desktop install
+runos desktop status --json
+runos desktop update
+runos desktop uninstall
+```
+
+The installer verifies the checksum, GitHub provenance, repository, workflow, tag, and application bundle. The installer replaces the application atomically.
+
+`runos update` updates the CLI first. The command then updates Desktop when Desktop is installed. JSON results report both components separately.
+
 ## v1.14.0
 
 `runos vpn` connects this machine to your RunOS clusters over a WireGuard-compatible tunnel, with no config file to manage. Each machine is a device with its own key (generated on the machine, never uploaded) and its own address. A sign-in lasts 24 hours; after that the tunnel is cut and `runos vpn up` signs you in again in the browser.

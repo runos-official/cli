@@ -5,7 +5,12 @@ import "time"
 // statusLocked renders the daemon's current view for `runos vpn status`. Split from daemon.go to
 // keep each file inside the size budget; the daemon holds the lock, this only reads.
 func (d *Daemon) statusLocked() *Status {
-	s := &Status{Version: d.version, DeviceID: d.state.DeviceID, AccountID: d.state.AccountID}
+	s := &Status{SchemaVersion: 1, Version: d.version}
+	active := d.state.Active()
+	if active != nil {
+		s.DeviceID = active.DeviceID
+		s.AccountID = active.AccountID
+	}
 	s.Running = d.engine != nil
 	if d.engine != nil {
 		s.Interface = d.engine.InterfaceName()
@@ -13,9 +18,11 @@ func (d *Daemon) statusLocked() *Status {
 	if d.plan.Address.IsValid() {
 		s.Address = d.plan.Address.String()
 	}
-	s.Session.Present = d.state.SessionToken != "" && d.state.SessionExpiresAt.After(time.Now())
-	s.Session.ExpiresAt = d.state.SessionExpiresAt
-	s.Session.LoginRequired = d.plan.LoginRequired || (d.state.SessionToken != "" && !s.Session.Present)
+	if active != nil {
+		s.Session.Present = active.SessionToken != "" && active.SessionExpiresAt.After(time.Now())
+		s.Session.ExpiresAt = active.SessionExpiresAt
+		s.Session.LoginRequired = d.plan.LoginRequired || (active.SessionToken != "" && !s.Session.Present)
+	}
 	s.Revision = d.revision
 	s.LastPollAt = d.lastPoll
 	s.LastPollErr = d.lastErr

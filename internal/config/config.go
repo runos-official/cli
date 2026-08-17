@@ -28,6 +28,15 @@ type FirebaseConfig struct {
 	ProjectID  string `json:"project_id,omitempty"`
 }
 
+// KnownAccount stores non-secret metadata for an account that used this CLI.
+// Credentials remain only in the active fields on Config.
+type KnownAccount struct {
+	AccountID  string `json:"account_id"`
+	AddedAt    string `json:"added_at"`
+	LastUsedAt string `json:"last_used_at"`
+	Active     bool   `json:"active"`
+}
+
 // RemoteDomains holds the domain URLs for a RunOS environment.
 //
 // The CDN config publishes both `api` (current) and `conductor` (legacy)
@@ -78,6 +87,7 @@ type Config struct {
 	APIKey           string          `json:"api_key,omitempty"` // stored PAT; set by `runos login --api-key`, takes precedence over Firebase, overridden by the RUNOS_API_KEY env var
 	Firebase         *FirebaseConfig `json:"firebase,omitempty"`
 	SignedInAt       string          `json:"signed_in_at,omitempty"` // RFC3339 timestamp of login
+	KnownAccounts    []KnownAccount  `json:"known_accounts,omitempty"`
 }
 
 // ApplySessionLogin records a Firebase refresh-token session on the
@@ -95,6 +105,58 @@ func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, r
 	c.RefreshToken = refreshToken
 	c.SignedInAt = signedInAt
 	c.APIKey = ""
+	c.RememberAccount(accountID, signedInAt)
+}
+
+// RememberAccount adds an account or marks an existing account as active.
+func (c *Config) RememberAccount(accountID, usedAt string) {
+	if c == nil || accountID == "" {
+		return
+	}
+	if usedAt == "" {
+		usedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	found := false
+	for i := range c.KnownAccounts {
+		c.KnownAccounts[i].Active = c.KnownAccounts[i].AccountID == accountID
+		if c.KnownAccounts[i].AccountID == accountID {
+			found = true
+			c.KnownAccounts[i].LastUsedAt = usedAt
+			if c.KnownAccounts[i].AddedAt == "" {
+				c.KnownAccounts[i].AddedAt = usedAt
+			}
+		}
+	}
+	if !found {
+		c.KnownAccounts = append(c.KnownAccounts, KnownAccount{
+			AccountID: accountID, AddedAt: usedAt, LastUsedAt: usedAt, Active: true,
+		})
+	}
+	sort.SliceStable(c.KnownAccounts, func(i, j int) bool {
+		return c.KnownAccounts[i].AddedAt < c.KnownAccounts[j].AddedAt
+	})
+}
+
+// ClearActiveAccount preserves known accounts and clears their active state.
+func (c *Config) ClearActiveAccount() {
+	for i := range c.KnownAccounts {
+		c.KnownAccounts[i].Active = false
+	}
+}
+
+// ForgetAccount removes one account from local metadata.
+func (c *Config) ForgetAccount(accountID string) bool {
+	found := false
+	kept := c.KnownAccounts[:0]
+	for _, account := range c.KnownAccounts {
+		if account.AccountID == accountID {
+			found = true
+			continue
+		}
+		kept = append(kept, account)
+	}
+	c.KnownAccounts = kept
+	return found
 }
 
 func configDir() (string, error) {
