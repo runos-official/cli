@@ -56,6 +56,7 @@ var vpnStatusCmd = &cobra.Command{
 
 func init() {
 	vpnUpCmd.Flags().BoolP("json", "j", false, "Output as JSON")
+	vpnUpCmd.Flags().Bool("non-interactive", false, "Never open a browser: fail if a fresh sign-in is needed (for unattended callers such as connect-at-startup)")
 	vpnDownCmd.Flags().BoolP("json", "j", false, "Output as JSON")
 	vpnStatusCmd.Flags().BoolP("json", "j", false, "Output as JSON")
 	vpnCmd.AddCommand(vpnUpCmd, vpnDownCmd, vpnStatusCmd)
@@ -77,6 +78,21 @@ func refuseVPNWithPAT(cfg *config.Config) error {
 		return fmt.Errorf("a personal access token cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login' (or just run 'runos vpn up', which signs you in), then retry")
 	}
 	return nil
+}
+
+/*
+Whether an `up` that needs a fresh sign-in may open a browser, as an error or nil.
+
+An unattended caller (the desktop app connecting at login) must never have a browser window
+appear on its behalf: at computer startup that is a window nobody asked for at the worst moment.
+It fails instead, clearly enough that the caller can put the sign-in in front of the person when
+they choose. An interactive `up` is unchanged and signs in as it always did.
+*/
+func signInRequiredError(nonInteractive bool) error {
+	if !nonInteractive {
+		return nil
+	}
+	return fmt.Errorf("the VPN needs a fresh sign-in and this run may not open a browser; run 'runos vpn up' when you are at the machine")
 }
 
 func runVPNUp(cmd *cobra.Command, args []string) error {
@@ -130,6 +146,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if needSignIn {
+		nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
+		if err := signInRequiredError(nonInteractive); err != nil {
+			return err
+		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "This VPN session needs a fresh sign-in.")
 		if err := interactiveLogin(); err != nil {
 			return err
