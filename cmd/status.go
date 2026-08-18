@@ -196,8 +196,13 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Account ID:     %s\n", accountID)
 	}
 	if mismatch, _ := status["vpnAccountMismatch"].(bool); mismatch {
-		fmt.Printf("VPN Account ID: %s (does not match the CLI account)\n", status["vpnAccountId"])
-		fmt.Println("  Run 'runos vpn up' to synchronize the VPN account.")
+		// The consequence, not just the state. "Synchronize the VPN account" named neither what
+		// was wrong nor what it cost: every cluster 'runos vpn status' lists belongs to the OTHER
+		// account, so a person reading it is looking at somebody else's clusters.
+		fmt.Printf("VPN Account ID: %s\n", status["vpnAccountId"])
+		fmt.Printf("  The VPN is still signed in to %s, so the clusters 'runos vpn status' lists belong to %s, not %s.\n",
+			status["vpnAccountId"], status["vpnAccountId"], status["accountId"])
+		fmt.Printf("  Run 'runos vpn up' to move the VPN to %s.\n", status["accountId"])
 	}
 
 	// Company profile (when set on the account)
