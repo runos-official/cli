@@ -94,11 +94,16 @@ func clusterStatusLine(c vpn.ClusterStatus) string {
 	case c.Connected && c.PeerUp:
 		return fmt.Sprintf("%s  connected, no handshake yet", label)
 	case c.Connected && !c.Reachable:
-		return fmt.Sprintf("%s  connected but unreachable: %s", label, c.Reason)
+		// A dead state, and not one waiting fixes: the device is in the connected set for a
+		// cluster that cannot serve it. Name the way out, or the line is just a complaint.
+		return fmt.Sprintf("%s  connected but unreachable: %s. Nothing routes here; 'runos vpn disconnect %s' to clear it",
+			label, c.Reason, c.CID)
 	case c.Connected:
 		return fmt.Sprintf("%s  connecting...", label)
 	case !c.Reachable:
-		return fmt.Sprintf("%s  available but no VPN server (%s)", label, c.Reason)
+		// NOT "available". "Available" is an offer to connect, and connecting to a cluster with no
+		// VPN server only buys the dead state above. The reason carries the whole explanation.
+		return fmt.Sprintf("%s  cannot connect: %s", label, c.Reason)
 	default:
 		return fmt.Sprintf("%s  available (not connected)", label)
 	}

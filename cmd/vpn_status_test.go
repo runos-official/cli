@@ -33,9 +33,14 @@ func TestClusterStatusLineReflectsEachState(t *testing.T) {
 			want:    "available (not connected)",
 		},
 		{
-			name:    "available no server",
+			// The defect the operator reported: a cluster with no VPN server was described as
+			// "available but no VPN server", which reads as an offer. It is not one. `vpn connect`
+			// on it produces a connected-but-unreachable dead state and nothing else. A person
+			// scanning this list must be able to see, in the first word, which clusters they can
+			// actually use.
+			name:    "no server is NOT available",
 			cluster: vpn.ClusterStatus{CID: "jwn", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"},
-			want:    "available but no VPN server",
+			want:    "cannot connect: no VPN server installed",
 		},
 	}
 	for _, tc := range cases {
@@ -73,5 +78,32 @@ func TestBytesHumanUsesBinaryUnits(t *testing.T) {
 		if got := bytesHuman(n); got != want {
 			t.Errorf("bytesHuman(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// "available" is an offer, and the list must only make it to clusters that can actually be
+// connected. This is the whole of the operator's report: "i am connecting to nothing it seems yet
+// it says i can connect".
+func TestOnlyAConnectableClusterIsCalledAvailable(t *testing.T) {
+	noServer := vpn.ClusterStatus{CID: "jwn", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"}
+	if got := clusterStatusLine(noServer); strings.Contains(got, "available") {
+		t.Errorf("a cluster with no VPN server must not be offered as available, got %q", got)
+	}
+	ready := vpn.ClusterStatus{CID: "z42", Name: "x", Connected: false, Reachable: true}
+	if got := clusterStatusLine(ready); !strings.Contains(got, "available") {
+		t.Errorf("a cluster with a server IS available, got %q", got)
+	}
+}
+
+// A cluster already stuck in the dead state must say how to get out of it, because the state is
+// not one the person can fix by waiting.
+func TestConnectedButUnreachableSaysWhatToDo(t *testing.T) {
+	stuck := vpn.ClusterStatus{CID: "g4v", Name: "vhm-lab", Connected: true, Reachable: false, Reason: "no VPN server installed"}
+	got := clusterStatusLine(stuck)
+	if !strings.Contains(got, "no VPN server installed") {
+		t.Errorf("must keep the reason, got %q", got)
+	}
+	if !strings.Contains(got, "disconnect g4v") {
+		t.Errorf("must name the way out, got %q", got)
 	}
 }

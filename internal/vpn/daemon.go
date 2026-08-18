@@ -241,6 +241,13 @@ func (d *Daemon) handleSetMembershipLocked(cid string, connect bool) Response {
 	if cid == "" {
 		return Response{Error: "a cluster id is required"}
 	}
+	// Connect only. A disconnect is always allowed, including from a cluster that is unreachable,
+	// because that is the only way out of the dead state this guard exists to prevent.
+	if connect {
+		if refusal := connectRefusal(d.doc, cid); refusal != "" {
+			return Response{Error: refusal}
+		}
+	}
 	current := map[string]struct{}{}
 	if d.doc != nil {
 		for _, c := range d.doc.Clusters {
