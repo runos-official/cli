@@ -129,6 +129,39 @@ func (darwinPlatform) RemoveResolver(zone string) error {
 	return nil
 }
 
+func (p darwinPlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []ResolverPlan) (DNSStatus, error) {
+	have, err := p.Resolvers()
+	if err != nil {
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	diff := DiffResolvers(have, resolvers)
+	for _, resolver := range diff.Set {
+		if err := p.SetResolver(resolver.Zone, resolver.Resolver); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+		}
+	}
+	for _, zone := range diff.Remove {
+		if err := p.RemoveResolver(zone); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+		}
+	}
+	if len(diff.Set) > 0 || len(diff.Remove) > 0 {
+		_ = p.FlushDNS()
+	}
+	if len(resolvers) == 0 {
+		return DNSStatus{Mode: "unavailable", Error: "no private DNS zones are active"}, nil
+	}
+	out, err := run("scutil", "--dns")
+	if err != nil {
+		err = fmt.Errorf("read effective macOS DNS: %w: %s", err, out)
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	if err := verifyEffectiveResolvers(parseScutilDNS(string(out)), resolvers); err != nil {
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	return DNSStatus{Available: true, Mode: "native"}, nil
+}
+
 func (darwinPlatform) FlushDNS() error {
 	// Both are needed on modern macOS: dscacheutil clears the cache, mDNSResponder reloads it.
 	_, _ = run("dscacheutil", "-flushcache")

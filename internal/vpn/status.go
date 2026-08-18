@@ -5,7 +5,7 @@ import "time"
 // statusLocked renders the daemon's current view for `runos vpn status`. Split from daemon.go to
 // keep each file inside the size budget; the daemon holds the lock, this only reads.
 func (d *Daemon) statusLocked() *Status {
-	s := &Status{SchemaVersion: 1, Version: d.version}
+	s := &Status{SchemaVersion: 2, Version: d.version, DNS: d.dns}
 	active := d.state.Active()
 	if active != nil {
 		s.DeviceID = active.DeviceID
@@ -25,7 +25,8 @@ func (d *Daemon) statusLocked() *Status {
 	}
 	s.Revision = d.revision
 	s.LastPollAt = d.lastPoll
-	s.LastPollErr = d.lastErr
+	s.LastPollErr = d.lastPollErr
+	s.LastApplyErr = d.lastApplyErr
 
 	var stats map[string]*PeerStats
 	if d.engine != nil {

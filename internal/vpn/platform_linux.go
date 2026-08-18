@@ -9,28 +9,19 @@ import (
 	"strings"
 )
 
-// The Linux platform. The interface is addressed and routed with `ip` (iproute2, present on every
-// modern distro); split DNS is systemd-resolved via `resolvectl` when it is running, steering only
-// the cluster's zones to the tunnel resolver with a routing domain (`~zone`). When resolved is not
-// present the daemon does NOT rewrite /etc/resolv.conf (that is a machine-wide file other things
-// own); it reports split DNS as unavailable and the tunnel still carries traffic, names just
-// resolve publicly.
-//
-// `resolvectl domain LINK ...` sets the link's WHOLE domain list (measured: a second call with a
-// new zone replaced the first), so the per-zone Set/Remove below read the link's current list
-// back and write the full list every time. Resolvers() parses the same read-back, so the daemon's
-// diff sees what resolved really holds.
+// The Linux platform uses a local router for private DNS. systemd-resolved sends only configured
+// zones to that router. The router sends each zone only to its assigned cluster resolver.
 
 // defaultTunName is the interface the engine creates on Linux.
 const defaultTunName = "runos0"
 
 type linuxPlatform struct {
-	// resolved is true when systemd-resolved answers, decided once at construction.
 	resolved bool
+	router   *dnsRouter
 }
 
 func newPlatform() platform {
-	return linuxPlatform{resolved: resolvectlAvailable()}
+	return &linuxPlatform{resolved: resolvectlAvailable()}
 }
 
 func resolvectlAvailable() bool {
@@ -72,90 +63,92 @@ func (linuxPlatform) RemoveRoute(iface string, prefix netip.Prefix) error {
 	return nil
 }
 
-// Resolvers reads the link's routing domains and DNS server back from resolved. Every routing
-// domain on the link maps to the link's (single) resolver: the daemon steers all of a link's
-// zones to one tunnel resolver per cluster, and two clusters on one link share the DNS server
-// list, so the first server is what every zone gets.
-func (p linuxPlatform) Resolvers() (map[string]netip.Addr, error) {
-	found := map[string]netip.Addr{}
+func (p *linuxPlatform) ReconcileDNS(iface string, clientAddr netip.Addr, resolvers []ResolverPlan) (DNSStatus, error) {
 	if !p.resolved {
-		return found, nil
+		p.stopRouter()
+		return DNSStatus{
+			Mode:  "unavailable",
+			Error: "systemd-resolved is unavailable; private names can resolve publicly",
+		}, nil
 	}
-	dnsOut, err := run("resolvectl", "dns", defaultTunName)
-	if err != nil {
-		return found, nil // link not known to resolved yet: nothing steered
+	if len(resolvers) == 0 {
+		if out, err := run("resolvectl", "revert", iface); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: "remove private DNS state"}, fmt.Errorf("revert link DNS: %w: %s", err, out)
+		}
+		p.stopRouter()
+		_, _ = run("resolvectl", "flush-caches")
+		return DNSStatus{Mode: "unavailable", Error: "no private DNS zones are active"}, nil
 	}
-	servers := parseResolvectlLinkValues(string(dnsOut))
-	if len(servers) == 0 {
-		return found, nil
+	if !clientAddr.IsValid() {
+		return DNSStatus{Mode: "unavailable", Error: "the VPN client address is unavailable"}, fmt.Errorf("configure private DNS without a client address")
 	}
-	resolver, err := netip.ParseAddr(servers[0])
-	if err != nil {
-		return found, nil
+	routes := dnsRoutesForPlans(resolvers)
+	if p.router != nil {
+		p.router.Update(routes)
+		if err := applyAndVerifyResolvedDNS(iface, p.router.Addr(), resolvers); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+		}
+		return DNSStatus{Available: true, Mode: "local-proxy"}, nil
 	}
-	domOut, err := run("resolvectl", "domain", defaultTunName)
-	if err != nil {
-		return found, nil
-	}
-	for _, zone := range routingZones(parseResolvectlLinkValues(string(domOut))) {
-		found[zone] = resolver
-	}
-	return found, nil
-}
 
-func (p linuxPlatform) SetResolver(zone string, resolver netip.Addr) error {
-	if !p.resolved {
-		// No resolved: do not touch resolv.conf. The tunnel works; the name resolves publicly.
-		// Returning nil keeps the daemon converging routes even without split DNS.
-		return nil
-	}
-	if out, err := run("resolvectl", "dns", defaultTunName, resolver.String()); err != nil {
-		return fmt.Errorf("set link dns: %w: %s", err, out)
-	}
-	return p.setDomains(addZone(p.currentZones(), zone))
-}
-
-func (p linuxPlatform) RemoveResolver(zone string) error {
-	if !p.resolved {
-		return nil
-	}
-	return p.setDomains(removeZone(p.currentZones(), zone))
-}
-
-func (p linuxPlatform) currentZones() []string {
-	out, err := run("resolvectl", "domain", defaultTunName)
-	if err != nil {
-		return nil
-	}
-	return routingZones(parseResolvectlLinkValues(string(out)))
-}
-
-// setDomains writes the link's whole routing-domain list. An empty list clears it (resolvectl
-// wants one empty argument for that).
-func (p linuxPlatform) setDomains(zones []string) error {
-	args := []string{"domain", defaultTunName}
-	if len(zones) == 0 {
-		args = append(args, "")
-	}
-	for _, zone := range zones {
-		args = append(args, "~"+zone)
-	}
-	if out, err := run("resolvectl", args...); err != nil {
-		return fmt.Errorf("set link domains: %w: %s", err, out)
-	}
-	return nil
-}
-
-func (linuxPlatform) FlushDNS() error {
-	_, _ = run("resolvectl", "flush-caches")
-	return nil
-}
-
-func (p linuxPlatform) Teardown(iface string) error {
-	if p.resolved {
-		// Revert the link's DNS so no zone is steered after the tunnel goes down.
+	loopback, err := startDNSRouter(netip.MustParseAddrPort("127.0.0.1:0"), routes, defaultDNSUpstreamDeadline)
+	if err == nil {
+		if applyErr := applyAndVerifyResolvedDNS(iface, loopback.Addr(), resolvers); applyErr == nil {
+			p.router = loopback
+			return DNSStatus{Available: true, Mode: "local-proxy"}, nil
+		}
+		loopback.Close()
 		_, _ = run("resolvectl", "revert", iface)
 	}
-	// Routes go with the interface when the engine closes it.
+
+	fallbackAddr := netip.AddrPortFrom(clientAddr, 53)
+	fallback, err := startDNSRouter(fallbackAddr, routes, defaultDNSUpstreamDeadline)
+	if err != nil {
+		state := DNSStatus{Mode: "unavailable", Error: "cannot start the local DNS router"}
+		return state, fmt.Errorf("start local DNS router: %w", err)
+	}
+	if err := applyAndVerifyResolvedDNS(iface, fallback.Addr(), resolvers); err != nil {
+		fallback.Close()
+		_, _ = run("resolvectl", "revert", iface)
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	p.router = fallback
+	return DNSStatus{Available: true, Mode: "local-proxy"}, nil
+}
+
+func applyAndVerifyResolvedDNS(iface string, endpoint netip.AddrPort, resolvers []ResolverPlan) error {
+	if err := applyResolvedDNS(iface, endpoint, resolvers); err != nil {
+		return err
+	}
+	_, _ = run("resolvectl", "flush-caches")
+	probe := resolvedDNSProbeCommand(iface, resolvers[0].Zone)
+	if out, err := run("resolvectl", probe...); err != nil {
+		return fmt.Errorf("verify private DNS for %s: %w: %s", resolvers[0].Zone, err, out)
+	}
+	return nil
+}
+
+func applyResolvedDNS(iface string, endpoint netip.AddrPort, resolvers []ResolverPlan) error {
+	labels := []string{"set link DNS endpoint", "set link DNS domains", "disable the default DNS route"}
+	for index, command := range resolvedDNSCommands(iface, endpoint, resolvers) {
+		if out, err := run("resolvectl", command...); err != nil {
+			return fmt.Errorf("%s: %w: %s", labels[index], err, out)
+		}
+	}
+	return nil
+}
+
+func (p *linuxPlatform) stopRouter() {
+	if p.router != nil {
+		p.router.Close()
+		p.router = nil
+	}
+}
+
+func (p *linuxPlatform) Teardown(iface string) error {
+	if p.resolved {
+		_, _ = run("resolvectl", "revert", iface)
+	}
+	p.stopRouter()
 	return nil
 }

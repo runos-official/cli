@@ -40,6 +40,14 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 		fmt.Fprintln(out, "Session: none - run 'runos vpn up'")
 	}
 
+	if status.DNS.Available {
+		fmt.Fprintf(out, "Private DNS: available (%s)\n", status.DNS.Mode)
+	} else if status.DNS.Error != "" {
+		fmt.Fprintf(out, "Private DNS: unavailable - %s\n", status.DNS.Error)
+	} else {
+		fmt.Fprintln(out, "Private DNS: unavailable")
+	}
+
 	if len(status.Clusters) == 0 {
 		return nil
 	}

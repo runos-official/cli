@@ -33,3 +33,26 @@ func parseNrptRules(out string) map[string]netip.Addr {
 	}
 	return found
 }
+
+func parseEffectiveNrptPolicy(out string) map[string][]netip.Addr {
+	found := map[string][]netip.Addr{}
+	for _, line := range strings.Split(out, "\n") {
+		namespaces, servers, ok := strings.Cut(strings.TrimSpace(line), "|")
+		if !ok {
+			continue
+		}
+		var parsed []netip.Addr
+		for _, raw := range strings.Split(servers, ",") {
+			if server, err := netip.ParseAddr(strings.TrimSpace(raw)); err == nil {
+				parsed = append(parsed, server)
+			}
+		}
+		for _, namespace := range strings.Split(namespaces, ",") {
+			zone := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(namespace), "."))
+			if zone != "" {
+				found[zone] = append(found[zone], parsed...)
+			}
+		}
+	}
+	return found
+}

@@ -104,6 +104,39 @@ func (windowsPlatform) RemoveResolver(zone string) error {
 	return nil
 }
 
+func (p windowsPlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []ResolverPlan) (DNSStatus, error) {
+	have, err := p.Resolvers()
+	if err != nil {
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	diff := DiffResolvers(have, resolvers)
+	for _, resolver := range diff.Set {
+		if err := p.SetResolver(resolver.Zone, resolver.Resolver); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+		}
+	}
+	for _, zone := range diff.Remove {
+		if err := p.RemoveResolver(zone); err != nil {
+			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+		}
+	}
+	if len(diff.Set) > 0 || len(diff.Remove) > 0 {
+		_ = p.FlushDNS()
+	}
+	if len(resolvers) == 0 {
+		return DNSStatus{Mode: "unavailable", Error: "no private DNS zones are active"}, nil
+	}
+	out, err := powershell(`Get-DnsClientNrptPolicy -Effective | ForEach-Object { ($_.Namespace -join ',') + '|' + ($_.NameServers -join ',') }`)
+	if err != nil {
+		err = fmt.Errorf("read effective NRPT policy: %w: %s", err, out)
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	if err := verifyEffectiveResolvers(parseEffectiveNrptPolicy(string(out)), resolvers); err != nil {
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
+	}
+	return DNSStatus{Available: true, Mode: "native"}, nil
+}
+
 func (windowsPlatform) FlushDNS() error {
 	_, _ = run("ipconfig", "/flushdns")
 	return nil

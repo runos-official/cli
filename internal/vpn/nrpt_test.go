@@ -20,3 +20,20 @@ func TestParseNrptRules(t *testing.T) {
 		t.Fatal("empty output must give no rules")
 	}
 }
+
+func TestParseEffectiveNrptPolicyKeepsManagedConflicts(t *testing.T) {
+	out := ".alpha.runos.xyz,alpha.runos.xyz|10.1.0.1\r\n.alpha.runos.xyz|192.0.2.53\r\n.beta.runos.xyz,beta.runos.xyz|10.2.0.1\r\n"
+	got := parseEffectiveNrptPolicy(out)
+	if len(got) != 2 {
+		t.Fatalf("parsed %d effective zones, want 2", len(got))
+	}
+	if len(got["alpha.runos.xyz"]) != 3 {
+		t.Fatalf("alpha effective resolvers are %v", got["alpha.runos.xyz"])
+	}
+	if err := verifyEffectiveResolvers(got, []ResolverPlan{
+		{Zone: "alpha.runos.xyz", Resolver: netip.MustParseAddr("10.1.0.1")},
+		{Zone: "beta.runos.xyz", Resolver: netip.MustParseAddr("10.2.0.1")},
+	}); err == nil {
+		t.Fatal("the managed NRPT conflict was not reported")
+	}
+}

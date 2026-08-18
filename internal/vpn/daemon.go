@@ -24,13 +24,15 @@ type Daemon struct {
 	platform platform
 
 	// Live tunnel, nil when down.
-	engine   *engine
-	client   *conductorClient
-	doc      *Document
-	plan     Plan
-	revision string
-	lastPoll time.Time
-	lastErr  string
+	engine       *engine
+	client       *conductorClient
+	doc          *Document
+	plan         Plan
+	revision     string
+	lastPoll     time.Time
+	lastPollErr  string
+	lastApplyErr string
+	dns          DNSStatus
 
 	pollInterval time.Duration
 	cancelPoll   context.CancelFunc
@@ -56,6 +58,7 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 		state:        state,
 		platform:     newPlatform(),
 		pollInterval: PollInterval,
+		dns:          DNSStatus{Mode: "unavailable", Error: "the VPN is down"},
 	}, nil
 }
 
@@ -70,7 +73,7 @@ func (d *Daemon) Resume() {
 		return
 	}
 	if err := d.startTunnelLocked(); err != nil {
-		d.lastErr = err.Error()
+		d.lastApplyErr = err.Error()
 	}
 }
 
@@ -150,7 +153,7 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	// Keep the old tunnel until the target session arrives fully prepared.
 	if old := d.state.Active(); old != nil && old.AccountID != req.AccountID && d.client != nil {
 		if err := d.client.endSession(); err != nil {
-			d.lastErr = "end old session: " + err.Error()
+			d.lastPollErr = "end old session: " + err.Error()
 		}
 	}
 	d.stopTunnelLocked()
@@ -177,7 +180,7 @@ func (d *Daemon) handleDownLocked(forget bool) Response {
 		if err := d.client.endSession(); err != nil {
 			// Report but keep tearing down: a laptop the person told to go down must go down
 			// locally even if conductor is unreachable; the session lapses on its own within 24h.
-			d.lastErr = "end session: " + err.Error()
+			d.lastPollErr = "end session: " + err.Error()
 		}
 	}
 	d.stopTunnelLocked()
@@ -220,7 +223,7 @@ func (d *Daemon) handleForgetIdentityLocked(accountID string) Response {
 	if accountID == d.state.ActiveAccountID {
 		if d.client != nil {
 			if err := d.client.endSession(); err != nil {
-				d.lastErr = "end session: " + err.Error()
+				d.lastPollErr = "end session: " + err.Error()
 			}
 		}
 		d.stopTunnelLocked()
@@ -317,6 +320,8 @@ func (d *Daemon) stopTunnelLocked() {
 	d.doc = nil
 	d.plan = Plan{}
 	d.revision = ""
+	d.lastApplyErr = ""
+	d.dns = DNSStatus{Mode: "unavailable", Error: "the VPN is down"}
 }
 
 // pollAndApplyLocked fetches the document (conditional on the ETag) and, when it changed,
@@ -329,9 +334,10 @@ func (d *Daemon) pollAndApplyLocked() error {
 	d.lastPoll = time.Now()
 	res, err := d.client.pollState(d.revision)
 	if err != nil {
-		d.lastErr = err.Error()
+		d.lastPollErr = err.Error()
 		return err
 	}
+	d.lastPollErr = ""
 	if res.loginRequired {
 		// The session lapsed: apply an empty plan (peers gone) and stop, so the daemon does not
 		// hammer a 401 every tick. The interface and address stay so status is legible.
@@ -344,17 +350,17 @@ func (d *Daemon) pollAndApplyLocked() error {
 		// so re-asserting the current plan on each tick is how the tunnel comes back on its own
 		// without a wake listener per OS.
 		if err := d.convergeRoutesAndDNSLocked(nil, d.plan); err != nil {
-			d.lastErr = err.Error()
+			d.lastApplyErr = err.Error()
 			return err
 		}
-		d.lastErr = ""
+		d.lastApplyErr = ""
 		return nil
 	}
 	if err := d.applyDocumentLocked(res.doc); err != nil {
-		d.lastErr = err.Error()
+		d.lastApplyErr = err.Error()
 		return err
 	}
-	d.lastErr = ""
+	d.lastApplyErr = ""
 	return nil
 }
 
@@ -373,6 +379,8 @@ func (d *Daemon) applyLoginRequiredLocked() {
 		d.doc.Device.Session.LoginRequired = true
 	}
 	d.plan = Plan{LoginRequired: true}
+	d.lastApplyErr = ""
+	d.dns = DNSStatus{Mode: "unavailable", Error: "the VPN session expired"}
 }
 
 // applyDocumentLocked converges the machine to a new document.
@@ -425,26 +433,14 @@ func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan
 		}
 	}
 
-	have, err := d.platform.Resolvers()
+	clientAddr := netip.Addr{}
+	if plan.Address.IsValid() {
+		clientAddr = plan.Address.Addr()
+	}
+	dns, err := d.platform.ReconcileDNS(iface, clientAddr, plan.Resolvers)
+	d.dns = dns
 	if err != nil {
 		return err
-	}
-	resolverDiff := DiffResolvers(have, plan.Resolvers)
-	changed := false
-	for _, r := range resolverDiff.Set {
-		if err := d.platform.SetResolver(r.Zone, r.Resolver); err != nil {
-			return err
-		}
-		changed = true
-	}
-	for _, zone := range resolverDiff.Remove {
-		if err := d.platform.RemoveResolver(zone); err != nil {
-			return err
-		}
-		changed = true
-	}
-	if changed {
-		_ = d.platform.FlushDNS()
 	}
 	return nil
 }

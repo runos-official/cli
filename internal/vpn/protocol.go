@@ -92,6 +92,7 @@ type Status struct {
 		ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 		LoginRequired bool      `json:"loginRequired"`
 	} `json:"session"`
+	DNS      DNSStatus       `json:"dns"`
 	Clusters []ClusterStatus `json:"clusters"`
 	// The revision of the last document applied, and when it was fetched.
 	Revision     string    `json:"revision,omitempty"`
@@ -99,6 +100,13 @@ type Status struct {
 	LastPollErr  string    `json:"lastPollError,omitempty"`
 	LastApplyErr string    `json:"lastApplyError,omitempty"`
 	Version      string    `json:"version"`
+}
+
+// DNSStatus reports private DNS separately from tunnel reachability.
+type DNSStatus struct {
+	Available bool   `json:"available"`
+	Mode      string `json:"mode"`
+	Error     string `json:"error"`
 }
 
 // ClusterStatus is one cluster of the account as the daemon sees it: the document's facts plus

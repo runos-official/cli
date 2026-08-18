@@ -1,48 +1,38 @@
 package vpn
 
 import (
+	"net/netip"
 	"reflect"
 	"testing"
 )
 
-func TestParseResolvectlLinkValues(t *testing.T) {
-	cases := []struct {
-		name string
-		out  string
-		want []string
-	}{
-		{"empty link", "Link 6 (wg0):\n", nil},
-		{"one dns", "Link 6 (wg0): 10.9.9.9\n", []string{"10.9.9.9"}},
-		{"two domains", "Link 6 (wg0): ~a.example ~b.example\n", []string{"~a.example", "~b.example"}},
-		{"noise before", "Failed?\nLink 12 (runos0): ~z.example\n", []string{"~z.example"}},
-		{"no link line", "Unknown link\n", nil},
+func TestResolvedDNSCommandsApplyOneCompleteMultiClusterState(t *testing.T) {
+	commands := resolvedDNSCommands("runos0", netip.MustParseAddrPort("127.0.0.1:53001"), []ResolverPlan{
+		{Zone: "alpha.runos.xyz", Resolver: netip.MustParseAddr("10.1.0.1")},
+		{Zone: "beta.runos.xyz", Resolver: netip.MustParseAddr("10.2.0.1")},
+	})
+	want := [][]string{
+		{"dns", "runos0", "127.0.0.1:53001"},
+		{"domain", "runos0", "~alpha.runos.xyz", "~beta.runos.xyz"},
+		{"default-route", "runos0", "no"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := parseResolvectlLinkValues(tc.out); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("got %v want %v", got, tc.want)
-			}
-		})
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("resolved commands are %v, want %v", commands, want)
 	}
 }
 
-func TestRoutingZonesAndSetOps(t *testing.T) {
-	zones := routingZones([]string{"~A.example.", "search.example", "~b.example", "~"})
-	if want := []string{"a.example", "b.example"}; !reflect.DeepEqual(zones, want) {
-		t.Fatalf("routingZones got %v want %v", zones, want)
+func TestResolvedDNSCommandsUseLegacySyntaxForPort53Fallback(t *testing.T) {
+	commands := resolvedDNSCommands("runos0", netip.MustParseAddrPort("172.24.8.10:53"), []ResolverPlan{
+		{Zone: "alpha.runos.xyz", Resolver: netip.MustParseAddr("10.1.0.1")},
+	})
+	if got := commands[0][2]; got != "172.24.8.10" {
+		t.Fatalf("port 53 fallback server is %q, want an address without extended-port syntax", got)
 	}
-	// Adding a second cluster's zone must KEEP the first: the bug this guards against was
-	// resolvectl replacing the whole list on every set.
-	if got, want := addZone(zones, "c.example"), []string{"a.example", "b.example", "c.example"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("addZone got %v want %v", got, want)
-	}
-	if got, want := addZone(zones, "a.example"), zones; !reflect.DeepEqual(got, want) {
-		t.Fatalf("addZone duplicate got %v want %v", got, want)
-	}
-	if got, want := removeZone(zones, "a.example"), []string{"b.example"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("removeZone got %v want %v", got, want)
-	}
-	if got := removeZone([]string{"only.example"}, "only.example"); len(got) != 0 {
-		t.Fatalf("removeZone last got %v want empty", got)
+}
+
+func TestResolvedDNSProbeUsesTheVPNInterface(t *testing.T) {
+	want := []string{"--interface=runos0", "query", "alpha.runos.xyz"}
+	if got := resolvedDNSProbeCommand("runos0", "alpha.runos.xyz"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved probe command is %v, want %v", got, want)
 	}
 }

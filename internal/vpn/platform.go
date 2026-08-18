@@ -18,13 +18,8 @@ type platform interface {
 	Routes(iface string) ([]netip.Prefix, error)
 	AddRoute(iface string, prefix netip.Prefix) error
 	RemoveRoute(iface string, prefix netip.Prefix) error
-	// Resolvers returns the split-DNS zones the daemon currently steers, zone -> resolver.
-	Resolvers() (map[string]netip.Addr, error)
-	SetResolver(zone string, resolver netip.Addr) error
-	RemoveResolver(zone string) error
-	// FlushDNS drops the OS resolver cache after resolver changes, so a name resolves the new way
-	// at once rather than after its old TTL.
-	FlushDNS() error
+	// ReconcileDNS applies the complete private DNS state in one operation.
+	ReconcileDNS(iface string, clientAddr netip.Addr, resolvers []ResolverPlan) (DNSStatus, error)
 	// Teardown removes every route and resolver the daemon owns, for `down`. The interface itself
 	// goes away when the engine closes it.
 	Teardown(iface string) error

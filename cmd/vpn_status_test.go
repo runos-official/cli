@@ -1,12 +1,31 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/runos-official/cli/internal/vpn"
+	"github.com/spf13/cobra"
 )
+
+func TestVPNStatusShowsPrivateDNSFailure(t *testing.T) {
+	status := &vpn.Status{Running: true, Interface: "runos0"}
+	status.DNS = vpn.DNSStatus{
+		Mode:  "unavailable",
+		Error: "systemd-resolved is unavailable; private names can resolve publicly",
+	}
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+	if got := output.String(); !strings.Contains(got, "Private DNS: unavailable") || !strings.Contains(got, "resolve publicly") {
+		t.Fatalf("status did not show the private DNS failure: %q", got)
+	}
+}
 
 // The status line is what a person reads to know whether their tunnel is working, so its wording
 // is the requirement: a connected-and-handshaking cluster shows traffic, a connected-but-
