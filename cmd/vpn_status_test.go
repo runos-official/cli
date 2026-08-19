@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/runos-official/cli/internal/vpn"
+	"github.com/runos-official/cli/version"
 	"github.com/spf13/cobra"
 )
 
@@ -124,5 +125,49 @@ func TestConnectedButUnreachableSaysWhatToDo(t *testing.T) {
 	}
 	if !strings.Contains(got, "disconnect g4v") {
 		t.Errorf("must name the way out, got %q", got)
+	}
+}
+
+// A daemon older than the CLI is the commonest cause of a status field that reads empty, because
+// the daemon serialises what ITS build knows and a field added later decodes as a zero value here.
+// Measured 2026-08-19: daemon dev-2026-08-18T14:56:07Z against CLI dev-2026-08-18T19:40:41Z printed
+// "Private DNS: unavailable" with no reason while split DNS was in fact working, with
+// /etc/resolver written by the daemon and the cluster zone resolving to private addresses. A person
+// reading that goes and debugs DNS. The status has both versions in hand and must say so.
+func TestVPNStatusWarnsWhenTheDaemonIsAnOlderBuild(t *testing.T) {
+	previous := version.Version
+	version.Version = "dev-2026-08-18T19:40:41Z"
+	defer func() { version.Version = previous }()
+
+	status := &vpn.Status{Running: true, Interface: "utun8", Version: "dev-2026-08-18T14:56:07Z"}
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+	got := output.String()
+	for _, want := range []string{"older build", "dev-2026-08-18T14:56:07Z", "dev-2026-08-18T19:40:41Z", "runos vpn restart"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status did not name %q in the version mismatch: %q", want, got)
+		}
+	}
+}
+
+// The warning must NOT fire when the two agree, or every normal run carries noise.
+func TestVPNStatusIsQuietWhenTheBuildsMatch(t *testing.T) {
+	previous := version.Version
+	version.Version = "dev-2026-08-18T19:40:41Z"
+	defer func() { version.Version = previous }()
+
+	status := &vpn.Status{Running: true, Interface: "utun8", Version: "dev-2026-08-18T19:40:41Z"}
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+	if strings.Contains(output.String(), "older build") {
+		t.Fatalf("status warned about a version mismatch that does not exist: %q", output.String())
 	}
 }

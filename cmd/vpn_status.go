@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/runos-official/cli/internal/vpn"
+	"github.com/runos-official/cli/version"
 
 	"github.com/spf13/cobra"
 )
@@ -46,6 +47,22 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 		fmt.Fprintf(out, "Private DNS: unavailable - %s\n", status.DNS.Error)
 	} else {
 		fmt.Fprintln(out, "Private DNS: unavailable")
+	}
+
+	// A DAEMON OLDER THAN THIS CLI IS THE COMMONEST CAUSE OF AN EMPTY FIELD ABOVE. The daemon
+	// serialises what ITS build knows, so a field added after it was started decodes as a zero
+	// value here, and a zero value reads as a real answer rather than as a missing one.
+	//
+	// Measured 2026-08-19: daemon dev-2026-08-18T14:56:07Z against CLI dev-2026-08-18T19:40:41Z
+	// printed "Private DNS: unavailable" with no reason while split DNS was WORKING. The daemon
+	// had written /etc/resolver/<zone>, scutil showed the zone against the tunnel resolver, and
+	// the zone resolved to private addresses. Every failure path in the daemon sets a Mode and an
+	// Error, so an empty pair cannot come from a daemon that answered at all: it is the shape of a
+	// field the running build never sent. Nothing said so, and the reader debugs DNS instead.
+	if status.Running && status.Version != "" && status.Version != version.Version {
+		fmt.Fprintf(out, "\nThe VPN service is running an older build than this CLI (%s against %s).\n",
+			status.Version, version.Version)
+		fmt.Fprintln(out, "Anything it does not know reads as empty above. Run 'runos vpn restart' to load the current build.")
 	}
 
 	if len(status.Clusters) == 0 {
