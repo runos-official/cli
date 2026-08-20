@@ -7,6 +7,7 @@ import (
 
 	"github.com/runos-official/cli/internal/desktop"
 	"github.com/runos-official/cli/internal/update"
+	"github.com/runos-official/cli/internal/vpn"
 	"github.com/spf13/cobra"
 )
 
@@ -108,6 +109,23 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	}
+
+	// THE VPN DAEMON RUNS THIS BINARY, and replacing the file does not change what is already
+	// loaded. The launchd plist points at the runos executable, so after an update the daemon
+	// carries on running the PREVIOUS build until something restarts it, and nothing said so:
+	// `runos vpn restart` exists and its own success message is "it now runs the current runos
+	// build", but no code path called it and no code path mentioned it.
+	//
+	// SAID, NOT DONE. Restarting needs admin and `runos update` does not, so escalating here would
+	// either fail or prompt for a password in the middle of an unrelated command. Naming the one
+	// command is the honest half, and it is stated only when a daemon is actually loaded, so a
+	// machine that never installed the VPN reads nothing about it.
+	if running, err := vpn.NewService().Running(); err == nil && running {
+		fmt.Fprintln(progress, "")
+		fmt.Fprintln(progress, "The VPN service is still running the PREVIOUS build: replacing the")
+		fmt.Fprintln(progress, "binary does not reload a daemon that is already loaded.")
+		fmt.Fprintln(progress, "  Pick it up with: sudo runos vpn restart")
 	}
 	return nil
 }
