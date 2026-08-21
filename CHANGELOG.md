@@ -15,8 +15,14 @@ It opens the `devops` shell, which carries kubectl, k9s and stern. The workspace
 first use if you have never opened one, and the first one on a cluster pulls a large image, so it
 waits up to ten minutes and says what it is waiting for.
 
-KNOWN LIMIT: the command's exit code is not carried back, because the session is a byte stream and
-the protocol has no channel for it. `runos shell -- false` succeeds.
+A one-shot returns the command's own exit code, so it can be used in a script. The session carries
+no exit code of its own, so the shell prints it and the CLI takes that line off the output. The one
+exception is a command that ends the shell itself, such as a bare `exit`, which returns 0.
+
+WHAT YOU TYPE AFTER `--` IS WHAT RUNS, argument for argument, the same as `kubectl exec --`. Your
+quoting is kept, so `-- grep "error 500" app.log` searches for the whole phrase. Pipes, redirects
+and semicolons are shell syntax rather than arguments, so ask for a shell when you want them:
+`-- bash -lc 'a | b'`.
 
 
 RunOS accounts are now a CLI-wide local context. The new account commands manage known accounts without retaining inactive credentials.

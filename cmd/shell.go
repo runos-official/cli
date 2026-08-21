@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,10 +35,19 @@ the RunOS CLI itself, already pointed at this cluster.
 
 THE CONNECTION GOES STRAIGHT TO YOUR CLUSTER, not through the RunOS API. The API is asked for the
 key and nothing else, so keystrokes take one hop rather than two. That means it needs the cluster's
-own address to be reachable from here, which is the same thing the console's terminal needs.`,
-	Example: `  runos shell                             # an interactive shell
-  runos shell -- kubectl get nodes        # run one thing and exit
-  runos shell --cid abc12                 # a cluster other than the default`,
+own address to be reachable from here, which is the same thing the console's terminal needs.
+
+WHAT YOU TYPE AFTER -- IS WHAT RUNS, argument for argument, the same as ` + "`kubectl exec --`" + `.
+Your quoting is kept, so ` + "`-- grep \"error 500\" app.log`" + ` searches for the whole phrase.
+Pipes, redirects and semicolons are shell syntax rather than arguments, so ask for a shell when you
+want them: ` + "`-- bash -lc 'a | b'`" + `.
+
+A one-shot returns the command's own exit code, so it can be used in a script. The one exception is
+a command that ends the shell itself, such as a bare ` + "`exit`" + `, which returns 0.`,
+	Example: `  runos shell                                  # an interactive shell
+  runos shell -- kubectl get nodes             # run one thing and exit
+  runos shell -- bash -lc 'kubectl get po | wc -l'   # pipes need a shell, as above
+  runos shell --cid abc12                      # a cluster other than the default`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runShell,
 }
@@ -69,7 +79,7 @@ func oneShotCommand(cmd *cobra.Command, args []string) (string, error) {
 			"runos shell takes no arguments of its own. Put everything after --, as in: runos shell -- %s",
 			strings.Join(args, " "))
 	}
-	return strings.Join(args[dash:], " "), nil
+	return workspace.QuoteCommand(args[dash:]), nil
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
@@ -145,9 +155,18 @@ type workspaceAccess struct {
 // one. The console creates on first use too, so a person who has only ever used the CLI is not
 // told to go and click something in a browser first.
 func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
+	// A KEY IS NOT A RUNNING POD. The key lives in a Secret created by the same apply that creates
+	// the deployment, so it answers the instant the manifest lands, minutes before anything serves.
+	// Taking that as "ready" meant the wait below only ever ran on the very first invocation: press
+	// ctrl-C during it, or create the workspace from the console, or have the pod restart, and
+	// every later attempt dialled a starting pod and called it "refused".
 	access, err := readWorkspacePSK(client, token, aid, cid, uid)
 	if err == nil {
-		return access, nil
+		if up, _ := ready(client, token, aid, cid, uid); up {
+			return access, nil
+		}
+		fmt.Fprintln(os.Stderr, "Your workspace is still starting.")
+		return waitForWorkspace(client, token, aid, cid, uid)
 	}
 
 	fmt.Fprintln(os.Stderr, "Setting up your workspace on this cluster. The first one pulls a large image, so give it a few minutes.")
@@ -162,12 +181,15 @@ func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 		return nil, fmt.Errorf("your workspace could not be created (HTTP %d)", created.StatusCode)
 	}
 
-	// The pod has to become ready before it will answer, so wait rather than handing back a
-	// connection error that reads like a broken cluster.
-	//
-	// TEN MINUTES, because the first one on a cluster pulls a large image over whatever connection
-	// that cluster has. Measured on a home lab: the pod was serving in about four minutes, and the
-	// three-minute limit this used to carry would have given up on a workspace that was fine.
+	return waitForWorkspace(client, token, aid, cid, uid)
+}
+
+// waitForWorkspace blocks until the pod is serving, saying what it is waiting for.
+//
+// TEN MINUTES, because the first workspace on a cluster pulls a large image over whatever
+// connection that cluster has. Measured on a home lab: serving in about four minutes, so the
+// three-minute limit this used to carry gave up on a workspace that was fine.
+func waitForWorkspace(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
 	deadline := time.Now().Add(10 * time.Minute)
 	lastDetail := ""
 	for time.Now().Before(deadline) {
@@ -184,9 +206,9 @@ func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 		time.Sleep(3 * time.Second)
 	}
 	if lastDetail != "" {
-		return nil, fmt.Errorf("your workspace was created but is still not ready after ten minutes (%s)", lastDetail)
+		return nil, fmt.Errorf("your workspace is still not ready after ten minutes (%s)", lastDetail)
 	}
-	return nil, errors.New("your workspace was created but is still not ready after ten minutes")
+	return nil, errors.New("your workspace is still not ready after ten minutes")
 }
 
 func readWorkspacePSK(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
@@ -246,6 +268,15 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 	fd := int(os.Stdin.Fd())
 	interactive := term.IsTerminal(fd)
 
+	// A one-shot's output passes through a scanner that lifts the exit code off it. An interactive
+	// session gets no wrapper and therefore no marker, so it writes straight through.
+	var out io.Writer = os.Stdout
+	var scanner *workspace.ExitScanner
+	if oneShot {
+		scanner = workspace.NewExitScanner(os.Stdout)
+		out = scanner
+	}
+
 	if interactive {
 		state, err := term.MakeRaw(fd)
 		if err != nil {
@@ -285,9 +316,13 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				// TEXT, because the far end reads the message as a string and writes that into the
-				// shell. This is not KubeVirt, which needs binary.
-				if werr := conn.Write(ctx, websocket.MessageText, buf[:n]); werr != nil {
+				// BINARY, and that is not a detail. MEASURED 2026-08-21: Node's websocket library
+				// VALIDATES text frames and fails the connection with 1007 on the first byte that
+				// is not valid UTF-8. A multi-byte character split across this 32 KiB read
+				// boundary is enough, so any paste or pipe over 32 KiB containing one accented
+				// character killed the session mid-command. The far end reads the message as a
+				// Buffer either way, so binary costs nothing and removes the whole class.
+				if werr := conn.Write(ctx, websocket.MessageBinary, buf[:n]); werr != nil {
 					done <- werr
 					return
 				}
@@ -311,7 +346,7 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 				done <- err
 				return
 			}
-			if _, werr := os.Stdout.Write(data); werr != nil {
+			if _, werr := out.Write(data); werr != nil {
 				done <- werr
 				return
 			}
@@ -319,8 +354,24 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 	}()
 
 	err := <-done
+	if scanner != nil {
+		// Whatever was held back is ordinary output when no marker ever came. Losing it would
+		// silently truncate the last line of every short command.
+		_ = scanner.Flush()
+	}
 	if isNormalEnd(err) {
+		if scanner != nil && scanner.Found && scanner.Code != 0 {
+			// The command failed, so this must fail too, or a script cannot tell. The far end has
+			// already printed whatever it wanted to say, so nothing is added here.
+			os.Exit(scanner.Code)
+		}
 		return nil
+	}
+	// A STALE KEY DOES NOT FAIL THE DIAL. The far end accepts the upgrade and only then closes with
+	// 4401, so the handshake succeeds and the refusal arrives here instead, where a raw library
+	// string ("failed to get reader: received close frame") tells the user nothing.
+	if websocket.CloseStatus(err) == 4401 {
+		return errors.New("your workspace refused the key. It rotates regularly, so try again; if it keeps happening, open the terminal in the console once to reset it")
 	}
 	return err
 }

@@ -15,7 +15,12 @@ import (
 // How `runos shell [user] [-- command...]` is taken apart. Both forms have to work, because the
 // user argument is positional and `--` is optional, and getting it wrong means either the user
 // name is run as a command or the command is read as a user name.
-// How `runos shell [-- command...]` is taken apart. The verb takes no positional arguments of its
+// How `runos shell [-- command...]` is taken apart.
+//
+// EACH ARGUMENT IS QUOTED, not joined. Joining threw the caller's quoting away and the far end's
+// bash re-split what was left, so `grep "error 500" file` silently grepped for "error" across two
+// files. Quoting gives the same semantics as `kubectl exec --`: what you typed is what runs, and
+// shell syntax needs an explicit shell. The verb takes no positional arguments of its
 // own, so a stray word is a MISTAKE rather than something to ignore: dropping it silently would
 // open an interactive shell when the caller asked to run something specific.
 func TestOneShotCommand(t *testing.T) {
@@ -26,8 +31,8 @@ func TestOneShotCommand(t *testing.T) {
 		wantErr bool
 	}{
 		{"no arguments, interactive", []string{}, "", false},
-		{"a command after the dashes", []string{"--", "kubectl", "get", "nodes"}, "kubectl get nodes", false},
-		{"a command carrying its own flags", []string{"--", "ls", "-la", "/tmp"}, "ls -la /tmp", false},
+		{"a command after the dashes", []string{"--", "kubectl", "get", "nodes"}, `'kubectl' 'get' 'nodes'`, false},
+		{"a command carrying its own flags", []string{"--", "ls", "-la", "/tmp"}, `'ls' '-la' '/tmp'`, false},
 		{"dashes with nothing after them", []string{"--"}, "", false},
 		{"a stray word is refused, not ignored", []string{"devops"}, "", true},
 		{"a word before the dashes is refused", []string{"devops", "--", "kubectl", "get", "nodes"}, "", true},

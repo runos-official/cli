@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -63,24 +64,88 @@ type Target struct {
 	Command string
 }
 
-// OneShot turns a command the caller wants run into what the far end must be given so the session
-// ENDS afterwards.
+// ShellQuote makes one argument survive the far end's shell exactly as the caller typed it.
 //
-// MEASURED 2026-08-21 against a live workspace. The server runs a supplied command as
-// `bash --login -c "<cmd>; exec bash --login"`, so when the command finishes it hands over an
-// INTERACTIVE shell. A one-shot therefore never terminates on its own: the caller gets their
-// output followed by a prompt, and then waits forever. Appending an exit makes the wrapper's own
-// shell finish before it reaches that exec.
+// MEASURED 2026-08-21 against a live workspace, and it is the worst defect this verb had. Cobra
+// hands back an argv that is ALREADY SPLIT, so joining it on spaces throws away the caller's
+// quoting and the far end's bash re-splits whatever is left:
 //
-// THE EXIT CODE IS NOT CARRIED BACK. There is no channel for it: the session is a byte stream and
-// nothing in the protocol reports how the command ended. So `runos shell -- false` succeeds. That
-// is a real limit on scripting with this verb and it is stated in the command's help rather than
-// left to be discovered.
+//	runos shell -- printf '[%s]\n' "one two" three
+//	  wanted:  [one two]  [three]
+//	  got:     [one] [two] [three]      and the \n arrived as a literal n
+//
+//	runos shell -- grep "error 500" /var/log/app.log
+//	  greps for "error" across TWO files and reports plausible, wrong output.
+//
+// Nothing warns. The command runs, prints something believable, and is wrong. Single quotes are
+// used because inside them a POSIX shell interprets nothing at all; the only character needing
+// care is the single quote itself, which is closed, escaped and reopened.
+func ShellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+
+// QuoteCommand turns an already-split argv back into one line a shell will split the same way.
+func QuoteCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, ShellQuote(a))
+	}
+	return strings.Join(quoted, " ")
+}
+
+// ExitMarker is how a one-shot command's exit code gets home.
+//
+// THE SESSION IS A BYTE STREAM AND CARRIES NO EXIT CODE. The far end closes the socket when the
+// shell ends and the close frame has no status of its own, so there is nowhere for a number to
+// travel. Without this `runos shell -- false` succeeds, which quietly breaks any script that
+// checks whether its command worked.
+//
+// So the shell prints it, on its own line, and the CLI takes that line off the output. The marker
+// is long and improbable on purpose: a command whose real output contains this string would have
+// its exit code misread, and nothing shorter is safe against, say, `cat` of a log file.
+const ExitMarker = "__RUNOS_SHELL_RC_9f3a1c__:"
+
+// OneShot turns a command the caller wants run into what the far end must be given.
+//
+// TWO THINGS ARE ADDED AND EACH FIXES A MEASURED DEFECT (2026-08-21, against a live workspace):
+//
+//  1. AN EXIT. The server runs a supplied command as `bash --login -c "<cmd>; exec bash --login"`,
+//     so when the command finishes it hands over an INTERACTIVE shell. A one-shot never terminated:
+//     the caller got their output, then a prompt, then waited forever.
+//  2. THE EXIT CODE, printed for the CLI to read back and strip. See ExitMarker.
+//
+// The command itself must already be quoted by QuoteCommand; this only wraps it.
 func OneShot(command string) string {
 	if command == "" {
 		return ""
 	}
-	return command + "; exit"
+	// The code is captured IMMEDIATELY, before anything else can overwrite it.
+	return command + "; __runos_rc=$?; printf '\\n%s%d\\n' '" + ExitMarker + "' \"$__runos_rc\"; exit $__runos_rc"
+}
+
+// SplitExitCode takes the marker line off a one-shot's output and returns the code it carried.
+//
+// Returns the output unchanged and 0 when there is no marker, which is what an interactive session
+// and an older far end both look like. A missing marker must never be read as a failure: the
+// command may well have worked and simply not been wrapped.
+func SplitExitCode(out string) (string, int) {
+	idx := strings.LastIndex(out, ExitMarker)
+	if idx < 0 {
+		return out, 0
+	}
+	rest := out[idx+len(ExitMarker):]
+	end := strings.IndexAny(rest, "\r\n")
+	if end < 0 {
+		end = len(rest)
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+	if err != nil {
+		return out, 0
+	}
+	// Take the marker line off, including the newline that preceded it.
+	cleaned := strings.TrimSuffix(out[:idx], "\n")
+	cleaned = strings.TrimSuffix(cleaned, "\r")
+	return cleaned, code
 }
 
 // DialURL builds the websocket address.

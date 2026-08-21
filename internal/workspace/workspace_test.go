@@ -166,14 +166,26 @@ func TestAZeroOrNegativeSizeIsNeverSent(t *testing.T) {
 	}
 }
 
-func TestAOneShotCommandEndsTheSession(t *testing.T) {
-	// MEASURED 2026-08-21 against a live workspace, and it is why this exists. The server runs a
-	// supplied command as `bash --login -c "<cmd>; exec bash --login"`, so when the command
-	// finishes it hands over an INTERACTIVE shell. Without this the caller gets their output, then
-	// a prompt, and then waits forever.
+func TestAOneShotEndsTheSessionAndReportsItsCode(t *testing.T) {
+	// MEASURED 2026-08-21 against a live workspace. The server runs a supplied command as
+	// `bash --login -c "<cmd>; exec bash --login"`, so when the command finishes it hands over an
+	// INTERACTIVE shell: without an exit the caller got their output, then a prompt, then waited
+	// forever. And the session carries no exit code of its own, so it is printed and read back.
 	got := OneShot("kubectl get nodes")
-	if got != "kubectl get nodes; exit" {
-		t.Fatalf("a one-shot must end the shell, got %q", got)
+	if !strings.HasPrefix(got, "kubectl get nodes;") {
+		t.Fatalf("the command must come first and intact, got %q", got)
+	}
+	if !strings.Contains(got, ExitMarker) {
+		t.Fatalf("the exit code must be reported, got %q", got)
+	}
+	// Captured immediately, before anything else can overwrite $?.
+	if !strings.Contains(got, "__runos_rc=$?") {
+		t.Fatalf("the code must be captured straight after the command, got %q", got)
+	}
+	// And the shell exits WITH that code, so a far end that ever gains a real channel for it
+	// reports the same number this does.
+	if !strings.HasSuffix(got, "exit $__runos_rc") {
+		t.Fatalf("the shell must exit with the command's own code, got %q", got)
 	}
 	// An interactive session must NOT be given one, or it exits the moment it opens.
 	if OneShot("") != "" {
@@ -181,11 +193,39 @@ func TestAOneShotCommandEndsTheSession(t *testing.T) {
 	}
 }
 
-func TestTheOneShotSuffixSurvivesEncoding(t *testing.T) {
-	// The two pieces are separate on purpose: OneShot decides the shape, DialURL carries it. This
-	// pins that they still agree, so a command with quotes and pipes arrives whole AND ends.
-	cmd := `kubectl get nodes -o wide | grep "Ready"`
-	raw, err := DialURL(Target{Host: "h.example.com", User: UserDevOps, Command: OneShot(cmd)})
+func TestShellQuotingKeepsArgumentsWhole(t *testing.T) {
+	// MEASURED 2026-08-21 and it was the worst defect this verb had. Cobra hands back an argv that
+	// is ALREADY SPLIT, so joining on spaces threw the caller's quoting away and the far end's
+	// bash re-split what was left:
+	//
+	//   runos shell -- printf '[%s]\n' "one two" three
+	//     wanted:  [one two]  [three]
+	//     got:     [one] [two] [three],  and the \n arrived as a literal n
+	//
+	// Nothing warned. The command ran, printed something believable, and was wrong.
+	cases := []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"echo", "one two"}, `'echo' 'one two'`},
+		{[]string{"sh", "-c", "echo hi && echo there"}, `'sh' '-c' 'echo hi && echo there'`},
+		{[]string{"grep", "error 500", "/var/log/app.log"}, `'grep' 'error 500' '/var/log/app.log'`},
+		// A single quote inside an argument is the only character that needs care: close, escape,
+		// reopen. Getting this wrong turns one argument into two and changes what runs.
+		{[]string{"grep", "it's here"}, `'grep' 'it'\''s here'`},
+	}
+	for _, c := range cases {
+		if got := QuoteCommand(c.argv); got != c.want {
+			t.Errorf("QuoteCommand(%q):\n got  %s\n want %s", c.argv, got, c.want)
+		}
+	}
+}
+
+func TestAQuotedCommandSurvivesEncodingWhole(t *testing.T) {
+	// The pieces are separate on purpose: QuoteCommand preserves the caller's argv, OneShot wraps
+	// it, DialURL carries it. This pins that all three still agree.
+	command := OneShot(QuoteCommand([]string{"grep", "error 500", "/var/log/app.log"}))
+	raw, err := DialURL(Target{Host: "h.example.com", User: UserDevOps, Command: command})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +234,7 @@ func TestTheOneShotSuffixSurvivesEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cmd was not base64: %v", err)
 	}
-	if string(decoded) != cmd+"; exit" {
-		t.Fatalf("the command did not survive intact with its exit: %q", string(decoded))
+	if !strings.HasPrefix(string(decoded), `'grep' 'error 500' '/var/log/app.log';`) {
+		t.Fatalf("the quoting did not survive: %q", string(decoded))
 	}
 }
