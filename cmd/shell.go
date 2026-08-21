@@ -26,12 +26,11 @@ var (
 )
 
 var shellCmd = &cobra.Command{
-	Use:   "shell [-- command...]",
+	Use:   "shell [name] [-- command...]",
 	Short: "Open a shell in your workspace on a cluster",
 	Long: `Open a shell in your own workspace on a cluster, the same one the console's terminal shows.
 
-It opens the ` + workspace.UserDevOps + ` shell, which carries the cluster tooling: kubectl, k9s and
-the RunOS CLI itself, already pointed at this cluster.
+Run it with no name to see which shells your workspace offers.
 
 THE CONNECTION GOES STRAIGHT TO YOUR CLUSTER, not through the RunOS API. The API is asked for the
 key and nothing else, so keystrokes take one hop rather than two. That means it needs the cluster's
@@ -44,10 +43,10 @@ want them: ` + "`-- bash -lc 'a | b'`" + `.
 
 A one-shot returns the command's own exit code, so it can be used in a script. The one exception is
 a command that ends the shell itself, such as a bare ` + "`exit`" + `, which returns 0.`,
-	Example: `  runos shell                                  # an interactive shell
-  runos shell -- kubectl get nodes             # run one thing and exit
-  runos shell -- bash -lc 'kubectl get po | wc -l'   # pipes need a shell, as above
-  runos shell --cid abc12                      # a cluster other than the default`,
+	Example: `  runos shell                                     # which shells are available
+  runos shell devops                              # open the cluster-tooling shell
+  runos shell devops -- kubectl get nodes         # run one thing and exit
+  runos shell devops -- bash -lc 'kubectl get po | wc -l'`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runShell,
 }
@@ -58,34 +57,48 @@ func init() {
 	rootCmd.AddCommand(shellCmd)
 }
 
-// oneShotCommand pulls the command out of `runos shell -- thing to run`, or returns "" for an
-// interactive session.
+// splitShellArgs separates the shell's name from an optional one-shot command.
 //
-// EVERYTHING AFTER `--` IS THE COMMAND, and anything before it is refused rather than ignored.
-// This verb takes no positional arguments of its own, so a stray word is a mistake: silently
-// dropping it would run an interactive shell when the caller asked for something specific.
-func oneShotCommand(cmd *cobra.Command, args []string) (string, error) {
+// EVERYTHING AFTER `--` IS THE COMMAND. The name, if given, is the single argument before it.
+// A second bare argument is refused rather than ignored, because silently dropping it would open
+// an interactive shell when the caller asked for something specific.
+func splitShellArgs(cmd *cobra.Command, args []string) (name string, command string, err error) {
 	dash := cmd.ArgsLenAtDash()
-	if dash < 0 {
-		if len(args) > 0 {
-			return "", fmt.Errorf(
-				"runos shell takes no arguments of its own. To run something in the shell, put it after --, as in: runos shell -- %s",
-				strings.Join(args, " "))
-		}
-		return "", nil
+	before := args
+	if dash >= 0 {
+		before = args[:dash]
+		command = workspace.QuoteCommand(args[dash:])
 	}
-	if dash > 0 {
-		return "", fmt.Errorf(
-			"runos shell takes no arguments of its own. Put everything after --, as in: runos shell -- %s",
-			strings.Join(args, " "))
+	switch len(before) {
+	case 0:
+	case 1:
+		name = before[0]
+	default:
+		return "", "", fmt.Errorf(
+			"runos shell takes one shell name. To run something in it, put the command after --, as in: runos shell %s -- %s",
+			before[0], strings.Join(before[1:], " "))
 	}
-	return workspace.QuoteCommand(args[dash:]), nil
+	return name, command, nil
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 
-	oneShot, err := oneShotCommand(cmd, args)
+	name, oneShot, err := splitShellArgs(cmd, args)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		// No name is a REQUEST FOR THE LIST, not a default. Guessing here would mean that adding a
+		// second kind of shell later silently changed what an existing command opens.
+		fmt.Fprintln(cmd.OutOrStdout(), "Your workspace offers these shells:")
+		for _, sh := range workspace.Offered {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %-8s %s\n", sh.Name, sh.What)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "\nOpen one with: runos shell %s\n", workspace.Offered[0].Name)
+		return nil
+	}
+	shell, err := workspace.ResolveShell(name)
 	if err != nil {
 		return err
 	}
@@ -107,7 +120,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	// surfaces open the SAME workspace rather than two that look alike.
 	uid := auth.ExtractFirebaseUID(token)
 	if uid == "" {
-		return errors.New("could not read your user id from the current session; sign in again with 'runos login'")
+		return errors.New("runos shell needs a browser sign-in, because a workspace belongs to a person rather than to a key. Run 'runos login' and try again; an API key cannot open one")
 	}
 
 	// Read the width BEFORE connecting, so a one-shot can carry it and render correctly from its
@@ -126,7 +139,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	target := workspace.Target{
 		Host:    ws.URL,
 		Key:     ws.PSK,
-		User:    workspace.DefaultUser,
+		User:    shell.Name,
 		Command: workspace.OneShot(oneShot, oneShotCols, oneShotRows),
 	}
 	dialURL, err := workspace.DialURL(target)
@@ -167,7 +180,13 @@ func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 	// Taking that as "ready" meant the wait below only ever ran on the very first invocation: press
 	// ctrl-C during it, or create the workspace from the console, or have the pod restart, and
 	// every later attempt dialled a starting pod and called it "refused".
-	access, err := readWorkspacePSK(client, token, aid, cid, uid)
+	access, missing, err := readWorkspacePSK(client, token, aid, cid, uid)
+	if err != nil && !missing {
+		// A READ THAT FAILED IS NOT AN ABSENT WORKSPACE. Treating every failure as "you have none"
+		// meant a network blip, an expired sign-in or a 500 announced "Setting up your workspace"
+		// and posted a create for something that already exists.
+		return nil, err
+	}
 	if err == nil {
 		if up, _ := ready(client, token, aid, cid, uid); up {
 			return access, nil
@@ -202,7 +221,8 @@ func waitForWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 	for time.Now().Before(deadline) {
 		ok, detail := ready(client, token, aid, cid, uid)
 		if ok {
-			return readWorkspacePSK(client, token, aid, cid, uid)
+			access, _, err := readWorkspacePSK(client, token, aid, cid, uid)
+			return access, err
 		}
 		if detail != "" && detail != lastDetail {
 			// Say what it is doing rather than printing dots. A pull that is going to fail says so
@@ -218,22 +238,30 @@ func waitForWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 	return nil, errors.New("your workspace is still not ready after ten minutes")
 }
 
-func readWorkspacePSK(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
+// readWorkspacePSK returns the key, and says whether the workspace is genuinely ABSENT as opposed
+// to unreadable. Only an absence may lead to a create.
+func readWorkspacePSK(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, bool, error) {
 	result, err := client.Do("GET", fmt.Sprintf("/%s/%s/runostty/%s/psk", aid, cid, uid), token, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if result.StatusCode == 404 {
+		return nil, true, errors.New("no workspace on this cluster yet")
 	}
 	if !result.OK() {
-		return nil, fmt.Errorf("no workspace yet (HTTP %d)", result.StatusCode)
+		if message := result.ErrorMessage(); message != "" {
+			return nil, false, fmt.Errorf("%s", message)
+		}
+		return nil, false, fmt.Errorf("could not read your workspace (HTTP %d)", result.StatusCode)
 	}
 	var access workspaceAccess
 	if err := result.Decode(&access); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if access.PSK == "" || access.URL == "" {
-		return nil, errors.New("the workspace returned no address or key")
+		return nil, false, errors.New("the workspace returned no address or key")
 	}
-	return &access, nil
+	return &access, false, nil
 }
 
 // ready asks whether the workspace is up.
@@ -289,6 +317,15 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 		scanner = workspace.NewExitScanner(os.Stdout)
 		out = scanner
 	}
+
+	// TAKE DELIVERY OF SIGPIPE, or `runos shell devops -- kubectl get pods -A | head -20` kills this
+	// process the moment `head` exits, the deferred restore below never runs, and the caller is left
+	// in a terminal with no echo, no line editing and a dead ctrl-C. MEASURED 2026-08-21: exit
+	// status 141, no restore, pty still raw. Notified and never read, so the write simply returns
+	// EPIPE and the normal ending path runs.
+	pipeSig := make(chan os.Signal, 1)
+	signal.Notify(pipeSig, syscall.SIGPIPE)
+	defer signal.Stop(pipeSig)
 
 	if canRaw {
 		state, err := term.MakeRaw(inFd)
@@ -413,6 +450,16 @@ func isNormalEnd(err error) bool {
 	if status == websocket.StatusNoStatusRcvd {
 		return true
 	}
-	// EOF on stdin, which is what a piped-in script reaching its end looks like.
-	return strings.Contains(err.Error(), "EOF")
+	// A BROKEN PIPE IS AN ORDINARY ENDING: the caller piped this into something that has finished
+	// reading, `| head` being the obvious case.
+	if errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	// AND NOTHING ELSE IS. This used to end with a substring match on "EOF", which was reasoning
+	// rather than measurement: a TCP connection dropped with no close frame surfaces as "failed to
+	// read frame header: EOF", so a broken session exited 0 and looked like a clean logout.
+	// MEASURED 2026-08-21 against a server that drops the socket. The clean-logout case it was
+	// meant to cover is already handled above by StatusNoStatusRcvd, and stdin reaching EOF no
+	// longer ends the session at all, so it was catching nothing legitimate.
+	return false
 }

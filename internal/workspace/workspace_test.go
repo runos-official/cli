@@ -12,14 +12,13 @@ import (
 // are not guessable, so a later change that "tidies" one of them fails here instead of in a
 // customer's terminal.
 
-func TestTheUrlAlwaysNamesTheDevopsShell(t *testing.T) {
+func TestTheUrlAlwaysNamesTheShell(t *testing.T) {
 	// THE DEFECT THIS PREVENTS, and it is silent. The server falls back to the CODING shell for a
 	// user it does not recognise, and an ABSENT user counts as unrecognised. So a request that
 	// forgot to say devops does not fail: it opens a shell with no kubectl, and nothing anywhere
 	// explains why the caller's first command was not found.
 	for _, given := range []Target{
 		{Host: "h.example.com", User: UserDevOps},
-		{Host: "h.example.com"}, // caller left it empty
 	} {
 		raw, err := DialURL(given)
 		if err != nil {
@@ -35,14 +34,47 @@ func TestTheUrlAlwaysNamesTheDevopsShell(t *testing.T) {
 	}
 }
 
-func TestTheDefaultIsTheDevopsShellAndNotTheServersOwn(t *testing.T) {
-	// The server's own default is the coding shell. Ours is deliberately NOT the same, so this
-	// pins the difference rather than leaving it to be "tidied" back into agreement later.
-	if DefaultUser != UserDevOps {
-		t.Fatalf("DefaultUser must be %s, got %s", UserDevOps, DefaultUser)
+func TestBareShellListsRatherThanGuessing(t *testing.T) {
+	// AN EMPTY NAME IS NOT A DEFAULT. `runos shell` on its own must ask which one, so that adding a
+	// second kind later cannot silently change what an existing command opens.
+	_, err := ResolveShell("")
+	if err == nil {
+		t.Fatal("no name must be refused with the list, not resolved to a default")
 	}
-	if UserDev == UserDevOps {
-		t.Fatal("the two shells must stay distinct names")
+	if !strings.Contains(err.Error(), UserDevOps) {
+		t.Fatalf("the refusal must name what is available, got %q", err)
+	}
+}
+
+func TestAnUnknownShellIsRefusedWithTheList(t *testing.T) {
+	// The server falls back to the CODING shell for a name it does not know, so a typo would open
+	// a shell with no kubectl and nothing would say why.
+	_, err := ResolveShell("devpos")
+	if err == nil {
+		t.Fatal("a misspelled shell must be refused, not silently changed")
+	}
+	if !strings.Contains(err.Error(), UserDevOps) {
+		t.Fatalf("the refusal must list what exists, got %q", err)
+	}
+}
+
+func TestTheOfferedShellsAreWhatTheServerAccepts(t *testing.T) {
+	// Every offered name must be one the far end actually knows, or it silently opens the coding
+	// shell instead. The coding shell is deliberately NOT offered yet.
+	if len(Offered) == 0 {
+		t.Fatal("at least one shell must be offered")
+	}
+	for _, sh := range Offered {
+		if sh.Name != UserDev && sh.Name != UserDevOps {
+			t.Fatalf("%q is not a shell the server knows, so it would silently open dev", sh.Name)
+		}
+		if sh.What == "" {
+			t.Fatalf("%q needs a description, or the list tells the reader nothing", sh.Name)
+		}
+		got, err := ResolveShell(sh.Name)
+		if err != nil || got.Name != sh.Name {
+			t.Fatalf("an offered shell must resolve: %q %v", got.Name, err)
+		}
 	}
 }
 

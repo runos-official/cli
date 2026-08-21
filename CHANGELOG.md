@@ -3,7 +3,9 @@
 ## v1.15.0
 
 **`runos shell`** opens a shell in your own workspace on a cluster, the same pod the console's
-terminal shows. `runos shell -- kubectl get nodes` runs one thing and exits.
+terminal shows. Run it with no name to see which shells your workspace offers;
+`runos shell devops` opens the cluster-tooling one and `runos shell devops -- kubectl get nodes`
+runs one thing and exits.
 
 THE CONNECTION GOES STRAIGHT TO THE CLUSTER. The RunOS API is asked for the key and the workspace's
 address and nothing else; the bytes go from your machine to the cluster's own front door on 443.

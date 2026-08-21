@@ -36,14 +36,43 @@ const (
 	UserDevOps = "devops"
 )
 
-// ONLY THE devops SHELL IS OFFERED FOR NOW, by decision. The pod runs a second one (`dev`, the
-// project workspace with the coding tools) and the server accepts it, so adding it later is a
-// flag and nothing more. Until then the CLI always names devops explicitly.
+// Shell is one kind of shell a workspace can open.
+type Shell struct {
+	Name string
+	What string
+}
+
+// Offered is what `runos shell` will open, and it is a LIST rather than a single default because
+// more kinds are expected. The pod already runs a second one (`dev`, the project workspace with the
+// coding tools) which is deliberately not offered yet, and the server accepts a `user` parameter,
+// so adding one here is a line in this slice.
 //
-// NAMING IT EXPLICITLY IS NOT OPTIONAL. The server falls back to `dev` for anything it does not
-// recognise, INCLUDING an absent user, so a request that forgot to say devops would land silently
-// in the coding shell with no kubectl and no message anywhere explaining why.
-const DefaultUser = UserDevOps
+// NAMING THE SHELL EXPLICITLY IS NOT OPTIONAL. The server falls back to `dev` for anything it does
+// not recognise, INCLUDING an absent name, so a request that forgot to say which shell would land
+// silently in one with no kubectl and nothing anywhere would explain why.
+var Offered = []Shell{
+	{Name: "devops", What: "cluster tooling: kubectl, k9s and stern"},
+}
+
+// ResolveShell turns what the caller typed into a shell that exists, or refuses it with the list.
+//
+// AN EMPTY NAME IS NOT A DEFAULT. `runos shell` on its own lists what is available rather than
+// guessing, so adding a second kind later cannot silently change what an existing command opens.
+func ResolveShell(requested string) (Shell, error) {
+	for _, sh := range Offered {
+		if sh.Name == requested {
+			return sh, nil
+		}
+	}
+	names := make([]string, 0, len(Offered))
+	for _, sh := range Offered {
+		names = append(names, sh.Name)
+	}
+	if requested == "" {
+		return Shell{}, fmt.Errorf("say which shell to open: %s", strings.Join(names, ", "))
+	}
+	return Shell{}, fmt.Errorf("there is no %q shell in your workspace. Available: %s", requested, strings.Join(names, ", "))
+}
 
 // The subprotocol the server selects and echoes back. Offering it is not optional: a client that
 // offers only the key protocol gets no selection at all.
@@ -183,11 +212,7 @@ func DialURL(t Target) (string, error) {
 	u.Path = "/"
 
 	q := url.Values{}
-	user := t.User
-	if user == "" {
-		user = DefaultUser
-	}
-	q.Set("user", user)
+	q.Set("user", t.User)
 	if t.Command != "" {
 		// The server base64-decodes this and runs it before handing over the prompt. Encoded
 		// rather than passed raw because a command carries spaces, quotes and pipes.

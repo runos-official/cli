@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -23,19 +24,20 @@ import (
 // shell syntax needs an explicit shell. The verb takes no positional arguments of its
 // own, so a stray word is a MISTAKE rather than something to ignore: dropping it silently would
 // open an interactive shell when the caller asked to run something specific.
-func TestOneShotCommand(t *testing.T) {
+func TestSplitShellArgs(t *testing.T) {
 	cases := []struct {
 		name    string
 		argv    []string
 		wantCmd string
 		wantErr bool
 	}{
-		{"no arguments, interactive", []string{}, "", false},
+		{"no name at all, the caller wants the list", []string{}, "", false},
 		{"a command after the dashes", []string{"--", "kubectl", "get", "nodes"}, `'kubectl' 'get' 'nodes'`, false},
 		{"a command carrying its own flags", []string{"--", "ls", "-la", "/tmp"}, `'ls' '-la' '/tmp'`, false},
 		{"dashes with nothing after them", []string{"--"}, "", false},
-		{"a stray word is refused, not ignored", []string{"devops"}, "", true},
-		{"a word before the dashes is refused", []string{"devops", "--", "kubectl", "get", "nodes"}, "", true},
+		{"a name on its own is fine", []string{"devops"}, "", false},
+		{"a name and a command", []string{"devops", "--", "kubectl", "get", "nodes"}, `'kubectl' 'get' 'nodes'`, false},
+		{"two bare words is a mistake, not something to ignore", []string{"devops", "extra"}, "", true},
 	}
 
 	for _, tc := range cases {
@@ -46,7 +48,7 @@ func TestOneShotCommand(t *testing.T) {
 				Use:  "shell",
 				Args: cobra.ArbitraryArgs,
 				RunE: func(cmd *cobra.Command, args []string) error {
-					gotCmd, gotErr = oneShotCommand(cmd, args)
+					_, gotCmd, gotErr = splitShellArgs(cmd, args)
 					return nil
 				},
 			}
@@ -61,7 +63,7 @@ func TestOneShotCommand(t *testing.T) {
 					t.Fatalf("expected a refusal for %v", tc.argv)
 				}
 				// The refusal has to show the working form, or the caller is left guessing.
-				if !strings.Contains(gotErr.Error(), "runos shell --") {
+				if !strings.Contains(gotErr.Error(), "runos shell ") {
 					t.Fatalf("the refusal must show the right form, got %q", gotErr)
 				}
 				return
@@ -95,8 +97,15 @@ func TestIsNormalEnd(t *testing.T) {
 	if !isNormalEnd(websocket.CloseError{Code: websocket.StatusNormalClosure}) {
 		t.Error("a normal closure is a normal end")
 	}
-	if !isNormalEnd(io.EOF) {
-		t.Error("EOF is a normal end")
+	// A BROKEN PIPE IS: the caller piped this into something that finished reading first.
+	if !isNormalEnd(syscall.EPIPE) {
+		t.Error("a broken pipe is an ordinary ending, not a fault")
+	}
+	// AND A BARE EOF IS NOT. This assertion used to say the opposite, which locked the bug in: a
+	// TCP connection dropped with no close frame surfaces as "failed to read frame header: EOF",
+	// so a broken session exited 0 and looked like a clean logout.
+	if isNormalEnd(io.EOF) {
+		t.Error("a bare EOF is a dropped connection, not a clean end")
 	}
 
 	// And the other direction: a real fault must NOT be swallowed, or a broken session looks like
