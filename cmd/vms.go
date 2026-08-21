@@ -138,7 +138,11 @@ func runVmsProxy(cmd *cobra.Command, args []string) error {
 
 	// stdin and stdout are the SSH transport itself here, so nothing else may print to them.
 	// Every message this command produces goes to stderr, which ssh passes through.
-	return vmconsole.Pipe(ctx, conn, os.Stdin, os.Stdout)
+	//
+	// Refusal translates the gate's close codes. Without it a refused session reaches ssh as
+	// "failed to get reader: received close frame", which ssh reports as a broken pipe, and the
+	// person sees neither what was refused nor what to do about it.
+	return vmconsole.Refusal(vmconsole.Pipe(ctx, conn, os.Stdin, os.Stdout))
 }
 
 func runVmsSSH(cmd *cobra.Command, args []string) error {
