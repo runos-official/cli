@@ -423,13 +423,12 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 		}
 		return nil
 	}
-	// A STALE KEY DOES NOT FAIL THE DIAL. The far end accepts the upgrade and only then closes with
-	// 4401, so the handshake succeeds and the refusal arrives here instead, where a raw library
-	// string ("failed to get reader: received close frame") tells the user nothing.
-	if websocket.CloseStatus(err) == 4401 {
-		return errors.New("your workspace refused the key. It rotates regularly, so try again; if it keeps happening, open the terminal in the console once to reset it")
-	}
-	return err
+	// A REFUSAL DOES NOT FAIL THE DIAL. The gate accepts the upgrade and only then closes with a
+	// code, so the handshake succeeds and the refusal arrives here as a close frame, where the raw
+	// library string ("failed to get reader: received close frame") tells the user nothing.
+	// workspace.Refusal turns every code the gate can send into a sentence, so 4001 (gate
+	// restarting), 4409 (pass already used) and the rest stop surfacing as library noise.
+	return workspace.Refusal(err)
 }
 
 func sendSize(ctx context.Context, conn *websocket.Conn, fd int) {
