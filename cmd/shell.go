@@ -131,18 +131,24 @@ func runShell(cmd *cobra.Command, args []string) error {
 	}
 
 	client := api.NewClient(cfg.GetAPIURL())
-	ws, err := resolveWorkspace(client, token, aid, cid, uid)
-	if err != nil {
+	if err := ensureWorkspace(client, token, aid, cid, uid); err != nil {
 		return err
 	}
 
-	target := workspace.Target{
-		Host:    ws.URL,
-		Key:     ws.PSK,
-		User:    shell.Name,
-		Command: workspace.OneShot(oneShot, oneShotCols, oneShotRows),
-	}
-	dialURL, err := workspace.DialURL(target)
+	/*
+	 * THE CLIENT NO LONGER KNOWS WHERE ANYTHING LIVES.
+	 *
+	 * It used to hold the workspace's public hostname and a shared key, and build the URL itself.
+	 * Now it asks for a session and is told the address, the credential and the exact subprotocols
+	 * to offer. That removes a copy of a routing decision from every client, and it removes the
+	 * shared key entirely: what comes back names one person, one workspace and one login, lives
+	 * sixty seconds and works once.
+	 */
+	session, err := requestSession(client, token, aid, cid, workspace.SessionRequest{
+		Kind:  "ws.terminal",
+		Shell: shell.Name,
+		Cmd:   workspace.OneShot(oneShot, oneShotCols, oneShotRows),
+	})
 	if err != nil {
 		return err
 	}
@@ -150,64 +156,100 @@ func runShell(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, resp, err := websocket.Dial(ctx, dialURL, &websocket.DialOptions{
-		Subprotocols: workspace.Subprotocols(ws.PSK),
+	conn, resp, err := websocket.Dial(ctx, session.URL, &websocket.DialOptions{
+		Subprotocols: session.Subprotocols,
 	})
 	if err != nil {
-		// The status is the whole diagnosis for the two commonest failures: 401 means the key is
-		// stale, and anything DNS-shaped means this machine cannot see the cluster's own address.
+		// The status is the whole diagnosis for the commonest failures, and the pass is stripped
+		// from anything shown: a dial error can carry the whole URL, and a future one might carry
+		// the header.
 		if resp != nil {
-			return fmt.Errorf("your workspace refused the connection (HTTP %d)", resp.StatusCode)
+			return fmt.Errorf("the cluster refused the session (HTTP %d)", resp.StatusCode)
 		}
-		return fmt.Errorf("could not reach your workspace at %s: %w", ws.URL, err)
+		return fmt.Errorf("could not reach %s: %s", session.URL,
+			workspace.Redact(err.Error(), session.Pass))
 	}
 	defer conn.CloseNow()
 
 	return pipeShell(ctx, conn, oneShot != "")
 }
 
-type workspaceAccess struct {
-	PSK string `json:"psk"`
-	URL string `json:"url"`
-}
-
-// resolveWorkspace gets the key for this caller's workspace, creating it if they have never opened
-// one. The console creates on first use too, so a person who has only ever used the CLI is not
-// told to go and click something in a browser first.
-func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
-	// A KEY IS NOT A RUNNING POD. The key lives in a Secret created by the same apply that creates
-	// the deployment, so it answers the instant the manifest lands, minutes before anything serves.
-	// Taking that as "ready" meant the wait below only ever ran on the very first invocation: press
-	// ctrl-C during it, or create the workspace from the console, or have the pod restart, and
-	// every later attempt dialled a starting pod and called it "refused".
-	access, missing, err := readWorkspacePSK(client, token, aid, cid, uid)
-	if err != nil && !missing {
-		// A READ THAT FAILED IS NOT AN ABSENT WORKSPACE. Treating every failure as "you have none"
-		// meant a network blip, an expired sign-in or a 500 announced "Setting up your workspace"
-		// and posted a create for something that already exists.
-		return nil, err
+/*
+ * ensureWorkspace makes sure the caller HAS a workspace, and says nothing about how to reach it.
+ *
+ * The reach used to come from here too: this function read a shared key and a public hostname. Both
+ * are gone. What remains is the part that is still true, that a person who has never opened one
+ * needs it created, and that a create takes minutes because the first workspace on a cluster pulls
+ * a large image.
+ */
+func ensureWorkspace(client *api.Client, token, aid, cid, uid string) error {
+	if up, _ := ready(client, token, aid, cid, uid); up {
+		return nil
 	}
-	if err == nil {
-		if up, _ := ready(client, token, aid, cid, uid); up {
-			return access, nil
+
+	// A STATUS THAT COULD NOT BE READ IS NOT AN ABSENT WORKSPACE. Treating every failure as "you
+	// have none" meant a network blip or an expired sign-in announced "Setting up your workspace"
+	// and posted a create for something that already exists.
+	exists, err := workspaceExists(client, token, aid, cid, uid)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		fmt.Fprintln(os.Stderr, "Setting up your workspace on this cluster. The first one pulls a large image, so give it a few minutes.")
+		created, createErr := client.Do("POST", fmt.Sprintf("/%s/%s/runostty/%s", aid, cid, uid), token, nil)
+		if createErr != nil {
+			return createErr
 		}
+		if !created.OK() {
+			if message := created.ErrorMessage(); message != "" {
+				return fmt.Errorf("%s", message)
+			}
+			return fmt.Errorf("your workspace could not be created (HTTP %d)", created.StatusCode)
+		}
+	} else {
 		fmt.Fprintln(os.Stderr, "Your workspace is still starting.")
-		return waitForWorkspace(client, token, aid, cid, uid)
-	}
-
-	fmt.Fprintln(os.Stderr, "Setting up your workspace on this cluster. The first one pulls a large image, so give it a few minutes.")
-	created, createErr := client.Do("POST", fmt.Sprintf("/%s/%s/runostty/%s", aid, cid, uid), token, nil)
-	if createErr != nil {
-		return nil, createErr
-	}
-	if !created.OK() {
-		if message := created.ErrorMessage(); message != "" {
-			return nil, fmt.Errorf("%s", message)
-		}
-		return nil, fmt.Errorf("your workspace could not be created (HTTP %d)", created.StatusCode)
 	}
 
 	return waitForWorkspace(client, token, aid, cid, uid)
+}
+
+// workspaceExists says whether the caller has one, distinguishing absence from an unreadable answer.
+func workspaceExists(client *api.Client, token, aid, cid, uid string) (bool, error) {
+	result, err := client.Do("GET", fmt.Sprintf("/%s/%s/runostty/%s/status", aid, cid, uid), token, nil)
+	if err != nil {
+		return false, err
+	}
+	if result.StatusCode == 404 {
+		return false, nil
+	}
+	if !result.OK() {
+		if message := result.ErrorMessage(); message != "" {
+			return false, fmt.Errorf("%s", message)
+		}
+		return false, fmt.Errorf("could not read your workspace (HTTP %d)", result.StatusCode)
+	}
+	return true, nil
+}
+
+/*
+ * requestSession asks the control plane for a session and returns where to take it.
+ *
+ * THE REQUEST NAMES NO WORKSPACE AND NO PERSON. There is no field for one: the control plane derives
+ * the target from who is asking, so this client cannot open a colleague's workspace even by mistake,
+ * and a future flag cannot make it able to.
+ */
+func requestSession(client *api.Client, token, aid, cid string, req workspace.SessionRequest) (*workspace.Session, error) {
+	result, err := client.Do("POST", fmt.Sprintf("/%s/%s/sessions", aid, cid), token, req)
+	if err != nil {
+		return nil, err
+	}
+	if !result.OK() {
+		if message := result.ErrorMessage(); message != "" {
+			return nil, fmt.Errorf("%s", message)
+		}
+		return nil, fmt.Errorf("the cluster would not open a session (HTTP %d)", result.StatusCode)
+	}
+	return workspace.ParseSession(result.Body)
 }
 
 // waitForWorkspace blocks until the pod is serving, saying what it is waiting for.
@@ -215,14 +257,13 @@ func resolveWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 // TEN MINUTES, because the first workspace on a cluster pulls a large image over whatever
 // connection that cluster has. Measured on a home lab: serving in about four minutes, so the
 // three-minute limit this used to carry gave up on a workspace that was fine.
-func waitForWorkspace(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, error) {
+func waitForWorkspace(client *api.Client, token, aid, cid, uid string) error {
 	deadline := time.Now().Add(10 * time.Minute)
 	lastDetail := ""
 	for time.Now().Before(deadline) {
 		ok, detail := ready(client, token, aid, cid, uid)
 		if ok {
-			access, _, err := readWorkspacePSK(client, token, aid, cid, uid)
-			return access, err
+			return nil
 		}
 		if detail != "" && detail != lastDetail {
 			// Say what it is doing rather than printing dots. A pull that is going to fail says so
@@ -233,35 +274,9 @@ func waitForWorkspace(client *api.Client, token, aid, cid, uid string) (*workspa
 		time.Sleep(3 * time.Second)
 	}
 	if lastDetail != "" {
-		return nil, fmt.Errorf("your workspace is still not ready after ten minutes (%s)", lastDetail)
+		return fmt.Errorf("your workspace is still not ready after ten minutes (%s)", lastDetail)
 	}
-	return nil, errors.New("your workspace is still not ready after ten minutes")
-}
-
-// readWorkspacePSK returns the key, and says whether the workspace is genuinely ABSENT as opposed
-// to unreadable. Only an absence may lead to a create.
-func readWorkspacePSK(client *api.Client, token, aid, cid, uid string) (*workspaceAccess, bool, error) {
-	result, err := client.Do("GET", fmt.Sprintf("/%s/%s/runostty/%s/psk", aid, cid, uid), token, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	if result.StatusCode == 404 {
-		return nil, true, errors.New("no workspace on this cluster yet")
-	}
-	if !result.OK() {
-		if message := result.ErrorMessage(); message != "" {
-			return nil, false, fmt.Errorf("%s", message)
-		}
-		return nil, false, fmt.Errorf("could not read your workspace (HTTP %d)", result.StatusCode)
-	}
-	var access workspaceAccess
-	if err := result.Decode(&access); err != nil {
-		return nil, false, err
-	}
-	if access.PSK == "" || access.URL == "" {
-		return nil, false, errors.New("the workspace returned no address or key")
-	}
-	return &access, false, nil
+	return errors.New("your workspace is still not ready after ten minutes")
 }
 
 // ready asks whether the workspace is up.
