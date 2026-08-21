@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -117,6 +118,29 @@ func clusterStatusLine(c vpn.ClusterStatus) string {
 		return fmt.Sprintf("%s  connected, last handshake %s ago, %s down / %s up",
 			label, roundDuration(time.Since(c.LastHandshake)), bytesHuman(c.RxBytes), bytesHuman(c.TxBytes))
 	case c.Connected && c.PeerUp:
+		// "No handshake yet" is a fair description for the first second or two and a useless one
+		// after that, because it reads as "still working on it" forever. When we have SENT to the
+		// endpoint and had NOTHING back, that is not a pending state, it is a one-way path, and
+		// the line should say so and name the commonest cause.
+		//
+		// MEASURED 2026-08-21: a Mac on the same LAN as its own cluster sat on this line
+		// indefinitely. Conductor had advertised the cluster's PUBLIC endpoint, the router does no
+		// NAT hairpin (which is normal on consumer routers), and tcpdump on the node captured
+		// nothing at all. The status showed reachable, connected, and no reason to look at the
+		// network. The fix took one command once the cause was known; finding the cause took far
+		// longer than it should have.
+		if c.TxBytes > 0 && c.RxBytes == 0 {
+			line := fmt.Sprintf("%s  connected, no handshake: sent %s to %s, nothing back",
+				label, bytesHuman(c.TxBytes), c.Endpoint)
+			if isPublicEndpoint(c.Endpoint) {
+				line += ".\n           If this machine is on the same network as the cluster, its router may not " +
+					"allow reaching its own public address (no NAT hairpin). Declare the node's LAN address: " +
+					"'runos nodes ingress --nid <nid> --ingress-ip <lan-address> --ingress-not-published'"
+			} else {
+				line += fmt.Sprintf(".\n           Check that UDP reaches %s: a firewall or a missing port forward drops it silently", c.Endpoint)
+			}
+			return line
+		}
 		return fmt.Sprintf("%s  connected, no handshake yet", label)
 	case c.Connected && !c.Reachable:
 		// A dead state, and not one waiting fixes: the device is in the connected set for a
@@ -157,4 +181,29 @@ func bytesHuman(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// isPublicEndpoint reports whether a "host:port" endpoint names a globally routable address.
+//
+// Only used to choose which HINT to print beside a one-way tunnel, so an unparseable endpoint or a
+// host name is treated as public: that is the case whose hint is worth showing, and a wrong guess
+// here costs a sentence rather than a wrong diagnosis.
+func isPublicEndpoint(endpoint string) bool {
+	host := endpoint
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return false
+	}
+	// Carrier-grade NAT, 100.64.0.0/10. Not covered by IsPrivate, and a node behind it is reached
+	// from inside the same carrier network, so it belongs with the private cases.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	return true
 }

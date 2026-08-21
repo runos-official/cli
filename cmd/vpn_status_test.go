@@ -171,3 +171,99 @@ func TestVPNStatusIsQuietWhenTheBuildsMatch(t *testing.T) {
 		t.Fatalf("status warned about a version mismatch that does not exist: %q", output.String())
 	}
 }
+
+/**
+ * A tunnel that sends and never receives is not a pending state.
+ *
+ * MEASURED 2026-08-21: a Mac on the same LAN as its own cluster sat on "connected, no handshake
+ * yet" indefinitely. Conductor had advertised the cluster's PUBLIC endpoint, the router does no NAT
+ * hairpin, and tcpdump on the node captured nothing at all. Every field the status printed said
+ * things were fine, so the line sent the reader nowhere.
+ */
+func TestClusterStatusLineDiagnosesOneWayTunnel(t *testing.T) {
+	line := clusterStatusLine(vpn.ClusterStatus{
+		CID: "v6b", Name: "home-2node",
+		Connected: true, Reachable: true, PeerUp: true,
+		Endpoint: "169.1.210.215:32768",
+		TxBytes:  296, RxBytes: 0,
+	})
+
+	if strings.Contains(line, "no handshake yet") {
+		t.Fatalf("a one-way tunnel must not read as still-in-progress: %q", line)
+	}
+	// The endpoint has to be named. "No handshake" without it gives the reader nothing to test.
+	if !strings.Contains(line, "169.1.210.215:32768") {
+		t.Errorf("expected the endpoint in the line, got %q", line)
+	}
+	if !strings.Contains(line, "nothing back") {
+		t.Errorf("expected the line to say nothing came back, got %q", line)
+	}
+	// A public endpoint is the hairpin case, and the way out is one command.
+	if !strings.Contains(line, "NAT hairpin") || !strings.Contains(line, "ingress-not-published") {
+		t.Errorf("expected the hairpin hint and the command that fixes it, got %q", line)
+	}
+}
+
+// A private endpoint cannot be a hairpin problem, so that hint would be a wrong lead.
+func TestClusterStatusLineOmitsHairpinHintForPrivateEndpoint(t *testing.T) {
+	line := clusterStatusLine(vpn.ClusterStatus{
+		CID: "v6b", Name: "home-2node",
+		Connected: true, Reachable: true, PeerUp: true,
+		Endpoint: "192.168.0.132:32768",
+		TxBytes:  296, RxBytes: 0,
+	})
+	if strings.Contains(line, "NAT hairpin") {
+		t.Errorf("hairpin hint must not appear for a private endpoint: %q", line)
+	}
+	if !strings.Contains(line, "UDP reaches") {
+		t.Errorf("expected the firewall/port-forward hint instead, got %q", line)
+	}
+}
+
+// The genuine first-second case still reads as pending: nothing sent yet, nothing to diagnose.
+func TestClusterStatusLineStillSaysPendingBeforeAnythingIsSent(t *testing.T) {
+	line := clusterStatusLine(vpn.ClusterStatus{
+		CID: "v6b", Name: "home-2node",
+		Connected: true, Reachable: true, PeerUp: true,
+		Endpoint: "169.1.210.215:32768",
+		TxBytes:  0, RxBytes: 0,
+	})
+	if !strings.Contains(line, "no handshake yet") {
+		t.Errorf("expected the pending line before any traffic, got %q", line)
+	}
+}
+
+// Traffic in BOTH directions with no recorded handshake is not the one-way case.
+func TestClusterStatusLineDoesNotDiagnoseWhenBytesComeBack(t *testing.T) {
+	line := clusterStatusLine(vpn.ClusterStatus{
+		CID: "v6b", Name: "home-2node",
+		Connected: true, Reachable: true, PeerUp: true,
+		Endpoint: "169.1.210.215:32768",
+		TxBytes:  296, RxBytes: 92,
+	})
+	if !strings.Contains(line, "no handshake yet") {
+		t.Errorf("expected the pending line when bytes come back, got %q", line)
+	}
+}
+
+func TestIsPublicEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		want     bool
+	}{
+		{"169.1.210.215:32768", true},
+		{"192.168.0.132:32768", false},
+		{"10.58.72.1:32768", false},
+		{"172.16.4.4:32768", false},
+		// Carrier-grade NAT: reached from inside the carrier's network, so not a hairpin case.
+		{"100.72.3.4:32768", false},
+		{"127.0.0.1:32768", false},
+		// Unparseable or a host name: treated as public, because that is the case whose hint helps.
+		{"vpn.example.com:32768", true},
+		{"", true},
+	} {
+		if got := isPublicEndpoint(tc.endpoint); got != tc.want {
+			t.Errorf("isPublicEndpoint(%q) = %v, want %v", tc.endpoint, got, tc.want)
+		}
+	}
+}
