@@ -2,6 +2,23 @@
 
 ## v1.15.0
 
+**`runos shell`** opens a shell in your own workspace on a cluster, the same pod the console's
+terminal shows. `runos shell -- kubectl get nodes` runs one thing and exits.
+
+THE CONNECTION GOES STRAIGHT TO THE CLUSTER. The RunOS API is asked for the key and the workspace's
+address and nothing else; the bytes go from your machine to the cluster's own front door on 443.
+That is deliberate, because a terminal is judged on latency and a relay in the middle adds a hop to
+every keystroke. It also means it needs the cluster's own address to be reachable from where you
+are, which is exactly what the console's terminal needs.
+
+It opens the `devops` shell, which carries kubectl, k9s and stern. The workspace is created on
+first use if you have never opened one, and the first one on a cluster pulls a large image, so it
+waits up to ten minutes and says what it is waiting for.
+
+KNOWN LIMIT: the command's exit code is not carried back, because the session is a byte stream and
+the protocol has no channel for it. `runos shell -- false` succeeds.
+
+
 RunOS accounts are now a CLI-wide local context. The new account commands manage known accounts without retaining inactive credentials.
 
 Every account addition or switch uses browser authentication. An account mismatch stops the change before RunOS stores the new credential.
