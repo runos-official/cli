@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.16.0
+
+**VM consoles and workspaces now connect straight to the cluster, not through the RunOS API.** A
+serial console, a VNC screen, an SSH session and a workspace terminal all go from your machine to
+the cluster's own front door on 443, the same path `runos shell` already used. The API is asked for
+a short-lived pass and the cluster's address, nothing more, and it never sees the session's bytes.
+Update to this version or newer: an older CLI asking the API to relay a VM console now gets a clear
+"update to v1.16.0" refusal instead of a silent failure.
+
+`runos vms ssh` and `runos vms console` open the same way as before; what changed is underneath
+them. A pass names one person, one machine and one purpose, lasts about a minute, and works once, so
+a captured pass is spent and stale before it is useful. An SSH session can only ever reach port 22
+on the guest; there is no field in which to ask for another port.
+
+**A refused or interrupted session now says what happened.** A gate that is restarting says so and
+tells you to retry; a pass that was already used, or minted for another cluster, says that instead
+of printing a raw frame error. The advice to "reset the key in the console" is gone, because the
+shared key it referred to is gone.
+
 ## v1.15.0
 
 **`runos shell`** opens a shell in your own workspace on a cluster, the same pod the console's
