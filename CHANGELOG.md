@@ -24,6 +24,8 @@ quoting is kept, so `-- grep "error 500" app.log` searches for the whole phrase.
 and semicolons are shell syntax rather than arguments, so ask for a shell when you want them:
 `-- bash -lc 'a | b'`.
 
+The terminal's width travels with the command, so a wide table is not wrapped at 80 columns.
+
 
 RunOS accounts are now a CLI-wide local context. The new account commands manage known accounts without retaining inactive credentials.
 

@@ -115,9 +115,17 @@ const ExitMarker = "__RUNOS_SHELL_RC_9f3a1c__:"
 //  2. THE EXIT CODE, printed for the CLI to read back and strip. See ExitMarker.
 //
 // The command itself must already be quoted by QuoteCommand; this only wraps it.
-func OneShot(command string) string {
+func OneShot(command string, cols, rows int) string {
 	if command == "" {
 		return ""
+	}
+	// THE SIZE HAS TO TRAVEL WITH THE COMMAND, not after it. The far end spawns the shell at 80x24
+	// and starts the command synchronously, so the CLI's first resize frame cannot arrive until a
+	// round trip later. A slow command wins that race and a fast one loses it: `ls -l`, `ps aux`
+	// and `git log --oneline` render at 80 columns and wrap, while `kubectl get nodes -o wide`
+	// usually does not, which is the worst kind of bug because it looks intermittent.
+	if cols > 0 && rows > 0 {
+		command = fmt.Sprintf("stty cols %d rows %d 2>/dev/null; ", cols, rows) + command
 	}
 	// The code is captured IMMEDIATELY, before anything else can overwrite it.
 	return command + "; __runos_rc=$?; printf '\\n%s%d\\n' '" + ExitMarker + "' \"$__runos_rc\"; exit $__runos_rc"

@@ -110,6 +110,13 @@ func runShell(cmd *cobra.Command, args []string) error {
 		return errors.New("could not read your user id from the current session; sign in again with 'runos login'")
 	}
 
+	// Read the width BEFORE connecting, so a one-shot can carry it and render correctly from its
+	// first line rather than after a round trip.
+	oneShotCols, oneShotRows := 0, 0
+	if oneShot != "" && term.IsTerminal(int(os.Stdout.Fd())) {
+		oneShotCols, oneShotRows, _ = term.GetSize(int(os.Stdout.Fd()))
+	}
+
 	client := api.NewClient(cfg.GetAPIURL())
 	ws, err := resolveWorkspace(client, token, aid, cid, uid)
 	if err != nil {
@@ -120,7 +127,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 		Host:    ws.URL,
 		Key:     ws.PSK,
 		User:    workspace.DefaultUser,
-		Command: workspace.OneShot(oneShot),
+		Command: workspace.OneShot(oneShot, oneShotCols, oneShotRows),
 	}
 	dialURL, err := workspace.DialURL(target)
 	if err != nil {
@@ -265,8 +272,14 @@ func ready(client *api.Client, token, aid, cid, uid string) (bool, string) {
 // It is restored on every exit path, including a panic, because leaving a terminal in raw mode
 // leaves the user with a shell that does not echo.
 func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
-	fd := int(os.Stdin.Fd())
-	interactive := term.IsTerminal(fd)
+	// TWO DIFFERENT QUESTIONS, and conflating them cost every redirected one-shot its width.
+	// Raw mode is about the INPUT: can this terminal stop eating control keys. The size is about
+	// the OUTPUT: how wide is the thing being drawn on. `runos shell -- kubectl get nodes -o wide
+	// < /dev/null` from a 200-column terminal used to get 80, because the whole resize block was
+	// gated on stdin being a terminal and the size was read from stdin too.
+	inFd, outFd := int(os.Stdin.Fd()), int(os.Stdout.Fd())
+	canRaw := term.IsTerminal(inFd)
+	canSize := term.IsTerminal(outFd)
 
 	// A one-shot's output passes through a scanner that lifts the exit code off it. An interactive
 	// session gets no wrapper and therefore no marker, so it writes straight through.
@@ -277,30 +290,21 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 		out = scanner
 	}
 
-	if interactive {
-		state, err := term.MakeRaw(fd)
+	if canRaw {
+		state, err := term.MakeRaw(inFd)
 		if err != nil {
 			return fmt.Errorf("could not put this terminal into raw mode: %w", err)
 		}
-		defer func() { _ = term.Restore(fd, state) }()
+		defer func() { _ = term.Restore(inFd, state) }()
+	}
 
+	if canSize {
 		// Tell the far end the size now, and again whenever the window changes. Without the first
 		// one the shell believes it is 80x24 whatever the window is, so anything full-screen draws
 		// in the wrong place.
-		sendSize(ctx, conn, fd)
-		winch := make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
-		defer signal.Stop(winch)
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-winch:
-					sendSize(ctx, conn, fd)
-				}
-			}
-		}()
+		sendSize(ctx, conn, outFd)
+		stopWatching := watchWindowSize(ctx, func() { sendSize(ctx, conn, outFd) })
+		defer stopWatching()
 	}
 
 	// The reader is what ends the session, never the writer. MEASURED 2026-08-21 against a live

@@ -171,7 +171,7 @@ func TestAOneShotEndsTheSessionAndReportsItsCode(t *testing.T) {
 	// `bash --login -c "<cmd>; exec bash --login"`, so when the command finishes it hands over an
 	// INTERACTIVE shell: without an exit the caller got their output, then a prompt, then waited
 	// forever. And the session carries no exit code of its own, so it is printed and read back.
-	got := OneShot("kubectl get nodes")
+	got := OneShot("kubectl get nodes", 0, 0)
 	if !strings.HasPrefix(got, "kubectl get nodes;") {
 		t.Fatalf("the command must come first and intact, got %q", got)
 	}
@@ -188,8 +188,8 @@ func TestAOneShotEndsTheSessionAndReportsItsCode(t *testing.T) {
 		t.Fatalf("the shell must exit with the command's own code, got %q", got)
 	}
 	// An interactive session must NOT be given one, or it exits the moment it opens.
-	if OneShot("") != "" {
-		t.Fatalf("an interactive session must carry no command, got %q", OneShot(""))
+	if OneShot("", 120, 40) != "" {
+		t.Fatalf("an interactive session must carry no command, got %q", OneShot("", 120, 40))
 	}
 }
 
@@ -224,7 +224,7 @@ func TestShellQuotingKeepsArgumentsWhole(t *testing.T) {
 func TestAQuotedCommandSurvivesEncodingWhole(t *testing.T) {
 	// The pieces are separate on purpose: QuoteCommand preserves the caller's argv, OneShot wraps
 	// it, DialURL carries it. This pins that all three still agree.
-	command := OneShot(QuoteCommand([]string{"grep", "error 500", "/var/log/app.log"}))
+	command := OneShot(QuoteCommand([]string{"grep", "error 500", "/var/log/app.log"}), 0, 0)
 	raw, err := DialURL(Target{Host: "h.example.com", User: UserDevOps, Command: command})
 	if err != nil {
 		t.Fatal(err)
@@ -236,5 +236,19 @@ func TestAQuotedCommandSurvivesEncodingWhole(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(decoded), `'grep' 'error 500' '/var/log/app.log';`) {
 		t.Fatalf("the quoting did not survive: %q", string(decoded))
+	}
+}
+
+func TestAOneShotCarriesTheTerminalWidthWithIt(t *testing.T) {
+	// The far end spawns the shell at 80x24 and starts the command synchronously, so a resize sent
+	// after connecting cannot arrive before a fast command has already drawn. Carrying the size in
+	// the command removes the race rather than usually winning it.
+	got := OneShot("ls -l", 200, 50)
+	if !strings.HasPrefix(got, "stty cols 200 rows 50 2>/dev/null; ls -l;") {
+		t.Fatalf("the size must be set before the command runs, got %q", got)
+	}
+	// Not a terminal, no size to carry, and no stty at all rather than a bogus one.
+	if strings.Contains(OneShot("ls -l", 0, 0), "stty") {
+		t.Fatalf("no size means no stty, got %q", OneShot("ls -l", 0, 0))
 	}
 }
