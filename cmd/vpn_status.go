@@ -90,7 +90,7 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	}
 	fmt.Fprintln(out)
 	for _, c := range status.Clusters {
-		fmt.Fprintf(out, "  %s\n", clusterStatusLine(c))
+		fmt.Fprintf(out, "  %s\n", clusterStatusLineWithSession(c, status.Session.LoginRequired))
 	}
 	if note := peeringNote(status.Clusters); note != "" {
 		fmt.Fprintf(out, "\n%s\n", note)
@@ -130,6 +130,21 @@ func peeringNote(clusters []vpn.ClusterStatus) string {
 
 // clusterStatusLine is one cluster's summary: name, connection state, and either the live
 // handshake/traffic or the reason it is not reachable.
+// clusterStatusLineWithSession renders a row, but says so plainly when the SESSION is what is
+// broken rather than the cluster.
+//
+// Measured 2026-08-22 alongside the headline problem this file's other comment describes. With the
+// session expired, every row read "connecting...", which is exactly the failure mode already
+// called out below: a state that "reads as 'still working on it' forever". Nothing is connecting,
+// because the session that authorises the routes is gone, and no amount of waiting changes it.
+// The cluster is not at fault, so the row must not describe the cluster.
+func clusterStatusLineWithSession(c vpn.ClusterStatus, sessionExpired bool) string {
+	if sessionExpired && c.Connected {
+		return fmt.Sprintf("%-8s %s  session expired, not reachable until you run 'runos vpn up'", c.CID, c.Name)
+	}
+	return clusterStatusLine(c)
+}
+
 func clusterStatusLine(c vpn.ClusterStatus) string {
 	label := fmt.Sprintf("%-8s %s", c.CID, c.Name)
 	switch {

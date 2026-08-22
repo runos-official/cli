@@ -319,3 +319,21 @@ func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
 		t.Fatalf("a live session should read plainly, got %q", headline)
 	}
 }
+
+// The same 2026-08-22 expiry. Under the headline every cluster row read "connecting...", which is
+// the exact failure this file already warns about elsewhere: a state that "reads as 'still working
+// on it' forever". Nothing is connecting, because the session that authorises the routes is gone.
+func TestClusterRowsSayExpiredRatherThanConnecting(t *testing.T) {
+	c := vpn.ClusterStatus{CID: "v6b", Name: "host-homelab", Connected: true, Reachable: true}
+
+	if got := clusterStatusLineWithSession(c, true); !strings.Contains(got, "session expired") {
+		t.Fatalf("an expired session must be named on the row, got %q", got)
+	}
+	if got := clusterStatusLineWithSession(c, true); strings.Contains(got, "connecting...") {
+		t.Fatalf("row still implies progress that cannot happen: %q", got)
+	}
+	// With a live session the row is unchanged.
+	if got := clusterStatusLineWithSession(c, false); !strings.Contains(got, "connecting...") {
+		t.Fatalf("a live session should keep the normal row, got %q", got)
+	}
+}
