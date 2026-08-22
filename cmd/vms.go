@@ -198,7 +198,13 @@ func runVmsSSH(cmd *cobra.Command, args []string) error {
 		if errors.As(err, &exit) {
 			// ssh has already printed its own diagnosis to stderr, so adding wording here would
 			// only bury it. Exit with its code so a script sees what it would have seen.
-			os.Exit(exit.ExitCode())
+			//
+			// RETURNED, NEVER os.Exit: the VM's PRIVATE KEY is on disk and `defer cleanup()` a few
+			// lines up is what deletes it. os.Exit runs no defers, so every non-zero ssh, which
+			// includes every ordinary `exit 1` from inside the guest, left the key behind and broke
+			// this command's own promise that it is "deleted when the session ends". Execute()
+			// unwraps ExitCode() and exits with it, so the status still reaches the caller.
+			return &exitCodeError{code: exit.ExitCode()}
 		}
 		return err
 	}

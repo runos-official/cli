@@ -419,7 +419,13 @@ func pipeShell(ctx context.Context, conn *websocket.Conn, oneShot bool) error {
 		if scanner != nil && scanner.Found && scanner.Code != 0 {
 			// The command failed, so this must fail too, or a script cannot tell. The far end has
 			// already printed whatever it wanted to say, so nothing is added here.
-			os.Exit(scanner.Code)
+			//
+			// RETURNED, NEVER os.Exit: this function put the terminal into RAW MODE and restores it
+			// in a defer a few lines up. os.Exit runs no defers, so every failing one-shot used to
+			// hand the shell back with echo off and no line discipline, and the user's next command
+			// was invisible. Execute() unwraps any error carrying ExitCode() and exits with it, so
+			// the script still sees the far end's status.
+			return &exitCodeError{code: scanner.Code}
 		}
 		return nil
 	}
