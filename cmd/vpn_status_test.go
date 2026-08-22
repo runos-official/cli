@@ -267,3 +267,55 @@ func TestIsPublicEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// MEASURED 2026-08-22 on the lab boxes, and it produced a FALSE defect before it was understood.
+// The VPN session expired at 19:54. `runos vpn status` still led with:
+//
+//	VPN: up on utun0 (10.153.46.3/32)
+//	Session: expired - run 'runos vpn up' to sign in again
+//
+// The interface IS up, so the first line is literally true, but every cluster route had been
+// withdrawn: `netstat -rn | grep utun0` showed ONLY the client's own /32, no overlay or VM pool
+// range. Traffic to a VM left by the LAN default gateway and vanished. A live-migration
+// measurement running across that boundary looked like the VM was unreachable for 300+ seconds,
+// and that was read as a migration defect until the expiry was spotted.
+//
+// A reader scanning the first line must not come away thinking the tunnel works.
+func TestVPNStatusHeadlineSaysExpiredRatherThanUp(t *testing.T) {
+	status := &vpn.Status{Running: true, Interface: "utun0", Address: "10.153.46.3/32"}
+	status.Session.LoginRequired = true
+
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+
+	got := output.String()
+	headline := strings.SplitN(got, "\n", 2)[0]
+	if !strings.Contains(strings.ToUpper(headline), "EXPIRED") {
+		t.Fatalf("headline must say the session is expired, got %q", headline)
+	}
+	if strings.HasPrefix(headline, "VPN: up on") {
+		t.Fatalf("headline still reads as a working tunnel: %q", headline)
+	}
+}
+
+// A live session must keep the plain, reassuring headline.
+func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
+	status := &vpn.Status{Running: true, Interface: "utun0", Address: "10.153.46.3/32"}
+	status.Session.Present = true
+	status.Session.ExpiresAt = time.Now().Add(2 * time.Hour)
+
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+	headline := strings.SplitN(output.String(), "\n", 2)[0]
+	if headline != "VPN: up on utun0 (10.153.46.3/32)" {
+		t.Fatalf("a live session should read plainly, got %q", headline)
+	}
+}

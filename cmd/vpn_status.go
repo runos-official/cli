@@ -21,9 +21,28 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 		return nil
 	}
 
-	if !status.Running {
+	// THE HEADLINE MUST NOT READ AS A WORKING TUNNEL WHEN THE SESSION HAS LAPSED.
+	//
+	// Measured 2026-08-22, and it produced a false defect before it was understood. The session
+	// expired at 19:54 and this still led with "VPN: up on utun0 (10.153.46.3/32)". The interface
+	// IS up, so that line was literally true, but every cluster route had been withdrawn:
+	// `netstat -rn` showed only the client's own /32, with no overlay or VM pool range, so traffic
+	// to a VM left by the LAN default gateway and vanished. A live-migration measurement running
+	// across that boundary looked like the machine was unreachable for 300+ seconds, and that was
+	// read as a migration defect until the expiry was spotted.
+	//
+	// The session line below already said "expired". It was not enough: a reader takes the state
+	// from the first line, and the first line said up.
+	switch {
+	case !status.Running:
 		fmt.Fprintln(out, "VPN: down")
-	} else {
+	case status.Session.LoginRequired:
+		fmt.Fprintf(out, "VPN: SESSION EXPIRED - %s is up but no cluster is reachable", status.Interface)
+		if status.Address != "" {
+			fmt.Fprintf(out, " (%s)", status.Address)
+		}
+		fmt.Fprintln(out)
+	default:
 		fmt.Fprintf(out, "VPN: up on %s", status.Interface)
 		if status.Address != "" {
 			fmt.Fprintf(out, " (%s)", status.Address)
