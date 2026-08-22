@@ -1,9 +1,13 @@
 // Package workspace opens a shell in the caller's own RunOS workspace pod.
 //
-// THE CLIENT CONNECTS STRAIGHT TO THE CLUSTER, not through conductor. Conductor is asked for the
-// pre-shared key and nothing else; the bytes go from here to the cluster's own front door on 443,
-// the same way the console's terminal already works. That is deliberate and it is the whole point:
-// a terminal is judged on latency, and putting a relay in the middle adds a hop to every keystroke.
+// THE CLIENT CONNECTS STRAIGHT TO THE CLUSTER, not through conductor. Conductor is asked for a
+// SIGNED, SINGLE-USE SESSION PASS and nothing else; the bytes go from here to the cluster's own
+// session gate on 443. That is deliberate and it is the whole point: a terminal is judged on
+// latency, and putting a relay in the middle adds a hop to every keystroke.
+//
+// There is no pre-shared key any more. The pass names one person and one workspace, lasts about a
+// minute, works once, and the workspace verifies it again on arrival. See internal/workspace's
+// session.go for how it is requested and cmd/shell.go for how it is carried.
 //
 // EVERYTHING HERE WAS READ FROM THE runostty SOURCE (its `src/lib/auth.ts` and `src/lib/terminal.ts`),
 // not assumed from ttyd or any other terminal server. Three of its rules are not guessable:
@@ -21,10 +25,8 @@
 package workspace
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -77,21 +79,6 @@ func ResolveShell(requested string) (Shell, error) {
 // The subprotocol the server selects and echoes back. Offering it is not optional: a client that
 // offers only the key protocol gets no selection at all.
 const ttyProtocol = "runos.tty.v1"
-
-// The prefix that carries the key. Never selected, never echoed, never in a URL.
-const keyProtocolPrefix = "runos.psk."
-
-// Target is everything needed to open the session, once conductor has handed over the key.
-type Target struct {
-	// Host is the workspace's own name, as conductor returns it, e.g. runostty-<uid>.<clusterdomain>.
-	Host string
-	// Key is the pre-shared key. It rides a header and never the URL.
-	Key string
-	// User is one of the two the pod runs.
-	User string
-	// Command, when set, runs once at session start instead of dropping straight to a prompt.
-	Command string
-}
 
 // ShellQuote makes one argument survive the far end's shell exactly as the caller typed it.
 //
@@ -183,48 +170,6 @@ func SplitExitCode(out string) (string, int) {
 	cleaned := strings.TrimSuffix(out[:idx], "\n")
 	cleaned = strings.TrimSuffix(cleaned, "\r")
 	return cleaned, code
-}
-
-// DialURL builds the websocket address.
-//
-// THE KEY IS NEVER IN IT. A token in a URL is written down in three places nobody thinks about at
-// the time: the ingress access log, the browser's history, and any Referer a page leaks. runostty
-// refuses a key in the query string for exactly that reason, so putting one here would not even
-// work, it would just fail confusingly.
-func DialURL(t Target) (string, error) {
-	host := strings.TrimSpace(t.Host)
-	if host == "" {
-		return "", fmt.Errorf("the workspace has no address yet")
-	}
-	// Conductor returns a bare hostname. Anything with a scheme already is taken as given so a
-	// future change there does not produce wss://https://.
-	if !strings.Contains(host, "://") {
-		host = "wss://" + host
-	} else {
-		host = strings.Replace(host, "https://", "wss://", 1)
-		host = strings.Replace(host, "http://", "ws://", 1)
-	}
-
-	u, err := url.Parse(host)
-	if err != nil {
-		return "", fmt.Errorf("the workspace address %q could not be read: %w", t.Host, err)
-	}
-	u.Path = "/"
-
-	q := url.Values{}
-	q.Set("user", t.User)
-	if t.Command != "" {
-		// The server base64-decodes this and runs it before handing over the prompt. Encoded
-		// rather than passed raw because a command carries spaces, quotes and pipes.
-		q.Set("cmd", base64.StdEncoding.EncodeToString([]byte(t.Command)))
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
-}
-
-// Subprotocols returns the two the client must offer, in the order the server reads them.
-func Subprotocols(key string) []string {
-	return []string{ttyProtocol, keyProtocolPrefix + key}
 }
 
 // ResizeFrame is the message that tells the shell its new size.

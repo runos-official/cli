@@ -1,9 +1,7 @@
 package workspace
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -11,28 +9,6 @@ import (
 // The protocol here was read from the runostty source, not assumed. These pin the three rules that
 // are not guessable, so a later change that "tidies" one of them fails here instead of in a
 // customer's terminal.
-
-func TestTheUrlAlwaysNamesTheShell(t *testing.T) {
-	// THE DEFECT THIS PREVENTS, and it is silent. The server falls back to the CODING shell for a
-	// user it does not recognise, and an ABSENT user counts as unrecognised. So a request that
-	// forgot to say devops does not fail: it opens a shell with no kubectl, and nothing anywhere
-	// explains why the caller's first command was not found.
-	for _, given := range []Target{
-		{Host: "h.example.com", User: UserDevOps},
-	} {
-		raw, err := DialURL(given)
-		if err != nil {
-			t.Fatal(err)
-		}
-		u, err := url.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := u.Query().Get("user"); got != UserDevOps {
-			t.Fatalf("the shell must always be named explicitly, got user=%q from %+v", got, given)
-		}
-	}
-}
 
 func TestBareShellListsRatherThanGuessing(t *testing.T) {
 	// AN EMPTY NAME IS NOT A DEFAULT. `runos shell` on its own must ask which one, so that adding a
@@ -75,98 +51,6 @@ func TestTheOfferedShellsAreWhatTheServerAccepts(t *testing.T) {
 		if err != nil || got.Name != sh.Name {
 			t.Fatalf("an offered shell must resolve: %q %v", got.Name, err)
 		}
-	}
-}
-
-func TestTheKeyNeverReachesTheUrl(t *testing.T) {
-	// runostty REFUSES a key in the query string, and the reason is that a URL is written into the
-	// ingress access log, the browser's history and any Referer a page leaks. Putting it there
-	// would not just be poor practice, it would fail.
-	raw, err := DialURL(Target{Host: "runostty-abc.v6b.example.com", Key: "SUPERSECRET", User: UserDev})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(raw, "SUPERSECRET") {
-		t.Fatalf("the key must never appear in the URL, got %q", raw)
-	}
-	// It travels here instead.
-	protos := Subprotocols("SUPERSECRET")
-	if len(protos) != 2 {
-		t.Fatalf("two subprotocols must be offered, got %v", protos)
-	}
-	if protos[0] != "runos.tty.v1" {
-		t.Fatalf("the plain protocol must be offered, or the server selects nothing: %v", protos)
-	}
-	if protos[1] != "runos.psk.SUPERSECRET" {
-		t.Fatalf("the second must carry the key: %v", protos)
-	}
-}
-
-func TestTheUrlIsWssOnTheWorkspaceHost(t *testing.T) {
-	raw, err := DialURL(Target{Host: "runostty-abc.v6b.example.com", User: UserDevOps})
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.Scheme != "wss" {
-		t.Fatalf("must be wss, got %q", u.Scheme)
-	}
-	if u.Host != "runostty-abc.v6b.example.com" {
-		t.Fatalf("wrong host: %q", u.Host)
-	}
-	if u.Path != "/" {
-		t.Fatalf("the terminal is at /, got %q", u.Path)
-	}
-	if u.Query().Get("user") != UserDevOps {
-		t.Fatalf("the chosen shell must be carried: %q", u.RawQuery)
-	}
-}
-
-func TestAHostThatAlreadyCarriesASchemeIsNotDoubled(t *testing.T) {
-	// Conductor returns a bare hostname today. If that ever changes, this must not produce
-	// wss://https://runostty-... which fails with an unreadable parse error.
-	raw, err := DialURL(Target{Host: "https://runostty-abc.example.com", User: UserDev})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(raw, "https://") || strings.Count(raw, "://") != 1 {
-		t.Fatalf("scheme was doubled or left wrong: %q", raw)
-	}
-	if !strings.HasPrefix(raw, "wss://") {
-		t.Fatalf("must upgrade to wss, got %q", raw)
-	}
-}
-
-func TestAOneShotCommandIsCarriedEncoded(t *testing.T) {
-	// The server base64-decodes this and runs it before the prompt. Raw would break on the first
-	// command containing a space, a quote or a pipe, which is most of them.
-	cmd := `kubectl get nodes -o wide | grep "Ready"`
-	raw, err := DialURL(Target{Host: "h.example.com", User: UserDevOps, Command: cmd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, _ := url.Parse(raw)
-	got, err := base64.StdEncoding.DecodeString(u.Query().Get("cmd"))
-	if err != nil {
-		t.Fatalf("cmd was not base64: %v", err)
-	}
-	if string(got) != cmd {
-		t.Fatalf("the command did not survive: %q", string(got))
-	}
-	// Without a command the parameter must be ABSENT, not empty: the server checks presence.
-	raw2, _ := DialURL(Target{Host: "h.example.com", User: UserDev})
-	u2, _ := url.Parse(raw2)
-	if _, present := u2.Query()["cmd"]; present {
-		t.Fatal("an interactive session must not carry a cmd parameter at all")
-	}
-}
-
-func TestAnEmptyHostIsRefused(t *testing.T) {
-	if _, err := DialURL(Target{User: UserDev}); err == nil {
-		t.Fatal("no address must be refused, not dialled as an empty host")
 	}
 }
 
@@ -253,21 +137,13 @@ func TestShellQuotingKeepsArgumentsWhole(t *testing.T) {
 	}
 }
 
-func TestAQuotedCommandSurvivesEncodingWhole(t *testing.T) {
-	// The pieces are separate on purpose: QuoteCommand preserves the caller's argv, OneShot wraps
-	// it, DialURL carries it. This pins that all three still agree.
+func TestAQuotedCommandSurvivesWrappingWhole(t *testing.T) {
+	// The pieces are separate on purpose: QuoteCommand preserves the caller's argv and OneShot wraps
+	// it. This pins that the two still agree. The command now travels inside the SIGNED PASS rather
+	// than in a URL, so there is no encoding hop left to assert on.
 	command := OneShot(QuoteCommand([]string{"grep", "error 500", "/var/log/app.log"}), 0, 0)
-	raw, err := DialURL(Target{Host: "h.example.com", User: UserDevOps, Command: command})
-	if err != nil {
-		t.Fatal(err)
-	}
-	u, _ := url.Parse(raw)
-	decoded, err := base64.StdEncoding.DecodeString(u.Query().Get("cmd"))
-	if err != nil {
-		t.Fatalf("cmd was not base64: %v", err)
-	}
-	if !strings.HasPrefix(string(decoded), `'grep' 'error 500' '/var/log/app.log';`) {
-		t.Fatalf("the quoting did not survive: %q", string(decoded))
+	if !strings.HasPrefix(command, `'grep' 'error 500' '/var/log/app.log';`) {
+		t.Fatalf("the quoting did not survive: %q", command)
 	}
 }
 
