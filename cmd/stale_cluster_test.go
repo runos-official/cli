@@ -13,8 +13,8 @@ func TestJudgeStaleCluster(t *testing.T) {
 			// The exact message from the finding's second occurrence, which read as a broken
 			// cluster rather than a stale setting.
 			name:       "the message from the finding, with that cluster as the default",
-			errMsg:     "Cluster 'kqz' not found in account 'rjwrn'",
-			defaultCid: "kqz",
+			errMsg:     "Cluster 'cl2' not found in account 'acct1'",
+			defaultCid: "cl2",
 			want:       verdictDefaultClusterMissing,
 		},
 		{
@@ -22,41 +22,41 @@ func TestJudgeStaleCluster(t *testing.T) {
 			// their config is wrong would send them to the wrong place, which is this finding's
 			// own failure mode inverted.
 			name:       "a DIFFERENT cluster was named, so the default is not implicated",
-			errMsg:     "Cluster 'abc' not found in account 'rjwrn'",
-			defaultCid: "kqz",
+			errMsg:     "Cluster 'abc' not found in account 'acct1'",
+			defaultCid: "cl2",
 			want:       verdictNotStaleCluster,
 		},
 		{
 			name:       "no default configured, so nothing can be stale",
-			errMsg:     "Cluster 'kqz' not found in account 'rjwrn'",
+			errMsg:     "Cluster 'cl2' not found in account 'acct1'",
 			defaultCid: "",
 			want:       verdictNotStaleCluster,
 		},
 		{
 			name:       "an unrelated failure is left alone",
 			errMsg:     "failed to create VM: 500 Internal Server Error",
-			defaultCid: "kqz",
+			defaultCid: "cl2",
 			want:       verdictNotStaleCluster,
 		},
 		{
 			// Must not fire on a message that merely happens to contain the id as a substring of
 			// something else. The quoting is what makes the match safe.
 			name:       "an unquoted mention does not count",
-			errMsg:     "Cluster 'kqz2' not found in account 'rjwrn'",
-			defaultCid: "kqz",
+			errMsg:     "Cluster 'cl22' not found in account 'acct1'",
+			defaultCid: "cl2",
 			want:       verdictNotStaleCluster,
 		},
 		{
 			name:       "double-quoted messages match too",
-			errMsg:     `Cluster "kqz" not found in account "rjwrn"`,
-			defaultCid: "kqz",
+			errMsg:     `Cluster "cl2" not found in account "acct1"`,
+			defaultCid: "cl2",
 			want:       verdictDefaultClusterMissing,
 		},
 		{
 			// A not-found for something that is not a cluster must not be blamed on the default.
 			name:       "a different not-found is not a cluster problem",
-			errMsg:     "Node 'kqz' was not found",
-			defaultCid: "kqz",
+			errMsg:     "Node 'cl2' was not found",
+			defaultCid: "cl2",
 			want:       verdictNotStaleCluster,
 		},
 	}

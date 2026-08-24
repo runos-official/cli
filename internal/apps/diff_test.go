@@ -477,7 +477,7 @@ func TestComputeOverridesDiff_RejectsMalformedBase64(t *testing.T) {
 func TestBuildServerStateForDiff_MatchesPullShape(t *testing.T) {
 	raw := map[string]any{
 		"id": "ab12c", "name": "svc", "replicas": float64(1),
-		"clusterDomainId":            "elpfn",
+		"clusterDomainId":            "dom01",
 		"resourceRequirementClassId": "app.sl1.beff",
 		"integrationType":            nil,
 		"servicePortMappings": []any{
@@ -1838,12 +1838,12 @@ replicas: 1
 `)
 	server := []byte(`app: x
 replicas: 1
-clusterDomainId: elpfn
+clusterDomainId: dom01
 healthCheck: standard
 `)
 	got := listServerOnlyFields(local, server)
 	want := map[string]bool{
-		`clusterDomainId ("elpfn")`: true,
+		`clusterDomainId ("dom01")`: true,
 		`healthCheck ("standard")`:  true,
 	}
 	if len(got) != len(want) {
@@ -1921,7 +1921,7 @@ func TestComputeYAMLDiff_AdditivePopulatesServerOnlyFields(t *testing.T) {
 	_ = os.WriteFile(path, localBytes, 0644)
 
 	server := *local
-	server.ClusterDomainID = "elpfn"
+	server.ClusterDomainID = "dom01"
 	server.HealthCheck = "standard"
 
 	got, err := ComputeYAMLDiff(path, &server)

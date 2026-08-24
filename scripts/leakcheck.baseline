@@ -12,24 +12,17 @@
 #
 # Columns are tab separated: <path> <kind> <token>
 # Regenerate with: make leakcheck-update
-cmd/stale_cluster.go	id	rjwrn
-cmd/stale_cluster_test.go	id	rjwrn
-cmd/vpn_status.go	ipv4	10.153.46.3
 cmd/vpn_status.go	ipv4	100.64.0.0
-cmd/vpn_status_test.go	ipv4	10.153.46.3
 cmd/vpn_status_test.go	ipv4	10.58.72.1
 cmd/vpn_status_test.go	ipv4	100.72.3.4
-cmd/vpn_status_test.go	ipv4	169.1.210.215
 cmd/vpn_status_test.go	ipv4	172.16.4.4
-cmd/vpn_status_test.go	ipv4	192.168.0.132
+cmd/vpn_status_test.go	ipv4	192.168.7.20
 internal/apps/sync_test.go	ipv4	10.0.0.0
 internal/dynacmd/executor_test.go	ipv4	1.2.3.4
-internal/vmconsole/ticket_test.go	id	rjwrn
 internal/vpn/dns_router_test.go	ipv4	10.1.0.10
 internal/vpn/dns_router_test.go	ipv4	10.2.0.20
 internal/vpn/dns_router_test.go	ipv4	172.24.8.10
 internal/vpn/dns_router_test.go	ipv4	172.24.8.11
-internal/vpn/dns_verify.go	id	rjwrn
 internal/vpn/nrpt.go	ipv4	172.24.32.1
 internal/vpn/nrpt_test.go	ipv4	10.1.0.1
 internal/vpn/nrpt_test.go	ipv4	10.2.0.1

@@ -55,7 +55,7 @@ var longRunningCommands = map[string]bool{
 	// control probes inside other guests, each over its own ssh session from a
 	// node. Every "blocked" probe deliberately waits out its budget, because a
 	// dropped packet is what it is looking for, so the call is slow by design.
-	// Measured 2026-08-17 on cluster ede: the 30 s Default cut it off with
+	// Measured 2026-08-17 on a lab cluster: the 30 s Default cut it off with
 	// `context deadline exceeded` while conductor went on to finish the run and
 	// tear down every marker listener, so the operator saw a failure for a
 	// measurement that had actually completed.

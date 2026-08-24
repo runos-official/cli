@@ -45,11 +45,11 @@ func TestPrintVCSDeployBanner(t *testing.T) {
 	}{
 		{
 			name:       "non-empty configPath renders both lines",
-			appID:      "rjiqh",
+			appID:      "app02",
 			sha:        "943037f3abc1234567890",
 			configPath: "apps/billing/runos.yaml",
 			want: []string{
-				"Deploying app rjiqh @ 943037f...\n",
+				"Deploying app app02 @ 943037f...\n",
 				"  configPath: apps/billing/runos.yaml\n",
 			},
 			wantNot: []string{"<not sent>", "(using AppDocument default)"},
@@ -60,11 +60,11 @@ func TestPrintVCSDeployBanner(t *testing.T) {
 			// whatever the AppDocument has stored" wording that read
 			// like a warning for a totally normal code path.
 			name:       "empty configPath renders fallback",
-			appID:      "rjiqh",
+			appID:      "app02",
 			sha:        "deadbeefcafe1234",
 			configPath: "",
 			want: []string{
-				"Deploying app rjiqh @ deadbee...\n",
+				"Deploying app app02 @ deadbee...\n",
 				"  configPath: (using AppDocument default)\n",
 			},
 			wantNot: []string{"<not sent>"},
@@ -101,13 +101,13 @@ func TestWriteJSON_RoutesToProvidedWriter(t *testing.T) {
 	// previously typed *os.File which prevented bytes.Buffer tests).
 	var buf bytes.Buffer
 	envelope := vcsDeployJSONResponse{
-		JobID: "job123", AppID: "rjiqh", SHA: "deadbeef", ConfigPath: "apps/x/runos.yaml",
+		JobID: "job123", AppID: "app02", SHA: "deadbeef", ConfigPath: "apps/x/runos.yaml",
 	}
 	if err := writeJSON(&buf, envelope); err != nil {
 		t.Fatalf("writeJSON: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{`"jobId": "job123"`, `"appId": "rjiqh"`, `"sha": "deadbeef"`, `"configPath": "apps/x/runos.yaml"`} {
+	for _, want := range []string{`"jobId": "job123"`, `"appId": "app02"`, `"sha": "deadbeef"`, `"configPath": "apps/x/runos.yaml"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("envelope missing %q\ngot:\n%s", want, out)
 		}

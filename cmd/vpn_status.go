@@ -24,7 +24,7 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	// THE HEADLINE MUST NOT READ AS A WORKING TUNNEL WHEN THE SESSION HAS LAPSED.
 	//
 	// Measured 2026-08-22, and it produced a false defect before it was understood. The session
-	// expired at 19:54 and this still led with "VPN: up on utun0 (10.153.46.3/32)". The interface
+	// expired at 19:54 and this still led with "VPN: up on utun0 (198.51.100.3/32)". The interface
 	// IS up, so that line was literally true, but every cluster route had been withdrawn:
 	// `netstat -rn` showed only the client's own /32, with no overlay or VM pool range, so traffic
 	// to a VM left by the LAN default gateway and vanished. A live-migration measurement running

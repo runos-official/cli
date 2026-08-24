@@ -12,10 +12,10 @@ import (
 // file lands: macOS re-reads the directory and republishes its DNS configuration asynchronously, so
 // a check that runs immediately after the write sees the zone missing and refuses.
 //
-// MEASURED 2026-08-20 on the operator's Mac: `runos vpn connect v6b` failed with "private DNS zone
-// v6b.rjwrn.dev.runos.xyz is not effective", and the SAME command, unchanged, succeeded moments
+// MEASURED 2026-08-20 on the operator's Mac: `runos vpn connect cl1` failed with "private DNS zone
+// cl1.acct1.dev.runos.xyz is not effective", and the SAME command, unchanged, succeeded moments
 // later. In between, `scutil --dns` already listed the zone with its nameserver and reach 0x2
-// (Reachable), and /etc/resolver/v6b.rjwrn.dev.runos.xyz was on disk. Nothing was wrong with the
+// (Reachable), and /etc/resolver/cl1.acct1.dev.runos.xyz was on disk. Nothing was wrong with the
 // cluster; the check was simply early.
 //
 // The refusal reads like a broken cluster, which is the worst part: it names a zone and no action.

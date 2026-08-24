@@ -33,7 +33,7 @@ func TestPrepareDeployment_WireShape_DockerfilePath(t *testing.T) {
 
 	cfg := &DeployConfig{
 		App:        "iter27-api",
-		ID:         "ultbd",
+		ID:         "app01",
 		SourceDir:  "../../..",
 		Dockerfile: "apps/api/Dockerfile",
 	}

@@ -62,7 +62,7 @@ type SectionDiff struct {
 	// enumerate exactly what desired-state fields would be CLEARED
 	// when the deploy ships the user's local yaml. Examples:
 	//   "servicePortMappings[0].domains (2 entries)"
-	//   "clusterDomainId (\"elpfn\")"
+	//   "clusterDomainId (\"dom01\")"
 	//   "healthCheck (\"standard\")"
 	ServerOnlyFields []string `json:"serverOnlyFields,omitempty"`
 }

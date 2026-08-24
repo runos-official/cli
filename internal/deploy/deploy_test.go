@@ -37,7 +37,7 @@ func TestDeployConfig_AppSpecBlockOrderMatchesPulledApp(t *testing.T) {
 		AID:                        "acc-1",
 		Env:                        ".env",
 		Replicas:                   &replicas,
-		ClusterDomainID:            "elpfn",
+		ClusterDomainID:            "dom01",
 		ResourceRequirementClassID: "app.sl1.beff",
 		ServicePortMappings: []ServicePortMapping{
 			{Port: 3000},

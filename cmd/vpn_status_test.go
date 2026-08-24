@@ -39,7 +39,7 @@ func TestClusterStatusLineReflectsEachState(t *testing.T) {
 	}{
 		{
 			name:    "connected and handshaking",
-			cluster: vpn.ClusterStatus{CID: "g4v", Name: "lab", Connected: true, Reachable: true, PeerUp: true, LastHandshake: time.Now().Add(-30 * time.Second), RxBytes: 2048, TxBytes: 1024},
+			cluster: vpn.ClusterStatus{CID: "cl3", Name: "lab", Connected: true, Reachable: true, PeerUp: true, LastHandshake: time.Now().Add(-30 * time.Second), RxBytes: 2048, TxBytes: 1024},
 			want:    "connected, last handshake",
 		},
 		{
@@ -59,7 +59,7 @@ func TestClusterStatusLineReflectsEachState(t *testing.T) {
 			// scanning this list must be able to see, in the first word, which clusters they can
 			// actually use.
 			name:    "no server is NOT available",
-			cluster: vpn.ClusterStatus{CID: "jwn", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"},
+			cluster: vpn.ClusterStatus{CID: "cl4", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"},
 			want:    "cannot connect: no VPN server installed",
 		},
 	}
@@ -76,11 +76,11 @@ func TestClusterStatusLineReflectsEachState(t *testing.T) {
 // only when a connected cluster is peered with one the device is NOT connected to.
 func TestPeeringNoteNamesUnroutedPeers(t *testing.T) {
 	both := []vpn.ClusterStatus{
-		{CID: "wm2", Connected: true, PeeredWith: []string{"g4v"}},
-		{CID: "g4v", Connected: false, PeeredWith: []string{"wm2"}},
+		{CID: "wm2", Connected: true, PeeredWith: []string{"cl3"}},
+		{CID: "cl3", Connected: false, PeeredWith: []string{"wm2"}},
 	}
 	note := peeringNote(both)
-	if !strings.Contains(note, "wm2 is peered with g4v") || !strings.Contains(note, "unrouted") || !strings.Contains(note, "connect g4v") {
+	if !strings.Contains(note, "wm2 is peered with cl3") || !strings.Contains(note, "unrouted") || !strings.Contains(note, "connect cl3") {
 		t.Fatalf("note = %q", note)
 	}
 	both[1].Connected = true
@@ -105,7 +105,7 @@ func TestBytesHumanUsesBinaryUnits(t *testing.T) {
 // connected. This is the whole of the operator's report: "i am connecting to nothing it seems yet
 // it says i can connect".
 func TestOnlyAConnectableClusterIsCalledAvailable(t *testing.T) {
-	noServer := vpn.ClusterStatus{CID: "jwn", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"}
+	noServer := vpn.ClusterStatus{CID: "cl4", Name: "y", Connected: false, Reachable: false, Reason: "no VPN server installed"}
 	if got := clusterStatusLine(noServer); strings.Contains(got, "available") {
 		t.Errorf("a cluster with no VPN server must not be offered as available, got %q", got)
 	}
@@ -118,12 +118,12 @@ func TestOnlyAConnectableClusterIsCalledAvailable(t *testing.T) {
 // A cluster already stuck in the dead state must say how to get out of it, because the state is
 // not one the person can fix by waiting.
 func TestConnectedButUnreachableSaysWhatToDo(t *testing.T) {
-	stuck := vpn.ClusterStatus{CID: "g4v", Name: "vhm-lab", Connected: true, Reachable: false, Reason: "no VPN server installed"}
+	stuck := vpn.ClusterStatus{CID: "cl3", Name: "vhm-lab", Connected: true, Reachable: false, Reason: "no VPN server installed"}
 	got := clusterStatusLine(stuck)
 	if !strings.Contains(got, "no VPN server installed") {
 		t.Errorf("must keep the reason, got %q", got)
 	}
-	if !strings.Contains(got, "disconnect g4v") {
+	if !strings.Contains(got, "disconnect cl3") {
 		t.Errorf("must name the way out, got %q", got)
 	}
 }
@@ -182,9 +182,9 @@ func TestVPNStatusIsQuietWhenTheBuildsMatch(t *testing.T) {
  */
 func TestClusterStatusLineDiagnosesOneWayTunnel(t *testing.T) {
 	line := clusterStatusLine(vpn.ClusterStatus{
-		CID: "v6b", Name: "home-2node",
+		CID: "cl1", Name: "home-2node",
 		Connected: true, Reachable: true, PeerUp: true,
-		Endpoint: "169.1.210.215:32768",
+		Endpoint: "203.0.113.15:32768",
 		TxBytes:  296, RxBytes: 0,
 	})
 
@@ -192,7 +192,7 @@ func TestClusterStatusLineDiagnosesOneWayTunnel(t *testing.T) {
 		t.Fatalf("a one-way tunnel must not read as still-in-progress: %q", line)
 	}
 	// The endpoint has to be named. "No handshake" without it gives the reader nothing to test.
-	if !strings.Contains(line, "169.1.210.215:32768") {
+	if !strings.Contains(line, "203.0.113.15:32768") {
 		t.Errorf("expected the endpoint in the line, got %q", line)
 	}
 	if !strings.Contains(line, "nothing back") {
@@ -207,9 +207,9 @@ func TestClusterStatusLineDiagnosesOneWayTunnel(t *testing.T) {
 // A private endpoint cannot be a hairpin problem, so that hint would be a wrong lead.
 func TestClusterStatusLineOmitsHairpinHintForPrivateEndpoint(t *testing.T) {
 	line := clusterStatusLine(vpn.ClusterStatus{
-		CID: "v6b", Name: "home-2node",
+		CID: "cl1", Name: "home-2node",
 		Connected: true, Reachable: true, PeerUp: true,
-		Endpoint: "192.168.0.132:32768",
+		Endpoint: "192.168.7.20:32768",
 		TxBytes:  296, RxBytes: 0,
 	})
 	if strings.Contains(line, "NAT hairpin") {
@@ -223,9 +223,9 @@ func TestClusterStatusLineOmitsHairpinHintForPrivateEndpoint(t *testing.T) {
 // The genuine first-second case still reads as pending: nothing sent yet, nothing to diagnose.
 func TestClusterStatusLineStillSaysPendingBeforeAnythingIsSent(t *testing.T) {
 	line := clusterStatusLine(vpn.ClusterStatus{
-		CID: "v6b", Name: "home-2node",
+		CID: "cl1", Name: "home-2node",
 		Connected: true, Reachable: true, PeerUp: true,
-		Endpoint: "169.1.210.215:32768",
+		Endpoint: "203.0.113.15:32768",
 		TxBytes:  0, RxBytes: 0,
 	})
 	if !strings.Contains(line, "no handshake yet") {
@@ -236,9 +236,9 @@ func TestClusterStatusLineStillSaysPendingBeforeAnythingIsSent(t *testing.T) {
 // Traffic in BOTH directions with no recorded handshake is not the one-way case.
 func TestClusterStatusLineDoesNotDiagnoseWhenBytesComeBack(t *testing.T) {
 	line := clusterStatusLine(vpn.ClusterStatus{
-		CID: "v6b", Name: "home-2node",
+		CID: "cl1", Name: "home-2node",
 		Connected: true, Reachable: true, PeerUp: true,
-		Endpoint: "169.1.210.215:32768",
+		Endpoint: "203.0.113.15:32768",
 		TxBytes:  296, RxBytes: 92,
 	})
 	if !strings.Contains(line, "no handshake yet") {
@@ -251,8 +251,8 @@ func TestIsPublicEndpoint(t *testing.T) {
 		endpoint string
 		want     bool
 	}{
-		{"169.1.210.215:32768", true},
-		{"192.168.0.132:32768", false},
+		{"203.0.113.15:32768", true},
+		{"192.168.7.20:32768", false},
 		{"10.58.72.1:32768", false},
 		{"172.16.4.4:32768", false},
 		// Carrier-grade NAT: reached from inside the carrier's network, so not a hairpin case.
@@ -271,7 +271,7 @@ func TestIsPublicEndpoint(t *testing.T) {
 // MEASURED 2026-08-22 on the lab boxes, and it produced a FALSE defect before it was understood.
 // The VPN session expired at 19:54. `runos vpn status` still led with:
 //
-//	VPN: up on utun0 (10.153.46.3/32)
+//	VPN: up on utun0 (198.51.100.3/32)
 //	Session: expired - run 'runos vpn up' to sign in again
 //
 // The interface IS up, so the first line is literally true, but every cluster route had been
@@ -282,7 +282,7 @@ func TestIsPublicEndpoint(t *testing.T) {
 //
 // A reader scanning the first line must not come away thinking the tunnel works.
 func TestVPNStatusHeadlineSaysExpiredRatherThanUp(t *testing.T) {
-	status := &vpn.Status{Running: true, Interface: "utun0", Address: "10.153.46.3/32"}
+	status := &vpn.Status{Running: true, Interface: "utun0", Address: "198.51.100.3/32"}
 	status.Session.LoginRequired = true
 
 	var output bytes.Buffer
@@ -304,7 +304,7 @@ func TestVPNStatusHeadlineSaysExpiredRatherThanUp(t *testing.T) {
 
 // A live session must keep the plain, reassuring headline.
 func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
-	status := &vpn.Status{Running: true, Interface: "utun0", Address: "10.153.46.3/32"}
+	status := &vpn.Status{Running: true, Interface: "utun0", Address: "198.51.100.3/32"}
 	status.Session.Present = true
 	status.Session.ExpiresAt = time.Now().Add(2 * time.Hour)
 
@@ -315,7 +315,7 @@ func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
 		t.Fatalf("print VPN status: %v", err)
 	}
 	headline := strings.SplitN(output.String(), "\n", 2)[0]
-	if headline != "VPN: up on utun0 (10.153.46.3/32)" {
+	if headline != "VPN: up on utun0 (198.51.100.3/32)" {
 		t.Fatalf("a live session should read plainly, got %q", headline)
 	}
 }
@@ -324,7 +324,7 @@ func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
 // the exact failure this file already warns about elsewhere: a state that "reads as 'still working
 // on it' forever". Nothing is connecting, because the session that authorises the routes is gone.
 func TestClusterRowsSayExpiredRatherThanConnecting(t *testing.T) {
-	c := vpn.ClusterStatus{CID: "v6b", Name: "host-homelab", Connected: true, Reachable: true}
+	c := vpn.ClusterStatus{CID: "cl1", Name: "host-homelab", Connected: true, Reachable: true}
 
 	if got := clusterStatusLineWithSession(c, true); !strings.Contains(got, "session expired") {
 		t.Fatalf("an expired session must be named on the row, got %q", got)

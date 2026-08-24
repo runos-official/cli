@@ -1702,7 +1702,7 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 	}
 	cmdNoInput := manifest.Command{Command: "apps/list"}
 	// I27-AC: the boolean-flag space-form footgun reproduces against
-	// `apps overrides update --id ultbd --enabled false` because
+	// `apps overrides update --id app01 --enabled false` because
 	// `--enabled` is no-value boolean and `false` lands in the
 	// positional slot.
 	cmdOverrideUpdate := manifest.Command{
@@ -1783,7 +1783,7 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 			name:    "bool flag space-form lands false in positional (I27-AC)",
 			args:    []string{"false"},
 			cmd:     cmdOverrideUpdate,
-			body:    map[string]any{"id": "ultbd", "enabled": true},
+			body:    map[string]any{"id": "app01", "enabled": true},
 			wantErr: `If you meant a boolean flag, use --<flag>=false`,
 		},
 		{
@@ -1793,7 +1793,7 @@ func TestValidatePositionalFlagAgreement(t *testing.T) {
 			name:    "bool flag space-form lands true in positional (I27-AC)",
 			args:    []string{"true"},
 			cmd:     cmdOverrideUpdate,
-			body:    map[string]any{"id": "ultbd"},
+			body:    map[string]any{"id": "app01"},
 			wantErr: `If you meant a boolean flag, use --<flag>=true`,
 		},
 		{

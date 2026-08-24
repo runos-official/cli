@@ -38,7 +38,7 @@ func TestDeployVCS_BodyCarriesBuildArgsCli(t *testing.T) {
 			{Key: "NEXT_PUBLIC_APP_VERSION", Value: "1.2.3"},
 			{Key: "NODE_ENV", Value: "production"},
 		}
-		if _, err := svc.DeployVCS("ultbd", strings.Repeat("a", 40), "apps/web/runos.yaml", entries); err != nil {
+		if _, err := svc.DeployVCS("app01", strings.Repeat("a", 40), "apps/web/runos.yaml", entries); err != nil {
 			t.Fatalf("DeployVCS: %v", err)
 		}
 
@@ -81,7 +81,7 @@ func TestDeployVCS_BodyCarriesBuildArgsCli(t *testing.T) {
 			aid:        "aid",
 			cid:        "cid",
 		}
-		if _, err := svc.DeployVCS("ultbd", strings.Repeat("a", 40), "", nil); err != nil {
+		if _, err := svc.DeployVCS("app01", strings.Repeat("a", 40), "", nil); err != nil {
 			t.Fatalf("DeployVCS: %v", err)
 		}
 		if strings.Contains(string(captured), "buildArgsCli") {
@@ -251,7 +251,7 @@ func TestTargetIngressMatchesOSID(t *testing.T) {
 // flattener writes `{"error":"<inner msg>", "statusCode": 400}`.
 func TestDeployVCS_ReturnsTypedAPIErrorOn4xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/apps/ultbd/deploy") {
+		if !strings.HasSuffix(r.URL.Path, "/apps/app01/deploy") {
 			http.Error(w, "wrong endpoint: "+r.URL.Path, http.StatusNotFound)
 			return
 		}
@@ -269,7 +269,7 @@ func TestDeployVCS_ReturnsTypedAPIErrorOn4xx(t *testing.T) {
 		cid:        "cid",
 	}
 
-	_, err := svc.DeployVCS("ultbd", "aaaa", "", nil)
+	_, err := svc.DeployVCS("app01", "aaaa", "", nil)
 	if err == nil {
 		t.Fatalf("expected error on 400")
 	}
@@ -323,7 +323,7 @@ func TestGetAppDependencies_AcceptsEnvelope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if !strings.HasSuffix(r.URL.Path, "/apps/ultbd/dependencies") {
+				if !strings.HasSuffix(r.URL.Path, "/apps/app01/dependencies") {
 					http.Error(w, "wrong endpoint: "+r.URL.Path, http.StatusNotFound)
 					return
 				}
@@ -340,7 +340,7 @@ func TestGetAppDependencies_AcceptsEnvelope(t *testing.T) {
 				cid:        "cid",
 			}
 
-			deps, err := svc.GetAppDependencies("ultbd")
+			deps, err := svc.GetAppDependencies("app01")
 			if err != nil {
 				t.Fatalf("GetAppDependencies: %v", err)
 			}

@@ -156,7 +156,7 @@ func (p darwinPlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []Resolve
 	// lands: macOS republishes its DNS configuration asynchronously. Reading `scutil --dns` once,
 	// immediately after the write, is a coin flip.
 	//
-	// MEASURED 2026-08-20: `runos vpn connect v6b` failed with "private DNS zone ... is not
+	// MEASURED 2026-08-20: `runos vpn connect cl1` failed with "private DNS zone ... is not
 	// effective" and the SAME command, unchanged, succeeded moments later, with the resolver file
 	// already on disk and scutil already listing the zone as Reachable. Nothing was wrong with the
 	// cluster; the check was early. A first connect that reads as a broken cluster is the kind of

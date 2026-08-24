@@ -23,9 +23,9 @@ disconnect they have to think of themselves. It should never have been reachable
 already holds the document that says the server is missing.
 */
 func TestConnectIsRefusedWhenTheClusterHasNoVpnServer(t *testing.T) {
-	doc := docWith("g4v", false, "no VPN server installed")
+	doc := docWith("cl3", false, "no VPN server installed")
 
-	refusal := connectRefusal(doc, "g4v")
+	refusal := connectRefusal(doc, "cl3")
 
 	if refusal == "" {
 		t.Fatal("connecting to a cluster with no VPN server must be refused, not accepted")
@@ -33,7 +33,7 @@ func TestConnectIsRefusedWhenTheClusterHasNoVpnServer(t *testing.T) {
 	if !contains(refusal, "no VPN server installed") {
 		t.Errorf("the refusal must carry the server's own reason, got %q", refusal)
 	}
-	if !contains(refusal, "g4v") {
+	if !contains(refusal, "cl3") {
 		t.Errorf("the refusal must name the cluster, got %q", refusal)
 	}
 }
@@ -63,12 +63,12 @@ func TestConnectIsNotRefusedOnEvidenceTheDaemonDoesNotHave(t *testing.T) {
 /*
 Disconnect is never refused, and this is the important half.
 
-Devices are already stuck in the dead state this change prevents (g4v, measured 2026-08-18).
+Devices are already stuck in the dead state this change prevents (cl3, measured 2026-08-18).
 Applying the same check to disconnect would trap them there permanently: refusing to disconnect
 from an unreachable cluster because it is unreachable.
 */
 func TestDisconnectIsNeverRefused(t *testing.T) {
-	if refusal := connectRefusal(docWith("g4v", false, "no VPN server installed"), "g4v"); refusal == "" {
+	if refusal := connectRefusal(docWith("cl3", false, "no VPN server installed"), "cl3"); refusal == "" {
 		t.Fatal("guard the connect side")
 	}
 	// The daemon only consults connectRefusal on the connect path; this test pins the intent so a

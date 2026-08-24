@@ -8,7 +8,7 @@ Whether a connect may proceed, decided from the document the daemon already hold
 WHY THIS EXISTS. `vpn connect` used to write the device into any cluster's connected set without
 looking. On a cluster with no VPN server that produced a state with no exit: the device is
 recorded as connected, nothing routes, and `vpn status` reads "connected but unreachable" until
-somebody thinks to disconnect. Measured on the operator's own machine 2026-08-18, where g4v had
+somebody thinks to disconnect. Measured on the operator's own machine 2026-08-18, where cl3 had
 been sitting in exactly that state, and reported as "i am connecting to nothing it seems yet it
 says i can connect".
 

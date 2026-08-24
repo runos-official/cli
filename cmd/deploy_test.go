@@ -183,7 +183,7 @@ func TestSyncAppState_LocalMissingServerHas_FlagsKeysServerHasButLocalDoesNot(t 
 	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
 
 	cfg := &deploy.DeployConfig{
-		ID:        "nrdhg",
+		ID:        "app03",
 		App:       "smoke",
 		SecretEnv: ".smoke.env",
 	}
@@ -214,7 +214,7 @@ func TestSyncAppState_LocalMissingServerHas_EmptyWhenLocalEnvFileAbsent(t *testi
 	}, nil, nil)
 	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
 
-	cfg := &deploy.DeployConfig{ID: "nrdhg", App: "smoke", SecretEnv: ".smoke.env"}
+	cfg := &deploy.DeployConfig{ID: "app03", App: "smoke", SecretEnv: ".smoke.env"}
 	res, err := syncAppState(svc, cfg, yamlPath, "mycluster3")
 	if err != nil {
 		t.Fatalf("syncAppState: %v", err)
@@ -254,12 +254,12 @@ func TestSyncAppState_Suppresses404WarningsOnFirstDeploy(t *testing.T) {
 	}
 	// Server returns 404 for every /apps/:id/... endpoint.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"App 'nrdhg' not found"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"App 'app03' not found"}`, http.StatusNotFound)
 	}))
 	t.Cleanup(srv.Close)
 
 	svc := deploy.NewService(srv.URL, "tok", "mycluster3", "myacct")
-	cfg := &deploy.DeployConfig{ID: "nrdhg", App: "smoke", SecretEnv: ".smoke.env"}
+	cfg := &deploy.DeployConfig{ID: "app03", App: "smoke", SecretEnv: ".smoke.env"}
 	res, err := syncAppState(svc, cfg, yamlPath, "mycluster3")
 	if err != nil {
 		t.Fatalf("syncAppState should not propagate 404: %v", err)
@@ -465,7 +465,7 @@ func TestPreDeployDriftCheck_ForceServerOnly_PreserveOnly(t *testing.T) {
 		"id":              "ab12c",
 		"name":            "web",
 		"replicas":        float64(1),
-		"clusterDomainId": "elpfn",
+		"clusterDomainId": "dom01",
 	}, nil, nil, nil)
 	t.Setenv("RUNOS_API_URL", srv.URL)
 
@@ -479,7 +479,7 @@ func TestPreDeployDriftCheck_ForceServerOnly_PreserveOnly(t *testing.T) {
 	if !strings.Contains(stderr, "Note: the server has fields your local yaml doesn't") {
 		t.Errorf("expected the note header; got:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, `clusterDomainId ("elpfn")`) {
+	if !strings.Contains(stderr, `clusterDomainId ("dom01")`) {
 		t.Errorf("expected enumeration of clusterDomainId; got:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "Preserved server-side") {

@@ -13,12 +13,12 @@ import (
  * broken network.
  */
 func TestParseSession(t *testing.T) {
-	good := `{"kind":"ws.terminal","pass":"runos_pass_v1.abc.def","url":"wss://sessions.v6b.example/v1/session","subprotocols":["runos.session.v1","runos.pass.runos_pass_v1.abc.def"],"expiresAt":"2026-08-21T20:00:00Z"}`
+	good := `{"kind":"ws.terminal","pass":"runos_pass_v1.abc.def","url":"wss://sessions.cl1.example/v1/session","subprotocols":["runos.session.v1","runos.pass.runos_pass_v1.abc.def"],"expiresAt":"2026-08-21T20:00:00Z"}`
 	s, err := ParseSession([]byte(good))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.URL != "wss://sessions.v6b.example/v1/session" || len(s.Subprotocols) != 2 {
+	if s.URL != "wss://sessions.cl1.example/v1/session" || len(s.Subprotocols) != 2 {
 		t.Fatalf("parsed %+v", s)
 	}
 

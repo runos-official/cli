@@ -10,14 +10,14 @@ import (
 
 // Telling a stale DEFAULT cluster apart from a broken one (goal 21, O2).
 //
-// THE DEFECT. `runos config get` reported `cid: kqz` while `clusters list` returned five clusters,
-// none of them `kqz`. Every command that falls back to the configured cluster targeted a cluster
+// THE DEFECT. `runos config get` reported `cid: cl2` while `clusters list` returned five clusters,
+// none of them `cl2`. Every command that falls back to the configured cluster targeted a cluster
 // that is not in the account. The failure is quiet and bad: an agent that trusts the default
 // operates on the wrong target, or gets an error it attributes to the wrong cause.
 //
 // The finding was hit twice. The second time the message was:
 //
-//	Cluster 'kqz' not found in account 'rjwrn'
+//	Cluster 'cl2' not found in account 'acct1'
 //
 // which reads as a broken CLUSTER rather than a stale SETTING. That is the whole harm: the sentence
 // is true and points at the wrong thing, so the next move is to go and investigate a cluster that

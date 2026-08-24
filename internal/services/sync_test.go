@@ -87,7 +87,7 @@ func TestComputeSyncPlan_ClassOnlySwap_OmitsUnchangedResources(t *testing.T) {
 	updateCmd, _ := UpdateCommand(m, "postgresql")
 
 	local := &ServiceYAML{
-		Type: "postgresql", ID: "ecqtl", CID: "mycluster2", AID: "acct1",
+		Type: "postgresql", ID: "svc01", CID: "mycluster2", AID: "acct1",
 		Fields: map[string]any{
 			"name":                       "shared-db",
 			"resourceRequirementClassId": "postgresql.c0.small",
@@ -97,7 +97,7 @@ func TestComputeSyncPlan_ClassOnlySwap_OmitsUnchangedResources(t *testing.T) {
 		},
 	}
 	server := &ServiceYAML{
-		Type: "postgresql", ID: "ecqtl", CID: "mycluster2", AID: "acct1",
+		Type: "postgresql", ID: "svc01", CID: "mycluster2", AID: "acct1",
 		Fields: map[string]any{
 			"name":                       "shared-db",
 			"resourceRequirementClassId": "postgresql.c0.beff",

@@ -38,26 +38,26 @@ func TestMintTicketAsksForASessionAndNamesTheMachineOnlyAsAKey(t *testing.T) {
 	var got http.Request
 	srv := serverReturning(t, 201, map[string]any{
 		"kind": "vm.ssh", "pass": "runos_pass_v1.a.b",
-		"url":          "wss://sessions.v6b.example/v1/session",
+		"url":          "wss://sessions.cl1.example/v1/session",
 		"subprotocols": []string{"runos.session.v1", "runos.pass.runos_pass_v1.a.b"},
 		"expiresAt":    "2026-08-21T20:00:00Z",
 	}, &got)
 	defer srv.Close()
 
-	ticket, err := MintTicket(api.NewClient(srv.URL), "token", "rjwrn", "v6b", "rchx9", KindSSH)
+	ticket, err := MintTicket(api.NewClient(srv.URL), "token", "acct1", "cl1", "vm001", KindSSH)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ticket.WebsocketURL != "wss://sessions.v6b.example/v1/session" || ticket.Pass == "" {
+	if ticket.WebsocketURL != "wss://sessions.cl1.example/v1/session" || ticket.Pass == "" {
 		t.Fatalf("parsed %+v", ticket)
 	}
 
 	// ONE PATH FOR EVERY KIND, naming no machine: the vmid is in the body, as a lookup key.
-	if got.URL.Path != "/rjwrn/v6b/sessions" {
-		t.Errorf("posted to %s, want /rjwrn/v6b/sessions", got.URL.Path)
+	if got.URL.Path != "/acct1/cl1/sessions" {
+		t.Errorf("posted to %s, want /acct1/cl1/sessions", got.URL.Path)
 	}
 	body := got.Header.Get("X-Captured-Body")
-	if !strings.Contains(body, `"vmid":"rchx9"`) || !strings.Contains(body, `"kind":"vm.ssh"`) {
+	if !strings.Contains(body, `"vmid":"vm001"`) || !strings.Contains(body, `"kind":"vm.ssh"`) {
 		t.Errorf("body was %s", body)
 	}
 	// No namespace, no object name, no host: the control plane reads those from the row.

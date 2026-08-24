@@ -119,7 +119,7 @@ func TestIsBenignPreserveZero(t *testing.T) {
 		{"cpuRequestMc (500)", false, "preserve-on-omit but non-zero"},
 		{"memoryRequestMb (256)", false, "preserve-on-omit but non-zero"},
 		{`resourceRequirementClassId ("custom")`, false, "preserve-on-omit non-empty string"},
-		{`clusterDomainId ("elpfn")`, false, "preserve-on-omit non-empty string"},
+		{`clusterDomainId ("dom01")`, false, "preserve-on-omit non-empty string"},
 		// clearOnOmit fields: never benign (omit wipes them, scary).
 		{`domain ("foo.com")`, false, "clearOnOmit, never benign"},
 		{`healthCheck ("startup")`, false, "clearOnOmit, never benign"},
@@ -547,13 +547,13 @@ func TestComputeYAMLPatch_BodyIsFullLocalYAMLOnDrift(t *testing.T) {
 		CID:                        "k1",
 		AID:                        "acc-1",
 		Replicas:                   3, // the only field that differs
-		ClusterDomainID:            "elpfn",
+		ClusterDomainID:            "dom01",
 		ResourceRequirementClassID: "app.sl1.beff",
 		ServicePortMappings:        []Port{{Port: 8080, StandardHttps: BoolPtr(true)}},
 	}
 	server := map[string]any{
 		"name":                       "my-app",
-		"clusterDomainId":            "elpfn",
+		"clusterDomainId":            "dom01",
 		"resourceRequirementClassId": "app.sl1.beff",
 		"replicas":                   float64(1),
 		"servicePortMappings": []any{
