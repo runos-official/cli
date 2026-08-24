@@ -213,6 +213,9 @@ If a feature can be a single endpoint, prefer adding it to the manifest. Reach f
 ### Building
 
 ```bash
+# Install the tracked git hooks (run once, right after you clone)
+make hooks
+
 # Build and install locally
 make local
 
@@ -223,11 +226,65 @@ make build
 make test
 ```
 
+### Git hooks
+
+Run `make hooks` once per clone. It points `core.hooksPath` at the tracked
+`.githooks/` directory. `.git/hooks` is not tracked, so a hook that is not
+installed is a hook nobody has. The `pre-commit` hook runs the leak gate over
+your staged diff and blocks a commit that would publish a credential or a new
+internal identifier.
+
+### Public repo: no credentials, no internal identifiers
+
+This repo is public. Never commit credentials, tokens, API keys or private keys;
+real account, cluster or app IDs; org or customer names; internal hostnames; or
+pasted terminal output that carries a real address.
+
+Use placeholders in examples and fixtures. For addresses, use the ranges that
+exist for exactly that purpose: `192.0.2.0/24`, `198.51.100.0/24` and
+`203.0.113.0/24` (RFC 5737), and `2001:db8::/32` (RFC 3849).
+
+`scripts/leakcheck.py` enforces this. It runs in three places: the `pre-commit`
+hook (staged diff only, fast), `make leakcheck` (on demand), and
+`scripts/release.sh` (whole tree, and it cannot be skipped).
+
+```bash
+make leakcheck          # scan every tracked file
+make leakcheck-staged   # scan only what is staged
+make leakcheck-test     # test the checker itself
+make leakcheck-update   # ratchet the baseline down after removing an identifier
+```
+
+It has two severities.
+
+- **Credentials** hard fail, always. They can never be baselined.
+- **Internal identifiers** are ratcheted. `scripts/leakcheck.baseline` records
+  what this repo has already published, so existing work is not blocked. A NEW
+  identifier fails the gate.
+
+An internal identifier is a machine name or account id listed in
+`scripts/leakcheck.config`, or any IP address literal outside the documentation,
+loopback, link-local, unspecified, broadcast and well-known multicast ranges.
+Addresses are allow-listed rather than deny-listed, because you cannot tell a
+real address from an invented one by reading it. A project constant such as a
+service CIDR is absorbed into the baseline once and never asked about again.
+
+**Do not hand-add a line to `scripts/leakcheck.baseline` to get a commit
+through.** A line in that file records a leak that already shipped, it is not a
+licence to add another. Remove the identifier from the source, then run
+`make leakcheck-update` so the baseline shrinks.
+
+The pre-commit hook can be skipped in a genuine emergency with
+`git commit --no-verify`, and it says so when it fires. Skipping does not get
+the change released: the release gate runs the same checker over the whole tree.
+
 ### Project Structure
 
 ```
 cli/
+├── .githooks/              # Tracked git hooks (install with `make hooks`)
 ├── cmd/                    # Cobra command definitions
+├── scripts/                # release.sh and the public-repo leak gate
 ├── internal/
 │   ├── api/                # HTTP client for the RunOS API
 │   ├── apps/               # apps pull / diff / sync (apps as IaC)

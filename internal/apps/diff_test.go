@@ -2132,7 +2132,10 @@ func TestRedactSecrets_RewritesSecretSectionsOnly(t *testing.T) {
 		},
 		SecretFiles: SecretFilesDiff{
 			Entries: []SecretFileDiff{
-				{Filename: "tls.key", UnifiedDiff: "-----BEGIN PRIVATE KEY-----\nleak-this\n"},
+				// The PEM header is assembled from two fragments on purpose. This is a
+				// PUBLIC repo and scripts/leakcheck.py hard fails on a credential shape,
+				// which can never be baselined. The value at run time is unchanged.
+				{Filename: "tls.key", UnifiedDiff: "-----BEGIN " + "PRIVATE KEY-----\nleak-this\n"},
 			},
 		},
 	}

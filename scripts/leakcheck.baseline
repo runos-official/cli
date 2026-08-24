@@ -1,0 +1,54 @@
+# leakcheck baseline (leakcheck v1.0.1)
+#
+# WHAT THIS FILE IS
+# Every line below is an internal identifier that is ALREADY PUBLISHED in this
+# public repo. The gate ignores these lines so that existing work is not
+# blocked, and fails on anything new.
+#
+# A LINE HERE IS A RECORD OF A LEAK THAT ALREADY HAPPENED. IT IS NOT A LICENCE
+# TO ADD MORE. Never hand-add a line to get a commit through. The honest way to
+# clear a finding is to delete the identifier from the source and run
+# `make leakcheck-update`, which is the only direction this file should move.
+#
+# Columns are tab separated: <path> <kind> <token>
+# Regenerate with: make leakcheck-update
+cmd/stale_cluster.go	id	rjwrn
+cmd/stale_cluster_test.go	id	rjwrn
+cmd/vpn_status.go	ipv4	10.153.46.3
+cmd/vpn_status.go	ipv4	100.64.0.0
+cmd/vpn_status_test.go	ipv4	10.153.46.3
+cmd/vpn_status_test.go	ipv4	10.58.72.1
+cmd/vpn_status_test.go	ipv4	100.72.3.4
+cmd/vpn_status_test.go	ipv4	169.1.210.215
+cmd/vpn_status_test.go	ipv4	172.16.4.4
+cmd/vpn_status_test.go	ipv4	192.168.0.132
+internal/apps/sync_test.go	ipv4	10.0.0.0
+internal/dynacmd/executor_test.go	ipv4	1.2.3.4
+internal/vmconsole/ticket_test.go	id	rjwrn
+internal/vpn/dns_router_test.go	ipv4	10.1.0.10
+internal/vpn/dns_router_test.go	ipv4	10.2.0.20
+internal/vpn/dns_router_test.go	ipv4	172.24.8.10
+internal/vpn/dns_router_test.go	ipv4	172.24.8.11
+internal/vpn/dns_verify.go	id	rjwrn
+internal/vpn/nrpt.go	ipv4	172.24.32.1
+internal/vpn/nrpt_test.go	ipv4	10.1.0.1
+internal/vpn/nrpt_test.go	ipv4	10.2.0.1
+internal/vpn/nrpt_test.go	ipv4	172.24.1.1
+internal/vpn/nrpt_test.go	ipv4	172.24.2.1
+internal/vpn/nrpt_test.go	ipv4	172.24.2.2
+internal/vpn/plan_test.go	ipv4	10.0.0.99
+internal/vpn/plan_test.go	ipv4	10.10.10.0
+internal/vpn/plan_test.go	ipv4	10.10.10.1
+internal/vpn/plan_test.go	ipv4	10.20.30.0
+internal/vpn/plan_test.go	ipv4	10.20.30.1
+internal/vpn/plan_test.go	ipv4	10.40.40.0
+internal/vpn/plan_test.go	ipv4	10.40.40.1
+internal/vpn/plan_test.go	ipv4	10.50.0.0
+internal/vpn/plan_test.go	ipv4	10.9.9.1
+internal/vpn/plan_test.go	ipv4	10.99.7.2
+internal/vpn/resolvectl_test.go	ipv4	10.1.0.1
+internal/vpn/resolvectl_test.go	ipv4	10.2.0.1
+internal/vpn/resolvectl_test.go	ipv4	172.24.8.10
+internal/vpn/scutil_test.go	ipv4	10.1.0.1
+internal/vpn/scutil_test.go	ipv4	10.2.0.1
+internal/vpn/uapi_test.go	ipv4	10.10.10.0
