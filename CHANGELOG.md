@@ -19,6 +19,35 @@ tells you to retry; a pass that was already used, or minted for another cluster,
 of printing a raw frame error. The advice to "reset the key in the console" is gone, because the
 shared key it referred to is gone.
 
+**A sign-in now expires, and the CLI says so plainly.** Conductor bounds a Firebase session on
+`auth_time`, 24 hours by default, and then answers `401` with `code: auth.session_expired`. Until
+now the CLI never asked conductor whether the session was still accepted. It reported
+`authenticated: true` off a Firebase refresh, which still succeeds against Firebase, while every
+command failed, so a person was told they were logged in while nothing worked. `runos login` now
+asks conductor directly, `runos status` reports `sessionExpired` as its own flag, and an expired
+session prints as a state rather than as an `Error:`. Personal access tokens are exempt, so
+automation does not expire on a person's clock.
+
+**`runos vpn up` signs you in instead of giving up.** `enrolDevice` is its first conductor call, and
+it turned any refusal into a returned error, so an expired session ended the command rather than
+starting the sign-in that would have fixed it. The VPN display tells the truth alongside it: a
+cluster row no longer says "connecting..." when the session is gone, the summary no longer leads
+with "VPN: up", and `peerUp` now means the tunnel is carrying traffic rather than that a peer is
+configured.
+
+**`runos login` shows the device code before it opens the browser.** The browser used to open first
+and take the screen with it. The code and the verification link print first, the sign-in reports its
+progress as events, and `--no-browser` leaves opening the link to you.
+
+**The MCP server carries the recovery steps on an expired-session refusal**, so an agent that hits
+one is told what to do instead of improvising.
+
+**A leak gate now blocks credentials and new internal identifiers from this public repo.** It runs
+on the staged diff at commit time, on the whole tracked tree on demand, and inside
+`scripts/release.sh`, where it cannot be skipped.
+
+**Two failing paths skipped their own cleanup**, and the pre-gate workspace dial code is deleted.
+
 ## v1.15.0
 
 **`runos shell`** opens a shell in your own workspace on a cluster, the same pod the console's
