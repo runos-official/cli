@@ -126,7 +126,36 @@ func BuildAPIErrorEnvelope(err error) map[string]any {
 			envelope["error"] = msg
 		}
 	}
+	if code, _ := envelope["code"].(string); code == api.SessionExpiredCode {
+		envelope["recovery"] = sessionExpiredRecovery()
+	}
 	return envelope
+}
+
+/*
+What an AGENT should do about an expired session, carried on the refusal itself.
+
+An agent reading `code: auth.session_expired` knows WHAT happened and nothing about what to do, so
+it improvises. Observed 2026-08-25: it ran two shell commands, gave up, asked the person to run
+`runos login` themselves, then ran it anyway and pasted a raw URL. Every step of that is available
+to it; none of it was written down.
+
+It rides the error rather than living only in an MCP topic because a topic is read at bootstrap and
+this is needed at the moment of failure, by whichever agent is holding it.
+
+`--no-browser` is the point of the sequence: the agent gets the code and the link WITHOUT a browser
+opening on the person's machine unasked. Whether to open one is then a question it can ask.
+*/
+func sessionExpiredRecovery() []string {
+	return []string{
+		"Tell the user their RunOS session has expired. Do not ask them to run anything yet.",
+		"Run `runos login --no-browser --json`. It prints one JSON object per line and does NOT open a browser.",
+		"Read the `device_code` line: it carries `deviceId` and `url`.",
+		"Show the user the deviceId and tell them to check it matches the code the browser shows. That check is what makes this safe.",
+		"Offer to open the url for them, or let them open it themselves. Do not open it without asking.",
+		"The command keeps running and emits `pending` until they approve, then `authorized`, then exits 0. Wait for it rather than polling other commands.",
+		"On exit 0 the session is live: retry what the user originally asked for.",
+	}
 }
 
 // emitJSONErrorAndSilence prints a JSON error envelope to stdout and
