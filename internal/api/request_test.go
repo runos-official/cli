@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The property that makes the Procedure surface usable: a non-2xx is a
@@ -160,5 +161,62 @@ func TestOKCoversTheWhole2xxRange(t *testing.T) {
 		if got := (&Result{StatusCode: status}).OK(); got != want {
 			t.Errorf("OK(%d) = %v, want %v", status, got, want)
 		}
+	}
+}
+
+/*
+Conductor bounded a Firebase sign-in on 2026-08-25: a session now expires on the same clock the VPN
+session uses (auth_time), and says so with a 401 carrying code auth.session_expired plus a header
+naming when. A caller branches on the CODE, never on the sentence, which is written for a person
+and is expected to be reworded.
+*/
+func TestSessionExpiredReadsTheCodeNotTheSentence(t *testing.T) {
+	expired := &Result{
+		StatusCode: http.StatusUnauthorized,
+		Body:       []byte(`{"error":"Your session is 30 hours old and sessions expire after 24.","code":"auth.session_expired"}`),
+	}
+	if !expired.SessionExpired() {
+		t.Fatal("a 401 carrying auth.session_expired must read as an expired session")
+	}
+
+	// A plain 401 is a DIFFERENT problem with a different fix: a bad or missing credential, not one
+	// that simply aged out. Treating them alike would send someone to a browser sign-in to fix a
+	// token they never had.
+	plain := &Result{StatusCode: http.StatusUnauthorized, Body: []byte(`{"error":"Unauthorized"}`)}
+	if plain.SessionExpired() {
+		t.Fatal("a plain 401 must not read as an expired session")
+	}
+
+	// The same code on a non-401 is not this. And a body that is not JSON must not panic or guess.
+	other := &Result{StatusCode: http.StatusForbidden, Body: []byte(`{"code":"auth.session_expired"}`)}
+	if other.SessionExpired() {
+		t.Fatal("only a 401 carries this meaning")
+	}
+	if (&Result{StatusCode: http.StatusUnauthorized, Body: []byte("<html>")}).SessionExpired() {
+		t.Fatal("a non-JSON body must read as not-expired, not crash")
+	}
+}
+
+func TestSessionExpiresAtIsAbsentRatherThanGuessed(t *testing.T) {
+	header := http.Header{}
+	header.Set(SessionExpiresHeader, "2026-08-26T09:59:00Z")
+	at := (&Result{StatusCode: 200, Header: header}).SessionExpiresAt()
+	if at.UTC().Format(time.RFC3339) != "2026-08-26T09:59:00Z" {
+		t.Fatalf("expiry not read back: %v", at)
+	}
+
+	// Absence means "no known expiry" (a personal access token, or the rule switched off). It must
+	// never come back as a zero time a caller could mistake for "expires now"; callers check
+	// IsZero, so the contract is that it stays zero and says nothing.
+	if !(&Result{StatusCode: 200, Header: http.Header{}}).SessionExpiresAt().IsZero() {
+		t.Fatal("a missing header must leave the expiry unknown")
+	}
+	if !(&Result{StatusCode: 200}).SessionExpiresAt().IsZero() {
+		t.Fatal("no headers at all must leave the expiry unknown")
+	}
+	bad := http.Header{}
+	bad.Set(SessionExpiresHeader, "not a time")
+	if !(&Result{StatusCode: 200, Header: bad}).SessionExpiresAt().IsZero() {
+		t.Fatal("an unparseable header must leave the expiry unknown")
 	}
 }

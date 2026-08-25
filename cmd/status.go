@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/vpn"
@@ -130,6 +131,18 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			// Use stored sign-in timestamp
 			if cfg.SignedInAt != "" {
 				status["signedInAt"] = cfg.SignedInAt
+			}
+
+			// A refresh proves Firebase still knows the user; it does NOT prove conductor still
+			// accepts the sign-in, because the session bound lives there. See probeSession.
+			if probe, known := probeSession(cfg); known {
+				switch {
+				case !probe.accepted:
+					status["authenticated"] = false
+					status["authError"] = probe.message
+				case !probe.expiresAt.IsZero():
+					status["sessionExpiresAt"] = probe.expiresAt.UTC().Format(time.RFC3339)
+				}
 			}
 		}
 	}
@@ -299,6 +312,52 @@ func statusGetJSON(cfg *config.Config, path string, out any) error {
 		return fmt.Errorf("API error (%d)", resp.StatusCode)
 	}
 	return json.Unmarshal(body, out)
+}
+
+/*
+What CONDUCTOR says about the current sign-in, which is a different question from whether Firebase
+will still mint a token.
+
+Until conductor bounded a session, those two answers could not disagree: a refresh token minted ID
+tokens indefinitely, so `runos status` reported "authenticated" long after the VPN session, on the
+same underlying sign-in, had expired. A Firebase refresh cannot answer the new question, because
+Firebase does not know the rule. Only conductor does, so status asks it.
+
+UNREACHABLE IS NOT EXPIRED. A laptop on a train must not be told its session has ended: that would
+send someone through a browser sign-in to fix a problem they do not have. `known` is false for
+anything other than a clear answer, and the caller keeps what it already believed.
+*/
+type sessionProbe struct {
+	accepted  bool
+	expiresAt time.Time
+	message   string
+}
+
+func probeSession(cfg *config.Config) (sessionProbe, bool) {
+	aid := cfg.GetAccountID()
+	baseURL := cfg.GetAPIURL()
+	if aid == "" || baseURL == "" {
+		return sessionProbe{}, false
+	}
+	token, err := auth.ResolveToken(cfg)
+	if err != nil {
+		return sessionProbe{}, false
+	}
+	result, err := api.NewClient(baseURL).Do(
+		http.MethodGet, "/"+url.PathEscape(aid)+"/account/profile", token, nil,
+	)
+	if err != nil {
+		return sessionProbe{}, false
+	}
+	if result.SessionExpired() {
+		return sessionProbe{accepted: false, message: result.ErrorMessage()}, true
+	}
+	if !result.OK() {
+		// Some other refusal, a 403 or a 500. It says nothing about the SESSION, and reporting it
+		// as an expiry would send the user to a sign-in that fixes nothing.
+		return sessionProbe{}, false
+	}
+	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true
 }
 
 // fetchAccountProfile reads the account's company profile. Returns nil

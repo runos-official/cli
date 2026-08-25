@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // maxResponseBytes bounds a decoded response body. The Procedure
@@ -27,6 +28,48 @@ const maxResponseBytes = 4 * 1024 * 1024
 type Result struct {
 	StatusCode int
 	Body       []byte
+	// Response headers, kept because some facts ride one rather than the body. The session expiry
+	// is stamped on EVERY authenticated response so a client learns it without a second round trip
+	// (conductor's X-RunOS-Session-Expires-At); discarding headers here would mean a new endpoint
+	// and one more thing to keep in step.
+	Header http.Header
+}
+
+// SessionExpiredCode is conductor's machine-readable reason for a sign-in that has aged out. A
+// caller branches on this rather than on the sentence, which is written for a person and is
+// expected to be reworded.
+const SessionExpiredCode = "auth.session_expired"
+
+// SessionExpiresHeader carries when the current sign-in stops being accepted, RFC3339. Absent means
+// no known expiry (a personal access token, or the rule switched off), never "expires now".
+const SessionExpiresHeader = "X-RunOS-Session-Expires-At"
+
+// SessionExpired reports whether conductor refused this request because the sign-in has aged out,
+// which is a different thing from a bad or missing credential and has a different fix.
+func (r *Result) SessionExpired() bool {
+	if r.StatusCode != http.StatusUnauthorized {
+		return false
+	}
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(r.Body, &envelope) != nil {
+		return false
+	}
+	return envelope.Code == SessionExpiredCode
+}
+
+// SessionExpiresAt returns when the sign-in stops being accepted, or the zero time when the
+// response did not say.
+func (r *Result) SessionExpiresAt() time.Time {
+	if r.Header == nil {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, r.Header.Get(SessionExpiresHeader))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 // OK reports whether the status is 2xx.
@@ -108,5 +151,5 @@ func (c *Client) Do(method, path, token string, body any) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read the response: %w", err)
 	}
-	return &Result{StatusCode: resp.StatusCode, Body: raw}, nil
+	return &Result{StatusCode: resp.StatusCode, Body: raw, Header: resp.Header}, nil
 }

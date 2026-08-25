@@ -49,6 +49,7 @@ precedence over a stored key.`,
 }
 
 func init() {
+	loginCmd.Flags().BoolP("json", "j", false, "Report the browser sign-in as a stream of JSON events, one per line (device_code, pending, authorized, error)")
 	loginCmd.Flags().String("api-key", "", "Authenticate with a personal access token (PAT) instead of the browser flow; pair with --account-id")
 	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the PAT is account-scoped)")
 }
@@ -75,6 +76,12 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if apiKey, _ := cmd.Flags().GetString("api-key"); strings.TrimSpace(apiKey) != "" {
 		return loginWithAPIKey(cmd, apiKey)
 	}
+	if useJSON, _ := cmd.Flags().GetBool("json"); useJSON {
+		// The device id and the URL become readable by something other than a person: RunOS Desktop
+		// shows them in a window so the id can be checked against the browser and the URL used when
+		// the browser does not open.
+		return interactiveLoginReporting(&jsonSignIn{out: cmd.OutOrStdout()}, false)
+	}
 	return interactiveLogin()
 }
 
@@ -83,11 +90,23 @@ func runLogin(cmd *cobra.Command, args []string) error {
 // needs an auth_time from the last few minutes, which a refreshed token does not carry). Returns
 // after "Authenticated successfully!" is printed, or an error.
 func interactiveLogin() error {
+	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true)
+}
+
+/*
+The same sign-in, reporting through `report`.
+
+`chatty` is separate from the reporter on purpose. The closing "Authenticated successfully!" and
+the manifest-cache notice are prose for a terminal; written into a JSON stream they would corrupt
+the last line a caller is parsing, and a caller reading events already knows it succeeded because
+it was told.
+*/
+func interactiveLoginReporting(report signInReporter, chatty bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	session, err := browserAuthenticate(cfg, os.Stdout)
+	session, err := browserAuthenticateReporting(cfg, report)
 	if err != nil {
 		return err
 	}
@@ -95,8 +114,10 @@ func interactiveLogin() error {
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}
-	fmt.Printf("\nAuthenticated successfully!\n")
-	warmManifestCache(cfg)
+	if chatty {
+		fmt.Printf("\nAuthenticated successfully!\n")
+		warmManifestCache(cfg)
+	}
 	return nil
 }
 
@@ -115,6 +136,17 @@ func commitBrowserSession(cfg *config.Config, session browserSession) {
 
 // browserAuthenticate completes browser authentication without changing local context.
 func browserAuthenticate(cfg *config.Config, progress io.Writer) (browserSession, error) {
+	return browserAuthenticateReporting(cfg, textSignIn{out: progress})
+}
+
+/*
+The device-code flow itself, reporting through `report` rather than writing prose.
+
+One flow, two reporters (see login_events.go). The state transitions live HERE and are not
+duplicated for the JSON form: a second code path for authentication is exactly the thing that
+drifts and then differs in the one case nobody tested.
+*/
+func browserAuthenticateReporting(cfg *config.Config, report signInReporter) (browserSession, error) {
 
 	// Initiate device auth with Conductor API
 	conductorClient := api.NewClient(cfg.GetAPIURL())
@@ -133,29 +165,19 @@ func browserAuthenticate(cfg *config.Config, progress io.Writer) (browserSession
 		token,
 	)
 
-	fmt.Fprintf(progress, "Opening browser to authenticate...\n")
-	fmt.Fprintf(progress, "Device ID: %s - verify this matches the browser\n", deviceID)
-
-	if err := openBrowser(browserURL); err != nil {
-		fmt.Fprintf(progress, "\nCouldn't open browser automatically (this is normal on remote servers).\n")
-		fmt.Fprintf(progress, "Please open this URL in your browser:\n\n  %s\n\n", browserURL)
-	} else {
-		fmt.Fprintf(progress, "If the browser doesn't open, visit: %s\n\n", browserURL)
-	}
-
-	fmt.Fprintf(progress, "Waiting for authorization")
+	report.DeviceCode(deviceID, browserURL, openBrowser(browserURL) == nil)
 
 	deadline := time.Now().Add(pollTimeout)
 
 	for time.Now().Before(deadline) {
 		resp, err := conductorClient.PollDeviceAuth(deviceID, token)
 		if err != nil {
-			fmt.Fprintln(progress)
+			report.Failed("unreachable", err.Error())
 			return browserSession{}, fmt.Errorf("failed to check authorization: %w", err)
 		}
 
 		if resp.Success {
-			fmt.Fprintf(progress, "\n\nExchanging token...")
+			report.Authorized()
 
 			if resp.Firebase == nil {
 				return browserSession{}, fmt.Errorf("missing firebase config in response")
@@ -179,25 +201,25 @@ func browserAuthenticate(cfg *config.Config, progress io.Writer) (browserSession
 
 		switch resp.Error {
 		case "authorization_pending":
-			fmt.Fprint(progress, ".")
+			report.Pending()
 			time.Sleep(pollInterval)
 			continue
 		case "expired":
-			fmt.Fprintln(progress)
+			report.Failed("expired", "authorization expired - please try again")
 			return browserSession{}, fmt.Errorf("authorization expired - please try again")
 		case "used":
-			fmt.Fprintln(progress)
+			report.Failed("used", "token already used - please try again")
 			return browserSession{}, fmt.Errorf("token already used - please try again")
 		case "invalid":
-			fmt.Fprintln(progress)
+			report.Failed("invalid", resp.Message)
 			return browserSession{}, fmt.Errorf("invalid request: %s", resp.Message)
 		default:
-			fmt.Fprintln(progress)
+			report.Failed(resp.Error, resp.Message)
 			return browserSession{}, fmt.Errorf("authorization failed (error=%s): %s", resp.Error, resp.Message)
 		}
 	}
 
-	fmt.Fprintln(progress)
+	report.Failed("timeout", "authorization timed out - please try again")
 	return browserSession{}, fmt.Errorf("authorization timed out - please try again")
 }
 

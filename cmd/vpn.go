@@ -151,7 +151,14 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "This VPN session needs a fresh sign-in.")
-		if err := interactiveLogin(); err != nil {
+		// Under --json the sign-in reports as events on stdout, so a caller driving this from a UI
+		// can show the device id, the URL and a status that changes. See login_events.go.
+		useJSON, _ := cmd.Flags().GetBool("json")
+		var report signInReporter = textSignIn{out: cmd.OutOrStdout()}
+		if useJSON {
+			report = &jsonSignIn{out: cmd.OutOrStdout()}
+		}
+		if err := interactiveLoginReporting(report, !useJSON); err != nil {
 			return err
 		}
 		if cfg, err = config.Load(); err != nil {
