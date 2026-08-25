@@ -204,7 +204,15 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("Authentication: ✗ Not logged in")
 		if authErr, ok := status["authError"].(string); ok {
-			fmt.Printf("  Error: %s\n", authErr)
+			// A session that aged out is a STATE, not an error, and the sentence already says what
+			// to do about it. Labelling it "Error:" reads as something having gone wrong, which
+			// sends people looking for a fault instead of typing the command in front of them.
+			// A genuine failure (a refresh that could not complete) keeps the label it deserves.
+			if expired, _ := status["sessionExpired"].(bool); expired {
+				fmt.Printf("  %s\n", authErr)
+			} else {
+				fmt.Printf("  Error: %s\n", authErr)
+			}
 		}
 	}
 
