@@ -140,6 +140,10 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 				case !probe.accepted:
 					status["authenticated"] = false
 					status["authError"] = probe.message
+					// A FLAG, not a sentence to match on. Being signed out is a state a caller has a
+					// UI for, and RunOS Desktop was rendering conductor's terminal wording into a
+					// menu-bar dropdown because the flag it needed did not exist.
+					status["sessionExpired"] = true
 				case !probe.expiresAt.IsZero():
 					status["sessionExpiresAt"] = probe.expiresAt.UTC().Format(time.RFC3339)
 				}
