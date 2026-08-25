@@ -35,17 +35,23 @@ func TestJSONSignInEmitsOneObjectPerLine(t *testing.T) {
 	// by which time nobody needs it.
 	var out bytes.Buffer
 	report := &jsonSignIn{out: &out}
-	report.DeviceCode("a1b2c3", "https://console.example/account/connect-device/a1b2c3-tok", true)
+	report.DeviceCode("a1b2c3", "https://console.example/account/connect-device/a1b2c3-tok")
+	report.BrowserOpened(true, "https://console.example/account/connect-device/a1b2c3-tok")
 	report.Pending()
 	report.Pending()
 	report.Authorized()
 
 	events := decodeEvents(t, out.String())
-	if len(events) != 4 {
-		t.Fatalf("expected 4 events, got %d: %q", len(events), out.String())
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d: %q", len(events), out.String())
 	}
+	// THE CODE COMES FIRST, before anything about a browser. A browser that takes focus before the
+	// code is on screen leaves nothing to compare it against, and the check quietly does not happen.
 	if events[0]["event"] != "device_code" {
 		t.Fatalf("the device code must come first, got %v", events[0]["event"])
+	}
+	if events[1]["event"] != "browser_opened" {
+		t.Fatalf("the browser result must follow the code, got %v", events[1]["event"])
 	}
 	if events[0]["deviceId"] != "a1b2c3" {
 		t.Fatalf("the device id is what the person checks against the browser; got %v", events[0]["deviceId"])
@@ -53,8 +59,8 @@ func TestJSONSignInEmitsOneObjectPerLine(t *testing.T) {
 	if events[0]["url"] == "" || events[0]["url"] == nil {
 		t.Fatal("the URL must be present: it is the only way in when the browser does not open")
 	}
-	if events[3]["event"] != "authorized" {
-		t.Fatalf("expected authorized last, got %v", events[3]["event"])
+	if events[4]["event"] != "authorized" {
+		t.Fatalf("expected authorized last, got %v", events[4]["event"])
 	}
 }
 
@@ -64,7 +70,7 @@ func TestJSONSignInReportsBrowserOpenedEitherWay(t *testing.T) {
 	// the absence of a field.
 	for _, opened := range []bool{true, false} {
 		var out bytes.Buffer
-		(&jsonSignIn{out: &out}).DeviceCode("id", "https://example", opened)
+		(&jsonSignIn{out: &out}).BrowserOpened(opened, "https://example")
 		events := decodeEvents(t, out.String())
 		got, ok := events[0]["browserOpened"].(bool)
 		if !ok || got != opened {
@@ -92,7 +98,8 @@ func TestTextSignInStillReadsAsItAlwaysDid(t *testing.T) {
 	// to verify it, which is the instruction that makes the check happen at all.
 	var out bytes.Buffer
 	report := textSignIn{out: &out}
-	report.DeviceCode("a1b2c3", "https://console.example/x", true)
+	report.DeviceCode("a1b2c3", "https://console.example/x")
+	report.BrowserOpened(true, "https://console.example/x")
 	report.Pending()
 	got := out.String()
 	if !strings.Contains(got, "Device ID: a1b2c3 - verify this matches the browser") {

@@ -21,9 +21,16 @@ a second code path for authentication is exactly the thing that drifts and then 
 case nobody tested.
 */
 type signInReporter interface {
-	// DeviceCode fires once, as soon as the device id and URL exist. The id is what the person
-	// compares against the browser, which is the whole anti-spoofing property of this flow.
-	DeviceCode(deviceID, browserURL string, browserOpened bool)
+	/*
+	 DeviceCode fires once, as soon as the device id and URL exist, and BEFORE any browser opens.
+
+	 The order is the point. The id is what the person compares against the browser, so they have to
+	 see it first; a browser that takes focus before the code is on screen leaves nothing to compare
+	 against and the check quietly does not happen.
+	*/
+	DeviceCode(deviceID, browserURL string)
+	// BrowserOpened fires after the attempt, saying whether there is now a browser to look at.
+	BrowserOpened(opened bool, browserURL string)
 	// Pending fires on each poll that finds the authorization still outstanding.
 	Pending()
 	// Authorized fires once the browser has authorised, before the token exchange.
@@ -36,10 +43,13 @@ type signInReporter interface {
 // produced and it is unchanged.
 type textSignIn struct{ out io.Writer }
 
-func (t textSignIn) DeviceCode(deviceID, browserURL string, browserOpened bool) {
+func (t textSignIn) DeviceCode(deviceID, _ string) {
 	fmt.Fprintf(t.out, "Opening browser to authenticate...\n")
 	fmt.Fprintf(t.out, "Device ID: %s - verify this matches the browser\n", deviceID)
-	if browserOpened {
+}
+
+func (t textSignIn) BrowserOpened(opened bool, browserURL string) {
+	if opened {
 		fmt.Fprintf(t.out, "If the browser doesn't open, visit: %s\n\n", browserURL)
 	} else {
 		fmt.Fprintf(t.out, "\nCouldn't open browser automatically (this is normal on remote servers).\n")
@@ -89,9 +99,13 @@ func (j *jsonSignIn) emit(event signInEvent) {
 	}
 }
 
-func (j *jsonSignIn) DeviceCode(deviceID, browserURL string, browserOpened bool) {
-	opened := browserOpened
-	j.emit(signInEvent{Event: "device_code", DeviceID: deviceID, URL: browserURL, BrowserOpened: &opened})
+func (j *jsonSignIn) DeviceCode(deviceID, browserURL string) {
+	j.emit(signInEvent{Event: "device_code", DeviceID: deviceID, URL: browserURL})
+}
+
+func (j *jsonSignIn) BrowserOpened(opened bool, _ string) {
+	value := opened
+	j.emit(signInEvent{Event: "browser_opened", BrowserOpened: &value})
 }
 
 func (j *jsonSignIn) Pending()    { j.emit(signInEvent{Event: "pending"}) }

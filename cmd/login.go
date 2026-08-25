@@ -121,6 +121,15 @@ func interactiveLoginReporting(report signInReporter, chatty bool) error {
 	return nil
 }
 
+/*
+How long to leave the device code on screen before opening a browser.
+
+Long enough to read a short code and register that a window appeared; short enough that nobody
+wonders whether the command is stuck. The browser stealing focus the same instant the window opens
+is what this exists to prevent.
+*/
+const browserOpenDelay = 2 * time.Second
+
 type browserSession struct {
 	AccountID    string
 	Firebase     *config.FirebaseConfig
@@ -165,7 +174,15 @@ func browserAuthenticateReporting(cfg *config.Config, report signInReporter) (br
 		token,
 	)
 
-	report.DeviceCode(deviceID, browserURL, openBrowser(browserURL) == nil)
+	// The code FIRST, then the browser. Argument evaluation used to open the browser before this
+	// call ran, so a UI driving the CLI could not show the code until a browser already had focus,
+	// and the comparison the code exists for had nothing to compare against.
+	report.DeviceCode(deviceID, browserURL)
+	// A beat, so the code is read before the browser takes the screen. It costs a terminal user
+	// nothing (the id is already printed) and it is the difference between a window someone sees
+	// and one that is covered the instant it appears.
+	time.Sleep(browserOpenDelay)
+	report.BrowserOpened(openBrowser(browserURL) == nil, browserURL)
 
 	deadline := time.Now().Add(pollTimeout)
 

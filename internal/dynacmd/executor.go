@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
@@ -852,6 +853,7 @@ func formatAuthError(err error) (string, bool) {
 	}
 	var body struct {
 		Error     string `json:"error"`
+		Code      string `json:"code"`
 		Reason    string `json:"reason"`
 		RevokedAt string `json:"revokedAt"`
 		ExpiredAt string `json:"expiredAt"`
@@ -860,6 +862,17 @@ func formatAuthError(err error) (string, bool) {
 	msg := body.Error
 	if msg == "" {
 		msg = "unauthorized"
+	}
+	/*
+	 A session that simply ran out gets ONE line and no checklist.
+
+	 The three hints below are about personal access tokens: is the env var pointing at a current
+	 PAT, was it revoked, was it minted on another environment. None of that applies to a browser
+	 sign-in that aged out, and printing it sends someone to audit API keys they are not using. The
+	 remedy is one command and it is already in the sentence.
+	*/
+	if body.Code == api.SessionExpiredCode {
+		return "your session has expired. Run `runos login` to sign in again.", true
 	}
 	var sb strings.Builder
 	sb.WriteString("authentication refused (401): ")
