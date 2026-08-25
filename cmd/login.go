@@ -50,6 +50,7 @@ precedence over a stored key.`,
 
 func init() {
 	loginCmd.Flags().BoolP("json", "j", false, "Report the browser sign-in as a stream of JSON events, one per line (device_code, pending, authorized, error)")
+	loginCmd.Flags().Bool("no-browser", false, "Print the sign-in link instead of opening a browser; the caller opens it. Use when a UI shows the device code and opens the link on a click")
 	loginCmd.Flags().String("api-key", "", "Authenticate with a personal access token (PAT) instead of the browser flow; pair with --account-id")
 	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the PAT is account-scoped)")
 }
@@ -76,13 +77,14 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	if apiKey, _ := cmd.Flags().GetString("api-key"); strings.TrimSpace(apiKey) != "" {
 		return loginWithAPIKey(cmd, apiKey)
 	}
+	noBrowser, _ := cmd.Flags().GetBool("no-browser")
 	if useJSON, _ := cmd.Flags().GetBool("json"); useJSON {
 		// The device id and the URL become readable by something other than a person: RunOS Desktop
 		// shows them in a window so the id can be checked against the browser and the URL used when
 		// the browser does not open.
-		return interactiveLoginReporting(&jsonSignIn{out: cmd.OutOrStdout()}, false)
+		return interactiveLoginReporting(&jsonSignIn{out: cmd.OutOrStdout()}, false, !noBrowser)
 	}
-	return interactiveLogin()
+	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true, !noBrowser)
 }
 
 // interactiveLogin runs the browser device-code flow and saves the resulting Firebase session.
@@ -90,7 +92,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 // needs an auth_time from the last few minutes, which a refreshed token does not carry). Returns
 // after "Authenticated successfully!" is printed, or an error.
 func interactiveLogin() error {
-	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true)
+	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true, true)
 }
 
 /*
@@ -101,12 +103,12 @@ the manifest-cache notice are prose for a terminal; written into a JSON stream t
 the last line a caller is parsing, and a caller reading events already knows it succeeded because
 it was told.
 */
-func interactiveLoginReporting(report signInReporter, chatty bool) error {
+func interactiveLoginReporting(report signInReporter, chatty bool, autoOpenBrowser bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	session, err := browserAuthenticateReporting(cfg, report)
+	session, err := browserAuthenticateReporting(cfg, report, autoOpenBrowser)
 	if err != nil {
 		return err
 	}
@@ -145,7 +147,7 @@ func commitBrowserSession(cfg *config.Config, session browserSession) {
 
 // browserAuthenticate completes browser authentication without changing local context.
 func browserAuthenticate(cfg *config.Config, progress io.Writer) (browserSession, error) {
-	return browserAuthenticateReporting(cfg, textSignIn{out: progress})
+	return browserAuthenticateReporting(cfg, textSignIn{out: progress}, true)
 }
 
 /*
@@ -155,7 +157,11 @@ One flow, two reporters (see login_events.go). The state transitions live HERE a
 duplicated for the JSON form: a second code path for authentication is exactly the thing that
 drifts and then differs in the one case nobody tested.
 */
-func browserAuthenticateReporting(cfg *config.Config, report signInReporter) (browserSession, error) {
+func browserAuthenticateReporting(
+	cfg *config.Config,
+	report signInReporter,
+	autoOpenBrowser bool,
+) (browserSession, error) {
 
 	// Initiate device auth with Conductor API
 	conductorClient := api.NewClient(cfg.GetAPIURL())
@@ -178,11 +184,19 @@ func browserAuthenticateReporting(cfg *config.Config, report signInReporter) (br
 	// call ran, so a UI driving the CLI could not show the code until a browser already had focus,
 	// and the comparison the code exists for had nothing to compare against.
 	report.DeviceCode(deviceID, browserURL)
-	// A beat, so the code is read before the browser takes the screen. It costs a terminal user
-	// nothing (the id is already printed) and it is the difference between a window someone sees
-	// and one that is covered the instant it appears.
-	time.Sleep(browserOpenDelay)
-	report.BrowserOpened(openBrowser(browserURL) == nil, browserURL)
+	if autoOpenBrowser {
+		// A beat, so the code is read before the browser takes the screen. It costs a terminal user
+		// nothing (the id is already printed) and it is the difference between a window someone
+		// sees and one that is covered the instant it appears.
+		time.Sleep(browserOpenDelay)
+		report.BrowserOpened(openBrowser(browserURL) == nil, browserURL)
+	} else {
+		// The CALLER opens it, when the person asks. A UI can then show the code, let them read it,
+		// and open the browser on a click; the comparison stops being a race against a window
+		// appearing. Reported as "not opened" because that is true, and it is what makes the URL
+		// the prominent thing on screen.
+		report.BrowserOpened(false, browserURL)
+	}
 
 	deadline := time.Now().Add(pollTimeout)
 

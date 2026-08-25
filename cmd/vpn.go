@@ -56,6 +56,7 @@ var vpnStatusCmd = &cobra.Command{
 
 func init() {
 	vpnUpCmd.Flags().BoolP("json", "j", false, "Output as JSON")
+	vpnUpCmd.Flags().Bool("no-browser", false, "Report the sign-in link instead of opening a browser; the caller opens it. Use when a UI shows the device code and opens the link on a click")
 	vpnUpCmd.Flags().Bool("non-interactive", false, "Never open a browser: fail if a fresh sign-in is needed (for unattended callers such as connect-at-startup)")
 	vpnDownCmd.Flags().BoolP("json", "j", false, "Output as JSON")
 	vpnStatusCmd.Flags().BoolP("json", "j", false, "Output as JSON")
@@ -259,7 +260,8 @@ func signInAndReload(cmd *cobra.Command) (*config.Config, string, error) {
 	if useJSON {
 		report = &jsonSignIn{out: cmd.OutOrStdout()}
 	}
-	if err := interactiveLoginReporting(report, !useJSON); err != nil {
+	noBrowser, _ := cmd.Flags().GetBool("no-browser")
+	if err := interactiveLoginReporting(report, !useJSON, !noBrowser); err != nil {
 		return nil, "", err
 	}
 	cfg, err := config.Load()
