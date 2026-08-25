@@ -123,7 +123,18 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 	if hostname == "" {
 		hostname = "this-machine"
 	}
-	device, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
+	device, needSignIn, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
+	if needSignIn {
+		// The session aged out before `up` reached the session mint. Sign in and start again from
+		// the enrolment, rather than failing the command that exists to fix this.
+		if cfg, token, err = signInAndReload(cmd); err != nil {
+			return err
+		}
+		device, needSignIn, err = enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
+		if needSignIn {
+			return fmt.Errorf("the sign-in did not refresh the session; try 'runos login' then 'runos vpn up' again")
+		}
+	}
 	if errors.Is(err, errKeyRevoked) {
 		// The key was revoked (console, or an admin) and can never enrol again: rotate it in the
 		// daemon and enrol the new one, so a revoked machine is one `up` from working again
@@ -133,7 +144,7 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		if rErr != nil {
 			return rErr
 		}
-		device, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
 	}
 	if err != nil {
 		return err
@@ -146,25 +157,7 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if needSignIn {
-		nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
-		if err := signInRequiredError(nonInteractive); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.ErrOrStderr(), "This VPN session needs a fresh sign-in.")
-		// Under --json the sign-in reports as events on stdout, so a caller driving this from a UI
-		// can show the device id, the URL and a status that changes. See login_events.go.
-		useJSON, _ := cmd.Flags().GetBool("json")
-		var report signInReporter = textSignIn{out: cmd.OutOrStdout()}
-		if useJSON {
-			report = &jsonSignIn{out: cmd.OutOrStdout()}
-		}
-		if err := interactiveLoginReporting(report, !useJSON); err != nil {
-			return err
-		}
-		if cfg, err = config.Load(); err != nil {
-			return err
-		}
-		if token, err = auth.ResolveToken(cfg); err != nil {
+		if cfg, token, err = signInAndReload(cmd); err != nil {
 			return err
 		}
 		if session, needSignIn, err = mintSession(cfg, token, device.ID); err != nil {
@@ -241,4 +234,41 @@ func emitVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 		return nil
 	}
 	return printVPNStatus(cmd, status)
+}
+
+/*
+Run the browser sign-in, then reload what it changed.
+
+Shared by the two places `vpn up` can be told to sign in: conductor refusing the enrolment because
+the whole session aged out, and refusing the session mint because the sign-in is not recent enough.
+One remedy, one implementation; two copies of a re-auth path is how they end up differing.
+
+Under --json the sign-in reports as events on stdout, so a caller driving this from a UI can show
+the device id, the URL and a status that changes. See login_events.go.
+*/
+func signInAndReload(cmd *cobra.Command) (*config.Config, string, error) {
+	nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
+	if err := signInRequiredError(nonInteractive); err != nil {
+		return nil, "", err
+	}
+	useJSON, _ := cmd.Flags().GetBool("json")
+	if !useJSON {
+		fmt.Fprintln(cmd.ErrOrStderr(), "This VPN session needs a fresh sign-in.")
+	}
+	var report signInReporter = textSignIn{out: cmd.OutOrStdout()}
+	if useJSON {
+		report = &jsonSignIn{out: cmd.OutOrStdout()}
+	}
+	if err := interactiveLoginReporting(report, !useJSON); err != nil {
+		return nil, "", err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, "", err
+	}
+	token, err := auth.ResolveToken(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return cfg, token, nil
 }

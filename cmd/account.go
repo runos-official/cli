@@ -190,14 +190,20 @@ func synchronizeVPNAccount(cmd *cobra.Command, cfg *config.Config, previousAccou
 	if hostname == "" {
 		hostname = "this-machine"
 	}
-	device, err := enrolDevice(cfg, token, identityResponse.Identity.PublicKey, hostname, runtime.GOOS)
+	// This path runs during an account switch, which already holds a live session; a needSignIn here
+	// is reported as the failure it is rather than opening a browser mid-switch.
+	device, needSignIn, err := enrolDevice(cfg, token, identityResponse.Identity.PublicKey, hostname, runtime.GOOS)
+	if needSignIn {
+		result.State, result.Message = "failed", "your session has expired; run 'runos login' and try again"
+		return result
+	}
 	if errors.Is(err, errKeyRevoked) {
 		rotated, rotateErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: accountID})
 		if rotateErr != nil {
 			result.State, result.Message = "failed", rotateErr.Error()
 			return result
 		}
-		device, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
 	}
 	if err != nil {
 		result.State, result.Message = "failed", err.Error()

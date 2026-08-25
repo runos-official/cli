@@ -27,29 +27,39 @@ type vpnDeviceView struct {
 // (409 `vpn.key_revoked`): the machine needs a new keypair, which `up` asks the daemon for.
 var errKeyRevoked = errors.New("this machine's VPN key was revoked")
 
-// enrolDevice enrols this machine's public key, idempotent on the key. Returns the device.
-func enrolDevice(cfg *config.Config, token, publicKey, name, osName string) (*vpnDeviceView, error) {
+/*
+enrolDevice enrols this machine's public key, idempotent on the key.
+
+The middle return is "sign in first, then try again", the same signal mintSession gives. It exists
+because conductor now expires a Firebase sign-in, and this is the FIRST call `vpn up` makes: a
+refusal here used to end the command, which meant the session expiring broke the very command that
+fixes it. The remedy for an aged-out session is a sign-in, and `up` already knows how to do one.
+*/
+func enrolDevice(cfg *config.Config, token, publicKey, name, osName string) (*vpnDeviceView, bool, error) {
 	client := api.NewClient(cfg.GetAPIURL())
 	path := "/" + url.PathEscape(cfg.GetAccountID()) + "/vpn/devices"
 	result, err := client.Do(http.MethodPost, path, token, map[string]any{
 		"publicKey": publicKey, "name": name, "os": osName,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if result.SessionExpired() {
+		return nil, true, nil
 	}
 	if result.StatusCode == http.StatusConflict && vpnErrorCode(result) == "vpn.key_revoked" {
-		return nil, errKeyRevoked
+		return nil, false, errKeyRevoked
 	}
 	if !result.OK() {
-		return nil, fmt.Errorf("%s", vpnErrorMessage(result, "enrol this device"))
+		return nil, false, fmt.Errorf("%s", vpnErrorMessage(result, "enrol this device"))
 	}
 	var body struct {
 		Device vpnDeviceView `json:"device"`
 	}
 	if err := result.Decode(&body); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &body.Device, nil
+	return &body.Device, false, nil
 }
 
 // mintedSession is what the session endpoint returns.
@@ -68,7 +78,12 @@ func mintSession(cfg *config.Config, token, deviceID string) (*mintedSession, bo
 	if err != nil {
 		return nil, false, err
 	}
-	if result.StatusCode == http.StatusForbidden && vpnErrorCode(result) == "vpn.sign_in_required" {
+	// Two refusals, one remedy. `vpn.sign_in_required` is conductor asking for a sign-in from the
+	// last few minutes; `auth.session_expired` is the whole session having aged out. Both are fixed
+	// by signing in, and telling them apart here would only give `up` two branches that do the same
+	// thing.
+	if result.SessionExpired() ||
+		(result.StatusCode == http.StatusForbidden && vpnErrorCode(result) == "vpn.sign_in_required") {
 		return nil, true, nil
 	}
 	if !result.OK() {
