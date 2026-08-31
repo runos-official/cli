@@ -128,13 +128,18 @@ func TestConnectedButUnreachableSaysWhatToDo(t *testing.T) {
 	}
 }
 
-// A daemon older than the CLI is the commonest cause of a status field that reads empty, because
-// the daemon serialises what ITS build knows and a field added later decodes as a zero value here.
-// Measured 2026-08-19: daemon dev-2026-08-18T14:56:07Z against CLI dev-2026-08-18T19:40:41Z printed
-// "Private DNS: unavailable" with no reason while split DNS was in fact working, with
+// A daemon on a different build from the CLI is the commonest cause of a status field that reads
+// empty, because the daemon serialises what ITS build knows and a field the other build added
+// decodes as a zero value across the socket. Measured 2026-08-19: two dev builds a few hours apart
+// printed "Private DNS: unavailable" with no reason while split DNS was in fact working, with
 // /etc/resolver written by the daemon and the cluster zone resolving to private addresses. A person
 // reading that goes and debugs DNS. The status has both versions in hand and must say so.
-func TestVPNStatusWarnsWhenTheDaemonIsAnOlderBuild(t *testing.T) {
+//
+// It says DIFFERENT, not older. Which way round the two builds sit is not measured: the version
+// strings are timestamps for a dev build and semver for a release, so they are not comparable, and
+// a daemon NEWER than the binary is the ordinary state after installing a local build over a
+// release. The remedy is the same either way, so the notice states the fact it has.
+func TestVPNStatusNamesBothBuildsWhenTheyDiffer(t *testing.T) {
 	previous := version.Version
 	version.Version = "dev-2026-08-18T19:40:41Z"
 	defer func() { version.Version = previous }()
@@ -147,9 +152,15 @@ func TestVPNStatusWarnsWhenTheDaemonIsAnOlderBuild(t *testing.T) {
 		t.Fatalf("print VPN status: %v", err)
 	}
 	got := output.String()
-	for _, want := range []string{"older build", "dev-2026-08-18T14:56:07Z", "dev-2026-08-18T19:40:41Z", "runos vpn restart"} {
+	for _, want := range []string{"different build", "dev-2026-08-18T14:56:07Z", "dev-2026-08-18T19:40:41Z", "runos vpn restart"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("status did not name %q in the version mismatch: %q", want, got)
+		}
+	}
+	// The claim it must NOT make, because nothing here measured a direction.
+	for _, unwanted := range []string{"older", "previous", "behind", "newer"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("status claimed the direction %q, which it never measured: %q", unwanted, got)
 		}
 	}
 }
