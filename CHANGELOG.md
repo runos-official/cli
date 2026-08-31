@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.18.3
+
+**`runos vpn restart` no longer leaves a config file behind when run as root.** It was missing from
+the list of VPN commands that skip the config and manifest fetch, alongside `daemon`, `install` and
+`uninstall`. Those run as root and touch only the OS service, so fetching a config for root's own
+home writes a file that belongs to nobody. Worse, when that fetch could not complete the command
+failed before restarting anything, so an administrator password could be given for a restart that
+never happened. This matters now that RunOS Desktop offers the restart behind a password prompt.
+
 ## v1.18.2
 
 **The VPN control socket now reaches the person who installed it.** Two macOS users reported that

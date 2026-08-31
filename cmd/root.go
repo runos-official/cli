@@ -84,6 +84,22 @@ func shouldBootstrapManifest(cmdName, parentName string, manifestPresent bool) b
 	return true
 }
 
+/*
+isRootOnlyVPNCommand reports whether a `vpn` subcommand runs as root and touches only the OS
+service, so it must not run the config and manifest bootstrap.
+
+A list rather than a condition inline, so it can be tested: the omission of `restart` shipped
+unnoticed because nothing asserted the set.
+*/
+func isRootOnlyVPNCommand(name string) bool {
+	switch name {
+	case "daemon", "install", "uninstall", "restart":
+		return true
+	default:
+		return false
+	}
+}
+
 var rootCmd = &cobra.Command{
 	Use:     "runos",
 	Short:   "CLI for interacting with RunOS clusters",
@@ -105,12 +121,22 @@ var rootCmd = &cobra.Command{
 		if cmdName == "config" || cmdName == "env" || cmdName == "version" || cmdName == "help" || cmdName == "update" || (cmd.Parent() != nil && cmd.Parent().Name() == "desktop") {
 			return nil
 		}
-		// The VPN daemon runs as root under launchd: its home is /var/root, it never needs the
-		// manifest, and a CDN/config fetch on every boot would write a stray /var/root/.runos.
-		// `sudo runos vpn install|uninstall` run as root too and touch only the OS service, so
-		// they skip as well (measured: they printed "You're not signed in" for root's empty home).
-		if cmd.Parent() != nil && cmd.Parent().Name() == "vpn" &&
-			(cmdName == "daemon" || cmdName == "install" || cmdName == "uninstall") {
+		/*
+		 The VPN commands that run AS ROOT and touch only the OS service.
+
+		 The daemon runs as root under launchd: its home is /var/root, it never needs the manifest,
+		 and a CDN/config fetch on every boot would write a stray /var/root/.runos. `install` and
+		 `uninstall` run under sudo for the same reason (measured: they printed "You're not signed
+		 in" for root's empty home).
+
+		 `restart` belongs with them and was missed. MEASURED with 1.18.2: `HOME=<empty dir> runos
+		 vpn restart` exited 1 AND created `<empty dir>/.runos`, while install and uninstall created
+		 nothing. It matters more now that RunOS Desktop offers the restart behind an administrator
+		 prompt: the command runs as root with HOME=/var/root, so every restart wrote a root-owned
+		 config there, and when the config fetch could not complete the bootstrap failed BEFORE the
+		 restart ran, taking somebody's password and then doing nothing.
+		*/
+		if cmd.Parent() != nil && cmd.Parent().Name() == "vpn" && isRootOnlyVPNCommand(cmdName) {
 			return nil
 		}
 		// Also skip for parent commands that have their own subcommands
