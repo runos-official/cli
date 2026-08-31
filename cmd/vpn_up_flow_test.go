@@ -192,7 +192,17 @@ func TestAConfirmationOnAnotherAccountStopsAndTakesTheTunnelDown(t *testing.T) {
 		t.Errorf("no tunnel may come up after an account change, got %v", ups)
 	}
 	// D3: what was already up goes down.
-	assertHasCall(t, daemon.recorded(), "logout ")
+	/*
+	 D3: what was already up goes DOWN, and the previous account keeps its key.
+
+	 This used the daemon's `logout` op, which also FORGETS the key. Enrolment is idempotent on the
+	 public key, so wiping it means the previous account gains a dead device row the next time anybody
+	 connects it. The same defect was found and fixed in `runos logout` and in `account switch`; this
+	 was the one path still carrying it, which is what a shared op name buys you when only some
+	 callers get corrected.
+	*/
+	assertHasCall(t, daemon.recorded(), "down")
+	assertNoCall(t, daemon.recorded(), "logout")
 }
 
 // The sign-in still counts: the person IS now on the new account, and a second `vpn up` connects it

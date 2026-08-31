@@ -249,7 +249,15 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		// on another account is an account SWITCH, so the old tunnel goes down and the person
 		// connects the new account deliberately rather than by accident.
 		if changed := describeAccountChange(accountBefore, cfg.GetAccountID()); changed != "" {
-			_, _ = daemon.Call(vpn.Request{Op: vpn.OpLogout})
+			/*
+			 DOWN, NOT LOGOUT. The daemon's logout op also FORGETS this machine's key.
+
+			 Enrolment is idempotent on the public key, so wiping it means the previous account
+			 gains a dead device row the next time anybody connects it. The same defect was fixed in
+			 `runos logout` and in `account switch`; this was the last path still carrying it, which
+			 is what a shared op name buys you when only some callers get corrected.
+			*/
+			_, _ = daemon.Call(vpn.Request{Op: vpn.OpDown})
 			return errors.New(changed)
 		}
 		if device, session, err = prepareVPNSession(cmd, cfg, token, daemon); err != nil {
