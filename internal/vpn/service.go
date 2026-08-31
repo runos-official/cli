@@ -10,7 +10,10 @@ type service interface {
 	// Install writes and loads the service so `runos vpn daemon` runs as root. execPath is the
 	// absolute path of the running runos binary; socketGroup is the group that may reach the
 	// control socket (the installing user's primary group), so their CLI needs no sudo.
-	Install(execPath, socketGroup string) error
+	// Install writes the OS service definition. `groupExplicit` records that a person NAMED the
+	// group rather than the installer deriving it, which the daemon needs: it self-heals a derived
+	// group that cannot reach anybody, and must never overrule a choice somebody made.
+	Install(execPath, socketGroup string, groupExplicit bool) error
 	// Uninstall stops and removes the service and the socket. Idempotent.
 	Uninstall() error
 	// Running reports whether the service is loaded.

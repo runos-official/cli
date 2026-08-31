@@ -28,8 +28,8 @@ func (launchdService) Describe() string {
 	return "It runs in the background as a launchd daemon (" + launchdLabel + ") and starts at boot."
 }
 
-func (s launchdService) Install(execPath, socketGroup string) error {
-	plist := renderLaunchdPlist(execPath, socketGroup)
+func (s launchdService) Install(execPath, socketGroup string, groupExplicit bool) error {
+	plist := renderLaunchdPlist(execPath, socketGroup, groupExplicit)
 	if err := os.WriteFile(launchdPlistPath(), []byte(plist), 0o644); err != nil {
 		return fmt.Errorf("write launchd plist (need sudo?): %w", err)
 	}
@@ -97,7 +97,13 @@ func (s launchdService) Running() (bool, error) {
 
 // renderLaunchdPlist builds the LaunchDaemon. The group owns the socket so the installing user's
 // CLI reaches it without sudo; StandardError goes to a log the operator can read.
-func renderLaunchdPlist(execPath, socketGroup string) string {
+func renderLaunchdPlist(execPath, socketGroup string, groupExplicit bool) string {
+	source := ""
+	if groupExplicit {
+		// Recorded so the daemon leaves this group alone. Absent means the installer derived it,
+		// which is what every machine installed by an older build looks like, so those still heal.
+		source = "\n\t\t<string>--socket-group-source</string>\n\t\t<string>explicit</string>"
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -109,7 +115,7 @@ func renderLaunchdPlist(execPath, socketGroup string) string {
 		<string>vpn</string>
 		<string>daemon</string>
 		<string>--socket-group</string>
-		<string>%s</string>
+		<string>%s</string>%s
 	</array>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
@@ -117,5 +123,5 @@ func renderLaunchdPlist(execPath, socketGroup string) string {
 	<key>StandardOutPath</key><string>/var/log/runos-vpn.log</string>
 </dict>
 </plist>
-`, launchdLabel, execPath, socketGroup)
+`, launchdLabel, execPath, socketGroup, source)
 }

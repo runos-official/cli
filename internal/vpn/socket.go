@@ -3,11 +3,14 @@ package vpn
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,7 +34,7 @@ func restartServiceHint() string {
 // Serve listens on the socket and dispatches each connection to the daemon until ctx-style stop.
 // It replaces a stale socket file left by a crashed daemon. The returned listener is closed by
 // the caller to stop serving.
-func Serve(d *Daemon, socketPath, socketGroup string) (net.Listener, error) {
+func Serve(d *Daemon, socketPath, socketGroup string, groupExplicit bool) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
@@ -46,7 +49,7 @@ func Serve(d *Daemon, socketPath, socketGroup string) (net.Listener, error) {
 	// The installing user's CLI must reach the socket without admin rights: on unix that is 0660
 	// plus their group (found on real hardware: without the chown the socket is root:root and every
 	// non-root `runos vpn` call is a permission error); on Windows it is an ACL grant to Users.
-	if err := grantSocketAccess(socketPath, socketGroup); err != nil {
+	if err := grantSocketAccess(socketPath, socketGroup, groupExplicit); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}
@@ -99,6 +102,13 @@ func NewClient(socketPath string) *Client {
 func (c *Client) Call(req Request) (*Response, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, 3*time.Second)
 	if err != nil {
+		// PERMISSION DENIED IS THE OPPOSITE OF NOT RUNNING, and saying the wrong one sent two
+		// people round a loop that could not end (see socket_permission_test.go). EACCES means
+		// something IS listening and this user cannot reach it; reinstalling recreates the same
+		// socket, so the ordinary advice is not merely unhelpful, it is a dead end.
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, &PermissionError{Path: c.socketPath, Group: socketGroupName(c.socketPath), Err: err}
+		}
 		return nil, &NotRunningError{Path: c.socketPath, Err: err}
 	}
 	defer conn.Close()
@@ -148,3 +158,56 @@ func (e *NotRunningError) Error() string {
 }
 
 func (e *NotRunningError) Unwrap() error { return e.Err }
+
+/*
+PermissionError means the control socket is there and this user may not open it.
+
+Distinct from NotRunningError because the remedies have nothing in common: this one is fixed by the
+socket's group, and reinstalling recreates the same socket. It carries the group read off the file
+rather than a guess, because that is the fact the reader needs and the one a message written in
+advance cannot know.
+*/
+type PermissionError struct {
+	Path  string
+	Group string
+	Err   error
+}
+
+func (e *PermissionError) Error() string {
+	group := strconv.Quote(e.Group)
+	if e.Group == "" {
+		group = "a group you are not in"
+	}
+	/*
+	 THE REPAIR IS ONLY PROMISED WHERE IT HAPPENS.
+
+	 The daemon heals exactly one case: a derived group that is GID 0, on darwin. Everywhere else,
+	 and for every other group, it leaves the configured group alone. Telling a Linux user that a
+	 restart repairs the group would send them round a restart that changes nothing, which is the
+	 same shape as the defect this whole message exists to remove.
+	*/
+	if e.healable() {
+		return fmt.Sprintf(
+			"permission denied opening the RunOS VPN control socket (%s): it belongs to %s.\n"+
+				"The service IS running, so this is not an install problem. The daemon repairs the "+
+				"socket's group when it starts:\n  %s",
+			e.Path, group, restartServiceHint())
+	}
+	return fmt.Sprintf(
+		"permission denied opening the RunOS VPN control socket (%s): it belongs to %s.\n"+
+			"The service IS running, so this is not an install problem. Hand the socket to a group "+
+			"you are in:\n  sudo runos vpn install --socket-group <group>",
+		e.Path, group)
+}
+
+// healable reports whether the daemon would actually put this socket right on its next start. Only
+// a GID 0 group on darwin is healed; see usableSocketGroup.
+func (e *PermissionError) healable() bool {
+	if runtime.GOOS != "darwin" || e.Group == "" {
+		return false
+	}
+	gid, ok := groupGID(e.Group)
+	return ok && gid == rootGID
+}
+
+func (e *PermissionError) Unwrap() error { return e.Err }

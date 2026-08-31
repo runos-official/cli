@@ -36,7 +36,7 @@ func (windowsService) Describe() string {
 	return "It runs in the background as the Windows service \"" + serviceDisplayName + "\" and starts at boot."
 }
 
-func (windowsService) Install(execPath, _ string) error {
+func (windowsService) Install(execPath, _ string, _ bool) error {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(execPath), wintunDLL)); err != nil {
 		return fmt.Errorf("%s is missing beside %s: reinstall runos from the release zip, which ships it", wintunDLL, execPath)
 	}

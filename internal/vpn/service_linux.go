@@ -22,8 +22,8 @@ func (systemdService) Describe() string {
 	return "It runs in the background as the systemd service runos-vpn and starts at boot."
 }
 
-func (s systemdService) Install(execPath, socketGroup string) error {
-	unit := renderSystemdUnit(execPath, socketGroup)
+func (s systemdService) Install(execPath, socketGroup string, groupExplicit bool) error {
+	unit := renderSystemdUnit(execPath, socketGroup, groupExplicit)
 	if err := os.WriteFile(systemdUnitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit (need sudo?): %w", err)
 	}
@@ -62,7 +62,27 @@ func (s systemdService) Running() (bool, error) {
 
 // renderSystemdUnit builds the service unit. The socket group lets the installing user's CLI
 // reach the socket without sudo.
-func renderSystemdUnit(execPath, socketGroup string) string {
+/*
+renderSystemdUnit writes the unit.
+
+THE ARGUMENTS ARE BUILT, NOT INTERPOLATED. `--socket-group %s` with an empty group emitted a flag
+with nothing after it; systemd splits on whitespace, so argv ended at `--socket-group`, cobra
+answered "flag needs an argument", and the daemon exited before it ran a line of its own code.
+Restart=on-failure then looped forever while `systemctl enable --now` reported success, because a
+Type=simple unit succeeds as soon as exec does. The install printed "RunOS VPN service installed."
+over a service that never came up, with nothing on stdout or stderr to say why.
+
+Reachable on a machine with neither a `sudo` nor a `wheel` group, installed from a root shell:
+openSUSE is the case that has neither, and `su -` is its usual admin flow.
+*/
+func renderSystemdUnit(execPath, socketGroup string, groupExplicit bool) string {
+	args := execPath + " vpn daemon"
+	if socketGroup != "" {
+		args += " --socket-group " + socketGroup
+		if groupExplicit {
+			args += " --socket-group-source explicit"
+		}
+	}
 	return fmt.Sprintf(`[Unit]
 Description=RunOS VPN daemon
 After=network-online.target
@@ -70,11 +90,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%s vpn daemon --socket-group %s
+ExecStart=%s
 Restart=on-failure
 RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-`, execPath, socketGroup)
+`, args)
 }

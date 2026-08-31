@@ -4,9 +4,11 @@ package vpn
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"os/user"
+	"runtime"
 	"strconv"
 	"syscall"
 )
@@ -36,16 +38,48 @@ func RunDaemonHost(start func() (stop func(), err error)) error {
 	return nil
 }
 
-func grantSocketAccess(socketPath, socketGroup string) error {
+/*
+grantSocketAccess opens the control socket to the group that should be able to reach it.
+
+THE HEAL RUNS HERE, on every daemon start, because this is the one place that runs as root and can
+change the socket's owner without anybody typing a password. A machine installed before the
+installer was fixed still has `wheel` in its service definition; one restart, or the next reboot,
+puts the socket right. See usableSocketGroup for the narrow set of cases it will act on and the
+larger set it refuses to touch.
+*/
+func grantSocketAccess(socketPath, socketGroup string, groupExplicit bool) error {
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
-	if socketGroup != "" {
-		if grp, err := user.LookupGroup(socketGroup); err == nil {
-			if gid, convErr := strconv.Atoi(grp.Gid); convErr == nil {
-				_ = os.Chown(socketPath, -1, gid)
-			}
-		}
+	group := usableSocketGroup(socketGroup, runtime.GOOS, groupExplicit, groupGID, AdminGroup)
+	if group != socketGroup {
+		// LOUD, NOT SILENT. A root process changing who may control the VPN has to leave a record,
+		// and this line is what an operator greps for when the group is not what their service
+		// definition says.
+		log.Printf("vpn: the configured control-socket group %q holds only root, so it cannot be "+
+			"reached by the person who installed this. Using %q instead. Set --socket-group to "+
+			"override.", socketGroup, group)
 	}
+	if group == "" {
+		return nil
+	}
+	grp, err := user.LookupGroup(group)
+	if err != nil {
+		return nil
+	}
+	gid, err := strconv.Atoi(grp.Gid)
+	if err != nil {
+		return nil
+	}
+	_ = os.Chown(socketPath, -1, gid)
+	/*
+	 THE SOCKET'S STATE, RECORDED EVERY START.
+
+	 The daemon wrote nothing of its own to its log: everything in it came from the WireGuard
+	 engine. When two people could not reach the socket on 2026-08-31, nothing anywhere said what
+	 group it had been given, so the answer had to be worked out from the outside. One line makes
+	 this class of problem self-diagnosing, and it costs one write per daemon start.
+	*/
+	log.Printf("vpn: control socket %s is mode 0660, group %q (gid %d)", socketPath, group, gid)
 	return nil
 }

@@ -75,7 +75,7 @@ func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 // grantSocketAccess lets every local user connect: an AF_UNIX socket on Windows is reachable
 // only with write access to its file object, and a file created by LocalSystem under ProgramData
 // gives Users read only. The grant is to the well-known Users group SID, locale-independent.
-func grantSocketAccess(socketPath, _ string) error {
+func grantSocketAccess(socketPath, _ string, _ bool) error {
 	if out, err := run("icacls", socketPath, "/grant", "*S-1-5-32-545:(M)"); err != nil {
 		return fmt.Errorf("grant socket access: %w: %s", err, out)
 	}
