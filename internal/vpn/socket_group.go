@@ -107,6 +107,30 @@ WHAT IT MUST NEVER DO IS WIDEN ACCESS SOMEBODY CHOSE:
 On darwin the heal also cannot widen access relative to a healthy install: the ordinary macOS
 default is the installing user's primary group, `staff`, which contains every local account, and
 `admin` is a strict subset of that.
+
+REVIEW THIS ON 2027-03-01, WITH A CONDITION, NOT A CALENDAR.
+
+This exists to repair machines a bad build already installed, so it should not live here forever.
+But it CANNOT be retired by waiting, and deleting it on the date alone would break the machines it
+is carrying.
+
+Nothing except `vpn install` ever writes the service definition. `runos update` replaces the binary
+and leaves the plist alone, so a machine installed by the bad build keeps `wheel` in its plist
+through every future update, indefinitely. "Everybody has updated" is therefore not the same fact as
+"no machine still needs this", and the second one is what matters.
+
+What has to be true before it goes:
+
+  - No machine still carries a GID 0 socket group. The daemon LOGS every heal it performs, so the
+    line naming the override is the signal: while it is still appearing anywhere, this is still
+    load-bearing.
+  - The installer cannot produce one. That door is closed on both branches as of 1.18.4, so any
+    machine needing the heal was installed by an older build. Re-check that before removing, since
+    the fix and the heal are separate pieces.
+
+If both hold, delete this, `AdminGroupCandidates`, `FirstExistingGroup` and the `groupExplicit`
+argument that exists only to protect a chosen group from it, and say in the commit message which of
+the two conditions you verified and how.
 */
 func usableSocketGroup(configured, goos string, groupExplicit bool, gidOf func(string) (int, bool), adminGroup func() string) string {
 	/*
