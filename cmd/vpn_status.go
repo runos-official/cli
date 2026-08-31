@@ -27,11 +27,19 @@ step is `runos login`. This deliberately reads only what is on disk: whether con
 that identity is `runos status`'s question, and a status line about the tunnel must not make a
 network call to render itself.
 */
-func sessionNextStep(signedIn bool) string {
-	if signedIn {
+func sessionNextStep(credential auth.CredentialKind) string {
+	switch {
+	// A PAT can never mint a VPN session: a tunnel is a person's 24-hour sign-in and a stored
+	// secret is evidence of possession, so `vpn up` refuses it as its first act. Naming that
+	// command here is the same defect this line was rewritten to remove, left standing for the one
+	// credential that can never satisfy it, and on a PAT-only machine it was the permanent answer.
+	case credential.IsPAT():
+		return "run 'runos login' to sign in as a person, then 'runos vpn up'"
+	case credential == auth.CredentialInteractive:
 		return "run 'runos vpn up'"
+	default:
+		return "run 'runos login', then 'runos vpn up'"
 	}
-	return "run 'runos login', then 'runos vpn up'"
 }
 
 func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
@@ -71,20 +79,20 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	}
 
 	// The daemon knows nothing about the CLI's sign-in, so the next step is read from the config.
-	// Cheap: HasCredentials never touches the network.
-	signedIn := false
+	// Cheap: the credential kind never touches the network.
+	var credential auth.CredentialKind
 	if cfg, cErr := config.Load(); cErr == nil {
-		signedIn = auth.HasCredentials(cfg)
+		credential = auth.Kind(cfg)
 	}
 	switch {
 	case status.Session.LoginRequired:
-		fmt.Fprintf(out, "Session: expired - %s\n", sessionNextStep(signedIn))
+		fmt.Fprintf(out, "Session: expired - %s\n", sessionNextStep(credential))
 	case status.Session.Present:
 		fmt.Fprintf(out, "Session: valid until %s (%s from now)\n",
 			status.Session.ExpiresAt.Local().Format("2006-01-02 15:04"),
 			roundDuration(time.Until(status.Session.ExpiresAt)))
 	default:
-		fmt.Fprintf(out, "Session: none - %s\n", sessionNextStep(signedIn))
+		fmt.Fprintf(out, "Session: none - %s\n", sessionNextStep(credential))
 	}
 
 	if status.DNS.Available {

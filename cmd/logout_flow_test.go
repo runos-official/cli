@@ -37,6 +37,7 @@ func runLogoutCommand(t *testing.T, socketPath string) (string, error) {
 func TestLogoutTakesTheTunnelDownWithTheIdentity(t *testing.T) {
 	conductor := newFakeConductor(t)
 	daemon := newFakeDaemon(t)
+	daemon.tunnelUp = true // the case this test is about: there IS a tunnel to take down
 	fakeFirebase(t)
 	writeConfig(t, conductor.server.URL, "aaaaa", true)
 
@@ -115,4 +116,36 @@ func TestLogoutOnAnAlreadySignedOutMachineIsQuiet(t *testing.T) {
 	if !strings.Contains(out, "Already logged out") {
 		t.Errorf("want the already-logged-out line, got %q", out)
 	}
+}
+
+/*
+SIGNING OUT WITH NO TUNNEL UP MUST NOT SAY IT DISCONNECTED ONE.
+
+`down` answers with a status whether or not there was anything to take down, and the caller
+branched on "did a status come back", which is true for every daemon that answers at all. The
+daemon is a boot-start root service, so "installed, nothing connected" is the ordinary state
+between sessions, and in it `down` ends no session and tears nothing down while `runos logout`
+still printed "Disconnected the VPN."
+
+The sign-out itself is unaffected. Only the sentence was wrong.
+*/
+func TestLogoutWithNoTunnelUpDoesNotClaimADisconnect(t *testing.T) {
+	conductor := newFakeConductor(t)
+	daemon := newFakeDaemon(t) // tunnelUp is false
+	fakeFirebase(t)
+	writeConfig(t, conductor.server.URL, "aaaaa", true)
+
+	out, err := runLogoutCommand(t, daemon.path)
+	if err != nil {
+		t.Fatalf("logout failed: %v", err)
+	}
+
+	if strings.Contains(out, "Disconnected the VPN") {
+		t.Errorf("nothing was connected, so nothing was disconnected, got %q", out)
+	}
+	if !strings.Contains(out, "Logged out successfully") {
+		t.Errorf("the sign-out itself still has to happen and be reported, got %q", out)
+	}
+	// The teardown is still attempted: the daemon is the only thing that knows for sure.
+	assertHasCall(t, daemon.recorded(), "down")
 }

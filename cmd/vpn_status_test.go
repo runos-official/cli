@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/runos-official/cli/version"
 	"github.com/spf13/cobra"
@@ -365,7 +366,7 @@ The status pointed at a command that immediately refuses. Connecting consumes a 
 creates one (FPL26 D1), so with no identity the next step is `runos login`, not `runos vpn up`.
 */
 func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
-	if got := sessionNextStep(false); !strings.Contains(got, "runos login") {
+	if got := sessionNextStep(auth.CredentialNone); !strings.Contains(got, "runos login") {
 		t.Errorf("a signed-out person must be sent to sign in, got %q", got)
 	}
 	/*
@@ -374,13 +375,33 @@ func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
 	 sentence as well as in time. This is the same two-step phrasing `vpn up` itself uses when it
 	 refuses, so a person meets one wording rather than two.
 	*/
-	got := sessionNextStep(false)
+	got := sessionNextStep(auth.CredentialNone)
 	login, up := strings.Index(got, "runos login"), strings.Index(got, "runos vpn up")
 	if up >= 0 && login > up {
 		t.Errorf("the sign-in must come first, got %q", got)
 	}
 	// Signed in with no session is the ordinary "not connected yet" state, and `up` is right there.
-	if got := sessionNextStep(true); !strings.Contains(got, "runos vpn up") {
+	if got := sessionNextStep(auth.CredentialInteractive); !strings.Contains(got, "runos vpn up") {
 		t.Errorf("a signed-in person is one command from a tunnel, got %q", got)
+	}
+
+	/*
+	 A PAT IS NOT A SIGN-IN, and this line was sending its holder to a command that refuses it.
+
+	 `runos vpn up` calls `refuseVPNWithPAT` as its first act, because a tunnel is a person's
+	 24-hour session and a stored secret is evidence of possession, never of a person being there.
+	 So on a PAT-only machine "Session: none - run 'runos vpn up'" was the PERMANENT output, and
+	 the command it named could never work. It was decided from `HasCredentials`, which answers
+	 "is there a credential", when the question is "is there a PERSON".
+	*/
+	for _, kind := range []auth.CredentialKind{auth.CredentialEnvPAT, auth.CredentialStoredPAT} {
+		got := sessionNextStep(kind)
+		if !strings.Contains(got, "runos login") {
+			t.Errorf("%s must be sent to sign in as a person, got %q", kind, got)
+		}
+		login, up := strings.Index(got, "runos login"), strings.Index(got, "runos vpn up")
+		if up >= 0 && login > up {
+			t.Errorf("%s: the sign-in must come first, got %q", kind, got)
+		}
 	}
 }

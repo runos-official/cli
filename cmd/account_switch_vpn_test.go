@@ -29,6 +29,7 @@ Dropping the tunnel needs none of it.
 
 func TestSwitchingAccountLeavesTheVPNDownRatherThanConnectingIt(t *testing.T) {
 	daemon := newFakeDaemon(t)
+	daemon.tunnelUp = true
 
 	result := disconnectVPNForAccountChange(daemon.path, "aaaaa", "bbbbb")
 
@@ -48,6 +49,7 @@ func TestSwitchingAccountLeavesTheVPNDownRatherThanConnectingIt(t *testing.T) {
 // switched to. Silence here reads as the VPN having broken.
 func TestTheSwitchSaysTheVPNWentAndHowToGetItBack(t *testing.T) {
 	daemon := newFakeDaemon(t)
+	daemon.tunnelUp = true
 
 	message := disconnectVPNForAccountChange(daemon.path, "aaaaa", "bbbbb").Message
 
@@ -93,4 +95,31 @@ func TestSwitchingAccountWorksWithNoVPNService(t *testing.T) {
 	if strings.Contains(strings.ToLower(result.Message), "error") {
 		t.Errorf("an absent daemon is not an error to report, got %q", result.Message)
 	}
+}
+
+/*
+A SWITCH ON A MACHINE WITH NO TUNNEL UP MUST NOT CLAIM IT DISCONNECTED ONE.
+
+The daemon is a boot-start root service, so a machine where the service is installed and nothing is
+connected is the ordinary state between sessions, not an unusual one. `down` there is a complete
+no-op: no session is ended and nothing is torn down.
+
+The state was read from "did the daemon answer", which every running daemon does, so the switch
+reported "The VPN was disconnected because the account changed" about a tunnel that had never been
+up. Same class as the update notices this day already corrected twice: never claim what was not
+measured.
+*/
+func TestASwitchWithNoTunnelUpClaimsNoDisconnect(t *testing.T) {
+	daemon := newFakeDaemon(t) // tunnelUp is false: nothing is connected
+
+	result := disconnectVPNForAccountChange(daemon.path, "aaaaa", "bbbbb")
+
+	if result.State == vpnStateDisconnected {
+		t.Errorf("state = %q: nothing was disconnected", result.State)
+	}
+	if result.Message != "" {
+		t.Errorf("nothing happened, so there is nothing to report, got %q", result.Message)
+	}
+	// The teardown is still ATTEMPTED, because the daemon is the only thing that knows for sure.
+	assertHasCall(t, daemon.recorded(), "down")
 }

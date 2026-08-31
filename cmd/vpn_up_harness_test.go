@@ -89,7 +89,7 @@ func newFakeConductor(t *testing.T) *fakeConductor {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		switch {
 		case len(parts) == 3 && parts[1] == "vpn" && parts[2] == "devices":
-			c.handleEnrol(w, parts[0])
+			c.handleEnrol(w, r, parts[0])
 		case len(parts) == 5 && parts[1] == "vpn" && parts[2] == "devices" && parts[4] == "session":
 			c.handleMint(w, parts[0], parts[3])
 		default:
@@ -120,8 +120,20 @@ func newFakeConductor(t *testing.T) *fakeConductor {
 	return c
 }
 
-func (c *fakeConductor) handleEnrol(w http.ResponseWriter, aid string) {
-	c.record("enrol " + aid)
+func (c *fakeConductor) handleEnrol(w http.ResponseWriter, r *http.Request, aid string) {
+	/*
+	 THE KEY IS PART OF THE CALL, so it is recorded with it.
+
+	 Without this, "enrol aaaaa" was the whole record and nothing could tell the revoked key from
+	 the rotated one. The revoked-key test asserted `rotate-key` happened and stopped there, so
+	 enrolling the REVOKED key after rotating would have passed it, and its comment told the next
+	 reader the opposite.
+	*/
+	var body struct {
+		PublicKey string `json:"publicKey"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	c.record("enrol " + aid + "/" + body.PublicKey)
 	reply := enrolReply{status: http.StatusOK, deviceID: "device-for-" + aid}
 	c.mu.Lock()
 	if len(c.enrolReplies) > 0 {
@@ -211,6 +223,12 @@ type fakeDaemon struct {
 	// been signed in to one account already.
 	keys map[string]string
 
+	// tunnelUp models the real daemon's `d.engine != nil`. It matters because `down` answers with
+	// a status whether or not there was anything to take down, so a caller that wants to say "the
+	// tunnel went" has to be told which it was. Default false: the daemon is a boot-start service
+	// and "installed, nothing connected" is the ordinary state between sessions.
+	tunnelUp bool
+
 	// calls records every op, with the account it was scoped to, in order.
 	calls []string
 	// upRequests records the (account, device) pairs OpUp was asked to bring up. F3 is entirely
@@ -291,9 +309,12 @@ func (d *fakeDaemon) handle(req vpn.Request) vpn.Response {
 		d.upRequests = append(d.upRequests, req.AccountID+"/"+req.DeviceID)
 		return vpn.Response{Status: &vpn.Status{Running: true, AccountID: req.AccountID}}
 	case vpn.OpLogout, vpn.OpDown:
-		return vpn.Response{Status: &vpn.Status{Running: false}}
+		// `handle` already holds d.mu, so nothing here may take it again.
+		wasUp := d.tunnelUp
+		d.tunnelUp = false
+		return vpn.Response{Status: &vpn.Status{Running: false}, TunnelWasUp: wasUp}
 	case vpn.OpStatus:
-		return vpn.Response{Status: &vpn.Status{Running: false}}
+		return vpn.Response{Status: &vpn.Status{Running: d.tunnelUp}}
 	case vpn.OpConnect:
 		return vpn.Response{Status: &vpn.Status{Running: true, AccountID: req.AccountID}}
 	default:

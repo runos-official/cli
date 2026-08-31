@@ -191,6 +191,9 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 // (logout) the enrolment is cleared too; the device key stays either way.
 func (d *Daemon) handleDownLocked(forget bool) Response {
 	active := d.state.Active()
+	// Read BEFORE anything is torn down, because that is the only moment it is knowable. A caller
+	// that says "disconnected the VPN" needs to have been told one was connected.
+	tunnelWasUp := d.engine != nil
 	if d.client != nil {
 		if err := d.client.endSession(); err != nil {
 			// Report but keep tearing down: a laptop the person told to go down must go down
@@ -209,7 +212,7 @@ func (d *Daemon) handleDownLocked(forget bool) Response {
 	if err := SaveState(d.stateDir, d.state); err != nil {
 		return Response{Error: err.Error()}
 	}
-	return Response{Status: d.statusLocked()}
+	return Response{Status: d.statusLocked(), TunnelWasUp: tunnelWasUp}
 }
 
 // handleRotateKeyLocked drops the tunnel and the old identity and mints a new device keypair.

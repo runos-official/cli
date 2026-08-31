@@ -113,9 +113,6 @@ func runVPNForgetKey(cmd *cobra.Command, args []string) error {
 	return emitVPNStatus(cmd, resp.Status)
 }
 
-// confirmVPNAction gates a destructive VPN command the same way the rest of the CLI does: --yes
-// skips it, a non-TTY without --yes is a hard refuse (so a script cannot log out by accident), and
-// a TTY prompts on stderr.
 /*
 What a non-TTY caller is told when it asked for something irreversible without saying so.
 
@@ -127,6 +124,9 @@ func confirmRefusal(verb string) error {
 	return fmt.Errorf("%s cannot be undone; re-run with --yes to proceed", verb)
 }
 
+// confirmVPNAction gates a destructive VPN command the same way the rest of the CLI does: --yes
+// skips it, a non-TTY without --yes is a hard refuse (so a script cannot log out by accident), and
+// a TTY prompts on stderr.
 func confirmVPNAction(cmd *cobra.Command, verb, detail string) error {
 	yes, _ := cmd.Flags().GetBool("yes")
 	if yes {

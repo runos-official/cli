@@ -219,7 +219,7 @@ func disconnectVPNForAccountChange(socketPath, previousAccountID, accountID stri
 		return result
 	}
 
-	_, err := vpn.NewClient(socketPath).Call(vpn.Request{Op: vpn.OpDown})
+	resp, err := vpn.NewClient(socketPath).Call(vpn.Request{Op: vpn.OpDown})
 	if err != nil {
 		// No daemon is the ORDINARY case: `runos desktop install` does not write one. It must never
 		// stop somebody changing account, and it is not an error worth reporting as one.
@@ -229,6 +229,13 @@ func disconnectVPNForAccountChange(socketPath, previousAccountID, accountID stri
 			return result
 		}
 		result.State, result.Message = vpnStateFailed, err.Error()
+		return result
+	}
+	// A tunnel that was not up was not disconnected. The daemon is a boot-start root service, so
+	// answering with no tunnel running is the ordinary state between sessions, and claiming a
+	// disconnect there is the same class of unmeasured claim the update notices were fixed for.
+	if !resp.TunnelWasUp {
+		result.State = vpnStateUnchanged
 		return result
 	}
 	result.State = vpnStateDisconnected

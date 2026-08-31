@@ -31,7 +31,7 @@ func TestUpEnrolsThenMintsThenBringsTheTunnelUp(t *testing.T) {
 		t.Fatalf("up failed: %v\nstdout:\n%s", result.err, result.stdout)
 	}
 	assertSequence(t, "conductor", conductor.recorded(), []string{
-		"enrol aaaaa",
+		"enrol aaaaa/key-for-aaaaa",
 		"mint aaaaa/device-for-aaaaa",
 	})
 	// The key handed to the daemon and the device enrolled must both belong to the SAME account.
@@ -105,11 +105,11 @@ func TestAConfirmationReRunsTheWholeSequenceNotJustTheMint(t *testing.T) {
 		t.Fatalf("up failed: %v\nstdout:\n%s", result.err, result.stdout)
 	}
 	assertSequence(t, "conductor", conductor.recorded(), []string{
-		"enrol aaaaa",
+		"enrol aaaaa/key-for-aaaaa",
 		"mint aaaaa/device-for-aaaaa",
 		"device-auth initiate",
 		"device-auth poll -> aaaaa",
-		"enrol aaaaa", // the re-enrol the old code skipped
+		"enrol aaaaa/key-for-aaaaa", // the re-enrol the old code skipped
 		"mint aaaaa/device-for-aaaaa",
 	})
 	assertSequence(t, "daemon up", daemon.ups(), []string{"aaaaa/device-for-aaaaa"})
@@ -227,7 +227,7 @@ func TestTheNewAccountIsKeptSoASecondConnectWorks(t *testing.T) {
 	}
 	// Everything is the NEW account's, id and key together.
 	assertSequence(t, "daemon up", daemon.ups(), []string{"bbbbb/device-for-bbbbb"})
-	assertHasCall(t, conductor.recorded(), "enrol bbbbb")
+	assertHasCall(t, conductor.recorded(), "enrol bbbbb/key-for-bbbbb")
 }
 
 // ---------------------------------------------------------------------------
@@ -253,10 +253,10 @@ func TestAnExpiredSessionAtEnrolmentIsAlsoFixedByOneConfirmation(t *testing.T) {
 		t.Fatalf("up failed: %v\nstdout:\n%s", result.err, result.stdout)
 	}
 	assertSequence(t, "conductor", conductor.recorded(), []string{
-		"enrol aaaaa",
+		"enrol aaaaa/key-for-aaaaa",
 		"device-auth initiate",
 		"device-auth poll -> aaaaa",
-		"enrol aaaaa",
+		"enrol aaaaa/key-for-aaaaa",
 		"mint aaaaa/device-for-aaaaa",
 	})
 }
@@ -286,6 +286,16 @@ func TestARevokedKeyIsRotatedAndTheRotatedKeyIsTheOneEnrolled(t *testing.T) {
 	}
 	assertHasCall(t, daemon.recorded(), "rotate-key aaaaa")
 	assertSequence(t, "daemon up", daemon.ups(), []string{"aaaaa/device-for-aaaaa"})
+	/*
+	 WHICH KEY WENT UP, which is the whole claim in this test's name.
+
+	 It used to assert only that a rotation HAPPENED. Enrolling the revoked key again after
+	 rotating would have passed it, and the fake conductor recorded no key so nothing could tell
+	 the two apart. The fake daemon answers `key-for-<aid>` to OpIdentity and
+	 `rotated-key-for-<aid>` to OpRotateKey, so the sequence names both.
+	*/
+	assertSequence(t, "enrolments", enrolCalls(conductor.recorded()),
+		[]string{"enrol aaaaa/key-for-aaaaa", "enrol aaaaa/rotated-key-for-aaaaa"})
 	// No browser: a revoked key is not a stale sign-in and must not ask for one.
 	assertNoCall(t, conductor.recorded(), "device-auth")
 }
@@ -391,4 +401,16 @@ func indexOfEvent(events []SignInEventShape, name string) int {
 		}
 	}
 	return -1
+}
+
+// enrolCalls keeps only the enrolments from a conductor's record, so a sequence assertion is not
+// broken by an unrelated call landing between them.
+func enrolCalls(calls []string) []string {
+	var out []string
+	for _, call := range calls {
+		if strings.HasPrefix(call, "enrol ") {
+			out = append(out, call)
+		}
+	}
+	return out
 }

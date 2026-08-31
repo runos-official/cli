@@ -64,6 +64,18 @@ type Response struct {
 	Identity   *Identity  `json:"identity,omitempty"`
 	Identities []Identity `json:"identities,omitempty"`
 	Status     *Status    `json:"status,omitempty"`
+	/*
+	 Whether a `down` actually took a tunnel down, as opposed to answering a machine that had none.
+
+	 The daemon is a boot-start root service, so "installed, tunnel currently down" is the ordinary
+	 state between sessions, and `down` in that state is a complete no-op. Callers branched on
+	 `Status != nil`, which is true for every daemon that answers at all, so `runos logout` printed
+	 "Disconnected the VPN." and an account switch printed "The VPN was disconnected because the
+	 account changed" on a machine where nothing had been connected.
+
+	 Omitted when false, so a CLI too old to know the field reads the same JSON it always did.
+	*/
+	TunnelWasUp bool `json:"tunnelWasUp,omitempty"`
 }
 
 // Identity is what the daemon knows about this device before or after enrolment.

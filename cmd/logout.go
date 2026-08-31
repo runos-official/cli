@@ -61,8 +61,11 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	 The key is harmless on its own; it opens nothing without a session token, and this has just
 	 ended the session. Forgetting a key is what `runos vpn forget-key` is for.
 	*/
+	// TunnelWasUp, not `Status != nil`. Every daemon that answers at all returns a status, so the
+	// old condition said "disconnected the VPN" on the ordinary machine where the service is
+	// installed, no tunnel was up, and `down` did nothing whatever.
 	if resp, vErr := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpDown}); vErr == nil {
-		if resp.Status != nil {
+		if resp.TunnelWasUp {
 			fmt.Println("Disconnected the VPN.")
 		}
 	}
