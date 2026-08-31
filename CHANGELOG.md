@@ -1,5 +1,70 @@
 # Changelog
 
+## v1.17.0
+
+**Signing in and connecting the VPN are now two different things.** They were one, and it showed:
+`runos status` could report `"authenticated": false` beside `"vpnRunning": true` from a single
+invocation, because the CLI's credential and the VPN daemon's session were separate states with
+nothing keeping them honest. Signing in is `runos login`. Connecting is `runos vpn up`, and it
+consumes a sign-in rather than creating one.
+
+**`runos vpn up` on a signed-out machine says so.** It resolved your credential before it decided
+anything, so with none on disk it exited with the remedy on stderr and nothing on stdout. Anything
+driving it, RunOS Desktop included, saw an empty stream and a failure it could not explain. It now
+answers with a sentence naming `runos login`, and emits it as an event under `--json`.
+
+**Connecting after an account switch works the first time.** Conductor mints a VPN session only
+from a recent sign-in. On refusal the CLI signed you in and retried only the session mint, carrying
+a device id enrolled under the previous account into the new account's URL, which conductor answers
+404 for. That was the "sign in twice" everyone hit. The device key and the device id are both
+account-scoped, so the whole sequence now runs again after a sign-in. A sign-in that lands on a
+different account stops and says which account you are on.
+
+**A tunnel never comes up on a key the account never enrolled.** The daemon asked for the account's
+identity through a call that MINTS a keypair when there is none, so an account switch could start a
+tunnel with a key conductor had never seen. The interface came up, the clusters listed, and nothing
+routed, which is the worst way for it to fail. It now refuses, which is one command from working.
+
+**`runos logout` takes the tunnel down with it.** The VPN session lives in a root daemon that
+clearing a JSON file cannot reach, so a signed-out machine kept carrying traffic on the account it
+had signed out of. It keeps this machine's device key: enrolment is idempotent on the public key, so
+throwing it away would enrol a new device and leave a dead row on your account every time you
+signed out.
+
+**`runos vpn logout` is now `runos vpn forget-key`.** It never logged anybody out. It throws away
+this machine's VPN key, which is irreversible and puts a new device on your account, and it sat one
+word away from `runos logout`, which does end your identity. Its confirmation said "not reversible
+without a fresh sign-in", which was wrong twice. `vpn logout` still works as a hidden alias.
+
+**`runos account switch` no longer turns the VPN on.** It enrolled, minted and connected without
+ever asking whether the tunnel had been running, so switching account on a machine with the VPN
+deliberately off turned it on. A change of account now takes the tunnel down and leaves it down.
+Re-authenticating the same account leaves it alone.
+
+**A default cluster does not survive a change of account.** Cluster ids are account-scoped, so one
+carried across a sign-in is not stale, it is guaranteed wrong, and every command without `--cid`
+failed with a 404 about somebody else's cluster. Signing in to a different account clears it, and so
+does signing out. Re-authenticating the same account keeps it.
+
+**`runos status` stops claiming a sign-in it has not confirmed.** A refresh against Google proves
+Google still knows you; whether conductor accepts the token is a different question, and any 401
+other than an expiry was being filed as "nothing learned". A refused credential is now reported as
+refused, and the message names the environment doing the refusing, because being signed in to
+another environment is the usual cause.
+
+**A network failure is no longer reported as being signed out.** A ten second timeout reaching
+Google's token endpoint was reported as `authenticated: false` with the raw Go error, request URL
+and API key rendered into whatever was displaying it. It now reports `authErrorKind: network` with a
+sentence carrying neither, and keeps a redacted detail for diagnosis. Conductor is not in that path
+and never was.
+
+**A 401 gives advice about the credential you are actually using.** Every 401 printed the same three
+lines about personal access tokens, so somebody on a browser sign-in was told to audit an API key
+they did not have, and the one command that would have helped was not among them.
+
+**`runos vpn status` points at a command that can work.** Signed out, it said "run 'runos vpn up'",
+and `runos vpn up` then refused for want of a sign-in.
+
 ## v1.16.0
 
 **VM consoles and workspaces now connect straight to the cluster, not through the RunOS API.** A
