@@ -30,7 +30,7 @@ var vpnCmd = &cobra.Command{
   runos vpn status       Show the tunnel and each cluster
   runos vpn connect <cid> / disconnect <cid>
   runos vpn down         Disconnect and end the session
-  runos vpn logout       Down, and forget this device's key on this machine
+  runos vpn forget-key   Down, and throw away this machine's VPN key
 
 Each machine is a device with its own key and address. Signing in is 'runos login'
 and connecting is 'runos vpn up': one identity, and a tunnel that uses it. A sign-in
