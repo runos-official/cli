@@ -169,10 +169,48 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	// command is the honest half, and it is stated only when a daemon is actually loaded, so a
 	// machine that never installed the VPN reads nothing about it.
 	if running, err := vpn.NewService().Running(); err == nil && running {
-		fmt.Fprintln(progress, "")
-		fmt.Fprintln(progress, "The VPN service is still running the PREVIOUS build: replacing the")
-		fmt.Fprintln(progress, "binary does not reload a daemon that is already loaded.")
-		fmt.Fprintln(progress, "  Pick it up with: sudo runos vpn restart")
+		daemonVersion := runningDaemonVersion(cmd)
+		if vpnDaemonNeedsRestart(true, daemonVersion, currentVersion) {
+			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, currentVersion))
+		}
 	}
 	return nil
+}
+
+/*
+Whether the loaded daemon is actually behind this binary.
+
+REPORTED 2026-08-31: this notice printed on an already-current machine, where nothing had been
+replaced and nothing could be running a previous build. The condition was only "is the VPN service
+running", which is true on every machine that has one, so the advice appeared on every update
+whether or not one happened, and sent people to type a sudo command that would do nothing.
+
+A skew is `daemon != cli` and nothing else, which is the same comparison `runos vpn status` already
+makes. A daemon too old to report its own version cannot be compared, and advice given on no
+evidence is noise, so that stays quiet too.
+*/
+func vpnDaemonNeedsRestart(running bool, daemonVersion, cliVersion string) bool {
+	return running && daemonVersion != "" && daemonVersion != cliVersion
+}
+
+// vpnRestartNotice names both builds, so the reader can see the skew is real rather than take it on
+// trust, and the one command that fixes it. `runos update` cannot do it itself: restarting needs
+// admin and update does not, so escalating here would prompt for a password mid-command.
+func vpnRestartNotice(daemonVersion, cliVersion string) string {
+	return fmt.Sprintf(
+		"\nThe VPN service is still running the previous build (%s against %s): replacing the\n"+
+			"binary does not reload a daemon that is already loaded.\n"+
+			"  Pick it up with: sudo runos vpn restart\n",
+		daemonVersion, cliVersion,
+	)
+}
+
+// runningDaemonVersion asks the daemon what build it is. Empty when it cannot be reached or is too
+// old to say, which the caller treats as "no evidence of a skew".
+func runningDaemonVersion(cmd *cobra.Command) string {
+	resp, err := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpStatus})
+	if err != nil || resp.Status == nil {
+		return ""
+	}
+	return resp.Status.Version
 }
