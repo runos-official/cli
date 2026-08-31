@@ -357,7 +357,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// / etc), not their RUNOS PAT. The conductor's APIError body already
 		// carries the provider message; let it through verbatim.
 		if !is401UpstreamProxyCommand(cmdDef) {
-			if msg, ok := formatAuthError(err); ok {
+			if msg, ok := formatAuthError(err, auth.Kind(cfg).IsPAT()); ok {
 				err = fmt.Errorf("%s", msg)
 			}
 		}
@@ -875,7 +875,7 @@ func is401UpstreamProxyCommand(cmdDef manifest.Command) bool {
 // token"` string stays for backwards compatibility. We render the
 // reason + timestamp distinctly so CI logs spell out "revoked at <ts>"
 // vs "token doesn't parse" without the user having to dig.
-func formatAuthError(err error) (string, bool) {
+func formatAuthError(err error, usingPAT bool) (string, bool) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
 		return "", false
@@ -929,10 +929,27 @@ func formatAuthError(err error) (string, bool) {
 		sb.WriteString("]")
 	}
 	sb.WriteString("\n")
+	/*
+	 THE CHECKLIST HAS TO MATCH THE CREDENTIAL IN USE.
+
+	 These three lines are about personal access tokens, and they were printed for every 401
+	 regardless. Measured on a live machine 2026-08-31: an operator on a browser sign-in, pointed at
+	 a conductor that would not accept their token, was told to audit `RUNOS_API_KEY` and
+	 `runos account api-keys list`. They had no PAT. Every line of advice was for a credential they
+	 were not using, and none of them named the thing that would have fixed it.
+
+	 A browser sign-in has exactly one remedy and one common cause, so it gets two lines rather than
+	 three borrowed ones.
+	*/
 	sb.WriteString("Check:\n")
-	sb.WriteString("  - is RUNOS_API_KEY pointing at a current PAT? `runos account api-keys list`\n")
-	sb.WriteString("  - is RUNOS_API_URL pointing at the same environment the PAT was minted on?\n")
-	sb.WriteString("  - was the PAT revoked or rotated? mint a new one via `runos account api-keys add`")
+	if usingPAT {
+		sb.WriteString("  - is RUNOS_API_KEY pointing at a current PAT? `runos account api-keys list`\n")
+		sb.WriteString("  - is RUNOS_API_URL pointing at the same environment the PAT was minted on?\n")
+		sb.WriteString("  - was the PAT revoked or rotated? mint a new one via `runos account api-keys add`")
+	} else {
+		sb.WriteString("  - sign in again: `runos login`\n")
+		sb.WriteString("  - are you signed in to the environment you are talking to? `runos status` shows both")
+	}
 	return sb.String(), true
 }
 
