@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.18.4
+
+**Installing the VPN service from a root shell no longer makes its control socket unreachable.** The
+group that may open the socket is taken from the person installing, and `sudo` reports that person
+in SUDO_USER. Running `sudo runos vpn install` while already root reports root, whose own group
+contains nobody else, so the daemon installed, started, and could not be reached by the person who
+installed it. No path now hands the socket to root's own group.
+
 ## v1.18.3
 
 **`runos vpn restart` no longer leaves a config file behind when run as root.** It was missing from
