@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/auth"
+	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/runos-official/cli/version"
 
@@ -14,6 +16,24 @@ import (
 
 // printVPNStatus renders the human view of a daemon status: the session state first (it is what
 // lapses), then one line per cluster with its connection, reachability and live traffic.
+/*
+The one command that can actually move this person forward.
+
+MEASURED 2026-08-31, straight after a `runos logout`: the status read "Session: none - run 'runos
+vpn up'", and `runos vpn up` answered "you are not signed in". It named a command that refuses.
+
+Connecting consumes a sign-in and never creates one (FPL26 D1), so with no identity on disk the next
+step is `runos login`. This deliberately reads only what is on disk: whether conductor still ACCEPTS
+that identity is `runos status`'s question, and a status line about the tunnel must not make a
+network call to render itself.
+*/
+func sessionNextStep(signedIn bool) string {
+	if signedIn {
+		return "run 'runos vpn up'"
+	}
+	return "run 'runos login', then 'runos vpn up'"
+}
+
 func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	out := cmd.OutOrStdout()
 	if status == nil {
@@ -50,15 +70,21 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 		fmt.Fprintln(out)
 	}
 
+	// The daemon knows nothing about the CLI's sign-in, so the next step is read from the config.
+	// Cheap: HasCredentials never touches the network.
+	signedIn := false
+	if cfg, cErr := config.Load(); cErr == nil {
+		signedIn = auth.HasCredentials(cfg)
+	}
 	switch {
 	case status.Session.LoginRequired:
-		fmt.Fprintln(out, "Session: expired - run 'runos vpn up' to sign in again")
+		fmt.Fprintf(out, "Session: expired - %s\n", sessionNextStep(signedIn))
 	case status.Session.Present:
 		fmt.Fprintf(out, "Session: valid until %s (%s from now)\n",
 			status.Session.ExpiresAt.Local().Format("2006-01-02 15:04"),
 			roundDuration(time.Until(status.Session.ExpiresAt)))
 	default:
-		fmt.Fprintln(out, "Session: none - run 'runos vpn up'")
+		fmt.Fprintf(out, "Session: none - %s\n", sessionNextStep(signedIn))
 	}
 
 	if status.DNS.Available {

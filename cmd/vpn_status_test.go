@@ -337,3 +337,39 @@ func TestClusterRowsSayExpiredRatherThanConnecting(t *testing.T) {
 		t.Fatalf("a live session should keep the normal row, got %q", got)
 	}
 }
+
+/*
+What the VPN status tells a SIGNED-OUT person to do.
+
+MEASURED 2026-08-31 on a live machine, right after `runos logout`:
+
+	$ runos vpn status
+	VPN: down
+	Session: none - run 'runos vpn up'
+
+	$ runos vpn up
+	Error: you are not signed in. Run 'runos login' first, then 'runos vpn up'
+
+The status pointed at a command that immediately refuses. Connecting consumes a sign-in and never
+creates one (FPL26 D1), so with no identity the next step is `runos login`, not `runos vpn up`.
+*/
+func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
+	if got := sessionNextStep(false); !strings.Contains(got, "runos login") {
+		t.Errorf("a signed-out person must be sent to sign in, got %q", got)
+	}
+	/*
+	 Naming BOTH steps is right; naming them in the wrong order is not. `vpn up` is where they are
+	 going, and it refuses until the sign-in happens, so the sign-in has to come first in the
+	 sentence as well as in time. This is the same two-step phrasing `vpn up` itself uses when it
+	 refuses, so a person meets one wording rather than two.
+	*/
+	got := sessionNextStep(false)
+	login, up := strings.Index(got, "runos login"), strings.Index(got, "runos vpn up")
+	if up >= 0 && login > up {
+		t.Errorf("the sign-in must come first, got %q", got)
+	}
+	// Signed in with no session is the ordinary "not connected yet" state, and `up` is right there.
+	if got := sessionNextStep(true); !strings.Contains(got, "runos vpn up") {
+		t.Errorf("a signed-in person is one command from a tunnel, got %q", got)
+	}
+}
