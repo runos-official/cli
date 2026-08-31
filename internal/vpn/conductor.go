@@ -1,12 +1,38 @@
 package vpn
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 
 	"github.com/runos-official/cli/internal/api"
 )
+
+// maxRefusalBytes bounds the body read back from a refusal. Conductor's is a few dozen bytes; an
+// appliance answering in its place sends a web page.
+const maxRefusalBytes = 64 * 1024
+
+/*
+isConductorRefusal reports whether a refusal carries conductor's own error envelope.
+
+VERIFIED 2026-08-31 against conductor's source: every 401 it can produce goes out as
+`res.status(401).json({ error: ... })`, from the auth middleware, the session age gate and the
+secret gates alike. None of them answers with an empty or non-JSON body, so the envelope separates
+conductor from anything else that can sit in the path and answer 401.
+*/
+func isConductorRefusal(body []byte) bool {
+	var envelope struct {
+		Error   string `json:"error"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	return envelope.Error != "" || envelope.Code != "" || envelope.Message != ""
+}
 
 // conductorClient is the daemon's narrow view of Conductor: it holds a device SESSION token, not
 // a Firebase credential, and speaks exactly the three device routes a running tunnel needs. The
@@ -73,7 +99,17 @@ func (c *conductorClient) pollState(etag string) (stateResult, error) {
 		res.notModified = true
 		return res, nil
 	case http.StatusUnauthorized:
-		// The session lapsed or was revoked: tell the daemon to tear down and stop polling.
+		// The session lapsed or was revoked: tell the daemon to tear down and stop polling. That is
+		// terminal (the poll is cancelled and nothing restarts it), so it needs conductor's own
+		// envelope as proof rather than the status code alone. An appliance in the path can answer
+		// 401 too, and acting on that one costs the tunnel. See conductor_signout_proof_test.go.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBytes))
+		if err != nil {
+			return res, fmt.Errorf("state request returned HTTP 401 and its reply could not be read: %w", err)
+		}
+		if !isConductorRefusal(body) {
+			return res, fmt.Errorf("state request returned HTTP 401 from something that is not conductor")
+		}
 		res.loginRequired = true
 		return res, nil
 	case http.StatusOK:
