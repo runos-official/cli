@@ -57,6 +57,8 @@ var statusCmd = &cobra.Command{
 
 func init() {
 	statusCmd.Flags().BoolP("json", "j", false, "output as JSON")
+	// It reads the daemon's account and running state, so it dials the socket like the rest.
+	registerSocketFlag(statusCmd)
 }
 
 func runCLIStatus(cmd *cobra.Command, args []string) error {

@@ -32,9 +32,6 @@ func TestSwitchingAccountLeavesTheVPNDownRatherThanConnectingIt(t *testing.T) {
 
 	result := disconnectVPNForAccountChange(daemon.path, "aaaaa", "bbbbb")
 
-	if result.Synchronized {
-		t.Error("an account switch must not connect anything; the person asks for that themselves")
-	}
 	if result.State != vpnStateDisconnected {
 		t.Errorf("state = %q, want %q", result.State, vpnStateDisconnected)
 	}

@@ -16,6 +16,10 @@ var updateCmd = &cobra.Command{Use: "update", Short: "Update RunOS components", 
 func init() {
 	updateCmd.Flags().BoolP("check", "c", false, "Only check for updates, don't install")
 	updateCmd.Flags().BoolP("json", "j", false, "Output as JSON")
+	// This command dials the daemon to read its build, so it needs the same hidden escape hatch
+	// every other daemon-dialling command has. Without the declaration `vpnSocketClient` silently
+	// falls back to the production socket, which is invisible because the lookup error is dropped.
+	registerSocketFlag(updateCmd)
 }
 
 /*
@@ -201,8 +205,8 @@ func vpnDaemonNeedsRestart(running bool, daemonVersion, cliVersion string) bool 
 // admin and update does not, so escalating here would prompt for a password mid-command.
 func vpnRestartNotice(daemonVersion, cliVersion string) string {
 	return fmt.Sprintf(
-		"\nThe VPN service is still running the previous build (%s against %s): replacing the\n"+
-			"binary does not reload a daemon that is already loaded.\n"+
+		"\nThe VPN service is running a different build (%s) from the one now installed (%s):\n"+
+			"replacing the binary does not reload a daemon that is already loaded.\n"+
 			"  Pick it up with: sudo runos vpn restart\n",
 		daemonVersion, cliVersion,
 	)

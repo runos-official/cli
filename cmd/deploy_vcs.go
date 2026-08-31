@@ -60,16 +60,16 @@ func printVCSDeployBanner(human io.Writer, appID, sha, configPath string) {
 // to send on a VCS deploy request, so the cluster agent reads the right
 // file from the committed tree at <sha>. Three sources, priority order:
 //
-//   1. Explicit `configPath:` field in the yaml — escape hatch for non-
-//      standard layouts (e.g. yaml lives outside the repo, or the user
-//      vendored the file under a different path than where it lives in
-//      the source repo).
-//   2. Auto-derived from the yaml's filesystem path relative to the git
-//      repo root. Common case: the yaml is committed inside the repo and
-//      the user's checkout has it at its repo-canonical location. The
-//      user doesn't have to set anything.
-//   3. Empty string — couldn't determine. Conductor falls back to whatever
-//      the AppDocument has stored (default `runos.yaml` for fresh apps).
+//  1. Explicit `configPath:` field in the yaml — escape hatch for non-
+//     standard layouts (e.g. yaml lives outside the repo, or the user
+//     vendored the file under a different path than where it lives in
+//     the source repo).
+//  2. Auto-derived from the yaml's filesystem path relative to the git
+//     repo root. Common case: the yaml is committed inside the repo and
+//     the user's checkout has it at its repo-canonical location. The
+//     user doesn't have to set anything.
+//  3. Empty string — couldn't determine. Conductor falls back to whatever
+//     the AppDocument has stored (default `runos.yaml` for fresh apps).
 //
 // Always emits forward-slash paths (Windows backslashes get converted)
 // since the conductor and cluster agent treat configPath as a posix-style

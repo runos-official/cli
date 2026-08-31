@@ -106,7 +106,7 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	// Error, so an empty pair cannot come from a daemon that answered at all: it is the shape of a
 	// field the running build never sent. Nothing said so, and the reader debugs DNS instead.
 	if status.Running && status.Version != "" && status.Version != version.Version {
-		fmt.Fprintf(out, "\nThe VPN service is running an older build than this CLI (%s against %s).\n",
+		fmt.Fprintf(out, "\nThe VPN service is running a different build from this CLI (%s against %s).\n",
 			status.Version, version.Version)
 		fmt.Fprintln(out, "Anything it does not know reads as empty above. Run 'runos vpn restart' to load the current build.")
 	}

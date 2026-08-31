@@ -65,6 +65,20 @@ func init() {
 	rootCmd.AddCommand(vpnCmd)
 }
 
+/*
+registerSocketFlag declares the hidden `--socket` override on a command that dials the daemon.
+
+It has to be declared per command, and four commands that dial the socket had never declared it.
+`vpnSocketClient` drops the lookup error, so a missing declaration is invisible: the command
+silently uses the production socket, which is also why a test could not point one somewhere safe.
+*/
+func registerSocketFlag(cmds ...*cobra.Command) {
+	for _, c := range cmds {
+		c.Flags().String("socket", "", "path to the daemon control socket (advanced)")
+		_ = c.Flags().MarkHidden("socket")
+	}
+}
+
 // vpnSocketClient is the socket path the CLI dials. A hidden --socket flag on the parent overrides
 // it for tests and for a non-default install; defaults to internal/vpn.SocketPath.
 func vpnSocketClient(cmd *cobra.Command) *vpn.Client {

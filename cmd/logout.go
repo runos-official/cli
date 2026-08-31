@@ -19,8 +19,7 @@ var logoutCmd = &cobra.Command{
 func init() {
 	// The same hidden escape hatch every other daemon-talking command has. `logout` now drops the
 	// tunnel (D3), so it needs the same way to name a non-default socket.
-	logoutCmd.Flags().String("socket", "", "path to the daemon control socket (advanced)")
-	_ = logoutCmd.Flags().MarkHidden("socket")
+	registerSocketFlag(logoutCmd)
 }
 
 func runLogout(cmd *cobra.Command, args []string) error {

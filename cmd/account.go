@@ -24,10 +24,7 @@ var accountSwitchCmd = &cobra.Command{Use: "switch <account-id>", Args: cobra.Ex
 func init() {
 	// The same hidden escape hatch every other daemon-talking command has. Both of these change the
 	// active identity, so both take the tunnel down with it (FPL26 D3).
-	for _, c := range []*cobra.Command{accountAddCmd, accountSwitchCmd} {
-		c.Flags().String("socket", "", "path to the daemon control socket (advanced)")
-		_ = c.Flags().MarkHidden("socket")
-	}
+	registerSocketFlag(accountAddCmd, accountSwitchCmd, accountListCmd, accountForgetCmd)
 }
 
 var accountForgetCmd = &cobra.Command{Use: "forget <account-id>", Args: cobra.ExactArgs(1), Short: "Forget local account data", RunE: runAccountForget}
@@ -55,12 +52,29 @@ type accountListResult struct {
 	Accounts      []accountListEntry `json:"accounts"`
 }
 
+/*
+What an account change did to the VPN.
+
+`synchronized` is GONE, along with the `synchronized`/`down`/`mismatch` states it went with. They
+described a step that no longer exists: switching account used to enrol, mint and connect, and now
+takes the tunnel down and leaves it down. The field survived the rewrite as a stump that was never
+assigned, so every result reported `"synchronized": false` whatever happened.
+
+`schemaVersion` moves to 2 on `accountSwitchResult` because that is a breaking change to a payload,
+and leaving it at 1 while the states change underneath is how a consumer silently stops matching.
+*/
 type vpnSynchronization struct {
-	State        string `json:"state"`
-	AccountID    string `json:"accountId,omitempty"`
-	Synchronized bool   `json:"synchronized"`
-	Message      string `json:"message,omitempty"`
+	State     string `json:"state"`
+	AccountID string `json:"accountId,omitempty"`
+	Message   string `json:"message,omitempty"`
 }
+
+/*
+2, not 1. The `vpn` block's states changed meaning with the switch-to-teardown rewrite, and a
+`synchronized` field that no consumer could rely on was removed. Leaving the version at 1 while the
+payload changes underneath is how a consumer silently stops matching and nobody finds out.
+*/
+const accountSwitchSchemaVersion = 2
 
 type accountSwitchResult struct {
 	SchemaVersion  int                `json:"schemaVersion"`
@@ -152,7 +166,7 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 
 	socketPath, _ := cmd.Flags().GetString("socket")
 	vpnResult := disconnectVPNForAccountChange(socketPath, previousAccountID, cfg.GetAccountID())
-	result := accountSwitchResult{SchemaVersion: 1, AccountID: session.AccountID, AccountChanged: previousAccountID != session.AccountID, VPN: vpnResult}
+	result := accountSwitchResult{SchemaVersion: accountSwitchSchemaVersion, AccountID: session.AccountID, AccountChanged: previousAccountID != session.AccountID, VPN: vpnResult}
 	return emitAccountResult(cmd, result, func() {
 		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s\n", session.AccountID)
 		if vpnResult.Message != "" {
@@ -205,7 +219,7 @@ func disconnectVPNForAccountChange(socketPath, previousAccountID, accountID stri
 		return result
 	}
 
-	response, err := vpn.NewClient(socketPath).Call(vpn.Request{Op: vpn.OpDown})
+	_, err := vpn.NewClient(socketPath).Call(vpn.Request{Op: vpn.OpDown})
 	if err != nil {
 		// No daemon is the ORDINARY case: `runos desktop install` does not write one. It must never
 		// stop somebody changing account, and it is not an error worth reporting as one.
@@ -217,8 +231,6 @@ func disconnectVPNForAccountChange(socketPath, previousAccountID, accountID stri
 		result.State, result.Message = vpnStateFailed, err.Error()
 		return result
 	}
-	_ = response
-
 	result.State = vpnStateDisconnected
 	result.Message = fmt.Sprintf(
 		"The VPN was disconnected because the account changed. Run 'runos vpn up' to connect %s.",
@@ -240,12 +252,14 @@ func runAccountForget(cmd *cobra.Command, args []string) error {
 	wasActive := cfg.AccountID == accountID
 	removed := cfg.ForgetAccount(accountID)
 	if wasActive {
-		cfg.RefreshToken = ""
-		cfg.Firebase = nil
-		cfg.AccountID = ""
-		cfg.SignedInAt = ""
-		cfg.APIKey = ""
-		cfg.ClearActiveAccount()
+		/*
+		 Forgetting the account you are ON is a sign-out, so it goes through the one helper that
+		 knows what that means. Clearing the five credential fields by hand here missed
+		 DefaultClusterID, which is account-scoped: forgetting the active account left its default
+		 cluster behind, and the next command answered "Cluster <cid> not found in account <aid>",
+		 which is the exact defect ClearSession was written to remove.
+		*/
+		cfg.ClearSession()
 	}
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save account metadata: %w", err)
