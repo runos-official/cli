@@ -113,20 +113,20 @@ type OverridesDiff struct {
 // or a successful `runos deploy`). Nil when no baseline exists; in
 // that case the diff has no opinion on source-code drift.
 type DiffReport struct {
-	CID         string             `json:"cid"`
-	AppID       string             `json:"appId"`
-	AppName     string             `json:"appName"`
+	CID     string `json:"cid"`
+	AppID   string `json:"appId"`
+	AppName string `json:"appName"`
 	// Notes are short informational messages rendered above the section
 	// list. Currently used to flag the RRC custom-synthesis flap (server
 	// silently set class=custom because cpu/mem/replicas overrides
 	// disagreed with the named class), so users don't read the resulting
 	// `class` drift as a fresh problem on every sync.
-	Notes       []string           `json:"notes,omitempty"`
-	YAML        SectionDiff        `json:"yaml"`
+	Notes []string    `json:"notes,omitempty"`
+	YAML  SectionDiff `json:"yaml"`
 	// SecretEnv compares the local sensitive (Secret-backed) env file
 	// against the K8s Secret. Values are redacted in display by the
 	// diff command's --redact-secrets flag.
-	SecretEnv   SectionDiff        `json:"secretEnv"`
+	SecretEnv SectionDiff `json:"secretEnv"`
 	// Env compares the local plain (ConfigMap-backed) env file against
 	// the K8s ConfigMap. Values are committed to VCS by definition;
 	// no redaction.
@@ -208,8 +208,10 @@ func (r *DiffReport) NeedsForceToOverwrite() bool {
 //     step before the actual upload, so it isn't a deploy concern.
 //     Divergent env values would be a real conflict, but syncAppState
 //     errors out on those independently.
+//
 //   - secret files / overrides: deploy doesn't push them at all (use
 //     `apps sync` for those). Drift here isn't relevant to deploy.
+//
 //   - code: this IS deploy's payload. Stale source (server has newer
 //     archives than the recorded baseline) is always blocking.
 func (r *DiffReport) NeedsForceToDeploy() bool {
@@ -889,7 +891,7 @@ func ResolveLocalSecretPaths(yamlDir string, files []SecretFile) map[string]stri
 // the entry's UnifiedDiff field. Only drifted/missing entries trigger a
 // network call; in-sync entries are left untouched (already confirmed
 // identical via md5). Local file paths come from the entry's Local field
-//, populated upstream by ComputeSecretFilesDiff from the yaml manifest.
+// , populated upstream by ComputeSecretFilesDiff from the yaml manifest.
 func EnrichSecretFileDiffsWithContent(svc *Service, appID string, files *SecretFilesDiff) error {
 	for i := range files.Entries {
 		e := &files.Entries[i]

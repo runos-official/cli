@@ -883,4 +883,3 @@ func (s *Service) validateDownloadURL(downloadURL string) error {
 // single-use token at the URL has been used or expired. Callers should
 // match it with errors.Is and mint a fresh ticket via PrepareCliPull.
 var ErrTicketConsumed = errors.New("download token expired or already used")
-
