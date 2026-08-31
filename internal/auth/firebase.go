@@ -34,6 +34,27 @@ func SetEndpointsForTest(t interface{ Cleanup(func()) }, authURL, tokenURL strin
 	t.Cleanup(func() { firebaseAuthURL, firebaseTokenURL = previousAuth, previousToken })
 }
 
+/*
+What each call is called in an error, because the reader meets it with no context around it: a
+menu-bar line or a `runos status` field, and nothing to say which of the two round trips it was.
+*/
+const (
+	signInCall  = "the sign-in"
+	refreshCall = "the token refresh"
+)
+
+// maxReplyBytes bounds what is read back. Google's replies are a few hundred bytes; a wifi portal
+// answers with a web page, and this path must not pull an unbounded one into memory before
+// deciding it was not a token.
+const maxReplyBytes = 1 << 20
+
+// readReply reads the whole body once, so the same bytes can be tried as a token, as Google's
+// error envelope, and as evidence of an interception. Streaming it into a decoder, which is what
+// this used to do, consumes it and leaves nothing to describe when the decode fails.
+func readReply(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, maxReplyBytes))
+}
+
 type signInRequest struct {
 	Token             string `json:"token"`
 	ReturnSecureToken bool   `json:"returnSecureToken"`
@@ -44,12 +65,6 @@ type SignInResponse struct {
 	IDToken      string `json:"idToken"`
 	RefreshToken string `json:"refreshToken"`
 	ExpiresIn    string `json:"expiresIn"`
-}
-
-type firebaseError struct {
-	Error struct {
-		Message string `json:"message"`
-	} `json:"error"`
 }
 
 // ExchangeCustomToken exchanges a Firebase custom token for ID and refresh tokens.
@@ -69,21 +84,24 @@ func ExchangeCustomToken(customToken, apiKey string) (*SignInResponse, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(reqURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, transportFailure(signInCall, err)
 	}
 	defer resp.Body.Close()
 
+	reply, err := readReply(resp)
+	if err != nil {
+		return nil, transportFailure(signInCall, err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		var fbErr firebaseError
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&fbErr); err == nil && fbErr.Error.Message != "" {
-			return nil, fmt.Errorf("firebase auth failed: %s", fbErr.Error.Message)
-		}
-		return nil, fmt.Errorf("firebase auth failed with status: %d", resp.StatusCode)
+		return nil, googleFailure(signInCall, resp, reply)
 	}
 
 	var result SignInResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(reply, &result); err != nil || result.IDToken == "" {
+		// A 200 that is not a token is not a sign-in, whoever sent it. Accepting it hands an empty
+		// bearer token to conductor, which answers 401, which reads as a refusal one layer up.
+		return nil, interceptedFailure(signInCall, resp, reply)
 	}
 
 	return &result, nil
@@ -107,21 +125,22 @@ func RefreshIDToken(refreshToken, apiKey string) (*RefreshResponse, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(reqURL, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, transportFailure(refreshCall, err)
 	}
 	defer resp.Body.Close()
 
+	reply, err := readReply(resp)
+	if err != nil {
+		return nil, transportFailure(refreshCall, err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		var fbErr firebaseError
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&fbErr); err == nil && fbErr.Error.Message != "" {
-			return nil, fmt.Errorf("token refresh failed: %s", fbErr.Error.Message)
-		}
-		return nil, fmt.Errorf("token refresh failed with status: %d", resp.StatusCode)
+		return nil, googleFailure(refreshCall, resp, reply)
 	}
 
 	var result RefreshResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(reply, &result); err != nil || result.IDToken == "" {
+		return nil, interceptedFailure(refreshCall, resp, reply)
 	}
 
 	return &result, nil

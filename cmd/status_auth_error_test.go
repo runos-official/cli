@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/runos-official/cli/internal/auth"
 )
 
 /*
@@ -76,5 +78,76 @@ func TestDiagnosticDetailKeepsTheURLAndDropsTheKey(t *testing.T) {
 	}
 	if !strings.Contains(detail, "securetoken.googleapis.com") {
 		t.Errorf("the host is the useful half and must survive, got %q", detail)
+	}
+}
+
+/*
+The kind now comes from what the auth package MEASURED, not from the error's text.
+
+The first pass at FCR160 asked "is this a `*url.Error`". That is true for a dead link and false for
+every form of interference that ANSWERS, so the commonest one of all, a wifi portal returning its
+own page with a 200, still produced "Your session has ended". That is the sentence FCR160 was
+raised about, surviving in the case it was written for.
+
+`internal/auth` now tags every failure with the fact it measured. These cases pin the mapping from
+that tag to the two things a caller needs: the KIND, which the desktop app branches on, and the
+SENTENCE, which a person reads.
+*/
+func TestTheKindComesFromWhatTheAuthPackageMeasured(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		err         error
+		wantKind    string
+		wantMessage []string // fragments that must appear
+		notMessage  []string // fragments that must NOT
+	}{
+		{
+			name:        "a wifi portal answering instead of Google",
+			err:         fmt.Errorf("%w: %w: intercepted", auth.ErrNetworkUnreachable, auth.ErrInterceptedReply),
+			wantKind:    authErrorNetwork,
+			wantMessage: []string{"network", "unaffected"},
+			// THE DEFECT: this is the sentence FCR160 was raised about.
+			notMessage: []string{"session has ended", "runos login"},
+		},
+		{
+			name:        "nothing answered at all",
+			err:         fmt.Errorf("%w: dial tcp: i/o timeout", auth.ErrNetworkUnreachable),
+			wantKind:    authErrorNetwork,
+			wantMessage: []string{"unaffected"},
+			notMessage:  []string{"session has ended"},
+		},
+		{
+			name:        "Google refused the credential",
+			err:         fmt.Errorf("%w: TOKEN_EXPIRED", auth.ErrCredentialRefused),
+			wantKind:    authErrorRejected,
+			wantMessage: []string{"runos login"},
+		},
+		{
+			// Signing in again cannot fix a key Google will not take, so the sentence must not
+			// send anybody to a browser for it.
+			name:        "Google refused this machine's API key",
+			err:         fmt.Errorf("%w: API key not valid", auth.ErrClientMisconfigured),
+			wantKind:    authErrorRejected,
+			wantMessage: []string{"runos config get"},
+			notMessage:  []string{"session has ended"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, message := classifyAuthError(tc.err)
+
+			if kind != tc.wantKind {
+				t.Errorf("kind = %q, want %q", kind, tc.wantKind)
+			}
+			for _, want := range tc.wantMessage {
+				if !strings.Contains(message, want) {
+					t.Errorf("message %q must contain %q", message, want)
+				}
+			}
+			for _, unwanted := range tc.notMessage {
+				if strings.Contains(message, unwanted) {
+					t.Errorf("message %q must NOT contain %q", message, unwanted)
+				}
+			}
+		})
 	}
 }
