@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.18.0
+
+**`runos update --check` now says whether an update is waiting, as a flag.** It could not be
+branched on before. With `--check`, `updated` is false whether you are current or six versions
+behind, because the check never installs anything, and `version` reported the LATEST in both cases
+rather than what you have, so there was nothing to compare it against. The only difference between
+"you are up to date" and "an update is waiting" was an English sentence, and for RunOS Desktop the
+two payloads were byte-identical, so it could not tell at all. `updateAvailable` is the verdict and
+`currentVersion` is what is installed. `updated` and `version` keep their old meanings, so an
+existing reader is unaffected.
+
+The desktop verdict uses the same rule the installer uses, so a check can never offer an update that
+would do nothing, or hide one that would have worked.
+
 ## v1.17.0
 
 **Signing in and connecting the VPN are now two different things.** They were one, and it showed:
