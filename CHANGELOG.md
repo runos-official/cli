@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.18.2
+
+**The VPN control socket now reaches the person who installed it.** Two macOS users reported that
+after installing, every command answered "the RunOS VPN service is not running. Run 'sudo runos vpn
+install' first." The service was running the whole time: their socket belonged to `wheel`, which on
+macOS holds only root, so every connection was denied. Reinstalling recreated the same socket, so
+the advice could never work.
+
+The group is derived from whoever installs. Installing from a root shell, `sudo -i` or a
+provisioning script left no trace of the real user, and the fallback then used root's own group,
+which by definition excludes everyone else. It now uses the machine's administrators group instead,
+and `runos vpn install --socket-group <group>` overrides it.
+
+**A machine already in that state repairs itself.** The VPN service checks its socket every time it
+starts and puts the group right when it cannot reach anybody, so one `sudo runos vpn restart`, or
+the next reboot, is enough. No editing of service files. A group you chose yourself is never
+overridden.
+
+**"Permission denied" no longer reports as "not running".** A socket that exists and refuses you is
+the opposite of one that is absent, and the two have nothing in common to do about them. The message
+now names the group the socket actually has and the remedy that works on your machine.
+
+**The VPN service logs what it did.** It recorded nothing of its own before, so nothing anywhere
+said which group the socket had been given; every line in its log came from the tunnel engine. It
+now records the socket's path, mode and group at every start.
+
 ## v1.18.1
 
 **A failed sign-in now says what actually failed.** It classified from the error's text: a transport
