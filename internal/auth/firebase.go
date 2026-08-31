@@ -13,10 +13,26 @@ import (
 	"time"
 )
 
-const (
+/*
+Google's two endpoints, as VARIABLES so a test can point them somewhere it controls.
+
+Every path that signs in or refreshes goes through here, which used to make the whole of `vpn up`
+and `runos status` untestable without reaching Google: a test would have had to make a real request
+with a real credential. The seam matches the one `cmd` already uses for the browser flow
+(`authenticateInBrowser`). Nothing outside a test ever writes these.
+*/
+var (
 	firebaseAuthURL  = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken"
 	firebaseTokenURL = "https://securetoken.googleapis.com/v1/token"
 )
+
+// SetEndpointsForTest points both endpoints at a stub and restores them when the test ends.
+// Exported because the `cmd` package's flow tests need it; it has no other caller.
+func SetEndpointsForTest(t interface{ Cleanup(func()) }, authURL, tokenURL string) {
+	previousAuth, previousToken := firebaseAuthURL, firebaseTokenURL
+	firebaseAuthURL, firebaseTokenURL = authURL, tokenURL
+	t.Cleanup(func() { firebaseAuthURL, firebaseTokenURL = previousAuth, previousToken })
+}
 
 type signInRequest struct {
 	Token             string `json:"token"`
