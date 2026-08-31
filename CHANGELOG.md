@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.18.1
+
+**A failed sign-in now says what actually failed.** It classified from the error's text: a transport
+failure meant the network, and anything else meant a refusal. So Google being down, a proxy
+answering in its place, and a Firebase API key Google will not take all reported "Your session has
+ended. Run 'runos login' to sign in again." Two of those cannot be fixed by signing in, and one of
+them is a loop with no exit. The decision now happens where the reply is actually read, on the
+evidence Google's own error envelope provides, measured against the live endpoints. A reply that did
+not come from Google is named as such rather than blamed on your sign-in.
+
+A refresh that returned 200 with no token in it used to hand back an empty token and no error at
+all. That token then went to conductor, which answered 401, which read as a refusal: one piece of
+network interference became a false sign-out two hops later.
+
+**The VPN daemon needs conductor's own refusal before it treats a 401 as a sign-out.** That response
+is terminal: the tunnel comes down, the interface is torn down, and the poll stops until somebody
+runs `runos vpn up` by hand. Anything in the path that can answer 401 could trigger it. Conductor
+sends an error envelope with every 401 it produces, so its absence now means something else
+answered, and the tunnel stays up.
+
+**`runos login` into a different account takes the previous account's tunnel down.** Every other path
+that changes identity already did: `runos logout`, `runos account switch`, and the confirmation
+inside `runos vpn up`. Login did not, so a tunnel opened on one account carried on routing that
+account's traffic under a superseded identity.
+
+**`runos update` asks for a VPN restart when there is actually one to do.** The notice compared the
+daemon against the version compiled into the running process, which installing an update does not
+change, so on the ordinary machine it went quiet on every real update. That is the one case it
+exists for.
+
+**`runos status` no longer reports a VPN account mismatch for a tunnel that is down.** After an
+account switch the daemon keeps the previous account id, so every status claimed the VPN was still
+signed in to it, about a tunnel carrying nothing.
+
+**`runos logout` and `runos account switch` no longer say they disconnected a VPN that was not
+connected.** The daemon answers a `down` whether or not there was anything to take down, and both
+read that as a disconnect.
+
+**`runos vpn status` stops sending a personal access token holder to `runos vpn up`.** A tunnel is a
+person's 24-hour session, so that command refuses a PAT as its first act, which made this the
+permanent and unhelpful answer on a PAT-only machine.
+
+**`runos vpn up` no longer panics when a re-enrolment needs a fresh sign-in.** After rotating a
+revoked key it dropped the flag saying a sign-in was needed and dereferenced a nil device, so the
+command died with a Go stack trace instead of asking for one.
+
 ## v1.18.0
 
 **`runos update --check` now says whether an update is waiting, as a flag.** It could not be
