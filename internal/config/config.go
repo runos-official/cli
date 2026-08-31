@@ -100,12 +100,63 @@ type Config struct {
 // would 401 with "Invalid token" despite login reporting success. This
 // is the mirror of loginWithAPIKey clearing RefreshToken in reverse.
 func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, refreshToken, signedInAt string) {
+	c.forgetDefaultClusterOnAccountChange(accountID)
 	c.AccountID = accountID
 	c.Firebase = firebase
 	c.RefreshToken = refreshToken
 	c.SignedInAt = signedInAt
 	c.APIKey = ""
 	c.RememberAccount(accountID, signedInAt)
+}
+
+/*
+ApplyAPIKeyLogin stores a personal access token for one account, clearing the Firebase credential so
+exactly one is live and `runos logout` has a single thing to clear.
+
+Separate from ApplySessionLogin because a PAT is not a session: it carries no sign-in time and no
+refresh token. It shares the account-change rule, because a PAT is account-scoped too.
+*/
+func (c *Config) ApplyAPIKeyLogin(accountID, apiKey, signedInAt string) {
+	c.forgetDefaultClusterOnAccountChange(accountID)
+	c.APIKey = apiKey
+	c.AccountID = accountID
+	c.SignedInAt = signedInAt
+	c.RefreshToken = ""
+	c.Firebase = nil
+	c.RememberAccount(accountID, signedInAt)
+}
+
+/*
+ClearSession is what signing out leaves behind, which is the ENVIRONMENT and nothing about a person.
+
+The URLs stay: clearing them would silently move a signed-out machine back to the default
+environment, and that is not what signing out means. The default cluster does NOT stay; it is
+account state, and after a logout there is no account for it to belong to.
+*/
+func (c *Config) ClearSession() {
+	c.RefreshToken = ""
+	c.Firebase = nil
+	c.AccountID = ""
+	c.SignedInAt = ""
+	c.APIKey = ""
+	c.DefaultClusterID = ""
+	c.ClearActiveAccount()
+}
+
+/*
+Drop a default cluster that belonged to a DIFFERENT account.
+
+MEASURED 2026-08-31: an operator signed in to a second account and every command without `--cid`
+answered `Cluster <cid> not found in account <aid>`, naming the FIRST account's default. Cluster ids
+are scoped to an account, so one carried across a sign-in is not stale, it is guaranteed wrong.
+
+Re-authenticating the SAME account is not a change and keeps the default; people do that to refresh
+a sign-in. A first sign-in has no previous account to contradict, so it keeps whatever is there.
+*/
+func (c *Config) forgetDefaultClusterOnAccountChange(accountID string) {
+	if c.AccountID != "" && c.AccountID != accountID {
+		c.DefaultClusterID = ""
+	}
 }
 
 // RememberAccount adds an account or marks an existing account as active.

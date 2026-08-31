@@ -264,12 +264,7 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 		return err
 	}
 
-	cfg.APIKey = strings.TrimSpace(apiKey)
-	cfg.AccountID = aid
-	cfg.RefreshToken = ""
-	cfg.Firebase = nil
-	cfg.SignedInAt = time.Now().UTC().Format(time.RFC3339)
-	cfg.RememberAccount(aid, cfg.SignedInAt)
+	cfg.ApplyAPIKeyLogin(aid, strings.TrimSpace(apiKey), time.Now().UTC().Format(time.RFC3339))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}

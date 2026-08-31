@@ -68,13 +68,9 @@ func runLogout(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Clear authentication fields only (preserve URLs and default cluster)
-	cfg.RefreshToken = ""
-	cfg.Firebase = nil
-	cfg.AccountID = ""
-	cfg.SignedInAt = ""
-	cfg.APIKey = ""
-	cfg.ClearActiveAccount()
+	// The environment survives; everything about the person does not, the default cluster included.
+	// See Config.ClearSession.
+	cfg.ClearSession()
 
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
