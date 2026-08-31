@@ -122,8 +122,17 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	case authFirebase:
 		_, err := auth.RefreshIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 		if err != nil {
+			// FCR160. A refresh that could not COMPLETE and a refresh that was REFUSED are
+			// different facts with different remedies, and this had one bucket for both. A ten
+			// second timeout against Google's token endpoint reported the person as signed out and
+			// handed RunOS Desktop the raw Go error, request URL and API key included, to render in
+			// the menu bar. `authErrorKind` is the flag a client branches on; `authError` is the
+			// sentence a person reads; `authErrorDetail` is for whoever is diagnosing it.
+			kind, message := classifyAuthError(err)
 			status["authenticated"] = false
-			status["authError"] = err.Error()
+			status["authError"] = message
+			status["authErrorKind"] = kind
+			status["authErrorDetail"] = redactAPIKey(err.Error())
 		} else {
 			status["authenticated"] = true
 			status["authMethod"] = string(method)
@@ -143,7 +152,13 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 					// A FLAG, not a sentence to match on. Being signed out is a state a caller has a
 					// UI for, and RunOS Desktop was rendering conductor's terminal wording into a
 					// menu-bar dropdown because the flag it needed did not exist.
-					status["sessionExpired"] = true
+					//
+					// Set only for a sign-in that actually AGED OUT. A credential refused for any
+					// other reason is equally unusable, and `authenticated: false` says so, but
+					// calling it expired would be a claim about WHY that this code cannot make.
+					if probe.expired {
+						status["sessionExpired"] = true
+					}
 				case !probe.expiresAt.IsZero():
 					status["sessionExpiresAt"] = probe.expiresAt.UTC().Format(time.RFC3339)
 				}
@@ -202,17 +217,20 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	if authenticated, ok := status["authenticated"].(bool); ok && authenticated {
 		fmt.Printf("Authentication: ✓ Logged in%s\n", authMethodLabel(status["authMethod"]))
 	} else {
-		fmt.Println("Authentication: ✗ Not logged in")
+		// FCR160. "Not logged in" is a claim, and when the refresh could not COMPLETE it is a claim
+		// this code knows it cannot make. Say what actually happened instead: the check did not get
+		// an answer, and the sign-in is untouched.
+		kind, _ := status["authErrorKind"].(string)
+		if kind == authErrorNetwork {
+			fmt.Println("Authentication: ? Could not check")
+		} else {
+			fmt.Println("Authentication: ✗ Not logged in")
+		}
+		// NO "Error:" LABEL on any of these now. Each sentence carries its own remedy, and the
+		// label read as something having gone wrong, which sent people looking for a fault instead
+		// of typing the command in front of them. The kind above already separates the two cases.
 		if authErr, ok := status["authError"].(string); ok {
-			// A session that aged out is a STATE, not an error, and the sentence already says what
-			// to do about it. Labelling it "Error:" reads as something having gone wrong, which
-			// sends people looking for a fault instead of typing the command in front of them.
-			// A genuine failure (a refresh that could not complete) keeps the label it deserves.
-			if expired, _ := status["sessionExpired"].(bool); expired {
-				fmt.Printf("  %s\n", authErr)
-			} else {
-				fmt.Printf("  Error: %s\n", authErr)
-			}
+			fmt.Printf("  %s\n", authErr)
 		}
 	}
 
@@ -343,6 +361,18 @@ type sessionProbe struct {
 	accepted  bool
 	expiresAt time.Time
 	message   string
+	/*
+	 Whether the refusal was specifically a sign-in that AGED OUT, as opposed to a credential
+	 conductor will not take for some other reason.
+
+	 The two need telling apart because they are different situations with the same remedy, and a
+	 flag named `sessionExpired` must not be set for a token that was refused as invalid. Measured
+	 on a live machine 2026-08-31: a credential minted against one Firebase project, used against a
+	 conductor that verifies another, is refused with `Invalid token` and nothing about it has
+	 expired. Both still send the person to `runos login`, which is why the distinction is easy to
+	 lose and worth keeping.
+	*/
+	expired bool
 }
 
 func probeSession(cfg *config.Config) (sessionProbe, bool) {
@@ -361,15 +391,79 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 	if err != nil {
 		return sessionProbe{}, false
 	}
-	if result.SessionExpired() {
-		return sessionProbe{accepted: false, message: result.ErrorMessage()}, true
+	var envelope struct {
+		Code string `json:"code"`
 	}
-	if !result.OK() {
-		// Some other refusal, a 403 or a 500. It says nothing about the SESSION, and reporting it
-		// as an expiry would send the user to a sign-in that fixes nothing.
+	_ = result.Decode(&envelope)
+	accepted, known := sessionProbeVerdict(result.StatusCode, envelope.Code)
+	if !known {
 		return sessionProbe{}, false
 	}
+	if !accepted {
+		expired := envelope.Code == api.SessionExpiredCode
+		message := result.ErrorMessage()
+		if !expired {
+			message = refusedCredentialMessage(message, baseURL)
+		}
+		return sessionProbe{accepted: false, message: message, expired: expired}, true
+	}
 	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true
+}
+
+/*
+Whether conductor accepts this credential, decided from the status code alone.
+
+MEASURED 2026-08-31. This used to report a refusal ONLY for `auth.session_expired` and call every
+other 401 "nothing learned", which produced a machine where `runos clusters list` answered
+`authentication refused (401): Invalid token` and `runos status` answered `Authentication: ✓ Logged
+in`, seconds apart, from one credential. A token minted against another Firebase project does that,
+and so does any other reason conductor will not take it.
+
+A 401 IS something learned: the credential is refused. 403 and 5xx are not. A 403 means the
+credential was ACCEPTED and this one action is not allowed, and calling that a sign-out would send
+somebody to a browser to fix a permission.
+
+Pure, so the table above can cover every case without a conductor.
+*/
+func sessionProbeVerdict(statusCode int, errorCode string) (accepted, known bool) {
+	switch {
+	case statusCode == http.StatusUnauthorized:
+		return false, true
+	case statusCode >= 200 && statusCode < 300:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+/*
+What to say when conductor refuses the credential but did not say the session aged out.
+
+"Your session has expired" would be a guess. The token may belong to another environment, another
+Firebase project, or be wrong in a way nobody here can name. What is certain is that conductor will
+not take it and that signing in again is the thing to try, so the sentence says exactly that and
+keeps conductor's own words for whoever is diagnosing it.
+*/
+func refusedCredentialMessage(conductorMessage, apiURL string) string {
+	detail := strings.TrimSpace(conductorMessage)
+	if detail == "" {
+		detail = "the credential was refused"
+	}
+	where := strings.TrimSpace(apiURL)
+	if where == "" {
+		return fmt.Sprintf("RunOS refused this sign-in (%s). Run 'runos login' to sign in again.", detail)
+	}
+	// NAMING THE ENVIRONMENT is the useful half, and the reason this sentence exists.
+	//
+	// Measured 2026-08-31: an operator was signed in, genuinely, and had switched the CLI to a
+	// different environment. Their credential belonged to the environment they came from, so every
+	// request was refused while they were quite correct that they had signed in. "RunOS refused
+	// this sign-in" on its own invites the answer "no I did not, I am signed in", which is what
+	// happened. The address says which RunOS is refusing, and therefore which one to sign in to.
+	return fmt.Sprintf(
+		"%s refused this sign-in (%s). You may be signed in to a different environment; run 'runos login' to sign in to this one.",
+		where, detail,
+	)
 }
 
 // fetchAccountProfile reads the account's company profile. Returns nil
