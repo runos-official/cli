@@ -154,3 +154,23 @@ func TestOnlyAGroupTheMachineHasIsChosen(t *testing.T) {
 		})
 	}
 }
+
+/*
+One definition of "root's own group", because the installer and the daemon both refuse it and a
+second opinion is how they drift apart.
+
+GID 0 owns `wheel` on macOS and `root` on Linux.
+*/
+func TestOnlyGIDZeroCountsAsRootsGroup(t *testing.T) {
+	for _, gid := range []string{"0"} {
+		if !IsRootGroup(gid) {
+			t.Errorf("IsRootGroup(%q) = false, want true", gid)
+		}
+	}
+	// staff (20), admin (80), a Linux wheel (10), a user's own group, and anything unreadable.
+	for _, gid := range []string{"20", "80", "10", "501", "", "not-a-number"} {
+		if IsRootGroup(gid) {
+			t.Errorf("IsRootGroup(%q) = true, want false", gid)
+		}
+	}
+}

@@ -50,6 +50,18 @@ func AdminGroupCandidates(goos string) []string {
 	return []string{"sudo", "wheel"}
 }
 
+/*
+IsRootGroup reports whether a group id is root's own.
+
+ONE DEFINITION, shared by the installer and the daemon's self-heal, because they have to agree on
+what they are refusing. GID 0 owns `wheel` on macOS and `root` on Linux, and a socket owned by it
+reaches nobody except root, which is the opposite of what the setting is for.
+*/
+func IsRootGroup(gid string) bool {
+	parsed, err := strconv.Atoi(gid)
+	return err == nil && parsed == rootGID
+}
+
 // FirstExistingGroup returns the first candidate the machine actually has. Empty when it has none:
 // the socket then stays root-only, which is at least honest, rather than being handed to a group
 // that is not there.

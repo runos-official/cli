@@ -140,6 +140,32 @@ func TestTheInstallerNeverDerivesAGroupFromRoot(t *testing.T) {
 		}
 	})
 
+	/*
+	 SUDO_USER CAN ITSELF BE ROOT, and then it is not a person to grant anything to.
+
+	 `sudo` sets SUDO_USER to whoever invoked it, so running `sudo runos vpn install` from a root
+	 shell sets it to `root`, whose primary group is `wheel` on macOS and `root` on Linux. Both are
+	 GID 0. The fallback fixed for an ABSENT SUDO_USER is bypassed, because the variable is present;
+	 it is just present and useless.
+
+	 So the rule is not "trust SUDO_USER". It is that no branch may hand the socket to root's own
+	 group, because a socket owned by GID 0 reaches nobody the setting exists for. Without this the
+	 heal in the daemon would still be covering a path a CURRENT install can reach, rather than only
+	 machines installed by older builds.
+	*/
+	t.Run("SUDO_USER set to root is not a person either", func(t *testing.T) {
+		t.Setenv("SUDO_USER", "root")
+
+		got := socketGroupForInstall()
+
+		if got == "wheel" || got == "root" {
+			t.Fatalf("socketGroupForInstall() = %q: root's own group reaches nobody", got)
+		}
+		if want := vpn.AdminGroup(); got != want {
+			t.Errorf("socketGroupForInstall() = %q, want the administrators group %q", got, want)
+		}
+	})
+
 	t.Run("SUDO_USER names the person whose CLI must reach the socket", func(t *testing.T) {
 		current, err := user.Current()
 		if err != nil {

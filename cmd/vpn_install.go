@@ -178,7 +178,7 @@ both for anyone whose machine does not follow the convention.
 */
 func socketGroupForInstall() string {
 	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil {
+		if u, err := user.Lookup(sudoUser); err == nil && !vpn.IsRootGroup(u.Gid) {
 			if g, err := user.LookupGroupId(u.Gid); err == nil {
 				return g.Name
 			}
