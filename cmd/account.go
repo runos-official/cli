@@ -4,12 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"runtime"
 	"sort"
 	"time"
 
-	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/spf13/cobra"
@@ -23,6 +20,16 @@ var accountCmd = &cobra.Command{
 var accountListCmd = &cobra.Command{Use: "list", Short: "List locally known accounts", RunE: runAccountList}
 var accountAddCmd = &cobra.Command{Use: "add", Short: "Authenticate and add an account", RunE: runAccountAdd}
 var accountSwitchCmd = &cobra.Command{Use: "switch <account-id>", Args: cobra.ExactArgs(1), Short: "Authenticate and switch accounts", RunE: runAccountSwitch}
+
+func init() {
+	// The same hidden escape hatch every other daemon-talking command has. Both of these change the
+	// active identity, so both take the tunnel down with it (FPL26 D3).
+	for _, c := range []*cobra.Command{accountAddCmd, accountSwitchCmd} {
+		c.Flags().String("socket", "", "path to the daemon control socket (advanced)")
+		_ = c.Flags().MarkHidden("socket")
+	}
+}
+
 var accountForgetCmd = &cobra.Command{Use: "forget <account-id>", Args: cobra.ExactArgs(1), Short: "Forget local account data", RunE: runAccountForget}
 
 func init() {
@@ -143,7 +150,8 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 		return fmt.Errorf("failed to save account context: %w", err)
 	}
 
-	vpnResult := synchronizeVPNAccount(cmd, cfg, previousAccountID)
+	socketPath, _ := cmd.Flags().GetString("socket")
+	vpnResult := disconnectVPNForAccountChange(socketPath, previousAccountID, cfg.GetAccountID())
 	result := accountSwitchResult{SchemaVersion: 1, AccountID: session.AccountID, AccountChanged: previousAccountID != session.AccountID, VPN: vpnResult}
 	return emitAccountResult(cmd, result, func() {
 		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s\n", session.AccountID)
@@ -160,76 +168,62 @@ func verifyRequestedAccount(requested, authenticated string) error {
 	return nil
 }
 
-func synchronizeVPNAccount(cmd *cobra.Command, cfg *config.Config, previousAccountID string) vpnSynchronization {
-	accountID := cfg.GetAccountID()
+/*
+The states an account switch reports for the VPN. Named constants because a caller branches on
+them; the message beside each is written for a person and is expected to be reworded.
+*/
+const (
+	vpnStateDisconnected = "disconnected"
+	vpnStateUnchanged    = "unchanged"
+	vpnStateNotRunning   = "not-running"
+	vpnStateFailed       = "failed"
+)
+
+/*
+Take the tunnel down, because the identity that opened it has changed (FPL26 D3).
+
+THIS USED TO CONNECT. It enrolled this machine under the new account, minted a session and called
+`up`, unconditionally, without ever asking whether the tunnel had been running. So switching account
+on a machine with the VPN deliberately off turned it on. The same complaint was reported against
+RunOS Desktop, whose automatic account-follow did exactly this: "even though i don't have the
+connect at startup option selected, i seem to be connected". The app's copy was removed; this one
+was not.
+
+It was also a SECOND COPY of the enrol-mint-up sequence that `vpn up` owns. Two copies of an
+account-scoped sequence is how the account-switch defects got in: one of them was fixed and the
+other was not. There is now one, and this is not it.
+
+Connecting the new account is the person's decision, and it is one command.
+*/
+func disconnectVPNForAccountChange(socketPath, previousAccountID, accountID string) vpnSynchronization {
 	result := vpnSynchronization{AccountID: accountID}
-	daemon := vpnSocketClient(cmd)
-	identityResponse, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity, AccountID: accountID})
+
+	// A re-authentication of the SAME account is not a change, and people do it to refresh a
+	// sign-in. Dropping their tunnel for it would be an unpleasant surprise.
+	if previousAccountID == accountID || previousAccountID == "" {
+		result.State = vpnStateUnchanged
+		return result
+	}
+
+	response, err := vpn.NewClient(socketPath).Call(vpn.Request{Op: vpn.OpDown})
 	if err != nil {
+		// No daemon is the ORDINARY case: `runos desktop install` does not write one. It must never
+		// stop somebody changing account, and it is not an error worth reporting as one.
 		var notRunning *vpn.NotRunningError
 		if errors.As(err, &notRunning) {
-			if previousAccountID != "" && previousAccountID != accountID {
-				result.State = "mismatch"
-				result.Message = "The CLI account changed, but the VPN daemon could not stop the old account. Run 'sudo runos vpn restart'."
-			} else {
-				result.State = "not-running"
-				result.Message = "The account changed. The VPN service is not running."
-			}
+			result.State = vpnStateNotRunning
 			return result
 		}
-		result.State = "failed"
-		result.Message = err.Error()
+		result.State, result.Message = vpnStateFailed, err.Error()
 		return result
 	}
-	token, err := auth.ResolveToken(cfg)
-	if err != nil {
-		result.State, result.Message = "failed", err.Error()
-		return result
-	}
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "this-machine"
-	}
-	// This path runs during an account switch, which already holds a live session; a needSignIn here
-	// is reported as the failure it is rather than opening a browser mid-switch.
-	device, needSignIn, err := enrolDevice(cfg, token, identityResponse.Identity.PublicKey, hostname, runtime.GOOS)
-	if needSignIn {
-		result.State, result.Message = "failed", "your session has expired; run 'runos login' and try again"
-		return result
-	}
-	if errors.Is(err, errKeyRevoked) {
-		rotated, rotateErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: accountID})
-		if rotateErr != nil {
-			result.State, result.Message = "failed", rotateErr.Error()
-			return result
-		}
-		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
-	}
-	if err != nil {
-		result.State, result.Message = "failed", err.Error()
-		return result
-	}
-	session, signInRequired, err := mintSession(cfg, token, device.ID)
-	if err != nil {
-		result.State, result.Message = "failed", err.Error()
-		return result
-	}
-	if signInRequired {
-		result.State = "failed"
-		result.Message = "The VPN rejected the fresh browser authentication. Run 'runos vpn up' to retry."
-		return result
-	}
-	response, err := daemon.Call(vpn.Request{Op: vpn.OpUp, AccountID: accountID, DeviceID: device.ID, ConductorURL: cfg.GetAPIURL(), SessionToken: session.Token, SessionExpiresAt: session.ExpiresAt})
-	if err != nil {
-		result.State, result.Message = "failed", err.Error()
-		return result
-	}
-	result.Synchronized = true
-	result.State = "synchronized"
-	if response.Status != nil && !response.Status.Running {
-		result.State = "down"
-		result.Message = "The VPN account synchronized, but the tunnel is down."
-	}
+	_ = response
+
+	result.State = vpnStateDisconnected
+	result.Message = fmt.Sprintf(
+		"The VPN was disconnected because the account changed. Run 'runos vpn up' to connect %s.",
+		accountID,
+	)
 	return result
 }
 
