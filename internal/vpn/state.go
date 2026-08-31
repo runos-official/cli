@@ -149,7 +149,29 @@ func (s *State) Active() *AccountState {
 	return s.Accounts[s.ActiveAccountID]
 }
 
-// IdentityForAccount returns a stable key for one account.
+/*
+ExistingIdentityForAccount returns the account's key, or nil when it has never had one.
+
+The difference from IdentityForAccount is the whole point: that one MINTS a key when it finds none,
+which is right when the CLI is about to enrol whatever it gets back, and wrong everywhere else. On
+an account switch the CLI enrolled the previous account's key and then handed the daemon the new
+account id, which minted a second keypair, brought the tunnel up on it, and routed nothing: the
+public key conductor held was not the private key the tunnel was using.
+
+A caller that cannot enrol must use this one and refuse.
+*/
+func (s *State) ExistingIdentityForAccount(accountID string) *AccountState {
+	if s == nil {
+		return nil
+	}
+	if accountID == "" {
+		return s.Active()
+	}
+	return s.Accounts[accountID]
+}
+
+// IdentityForAccount returns a stable key for one account, MINTING one when the account has none.
+// Only a caller that will enrol the key it gets back may use this; see ExistingIdentityForAccount.
 func (s *State) IdentityForAccount(accountID string) (*AccountState, error) {
 	if accountID == "" {
 		if active := s.Active(); active != nil {

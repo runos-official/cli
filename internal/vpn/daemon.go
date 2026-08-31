@@ -146,9 +146,24 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	if req.SessionToken == "" || req.AccountID == "" || req.DeviceID == "" || req.ConductorURL == "" {
 		return Response{Error: "up needs a session token, account, device and conductor url"}
 	}
-	identity, err := d.state.IdentityForAccount(req.AccountID)
-	if err != nil {
-		return Response{Error: err.Error()}
+	/*
+	 THE KEY MUST ALREADY EXIST. Minting one here is how a tunnel came up on a key conductor had
+	 never seen.
+
+	 `up` is handed a device id that the CLI enrolled moments ago, and enrolment names a public key.
+	 If this account has no key on this machine, then whatever was enrolled belongs to a DIFFERENT
+	 account, and starting a tunnel with a freshly minted key would produce exactly the reported
+	 failure: an interface that comes up, clusters that list, and not one packet that routes.
+
+	 Refusing is recoverable in one command. Silently minting was not recoverable at all, because
+	 nothing about it looked wrong.
+	*/
+	identity := d.state.ExistingIdentityForAccount(req.AccountID)
+	if identity == nil {
+		return Response{Error: fmt.Sprintf(
+			"this machine has no VPN key enrolled for account %s; run 'runos vpn up' again",
+			req.AccountID,
+		)}
 	}
 	// Keep the old tunnel until the target session arrives fully prepared.
 	if old := d.state.Active(); old != nil && old.AccountID != req.AccountID && d.client != nil {
