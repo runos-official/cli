@@ -18,10 +18,46 @@ func init() {
 	updateCmd.Flags().BoolP("json", "j", false, "Output as JSON")
 }
 
+/*
+One component's update state.
+
+`updated` and `version` keep their old meanings so an older reader is unaffected: `updated` is
+whether this run INSTALLED anything, and `version` is the latest known version. Neither answers the
+question a UI actually asks, which is "is there something to install?"
+
+MEASURED 2026-08-31: with `--check`, `updated` is false whether you are current or six versions
+behind, and `version` is the latest in both cases, so there was nothing to compare it against. The
+only difference was an English sentence, and for the desktop the two payloads were byte-identical.
+RunOS Desktop needs the verdict to disable its Update item and to badge its menu bar.
+
+`updateAvailable` is that verdict and `currentVersion` is what is actually installed. Both are
+additive.
+*/
 type updateComponentResult struct {
-	Updated bool   `json:"updated"`
-	Version string `json:"version,omitempty"`
-	Message string `json:"message,omitempty"`
+	Updated bool `json:"updated"`
+	// Whether something is available to install. A FLAG, not a sentence to match on.
+	UpdateAvailable bool `json:"updateAvailable"`
+	// What is installed right now. `Version` stays the LATEST known version.
+	CurrentVersion string `json:"currentVersion,omitempty"`
+	Version        string `json:"version,omitempty"`
+	Message        string `json:"message,omitempty"`
+}
+
+/*
+Whether a desktop update is available, by the same rule the installer uses.
+
+`Manager.Update()` treats `installed == latest` as up to date and installs otherwise, so the check
+has to agree with it. A check that disagreed would either offer an update that does nothing, or hide
+one that would have worked.
+
+An empty side is never an update: nothing installed is the install path's business, and a latest
+that could not be read is not evidence of anything.
+*/
+func desktopUpdateAvailable(installed, latest string) bool {
+	if installed == "" || latest == "" {
+		return false
+	}
+	return installed != latest
 }
 
 type combinedUpdateResult struct {
@@ -44,7 +80,10 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	}
 	updater.SetProgress(progress)
 	currentVersion := updater.CurrentVersion()
-	result := combinedUpdateResult{SchemaVersion: 1, CLI: updateComponentResult{Version: currentVersion}}
+	result := combinedUpdateResult{SchemaVersion: 1, CLI: updateComponentResult{
+		Version:        currentVersion,
+		CurrentVersion: currentVersion,
+	}}
 	fmt.Fprintf(progress, "Current CLI version: %s\n", currentVersion)
 
 	if update.IsDevBuild() {
@@ -59,6 +98,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 		if !updater.NeedsUpdate(latestVersion) {
 			result.CLI.Message = "The CLI is already up to date."
 		} else if checkOnly {
+			result.CLI.UpdateAvailable = true
 			result.CLI.Message = "A CLI update is available."
 		} else {
 			fmt.Fprintln(progress, "Downloading the CLI update…")
@@ -81,7 +121,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 			return statusErr
 		}
 		if status.Installed {
-			component := &updateComponentResult{Version: status.Version}
+			component := &updateComponentResult{Version: status.Version, CurrentVersion: status.Version}
 			result.Desktop = component
 			if checkOnly {
 				latest, latestErr := manager.LatestVersion()
@@ -89,7 +129,12 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 					return latestErr
 				}
 				component.Version = latest
-				component.Message = "Desktop update check completed."
+				component.UpdateAvailable = desktopUpdateAvailable(status.Version, latest)
+				if component.UpdateAvailable {
+					component.Message = "A RunOS Desktop update is available."
+				} else {
+					component.Message = "RunOS Desktop is already up to date."
+				}
 			} else {
 				desktopResult, desktopErr := manager.Update()
 				if desktopErr != nil {
@@ -98,6 +143,8 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 				component.Updated = desktopResult.Updated
 				component.Version = desktopResult.Version
 				component.Message = desktopResult.Message
+				// It has just been installed, so nothing is waiting any more.
+				component.CurrentVersion = desktopResult.Version
 			}
 			fmt.Fprintln(progress, component.Message)
 		}
