@@ -177,11 +177,31 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	// machine that never installed the VPN reads nothing about it.
 	if running, err := vpn.NewService().Running(); err == nil && running {
 		daemonVersion := runningDaemonVersion(cmd)
-		if vpnDaemonNeedsRestart(true, daemonVersion, currentVersion) {
-			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, currentVersion))
+		installed := installedCLIVersion(currentVersion, result.CLI)
+		if vpnDaemonNeedsRestart(true, daemonVersion, installed) {
+			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, installed))
 		}
 	}
 	return nil
+}
+
+/*
+Which build is now ON DISK, which is the one a restarted daemon would load.
+
+NOT `version.Version`. That is the constant compiled into the RUNNING process, and installing an
+update replaces the file and never re-execs, so it still holds the OLD version for the rest of the
+command. Comparing the daemon against it meant that on the ordinary machine, where daemon and CLI
+were in step, `runos update` installed a new build, the loaded daemon was genuinely behind it, and
+the comparison was the old version against itself. The notice said nothing, on every real update,
+which is the one case it exists for.
+
+The update result already carries what it installed, so this asks it rather than the process.
+*/
+func installedCLIVersion(runningVersion string, cli updateComponentResult) string {
+	if cli.Updated && cli.Version != "" {
+		return cli.Version
+	}
+	return runningVersion
 }
 
 /*

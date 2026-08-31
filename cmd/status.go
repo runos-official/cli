@@ -84,7 +84,7 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			status["vpnAccountId"] = vpnAccountID
 		}
 		status["vpnRunning"] = daemonStatus.Status.Running
-		if cfg.AccountID != "" && vpnAccountID != "" && cfg.AccountID != vpnAccountID {
+		if vpnAccountMismatch(cfg.AccountID, vpnAccountID, daemonStatus.Status.Running) {
 			status["vpnAccountMismatch"] = true
 		}
 	}
@@ -410,6 +410,26 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 		return sessionProbe{accepted: false, message: message, expired: expired}, true
 	}
 	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true
+}
+
+/*
+Whether a tunnel is up on an account other than the one the CLI is signed in to.
+
+IT NEEDS THE TUNNEL TO BE UP. `account switch` takes the tunnel down and clears its session, but
+the daemon keeps its ActiveAccountID, because only `forget` clears that, and its status is read
+from there. So the daemon went on answering with the PREVIOUS account for a tunnel that was down.
+
+This used to compare the two account ids and nothing else, so after a switch every `runos status`
+reported "The VPN is still signed in to <old account>, so the clusters 'runos vpn status' lists
+belong to <old account>" about a tunnel carrying nothing and listing nothing, until the next
+`runos vpn up`. The claim is about traffic going the wrong way, and no traffic goes anywhere down
+a tunnel that is not running.
+*/
+func vpnAccountMismatch(configAccountID, vpnAccountID string, running bool) bool {
+	if !running || configAccountID == "" || vpnAccountID == "" {
+		return false
+	}
+	return configAccountID != vpnAccountID
 }
 
 /*

@@ -195,7 +195,14 @@ func prepareVPNSession(
 		if rErr != nil {
 			return nil, nil, rErr
 		}
-		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+		// THE FLAG, NOT JUST THE ERROR. Dropping it here left `device` nil beside a nil error, so
+		// the guard below passed and the next line read `device.ID`: `runos vpn up` died with a Go
+		// panic instead of asking for a sign-in, and a caller parsing its JSON got a stack trace on
+		// stderr and a signal exit. The first call has honoured this flag since it was written.
+		device, needSignIn, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+		if needSignIn {
+			return nil, nil, nil
+		}
 	}
 	if err != nil {
 		return nil, nil, err
@@ -263,15 +270,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		// on another account is an account SWITCH, so the old tunnel goes down and the person
 		// connects the new account deliberately rather than by accident.
 		if changed := describeAccountChange(accountBefore, cfg.GetAccountID()); changed != "" {
-			/*
-			 DOWN, NOT LOGOUT. The daemon's logout op also FORGETS this machine's key.
-
-			 Enrolment is idempotent on the public key, so wiping it means the previous account
-			 gains a dead device row the next time anybody connects it. The same defect was fixed in
-			 `runos logout` and in `account switch`; this was the last path still carrying it, which
-			 is what a shared op name buys you when only some callers get corrected.
-			*/
-			_, _ = daemon.Call(vpn.Request{Op: vpn.OpDown})
+			// The teardown itself belongs to the sign-in, not to this caller: EVERY path that
+			// changes identity has to do it, and having it here meant `runos login` did not. See
+			// `reportVPNAccountChange`. This is only the part that is specific to `vpn up`:
+			// stopping, rather than connecting an account the person did not ask for.
 			return errors.New(changed)
 		}
 		if device, session, err = prepareVPNSession(cmd, cfg, token, daemon); err != nil {
@@ -374,7 +376,7 @@ func signInAndReload(cmd *cobra.Command) (*config.Config, string, error) {
 		report = &jsonSignIn{out: cmd.OutOrStdout()}
 	}
 	noBrowser, _ := cmd.Flags().GetBool("no-browser")
-	if err := interactiveLoginReporting(report, !useJSON, !noBrowser); err != nil {
+	if err := interactiveLoginReporting(cmd, report, !useJSON, !noBrowser); err != nil {
 		return nil, "", err
 	}
 	cfg, err := config.Load()

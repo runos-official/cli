@@ -53,6 +53,9 @@ func init() {
 	loginCmd.Flags().Bool("no-browser", false, "Print the sign-in link instead of opening a browser; the caller opens it. Use when a UI shows the device code and opens the link on a click")
 	loginCmd.Flags().String("api-key", "", "Authenticate with a personal access token (PAT) instead of the browser flow; pair with --account-id")
 	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the PAT is account-scoped)")
+	// Signing in to another account takes that account's tunnel down, so this command dials the
+	// daemon and has to declare the override like every other command that does.
+	registerSocketFlag(loginCmd)
 }
 
 // resolveLoginAccountID validates the account id to persist for an
@@ -82,9 +85,9 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		// The device id and the URL become readable by something other than a person: RunOS Desktop
 		// shows them in a window so the id can be checked against the browser and the URL used when
 		// the browser does not open.
-		return interactiveLoginReporting(&jsonSignIn{out: cmd.OutOrStdout()}, false, !noBrowser)
+		return interactiveLoginReporting(cmd, &jsonSignIn{out: cmd.OutOrStdout()}, false, !noBrowser)
 	}
-	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true, !noBrowser)
+	return interactiveLoginReporting(cmd, textSignIn{out: os.Stdout}, true, !noBrowser)
 }
 
 /*
@@ -95,11 +98,12 @@ the manifest-cache notice are prose for a terminal; written into a JSON stream t
 the last line a caller is parsing, and a caller reading events already knows it succeeded because
 it was told.
 */
-func interactiveLoginReporting(report signInReporter, chatty bool, autoOpenBrowser bool) error {
+func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty bool, autoOpenBrowser bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	previousAccountID := cfg.AccountID
 	session, err := browserAuthenticateReporting(cfg, report, autoOpenBrowser)
 	if err != nil {
 		return err
@@ -108,6 +112,7 @@ func interactiveLoginReporting(report signInReporter, chatty bool, autoOpenBrows
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}
+	reportVPNAccountChange(cmd, previousAccountID, cfg.AccountID)
 	if chatty {
 		fmt.Printf("\nAuthenticated successfully!\n")
 		warmManifestCache(cfg)
@@ -264,10 +269,12 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 		return err
 	}
 
+	previousAccountID := cfg.AccountID
 	cfg.ApplyAPIKeyLogin(aid, strings.TrimSpace(apiKey), time.Now().UTC().Format(time.RFC3339))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}
+	reportVPNAccountChange(cmd, previousAccountID, aid)
 
 	fmt.Printf("Stored API key for account %s.\n", aid)
 	fmt.Println("The CLI will use this PAT for authentication. Run 'runos logout' to clear it.")
@@ -292,4 +299,28 @@ func warmManifestCache(cfg *config.Config) {
 		return
 	}
 	fmt.Println("Run 'runos --help' to see available commands.")
+}
+
+/*
+Take a tunnel down when a sign-in lands on a different account.
+
+FPL26 D3: the tunnel never outlives the identity that opened it. Every other path that changes
+identity does this, and `runos login` did not, so a tunnel opened on one account carried on routing
+that account's traffic after the person signed in to another. The daemon kept the old session
+token, the old device key and the old routes, and nothing anywhere said so.
+
+It is the same function `runos vpn up` calls for its confirmation, and THAT caller already tore
+down on an account change. The teardown had been added to one caller instead of to the step every
+caller shares.
+
+Quiet on the ordinary paths. `disconnectVPNForAccountChange` no-ops when the account did not
+change and when there was no previous account, and a machine with no VPN service at all is the
+common case, not a failure.
+*/
+func reportVPNAccountChange(cmd *cobra.Command, previousAccountID, accountID string) {
+	socketPath, _ := cmd.Flags().GetString("socket")
+	result := disconnectVPNForAccountChange(socketPath, previousAccountID, accountID)
+	if result.Message != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), result.Message)
+	}
 }
