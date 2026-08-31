@@ -26,19 +26,20 @@ var vpnCmd = &cobra.Command{
 	Long: `Manage the RunOS VPN on this machine.
 
   runos vpn install      Install the VPN service (needs admin once)
-  runos vpn up           Sign in and connect to your default cluster
+  runos vpn up           Connect to your default cluster (sign in first with 'runos login')
   runos vpn status       Show the tunnel and each cluster
   runos vpn connect <cid> / disconnect <cid>
   runos vpn down         Disconnect and end the session
   runos vpn logout       Down, and forget this device's key on this machine
 
-Each machine is a device with its own key and address. A sign-in lasts 24 hours;
-after that the tunnel is cut and 'runos vpn up' signs you in again.`,
+Each machine is a device with its own key and address. Signing in is 'runos login'
+and connecting is 'runos vpn up': one identity, and a tunnel that uses it. A sign-in
+lasts 24 hours, after which the tunnel is cut and you sign in again.`,
 }
 
 var vpnUpCmd = &cobra.Command{
 	Use:   "up",
-	Short: "Sign in and bring the VPN up",
+	Short: "Bring the VPN up (sign in first with 'runos login')",
 	RunE:  runVPNUp,
 }
 
@@ -76,7 +77,7 @@ func vpnSocketClient(cmd *cobra.Command) *vpn.Client {
 // person being present. Reads/other commands are unaffected; only up/connect need a person.
 func refuseVPNWithPAT(cfg *config.Config) error {
 	if auth.Kind(cfg).IsPAT() {
-		return fmt.Errorf("a personal access token cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login' (or just run 'runos vpn up', which signs you in), then retry")
+		return fmt.Errorf("a personal access token cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login', then run 'runos vpn up'")
 	}
 	return nil
 }
@@ -96,6 +97,106 @@ func signInRequiredError(nonInteractive bool) error {
 	return fmt.Errorf("the VPN needs a fresh sign-in and this run may not open a browser; run 'runos vpn up' when you are at the machine")
 }
 
+/*
+vpnSignedOutError turns "no credential" into the one sentence that fixes it.
+
+Kept separate from the reporting below so the wording is a pure function with a test. Any OTHER
+resolution failure passes through untouched: a locked keychain is not a sign-out, and rewording it
+into one would send the person to a browser that cannot help.
+*/
+func vpnSignedOutError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, auth.ErrNotAuthenticated) {
+		return fmt.Errorf("you are not signed in. Run 'runos login' first, then 'runos vpn up'")
+	}
+	return err
+}
+
+// reportSignedOut returns the sentence AND, under --json, emits it as an event. The stream is the
+// only channel a UI driving this command can see; without the event the window shows a spinner and
+// then a generic failure, which is what RunOS Desktop did.
+func reportSignedOut(cmd *cobra.Command, err error) error {
+	wrapped := vpnSignedOutError(err)
+	if useJSON, _ := cmd.Flags().GetBool("json"); useJSON && errors.Is(err, auth.ErrNotAuthenticated) {
+		(&jsonSignIn{out: cmd.OutOrStdout()}).Failed("not_signed_in", wrapped.Error())
+	}
+	return wrapped
+}
+
+/*
+describeAccountChange reports a confirmation that came back as a different person.
+
+Empty means carry on, which is the ordinary case. A sentence means stop: everything downstream is
+account-scoped, so continuing would post one account's device id into another account's URL.
+*/
+func describeAccountChange(before, after string) string {
+	if before == after || after == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"you signed in to account %s, not %s, so the VPN was disconnected. Run 'runos vpn up' to connect %s",
+		after, before, after,
+	)
+}
+
+/*
+prepareVPNSession runs the whole account-scoped sequence: this machine's key for THIS account, its
+enrolment, and the session mint.
+
+One function because the three steps share an account and must never be retried apart. A nil device
+with a nil error is conductor asking for a fresh sign-in; the caller signs in and calls this again
+from the top, which re-derives the key and the device id for whatever account the sign-in landed on.
+*/
+func prepareVPNSession(
+	cmd *cobra.Command,
+	cfg *config.Config,
+	token string,
+	daemon *vpn.Client,
+) (*vpnDeviceView, *mintedSession, error) {
+
+	// This machine's device key for this account (the daemon generates one on first use).
+	identity, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity, AccountID: cfg.GetAccountID()})
+	if err != nil {
+		return nil, nil, err
+	}
+	publicKey := identity.Identity.PublicKey
+
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "this-machine"
+	}
+
+	device, needSignIn, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
+	if needSignIn {
+		return nil, nil, nil
+	}
+	if errors.Is(err, errKeyRevoked) {
+		// The key was revoked (console, or an admin) and can never enrol again: rotate it in the
+		// daemon and enrol the new one, so a revoked machine is one `up` from working again
+		// rather than stuck forever. The old device row stays revoked in the account.
+		fmt.Fprintln(cmd.ErrOrStderr(), "This machine's previous VPN key was revoked; enrolling a new one.")
+		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: cfg.GetAccountID()})
+		if rErr != nil {
+			return nil, nil, rErr
+		}
+		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	session, needSignIn, err := mintSession(cfg, token, device.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if needSignIn {
+		return nil, nil, nil
+	}
+	return device, session, nil
+}
+
 func runVPNUp(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	cfg, err := config.Load()
@@ -108,63 +209,53 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 
 	daemon := vpnSocketClient(cmd)
 
-	// Ask the daemon for this machine's device key (it generates one on first use).
-	identity, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity, AccountID: cfg.GetAccountID()})
-	if err != nil {
-		return err
-	}
-	publicKey := identity.Identity.PublicKey
+	/*
+	 CONNECTING CONSUMES A SIGN-IN. IT NEVER CREATES ONE (FPL26 D1).
 
+	 This resolve used to happen before `up` had decided anything, and its failure was returned raw.
+	 On a signed-out machine that meant exit 1, an empty stdout and the remedy on stderr, which is
+	 invisible to RunOS Desktop: its Sign In button ran this command, read stdout, and so could
+	 never sign anybody in. Reported 2026-08-28.
+
+	 `runos login` is now the one place an identity is established, and this says so, in the JSON
+	 stream as well so a UI can put the remedy in front of the person.
+	*/
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
-		return err
+		return reportSignedOut(cmd, err)
 	}
 
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "this-machine"
-	}
-	device, needSignIn, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
-	if needSignIn {
-		// The session aged out before `up` reached the session mint. Sign in and start again from
-		// the enrolment, rather than failing the command that exists to fix this.
-		if cfg, token, err = signInAndReload(cmd); err != nil {
-			return err
-		}
-		device, needSignIn, err = enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
-		if needSignIn {
-			return fmt.Errorf("the sign-in did not refresh the session; try 'runos login' then 'runos vpn up' again")
-		}
-	}
-	if errors.Is(err, errKeyRevoked) {
-		// The key was revoked (console, or an admin) and can never enrol again: rotate it in the
-		// daemon and enrol the new one, so a revoked machine is one `up` from working again
-		// rather than stuck forever. The old device row stays revoked in the account.
-		fmt.Fprintln(cmd.ErrOrStderr(), "This machine's previous VPN key was revoked; enrolling a new one.")
-		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: cfg.GetAccountID()})
-		if rErr != nil {
-			return rErr
-		}
-		device, _, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
-	}
+	device, session, err := prepareVPNSession(cmd, cfg, token, daemon)
 	if err != nil {
 		return err
 	}
+	if device == nil {
+		/*
+		 Conductor wants a sign-in from the last few minutes before it will mint a session. That is
+		 the "2FA on the VPN" gate and it is deliberate, so the answer is to ask the person to
+		 confirm it is them and then RUN THE WHOLE SEQUENCE AGAIN.
 
-	// Mint a session. Conductor requires a fresh interactive sign-in; on refusal, run the browser
-	// flow once and retry with the new token. This is the whole re-auth story: no new command.
-	session, needSignIn, err := mintSession(cfg, token, device.ID)
-	if err != nil {
-		return err
-	}
-	if needSignIn {
+		 The whole sequence, not just the failed step. The device key and the device id are both
+		 account-scoped: retrying only the mint carried the previous account's device id into the new
+		 account's URL, which conductor answers 404 for, and left the daemon holding a key that
+		 account never enrolled. That is the "sign in twice" report, and a tunnel that came up and
+		 routed nothing.
+		*/
+		accountBefore := cfg.GetAccountID()
 		if cfg, token, err = signInAndReload(cmd); err != nil {
 			return err
 		}
-		if session, needSignIn, err = mintSession(cfg, token, device.ID); err != nil {
+		// D3: the tunnel never outlives the identity that opened it. A confirmation that came back
+		// on another account is an account SWITCH, so the old tunnel goes down and the person
+		// connects the new account deliberately rather than by accident.
+		if changed := describeAccountChange(accountBefore, cfg.GetAccountID()); changed != "" {
+			_, _ = daemon.Call(vpn.Request{Op: vpn.OpLogout})
+			return errors.New(changed)
+		}
+		if device, session, err = prepareVPNSession(cmd, cfg, token, daemon); err != nil {
 			return err
 		}
-		if needSignIn {
+		if device == nil {
 			return fmt.Errorf("the sign-in did not refresh the session window; try 'runos login' then 'runos vpn up' again")
 		}
 	}

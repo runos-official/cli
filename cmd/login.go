@@ -87,14 +87,6 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true, !noBrowser)
 }
 
-// interactiveLogin runs the browser device-code flow and saves the resulting Firebase session.
-// Extracted from runLogin so `runos vpn up` can force a FRESH interactive sign-in (a VPN session
-// needs an auth_time from the last few minutes, which a refreshed token does not carry). Returns
-// after "Authenticated successfully!" is printed, or an error.
-func interactiveLogin() error {
-	return interactiveLoginReporting(textSignIn{out: os.Stdout}, true, true)
-}
-
 /*
 The same sign-in, reporting through `report`.
 
