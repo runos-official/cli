@@ -4,6 +4,7 @@ package desktop
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/runos-official/cli/internal/update"
 	"io"
 	"net/http"
 	"os"
@@ -199,7 +200,14 @@ func (m *Manager) Update() (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if status.Installed && status.Version == latest {
+	/*
+	 UP TO DATE MEANS NOT BEHIND, not merely different.
+
+	 This compared for equality, so a bundle NEWER than the latest release was replaced by the older
+	 one. Harmless while every local build claimed to be 0.1.0, which is always behind; reachable as
+	 soon as local builds began reporting the version they are working toward.
+	*/
+	if status.Installed && !update.IsNewerVersion(latest, status.Version) {
 		status.Action = "update"
 		status.Message = "RunOS Desktop is already up to date."
 		return status, nil

@@ -155,6 +155,11 @@ func (u *Updater) NeedsUpdate(latest string) bool {
 	return isNewerVersion(latest, current)
 }
 
+// IsNewerVersion reports whether a is newer than b. Exported because the DESKTOP update path needs
+// the same rule: it treated any difference as needing an install, which downgraded a build that was
+// AHEAD of the latest release. One comparison, so the two can never disagree again.
+func IsNewerVersion(a, b string) bool { return isNewerVersion(a, b) }
+
 // isNewerVersion returns true if version a is newer than version b.
 // Versions are expected in semver format: major.minor.patch (e.g., "0.1.12")
 func isNewerVersion(a, b string) bool {

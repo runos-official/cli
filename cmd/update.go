@@ -57,7 +57,10 @@ func desktopUpdateAvailable(installed, latest string) bool {
 	if installed == "" || latest == "" {
 		return false
 	}
-	return installed != latest
+	// NEWER, not merely different. Any-difference downgraded a build that was ahead of the latest
+	// release, which was invisible while every local build claimed 0.1.0 and became reachable the
+	// moment local builds started reporting the version under development.
+	return update.IsNewerVersion(latest, installed)
 }
 
 type combinedUpdateResult struct {

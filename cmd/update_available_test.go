@@ -54,9 +54,11 @@ func TestTheCheckReportsAVerdictAndNotJustASentence(t *testing.T) {
 /*
 The desktop verdict, which must agree with what the installer actually does.
 
-`Manager.Update()` treats `installed == latest` as up to date and installs otherwise, so the check
-uses the same rule. A check that disagreed with the installer would either offer an update that does
-nothing or hide one that would have worked.
+Both now ask the same question, "is the latest NEWER than what is installed", through one shared
+comparison. They used to ask "is it different", which meant a build ahead of the latest release was
+reported as needing an update and then downgraded by it. A check that disagreed with the installer
+would either offer an update that does nothing or hide one that would have worked, so they share the
+rule rather than each carrying a copy.
 */
 func TestTheDesktopVerdictMatchesWhatTheInstallerWouldDo(t *testing.T) {
 	for _, tc := range []struct {
