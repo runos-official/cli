@@ -397,7 +397,7 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 		Code string `json:"code"`
 	}
 	_ = result.Decode(&envelope)
-	accepted, known := sessionProbeVerdict(result.StatusCode, envelope.Code)
+	accepted, known := sessionProbeVerdict(result.StatusCode)
 	if !known {
 		return sessionProbe{}, false
 	}
@@ -425,9 +425,14 @@ A 401 IS something learned: the credential is refused. 403 and 5xx are not. A 40
 credential was ACCEPTED and this one action is not allowed, and calling that a sign-out would send
 somebody to a browser to fix a permission.
 
+It takes the STATUS AND NOTHING ELSE. It used to accept conductor's error code as well and never
+read it, which reads as "the code changes the verdict" to anyone extending this. It does not: the
+code says WHY the credential was refused, which the caller uses to pick the sentence, and a refusal
+is a refusal whatever the reason.
+
 Pure, so the table above can cover every case without a conductor.
 */
-func sessionProbeVerdict(statusCode int, errorCode string) (accepted, known bool) {
+func sessionProbeVerdict(statusCode int) (accepted, known bool) {
 	switch {
 	case statusCode == http.StatusUnauthorized:
 		return false, true

@@ -35,18 +35,19 @@ func TestARefusedCredentialIsNotAWorkingSignIn(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		status   int
-		code     string
 		accepted bool
 		known    bool
 	}{
-		{name: "the session aged out", status: http.StatusUnauthorized, code: "auth.session_expired", accepted: false, known: true},
-		{name: "the token is refused outright", status: http.StatusUnauthorized, code: "", accepted: false, known: true},
-		{name: "forbidden is a permission, not a sign-out", status: http.StatusForbidden, code: "", known: false},
-		{name: "a server fault says nothing either way", status: http.StatusInternalServerError, code: "", known: false},
-		{name: "accepted", status: http.StatusOK, code: "", accepted: true, known: true},
+		// One case, because the verdict does not depend on WHY. A session that aged out
+		// (`auth.session_expired`) and a token refused outright are both 401 and both refusals;
+		// the reason picks the sentence the caller prints, not whether the credential works.
+		{name: "a refusal", status: http.StatusUnauthorized, accepted: false, known: true},
+		{name: "forbidden is a permission, not a sign-out", status: http.StatusForbidden, known: false},
+		{name: "a server fault says nothing either way", status: http.StatusInternalServerError, known: false},
+		{name: "accepted", status: http.StatusOK, accepted: true, known: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			accepted, known := sessionProbeVerdict(tc.status, tc.code)
+			accepted, known := sessionProbeVerdict(tc.status)
 			if known != tc.known {
 				t.Fatalf("known = %v, want %v", known, tc.known)
 			}
