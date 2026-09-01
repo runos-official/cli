@@ -184,7 +184,19 @@ func classifyCursorServer(name string) *cursorMCPServer {
 			return &cursorMCPServers[i]
 		}
 	}
-	if !strings.HasPrefix(trimmed, "runos") {
+	// Contains, not HasPrefix. "runos" does not have to be the first word of the
+	// name. HasPrefix covered runos-write-prod and missed prod-runos-write, and
+	// prefixing an account, an environment or a company onto a copied entry is as
+	// ordinary as appending one. Measured 2026-09-01 against the built binary:
+	// prod-runos-write, acme-runos-sensitive-write, team/runos-write and a name
+	// carrying a leading zero-width space all returned allow on a live write
+	// server. TrimSpace does not remove a zero-width space, because Unicode does
+	// not class it as whitespace, so the prefix test failed on that too.
+	//
+	// The risky-word test below still does the real work, so a name carrying
+	// "runos" but neither "write" nor "sensitive" is still somebody else's
+	// server and is still allowed.
+	if !strings.Contains(trimmed, "runos") {
 		return nil
 	}
 	if strings.Contains(trimmed, "sensitive") || strings.Contains(trimmed, "write") {

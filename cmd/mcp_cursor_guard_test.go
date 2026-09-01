@@ -200,6 +200,37 @@ var cursorGuardCases = []cursorGuardCase{
 		permission: "ask",
 	},
 
+	// 2b. The fix for 2 anchored on a PREFIX, so it covered runos-write-prod and
+	//     missed prod-runos-write. Prefixing an account, an environment or a
+	//     company onto a copied entry is as ordinary as appending one. Measured
+	//     2026-09-01 against the built binary: every payload below returned
+	//     {"permission":"allow"} with no prompt, on a fully live write server.
+	{
+		name:       "a write server with the environment prefixed asks",
+		payload:    `{"mcp_server_name":"prod-runos-write"}`,
+		permission: "ask",
+	},
+	{
+		name:       "a sensitive-write server with a company prefixed asks",
+		payload:    `{"mcp_server_name":"acme-runos-sensitive-write"}`,
+		permission: "ask",
+	},
+	{
+		name:       "a write server behind a path-like prefix asks",
+		payload:    `{"mcp_server_name":"team/runos-write"}`,
+		permission: "ask",
+	},
+	{
+		name:       "a zero-width space before the name does not hide the write server",
+		payload:    `{"mcp_server_name":"\u200brunos-write"}`,
+		permission: "ask",
+	},
+	{
+		name:       "runos in the middle with no risky word is still not ours",
+		payload:    `{"mcp_server_name":"my-runos-dashboard"}`,
+		permission: "allow",
+	},
+
 	// The other half of the rule: a server that is not RunOS at all is not ours
 	// to judge. The hook fires for every MCP server in the project, so blocking
 	// somebody else's would be a defect of its own.
