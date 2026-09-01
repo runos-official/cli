@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.19.0
+
+**Cursor is the fifth `runos mcp configure` target.** It writes `.cursor/mcp.json` in the current
+directory, declaring the four RunOS servers, which scopes the tools to that project. It also writes
+`.cursor/hooks.json` and `.cursor/hooks/runos-guard.sh`, so Cursor asks before every call to
+`runos-sensitive-read`, `runos-write` and `runos-sensitive-write`. Cursor has no per-server switch in
+`mcp.json`, so all four servers load unless you pass `--read-only`, which declares the read server
+alone and removes the other three if an earlier run declared them.
+
+**The guard parses the payload rather than scanning it.** The script pipes Cursor's payload to
+`runos mcp cursor-guard`, which reads it with a real JSON parser and answers on the top-level
+`mcp_server_name`. A text scan cannot do this safely: `tool_input` is written by the model and RunOS
+write tools take free-form string maps, so a decoy `mcp_server_name` nested inside `tool_input` reads
+the same to a regex as the real key. The decision keys on the server name and never on a tool list,
+because RunOS moves a tool between servers when its risk changes and a tool list then goes stale.
+
+**Three outcomes, and the last one is deliberate.** A RunOS server that carries risk gets `ask`. Any
+other named server gets `allow`, because the hook fires for every MCP server in the project and must
+not block somebody else's. A payload with no server name the guard can read gets `ask`, so a Cursor
+that ever renames the field makes noise instead of a silent hole.
+
+**The guard is registered `failClosed`.** Cursor lets a hook that crashes, times out or prints invalid
+JSON allow the action through. This hook is the only brake on the write servers, so it blocks instead.
+While it is broken it blocks every MCP call in that project, including another tool's servers.
+
+**The command converges on the whole state, every run.** It checks and repairs the server
+declarations, the hook registration and the guard script together, and reports what it changed. A
+project whose guard was deleted, whose hook registration was lost, or whose committed `.cursor/mcp.json`
+points at another machine's binary, is repaired rather than skipped. A run that finds everything in
+place changes nothing and says so.
+
+**Nothing is written until both files parse.** An unreadable `.cursor/hooks.json` used to be found
+only after `mcp.json` had already declared four servers, which left the project loading them with no
+guard registered. Both files are now read and parsed before either is written. The JSON literal `null`
+is read as an empty object instead of panicking with a Go stack trace.
+
+**It asks before it writes, and it refuses on Windows.** A typed confirmation lists what each server
+can do, that all four load, and that the guard is a Cursor editor feature a terminal client may not
+run. `--yes` skips it. The guard is a bash script, so the command refuses on Windows and names the
+reason, rather than reporting success over a hook Windows cannot execute. `--read-only` works there.
+
+**A configured project keeps what it already had.** Both files are merged rather than replaced, so a
+server or a hook another tool put there survives, and the guard is registered once however often the
+command runs. A file that does not hold a JSON object is named in the error and left on disk.
+
+**The closing message no longer claims access the user does not have.** It says "run `runos login`"
+when there is no credential on hand, instead of "Cursor now has access to RunOS tools".
+
+**`runos mcp configure` with no target lists the targets it actually has.** The list was written out
+by hand beside the four handlers, so a fifth target could ship without appearing in it.
+
 ## v1.18.4
 
 **Installing the VPN service from a root shell no longer makes its control socket unreachable.** The

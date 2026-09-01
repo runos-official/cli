@@ -16,7 +16,7 @@ This CLI communicates with the same REST API used by the RunOS web console, givi
 - **Apps + services as IaC** -- `apps pull` / `apps diff` / `apps sync` and the matching `services` triplet round-trip cluster state to/from yaml on disk for git-versioned config
 - **Job tracking** -- follow long-running operations with real-time progress and per-step build logs
 - **Headless auth** -- personal access tokens for CI/CD via `RUNOS_API_KEY` (no interactive login required)
-- **MCP integration** -- Model Context Protocol server for AI coding assistants (Claude Code, Gemini CLI, OpenCode, OpenAI Codex)
+- **MCP integration** -- Model Context Protocol server for AI coding assistants (Claude Code, Cursor, Gemini CLI, OpenCode, OpenAI Codex)
 - **Dynamic commands** -- most CLI commands auto-update from the API manifest, so new server-side features appear without a CLI upgrade
 
 ## Installation
@@ -170,18 +170,23 @@ Four permission levels control what operations are available:
 
 | Level | Risk | Description |
 |---|---|---|
-| `read` | Low | Query-only operations (list clusters, apps, services) |
+| `read` | Low | Operations that change nothing (list clusters, apps, services) |
 | `sensitive-read` | **High** | Read operations that return credentials and connection strings -- these will be visible to the AI model |
 | `write` | **High** | Create, update, and delete operations that modify live infrastructure |
 | `sensitive-write` | **Critical** | Credential rotation and secret management on live infrastructure |
 
 > **Security note:** Choose the minimum permission level you need. The `sensitive-read` and above levels expose secrets to the AI assistant's context. Only use these in trusted environments.
 
+> **What `read` does and does not promise.** The `read` server performs no mutation, and that is the whole of the promise. It is not free of secrets. On a CLI older than manifest 45.0.0, the `grafana`, `litellm`, `langfuse`, `vector` and `clickhouse` credentials commands sit on the `read` tier and return real passwords. Manifest 45.0.0 moves those five to `sensitive-read`. Run `runos manifest update` and check `runos cli version-check` before you treat the read server as secret-free. The `prometheus`, `traefik` and `netbird-server` credentials commands stay on `read` in every version, because they return only host, port and URL fields.
+
 ### Configure for your AI assistant
 
 ```bash
 # Claude Code
 runos mcp configure claude
+
+# Cursor
+runos mcp configure cursor
 
 # Gemini CLI
 runos mcp configure gemini
@@ -192,6 +197,78 @@ runos mcp configure opencode
 # OpenAI Codex
 runos mcp configure codex
 ```
+
+Every target writes into the current directory, so the RunOS tools are scoped to that
+project. Re-running a target is safe: `cursor` brings the project back to the state it
+should be in and reports what it changed, and the other four leave a configured project
+alone.
+
+### Cursor
+
+`runos mcp configure cursor` writes three files:
+
+| File | What it does |
+|---|---|
+| `.cursor/mcp.json` | Declares the four RunOS servers as stdio servers |
+| `.cursor/hooks.json` | Registers the guard as a `beforeMCPExecution` hook, at `version: 1`, with `failClosed: true` |
+| `.cursor/hooks/runos-guard.sh` | Answers `ask` for the three servers that carry risk, and `allow` for everything else |
+
+The command converges on all three every run. Delete the guard, break the hook
+registration, or clone a project whose committed `.cursor/mcp.json` points at another
+machine's binary, and the next run repairs it and says what it repaired. A run that finds
+everything in place changes nothing and says so.
+
+**The guard decides on the MCP server name, never on a tool list.** Tools move between
+servers when their risk changes, so a tool list goes stale where a server name does not.
+The script parses nothing itself: it pipes Cursor's payload to `runos mcp cursor-guard`,
+which reads it with a real JSON parser. That matters because `tool_input` is written by
+the model and RunOS write tools take free-form string maps, so a text scan for
+`mcp_server_name` cannot tell the real top-level key from a decoy nested inside
+`tool_input`.
+
+Three outcomes:
+
+| The payload names | The guard answers | Why |
+|---|---|---|
+| `runos-sensitive-read`, `runos-write` or `runos-sensitive-write` | `ask` | These change or reveal something |
+| `runos`, or any server the guard does not know | `allow` | The hook fires for every MCP server in the project and must not block another tool's |
+| nothing the guard can read | `ask` | A guard that cannot read its own payload has to be loud, not silent |
+
+**A broken guard blocks, it does not allow.** Cursor lets a hook that crashes, times out
+or prints invalid JSON allow the action through. The guard is registered `failClosed`, so
+those cases block instead. The cost is real: while the guard is broken, every MCP call in
+that project is blocked, including another tool's servers. Re-run
+`runos mcp configure cursor` to restore it.
+
+**All four servers load.** Cursor has no per-server switch in `mcp.json`. Open Customize
+in the sidebar and switch off `runos-sensitive-read`, `runos-write` and
+`runos-sensitive-write`, or run `runos mcp configure cursor --read-only` to declare the
+read server alone. `--read-only` also removes the other three if an earlier run declared
+them.
+
+**The guard is a Cursor editor feature.** A client that does not read `.cursor/hooks.json`
+runs no guard at all. `cursor-agent` 2025.09.17 is such a client: its bundle contains no
+`beforeMCPExecution`, no `hooks.json` and no `mcp_server_name`. There the approvals prompt
+is the only brake, and `--read-only` is the only way to keep the write servers from
+loading.
+
+**Windows.** The guard is a bash script, so `runos mcp configure cursor` refuses to run on
+Windows and names the reason. `--read-only` works there, because a project that declares
+only the read server needs no guard.
+
+The command asks for a typed confirmation before it writes, having first listed what each
+server can do. `--yes` skips that. `--read-only` never asks, because it declares nothing
+that can change anything.
+
+An existing `.cursor/mcp.json` or `.cursor/hooks.json` is merged, not replaced: servers
+and hooks another tool put there survive. A file that does not hold a JSON object is
+named in the error and left on disk, and nothing else is written either. The one
+exception is the JSON literal `null`, which is read as an empty object.
+
+The guard is appended to `beforeMCPExecution` rather than replacing it. That is safe
+because Cursor documents that "all matching hooks from every source run". Cursor does
+not document how it combines two hooks that return different decisions, so if you
+register a second `beforeMCPExecution` hook, test the pair before relying on either.
 
 ### How tools are exposed
 
