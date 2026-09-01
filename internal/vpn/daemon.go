@@ -74,6 +74,11 @@ func (d *Daemon) Resume() {
 	}
 	if err := d.startTunnelLocked(); err != nil {
 		d.lastApplyErr = err.Error()
+		// The daemon starts at boot and races the network stack, so this is the ordinary failure,
+		// not an exceptional one. Say that the retry loop is running, because the previous version
+		// of this code gave up here and left no trace of having done so.
+		logEvent("resume did not complete its first poll: %s (the retry loop is running)",
+			redactURL(err.Error()))
 	}
 }
 
@@ -314,14 +319,42 @@ func (d *Daemon) startTunnelLocked() error {
 	d.engine = eng
 	d.client = newConductorClient(active.ConductorURL, active.AccountID, active.DeviceID, active.SessionToken)
 	d.revision = ""
+	resetPollLog()
+	logEvent("tunnel up on %s for account %s device %s, conductor %s",
+		eng.InterfaceName(), active.AccountID, active.DeviceID, redactURL(active.ConductorURL))
+	return d.beginPollingLocked()
+}
+
+/*
+Start the poll loop, then take the first poll.
+
+THE ORDER IS THE WHOLE POINT, and it is the fix for a defect measured on a real machine
+2026-09-01. This used to poll first and start the loop only on success:
+
 	if err := d.pollAndApplyLocked(); err != nil {
-		return err
+	    return err          // returned HERE
 	}
+	d.startPollLoop()       // never reached
+
+The daemon runs from a LaunchDaemon with RunAtLoad, so at boot it races the network stack and
+losing that race is the ORDINARY case. One DNS failure on the first attempt therefore meant the
+poll loop was never started at all: the interface stayed up with no address and no routes, the
+session stayed valid, `lastPoll` stayed frozen at daemon start, and nothing ever tried again.
+DNS recovered minutes later and no one noticed. The only exits were a manual `vpn up` or a
+daemon restart.
+
+The error is still returned, so a caller that wants to report the first failure still can. What
+changed is that the daemon keeps TRYING while it does.
+*/
+func (d *Daemon) beginPollingLocked() error {
 	d.startPollLoop()
-	return nil
+	return d.pollAndApplyLocked()
 }
 
 func (d *Daemon) stopTunnelLocked() {
+	if d.engine != nil {
+		logEvent("tunnel down on %s", d.engine.InterfaceName())
+	}
 	if d.cancelPoll != nil {
 		// Cancel only, never wait here: the loop goroutine takes d.mu, which this caller holds, so
 		// waiting on it under the lock is a deadlock the moment a tick and a stop coincide. The
@@ -351,6 +384,9 @@ func (d *Daemon) pollAndApplyLocked() error {
 	}
 	d.lastPoll = time.Now()
 	res, err := d.client.pollState(d.revision)
+	// One place every poll passes through, so the log cannot drift from the status the daemon
+	// reports. logPollOutcome writes only on a CHANGE: the first failure, and the recovery.
+	logPollOutcome(err)
 	if err != nil {
 		d.lastPollErr = err.Error()
 		return err
@@ -359,6 +395,7 @@ func (d *Daemon) pollAndApplyLocked() error {
 	if res.loginRequired {
 		// The session lapsed: apply an empty plan (peers gone) and stop, so the daemon does not
 		// hammer a 401 every tick. The interface and address stay so status is legible.
+		logEvent("session has lapsed: peers removed, sign in again to restore the tunnel")
 		d.applyLoginRequiredLocked()
 		return nil
 	}

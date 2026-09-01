@@ -405,3 +405,73 @@ func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
 		}
 	}
 }
+
+/*
+The headline must not read as a working tunnel when the tunnel never converged.
+
+This is the SAME defect as the session-expiry one above, with a different cause, and it was
+measured on a real machine 2026-09-01. The daemon started at boot, lost the race with the network
+stack, and its first state request failed with "lookup api.dev.runos.com: no such host". The
+interface came up; the address and routes never arrived, because those come from the document the
+failed request would have fetched.
+
+What `vpn status` then printed, all three lines at once:
+
+	VPN: up on utun0
+	Session: valid until 21:45
+	Private DNS: unavailable - the VPN is down
+
+The first line and the third contradict each other, and a reader takes the state from the first.
+The tunnel carried nothing: utun0 had no inet address and no routes.
+
+`LoginRequired` is false here, so the expiry case above does not catch it. The signal is a poll
+error with no clusters: no state has ever been applied, and the last attempt to fetch it failed.
+*/
+func TestHeadlineSaysSoWhenTheTunnelNeverConverged(t *testing.T) {
+	status := &vpn.Status{
+		Running:     true,
+		Interface:   "utun0",
+		LastPollErr: `state request: Get "https://api.example.com/a/vpn/devices/d/state": dial tcp: lookup api.example.com: no such host`,
+	}
+	status.Session.Present = true
+	status.Session.ExpiresAt = time.Now().Add(9 * time.Hour)
+
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+
+	got := output.String()
+	headline := strings.SplitN(got, "\n", 2)[0]
+	if strings.Contains(headline, "up on") && !strings.Contains(headline, "NOT") {
+		t.Fatalf("the headline calls a tunnel that carries nothing 'up':\n%s", got)
+	}
+	if !strings.Contains(got, "no such host") {
+		t.Errorf("the reason is the whole point, and it was not shown:\n%s", got)
+	}
+}
+
+// The control. A tunnel that HAS converged must still read as up, or the fix above would just
+// make every status alarming and teach the reader to ignore the first line.
+func TestAConvergedTunnelStillReadsAsUp(t *testing.T) {
+	status := &vpn.Status{
+		Running:   true,
+		Interface: "utun0",
+		Address:   "198.51.100.3/32",
+		Clusters:  []vpn.ClusterStatus{{Name: "one"}},
+	}
+	status.Session.Present = true
+	status.Session.ExpiresAt = time.Now().Add(9 * time.Hour)
+
+	var output bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&output)
+	if err := printVPNStatus(command, status); err != nil {
+		t.Fatalf("print VPN status: %v", err)
+	}
+	if headline := strings.SplitN(output.String(), "\n", 2)[0]; !strings.Contains(headline, "up on utun0") {
+		t.Fatalf("a working tunnel stopped reading as up: %q", headline)
+	}
+}

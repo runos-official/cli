@@ -70,6 +70,22 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 			fmt.Fprintf(out, " (%s)", status.Address)
 		}
 		fmt.Fprintln(out)
+	case status.LastPollErr != "" && len(status.Clusters) == 0:
+		// THE SAME DEFECT AS ABOVE, WITH A DIFFERENT CAUSE. Measured 2026-09-01: the daemon
+		// started at boot, lost the race with the network stack, and its first state request
+		// failed with "no such host". The interface came up; the address and the routes never
+		// did, because those come from the document that request would have fetched. status then
+		// printed "VPN: up on utun0" above "Private DNS: unavailable - the VPN is down", and the
+		// reader takes the state from the first line.
+		//
+		// LoginRequired is false here, so the expiry case cannot catch it. No clusters AND a
+		// failed last poll means no state has ever been applied: the interface exists and carries
+		// nothing. A single failed poll on a tunnel that HAS converged still has its clusters, so
+		// this does not fire for a transient blip.
+		fmt.Fprintf(out, "VPN: NOT CARRYING TRAFFIC - %s is up but no state has been applied\n",
+			status.Interface)
+		fmt.Fprintf(out, "  last attempt failed: %s\n", status.LastPollErr)
+		fmt.Fprintln(out, "  the daemon retries every 30s; 'runos vpn logs' shows the history")
 	default:
 		fmt.Fprintf(out, "VPN: up on %s", status.Interface)
 		if status.Address != "" {
