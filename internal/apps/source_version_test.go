@@ -350,3 +350,100 @@ func TestComputeCodeVersionStatus_LegacyFallback(t *testing.T) {
 		t.Errorf("expected stale with NewerCount=1; got %+v", status)
 	}
 }
+
+// FPL16 B2, MEASURED on the dev homelab cluster before this fix.
+//
+// A build that fails still registers its uploaded source archive on the server, and that listing
+// is the only signal this gate has. The sequence was: deploy succeeds (archive A), a bad line is
+// added to the Dockerfile, the deploy's build FAILS (archive B), the bad line is removed so the
+// tree is byte-identical to A, and the next deploy is REFUSED with "newer source archives exist on
+// the server than your recorded baseline. Deploying now would overwrite changes that aren't in
+// your local files."
+//
+// Both sentences are false: B IS the user's own files, uploaded by the failed build. The printed
+// recovery, `apps pull --code --force`, would have overwritten the working tree with the source of
+// a build that failed.
+//
+// Conductor cannot fix this alone, because it cannot know which id the caller's sidecar holds. It
+// annotates every archive with buildStatus and leaves the decision here.
+func TestComputeCodeVersionStatus_FailedBuildIsNotNewer(t *testing.T) {
+	dir := t.TempDir()
+	// The --follow path: the sidecar was restored to the last GOOD upload.
+	if err := WriteSourceVersion(dir, testSidecarCID, testSidecarApp, "A"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	srv := archivesServer(t, []CliArchive{
+		{CliUploadID: "A", PushTime: "2026-04-26T10:00:00Z", BuildStatus: "success"},
+		{CliUploadID: "B", PushTime: "2026-04-27T10:00:00Z", BuildStatus: "failed"},
+	})
+	svc := NewService(srv.URL, "tok", testSidecarCID, "acc-1")
+
+	status, err := ComputeCodeVersionStatus(svc, testSidecarCID, testSidecarApp, dir)
+	if err != nil {
+		t.Fatalf("ComputeCodeVersionStatus: %v", err)
+	}
+	if !status.RecordedFound {
+		t.Fatal("RecordedFound = false; the recorded archive must still resolve")
+	}
+	if status.NewerCount != 0 {
+		t.Errorf("NewerCount = %d; want 0. An upload whose build failed never shipped an image, so it is not a deploy this directory is behind", status.NewerCount)
+	}
+	if status.IsStale() {
+		t.Error("IsStale() = true; the deploy would be refused for a build that never shipped")
+	}
+}
+
+// The DEFAULT deploy path, which is the larger half of the traffic. `runos deploy` writes the
+// sidecar to the NEW upload id unconditionally and only restores the previous value inside
+// `if flagFollow`, and --follow defaults to false. So after a default deploy whose build failed,
+// the sidecar names the FAILED upload.
+//
+// This is why conductor must not DROP the failed archive from the listing: dropping it makes the
+// recorded id unresolvable, and the gate then hard-refuses with "the local .source-version file
+// was hand-edited or the archive was deleted server-side", which is a harder refusal than the
+// warning it replaced, on a path that worked before.
+func TestComputeCodeVersionStatus_FailedBuildStillResolves(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteSourceVersion(dir, testSidecarCID, testSidecarApp, "B"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	srv := archivesServer(t, []CliArchive{
+		{CliUploadID: "A", PushTime: "2026-04-26T10:00:00Z", BuildStatus: "success"},
+		{CliUploadID: "B", PushTime: "2026-04-27T10:00:00Z", BuildStatus: "failed"},
+	})
+	svc := NewService(srv.URL, "tok", testSidecarCID, "acc-1")
+
+	status, err := ComputeCodeVersionStatus(svc, testSidecarCID, testSidecarApp, dir)
+	if err != nil {
+		t.Fatalf("ComputeCodeVersionStatus: %v", err)
+	}
+	if !status.RecordedFound {
+		t.Fatal("RecordedFound = false; a failed build's archive must stay resolvable or the next deploy hits the tampering refusal")
+	}
+	if status.NewerCount != 0 {
+		t.Errorf("NewerCount = %d; want 0", status.NewerCount)
+	}
+}
+
+// Absent is unknown, never failed. Build rows are capped and purged, so an old archive routinely
+// carries no status. Reading absent as failed would silently stop protecting a teammate's deploy,
+// which is the whole reason this gate exists.
+func TestComputeCodeVersionStatus_UnknownBuildStatusStillCounts(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteSourceVersion(dir, testSidecarCID, testSidecarApp, "A"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	srv := archivesServer(t, []CliArchive{
+		{CliUploadID: "A", PushTime: "2026-04-26T10:00:00Z", BuildStatus: "success"},
+		{CliUploadID: "C", PushTime: "2026-04-28T10:00:00Z"}, // purged row: no status at all
+	})
+	svc := NewService(srv.URL, "tok", testSidecarCID, "acc-1")
+
+	status, err := ComputeCodeVersionStatus(svc, testSidecarCID, testSidecarApp, dir)
+	if err != nil {
+		t.Fatalf("ComputeCodeVersionStatus: %v", err)
+	}
+	if status.NewerCount != 1 {
+		t.Errorf("NewerCount = %d; want 1. An archive with no build row must still protect a teammate's deploy", status.NewerCount)
+	}
+}

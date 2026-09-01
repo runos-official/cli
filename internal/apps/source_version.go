@@ -185,6 +185,27 @@ func ComputeCodeVersionStatus(svc *Service, cid, appID, appDir string) (*CodeVer
 
 	for _, a := range archives {
 		if a.PushTime > recordedTime {
+			// FPL16 B2. An upload whose build FAILED never shipped an image, so
+			// it is not a deploy this directory is behind. Counting it refused
+			// the next deploy with "newer source archives exist ... deploying
+			// now would overwrite changes that aren't in your local files" when
+			// nothing local had changed: the archive on the server WAS the
+			// user's own files, uploaded by the build that then failed. The
+			// printed recovery, `apps pull --code --force`, would have
+			// overwritten the working tree with the source of a failed build.
+			//
+			// Only the NEWER count skips these. Resolution of the recorded id
+			// above, Latest, `apps pull --code` and `apps list-previous-uploads`
+			// all still see every archive, because the default deploy path
+			// records the FAILED upload in its own sidecar and must be able to
+			// resolve it.
+			//
+			// An empty BuildStatus is UNKNOWN, not failed: build rows are capped
+			// and purged, and reading absent as failed would stop this gate
+			// protecting a teammate's deploy.
+			if a.BuildStatus == "failed" {
+				continue
+			}
 			status.NewerArchives = append(status.NewerArchives, a)
 		}
 	}

@@ -687,6 +687,14 @@ type CliArchive struct {
 	Digest      string `json:"digest"`
 	Size        int64  `json:"size"`
 	PushTime    string `json:"pushTime"`
+	// BuildStatus is the cluster agent's terminal status for the build this
+	// archive fed: "success", "failed", or "" when conductor holds no row for
+	// it. Build rows are capped and purged, so "" is routine on an old archive
+	// and means UNKNOWN, never failed.
+	//
+	// An upload whose build failed never shipped an image, so it is not a
+	// deploy anyone is behind. See ComputeCodeVersionStatus (FPL16 B2).
+	BuildStatus string `json:"buildStatus,omitempty"`
 }
 
 // cliArchivesEnvelope mirrors the conductor's GET /apps/:id/cli-archives
