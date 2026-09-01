@@ -125,12 +125,12 @@ func init() {
 	mcpConfigureCodexCmd.Flags().BoolP("yes", "y", false, "Skip warning and confirmation prompt")
 }
 
+// runMCPConfigure lists the registered subcommands, so a new target cannot drift.
 func runMCPConfigure(cmd *cobra.Command, args []string) {
 	fmt.Println("Available targets:")
-	fmt.Println("  claude    Configure for Claude Code CLI (project-level)")
-	fmt.Println("  opencode  Configure for OpenCode (project-level)")
-	fmt.Println("  gemini    Configure for Gemini CLI (project-level)")
-	fmt.Println("  codex     Configure for OpenAI Codex (project-level)")
+	for _, target := range cmd.Commands() {
+		fmt.Printf("  %-9s %s\n", target.Name(), target.Short)
+	}
 	fmt.Println()
 	fmt.Println("Usage: runos mcp configure <target>")
 }
