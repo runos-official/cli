@@ -51,6 +51,55 @@ when there is no credential on hand, instead of "Cursor now has access to RunOS 
 **`runos mcp configure` with no target lists the targets it actually has.** The list was written out
 by hand beside the four handlers, so a fifth target could ship without appearing in it.
 
+**The Cursor guard no longer misses a RunOS server with a word in front of its name.** Recognition
+was anchored on a prefix, so `runos-write-prod` was caught and `prod-runos-write` was not. Measured
+against the built binary on a live write server: `prod-runos-write`, `acme-runos-sensitive-write`,
+`team/runos-write` and a name carrying a leading zero-width space all returned `allow` with no
+prompt. Prefixing an account, an environment or a company onto a copied entry is at least as
+ordinary as appending one. A name that carries `runos` but neither `write` nor `sensitive` is still
+somebody else's server and is still allowed, and that case is pinned.
+
+**A failed build is no longer a deploy you are behind.** A build that fails still registers its
+uploaded source archive, and the pre-deploy drift gate counted it, so the next deploy was refused
+with "newer source archives exist on the server ... deploying now would overwrite changes that
+aren't in your local files". Both sentences were false: that archive WAS the user's own files, and
+the printed recovery would have overwritten the working tree with the source of a failed build. The
+NEWER count now skips an archive whose build failed, and only that count: the recorded id still
+resolves, because the default deploy path records the failed upload in its own sidecar. An absent
+build status is UNKNOWN, never failed, so an old archive with a purged build row still protects a
+teammate's deploy.
+
+**A VPN failure at daemon start no longer wedges the tunnel forever.** The daemon polled once and
+started its retry loop only on success, so the FIRST poll failing meant no retry loop was ever
+created. The daemon starts at boot from a LaunchDaemon, where it races the network stack, and losing
+that race is the ordinary case. Measured: the interface up with no address and no routes, a valid
+session, the last poll frozen at daemon start, and an error naming a DNS failure that had cleared
+minutes earlier. Only a manual `vpn up` or a service restart recovered it. The loop now starts
+before the first poll; the error is still reported, but the daemon keeps trying while it does.
+
+**`vpn status` no longer calls a tunnel that carries nothing "up".** It printed `VPN: up on <iface>`
+above `Private DNS: unavailable - the VPN is down`, and a reader takes the state from the first
+line. A failed last poll with no clusters means no state has ever been applied, and the headline now
+says NOT CARRYING TRAFFIC and names the error. A converged tunnel with one transient poll failure
+still has its clusters, so this does not fire for a blip.
+
+**The VPN daemon writes a log worth reading, and `runos vpn logs` prints it.** The daemon's output
+always went to a log file, but almost all of it was macOS `MallocStackLogging` chatter and the
+failures that mattered wrote nothing: on one machine, 582 KB holding a handful of useful lines. The
+daemon now records transitions and failures, including the RECOVERY with how long it took and how
+many attempts it cost, which is the line a support conversation needs. A steady state writes
+nothing, and a repeated failure logs once rather than once per poll. Session tokens, keys and the
+tunnel configuration are never written, and a URL's query string is stripped because that is where a
+signed URL carries its credential. `runos vpn logs` prints the file with the OS noise removed and
+needs no root, so a person can produce their own logs.
+
+**The leak gate catches two kinds of secret it used to walk past.** It did not know the
+`runos_pat_` shape, so a RunOS token pasted into a tracked file passed. And it silently SKIPPED any
+file that is not valid UTF-8: a token in a utf-16, latin-1, utf-32 or NUL-padded file passed as
+clean while the same token in a plain file was caught. Both are closed, and a new
+`scripts/unscannable_check.py` fails the build when the repository holds a file the scanner cannot
+read at all, which is how the second hole was found.
+
 ## v1.18.4
 
 **Installing the VPN service from a root shell no longer makes its control socket unreachable.** The
