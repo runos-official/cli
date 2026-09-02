@@ -675,11 +675,15 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			}
 		}
 		s.recordTopicsRead(params.Name, params.Arguments, result)
+		// Reading the kafka topic and then calling a kafka tool that is not
+		// listed is a confusing dead end. Every topic stays readable under
+		// scoping, so the topic itself has to say the tools are one call away.
+		notice := s.toolsets.hiddenTypeNotice(params.Arguments)
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: gateWarning + result}},
+				Content: []ContentBlock{{Type: "text", Text: gateWarning + notice + result}},
 			},
 		}
 	}

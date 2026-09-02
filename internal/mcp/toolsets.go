@@ -371,3 +371,73 @@ func (s *Server) SetToolsets(ts *Toolsets) {
 	}
 	s.toolsets = ts
 }
+
+// hiddenTypeNotice prefixes a topic result when that topic documents a service
+// type whose tools are not loaded.
+//
+// Without it the scoping produces a dead end: every topic stays readable, so an
+// agent reads `kafka`, learns exactly how to add a Kafka service, then calls
+// services_kafka_add and finds no such tool. The topic is the moment the agent
+// has decided it wants the thing, which is exactly when it needs to be told the
+// tools are one call away.
+//
+// It fires on a topic READ and on a SEARCH, because only 5 of the 19 hidden
+// types have a topic of their own: measured, kafka, clickhouse, grafana,
+// rabbitmq, ollama, prometheus, linstor, vector and netbird have none. An agent
+// looking for Kafka therefore never reads a Kafka topic, it SEARCHES for one and
+// finds nothing, which reads as "RunOS has no Kafka". The search is the moment
+// that has to be corrected.
+//
+// Matched on an EXACT service-type name, in the key or in a search keyword. A
+// fuzzier rule would eventually claim something is about a service when it is
+// not, and a wrong notice is worse than a missing one: this only ever adds a
+// true statement.
+func (ts *Toolsets) hiddenTypeNotice(args map[string]any) string {
+	if ts == nil {
+		return ""
+	}
+	var candidates []string
+	if key, _ := args["key"].(string); key != "" {
+		candidates = append(candidates, key)
+	}
+	if kw, _ := args["keywords"].(string); kw != "" {
+		for _, part := range strings.FieldsFunc(kw, func(r rune) bool {
+			return r == ',' || r == ' ' || r == ';'
+		}) {
+			candidates = append(candidates, part)
+		}
+	}
+	for _, c := range candidates {
+		if n := ts.noticeFor(strings.TrimSpace(strings.ToLower(c))); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+func (ts *Toolsets) noticeFor(key string) string {
+	if key == "" {
+		return ""
+	}
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if !ts.scoped {
+		return ""
+	}
+	if _, known := ts.known[key]; !known {
+		return ""
+	}
+	if _, on := ts.extra[key]; on {
+		return ""
+	}
+	if _, platform := ts.platformManaged[key]; !platform {
+		if _, used := ts.inUse[key]; used {
+			return ""
+		}
+	}
+	return fmt.Sprintf(
+		"[runos] RunOS SUPPORTS %s, but its tools are not loaded in this session. "+
+			"Call runos_tools_enable with types [\"%s\"] to load them, then act. "+
+			"Do NOT install %s by hand and do NOT tell the user RunOS lacks it.\n\n",
+		key, key, key)
+}

@@ -258,3 +258,87 @@ func TestPlatformManagedListComesFromConductorNotFromHere(t *testing.T) {
 		t.Error("exposed a type conductor marked platform-owned")
 	}
 }
+
+// Reading the kafka topic and then calling a kafka tool that is not listed is a
+// dead end. The topic is where the agent has decided it wants the thing, so it
+// is where the notice belongs.
+func TestReadingAHiddenServiceTopicSaysTheToolsCanBeLoaded(t *testing.T) {
+	ts := scopedTo("postgresql")
+	got := ts.hiddenTypeNotice(map[string]any{"key": "kafka"})
+	if got == "" {
+		t.Fatal("no notice on a hidden service type")
+	}
+	for _, want := range []string{"runos_tools_enable", "kafka", "Do NOT install"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notice omits %q: %s", want, got)
+		}
+	}
+	// RunOS supporting it is the point; the notice must not read as absence.
+	if !strings.Contains(strings.ToLower(got), "runos supports") {
+		t.Errorf("notice does not say RunOS supports it: %s", got)
+	}
+}
+
+// A notice that fires when it should not is worse than one that never fires:
+// it would tell the agent to enable something already loaded.
+func TestNoNoticeWhenTheToolsAreAlreadyThere(t *testing.T) {
+	ts := scopedTo("postgresql")
+	for _, args := range []map[string]any{
+		{"key": "postgresql"},        // in use
+		{"key": "platform-overview"}, // not a service type at all
+		{"key": ""},                  // no key and no keywords
+		{"keywords": "deploy"},       // a search naming nothing hidden
+	} {
+		if got := ts.hiddenTypeNotice(args); got != "" {
+			t.Errorf("unexpected notice for %v: %s", args, got)
+		}
+	}
+	// And once enabled, it stops.
+	ts.Enable([]string{"kafka"})
+	if got := ts.hiddenTypeNotice(map[string]any{"key": "kafka"}); got != "" {
+		t.Errorf("still nagging after enable: %s", got)
+	}
+}
+
+// Unscoped hides nothing, so it must never claim a type is unavailable.
+func TestNoNoticeWhenUnscoped(t *testing.T) {
+	if got := newUnscoped(testManifest()).hiddenTypeNotice(map[string]any{"key": "kafka"}); got != "" {
+		t.Errorf("unscoped server produced a notice: %s", got)
+	}
+	var nilTS *Toolsets
+	if got := nilTS.hiddenTypeNotice(map[string]any{"key": "kafka"}); got != "" {
+		t.Errorf("nil Toolsets produced a notice: %s", got)
+	}
+}
+
+// A platform-owned type is hidden despite being in use, so its topic must also
+// say how to load it.
+func TestPlatformServiceTopicAlsoGetsTheNotice(t *testing.T) {
+	ts := scopedTo("postgresql", "cert-manager")
+	if got := ts.hiddenTypeNotice(map[string]any{"key": "cert-manager"}); got == "" {
+		t.Error("no notice on a hidden platform service topic")
+	}
+}
+
+// Only 5 of 19 hidden types have a topic, so a read-only hook misses the case
+// that matters: an agent looking for Kafka searches, finds nothing, and reads
+// that as "RunOS has no Kafka".
+func TestSearchingForAHiddenServiceSaysItExists(t *testing.T) {
+	ts := scopedTo("postgresql")
+	for _, kw := range []string{"kafka", "kafka,queue", "queue, kafka", "KAFKA"} {
+		got := ts.hiddenTypeNotice(map[string]any{"keywords": kw})
+		if got == "" {
+			t.Errorf("search %q produced no notice", kw)
+			continue
+		}
+		if !strings.Contains(got, "SUPPORTS kafka") {
+			t.Errorf("search %q did not say RunOS supports it: %s", kw, got)
+		}
+	}
+	// A search that names nothing hidden stays quiet.
+	for _, kw := range []string{"deploy", "postgresql", "dockerfile"} {
+		if got := ts.hiddenTypeNotice(map[string]any{"keywords": kw}); got != "" {
+			t.Errorf("search %q produced a spurious notice: %s", kw, got)
+		}
+	}
+}
