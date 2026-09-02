@@ -55,6 +55,8 @@ func (s *Server) SetManifestReloader(r ManifestReloader) {
 func manifestUpdateTool() Tool {
 	return Tool{
 		Name: manifestUpdateToolName,
+		// Writes files into the user's workspace, so not read-only.
+		Annotations: &ToolAnnotations{},
 		Description: `Refresh this server's RunOS command list from the API, without restarting it.
 
 Call this when a tool you expect does not exist, when a tool refuses an argument the documentation says it takes, or right after someone deploys conductor. The server loads the command list once at startup, so a command shipped since then is invisible until this runs.

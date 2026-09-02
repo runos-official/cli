@@ -33,6 +33,8 @@ func staticRunTools(category string) []Tool {
 	return []Tool{
 		{
 			Name: "run",
+			// Executes a task in the cluster, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Execute a one-off command/script in the cluster from a VCS app's image at a specific commit SHA. Sibling to deploy: deploy is build+rollout, run is build+execute.
 
 WHEN TO USE: pre-rollout tasks (DB migrations, seeds, backfills, one-off maintenance). The canonical CI ordering is run THEN deploy: ` + "`runos run ... scripts/release.sh`" + ` then ` + "`runos deploy ... --sha <same-sha>`" + `. Both verbs are keyed on the SHA, so the second one reuses the image already in Harbor and only does the rollout.

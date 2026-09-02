@@ -33,7 +33,8 @@ func staticJobsTools(category string) []Tool {
 
 	return []Tool{
 		{
-			Name: "jobs_follow",
+			Name:        "jobs_follow",
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
 			Description: `Follow a job's progress until it completes (or fails/cancels).
 
 Blocks for the duration of the job — useful when an LLM dispatched an async operation (apps_sync, services_sync, deploy without --follow) and wants the same end-of-rollout signal a human gets from "runos follow <jobId>". Returns the streamed work-item log + final status as a single text payload.

@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.19.1
+
+**Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
+server emitted no annotations at all, on any of its 315 tools. Measured in Cursor 3.18.9: its
+per-server panel has a "Writes" policy, and with nothing to classify on it treated the entire READ
+server as writes. Setting that policy to "Don't allow" disabled all 315 tools and the panel read
+"0 tools enabled", so a user who picked the cautious setting lost the whole read-only surface. That
+is the opposite of what the four-server split exists to communicate.
+
+**The serving tier decides it, not the HTTP method.** The per-server allow-list is the real access
+boundary, so a command carried by a read tier cannot write whatever verb it uses. Seven genuine
+reads are POSTs because they need a request body, `virt/config-diff` and
+`storage-groups/inspect-device` among them, and keying on the method alone left all seven marked as
+writes. A `DELETE` on a write tier additionally carries `destructiveHint`, reusing the same
+`dynacmd.IsDestructiveCommand` rule the CLI's own `--yes` gate uses, so the hint cannot drift from
+the confirmation it mirrors.
+
+**No tool is left unannotated, because absent and false do not mean the same thing to a client.**
+Absent is "unknown"; an empty block asserts "this is not read-only". The hand-written tools that
+write to the user's workspace rather than the cluster (`apps_pull`, `services_pull`,
+`manifest_update`) carry that assertion explicitly, as do `deploy`, `run`, `apps_sync`,
+`services_sync` and `services_harbor_build-image`.
+
+Measured across all four servers after the change:
+
+    server            tools  readOnly  destructive  unannotated
+    read                315       312            0            0
+    sensitive-read       31        30            0            0
+    write               313         4           81            0
+    sensitive-write      51         4           13            0
+
+The four read-only tools on the write servers are the diffs and `jobs_follow`, which read wherever
+they are served.
+
+
 ## v1.19.0
 
 **Cursor is the fifth `runos mcp configure` target.** It writes `.cursor/mcp.json` in the current

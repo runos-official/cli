@@ -27,6 +27,8 @@ func staticAppsTools(category string) []Tool {
 	if category == "read" {
 		tools = append(tools, Tool{
 			Name: "apps_pull",
+			// Writes files into the user's workspace, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Pull running app config (and optionally source code) into a local directory.
 
 BEFORE CALLING: If the user's request didn't clearly specify where files should land, ASK them.
@@ -102,7 +104,8 @@ all and yaml_file/app_id are mutually exclusive.`,
 		})
 
 		tools = append(tools, Tool{
-			Name: "apps_diff",
+			Name:        "apps_diff",
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
 			Description: `Compare a local pulled runos.yaml (and the env/secret files/overrides it references) against the current cluster state. Reports drift in JSON without writing anything.
 
 Returns drift details for yaml, env, secret files, and overrides. Use this before apps_sync to preview pushes, or as a CI gate (drift -> non-zero exit).
@@ -125,7 +128,8 @@ yaml_file is required when called via MCP (the MCP subprocess can't reliably aut
 		})
 
 		tools = append(tools, Tool{
-			Name: "apps_list_previous_uploads",
+			Name:        "apps_list_previous_uploads",
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
 			Description: `List previously CLI-uploaded source archives for an app, addressed by yaml-file path. Each entry has a cliUploadID you can pass to apps_pull as code_version to restore that exact source locally; running runos deploy from the per-app directory then redeploys it.
 
 The sibling tool apps_cli-archives returns the same data via app_id + cid directly (no yaml-file path required); prefer that shape when the caller already has identifiers in hand.
@@ -151,6 +155,8 @@ Apps deployed via git/CI (not the runos deploy command) will return an empty lis
 	if category == "write" {
 		tools = append(tools, Tool{
 			Name: "apps_sync",
+			// Pushes to the cluster, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Push local app config (yaml, env, secret files, overrides) to the cluster. Reverse of apps_pull.
 
 Sync runs as plan -> apply: it computes deltas against current server state and pushes them. Pass dry_run=true to compute the plan without applying. The interactive confirmation prompt is auto-skipped when called via MCP.

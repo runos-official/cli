@@ -75,6 +75,67 @@ type Tool struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
 	InputSchema InputSchema `json:"inputSchema"`
+	// Annotations carries the MCP tool hints. Omitted when nil, because an
+	// absent block and an all-false block do not mean the same thing to a
+	// client: absent is "unknown", false is "asserted to write".
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations are the MCP tool hints a client uses to tell a read from a
+// write. Without them a client cannot classify a tool and must assume the
+// unsafe case.
+//
+// WHY THIS EXISTS. Cursor's per-server panel carries a "Writes" policy. With no
+// annotation it treated all 315 tools on the READ server as writes, so setting
+// that policy to "Don't allow" disabled every one of them and the panel read
+// "0 tools enabled". A user picking the cautious setting lost the entire
+// read-only surface, which is the opposite of what the four-server split is
+// there to communicate.
+//
+// These are HINTS and are not load-bearing for access control. The per-server
+// tool allow-list remains the actual boundary; a client is free to ignore
+// anything here.
+type ToolAnnotations struct {
+	// ReadOnlyHint is true when the tool does not modify any environment.
+	// Derived from the manifest method: a GET changes nothing.
+	ReadOnlyHint bool `json:"readOnlyHint,omitempty"`
+	// DestructiveHint is true when the tool may perform an irreversible
+	// change. Only meaningful when ReadOnlyHint is false.
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
+}
+
+// annotationsFor derives the MCP hints from the manifest entry. The manifest
+// already carries everything needed: the HTTP method says whether the call
+// changes anything, and dynacmd owns the destructive rule the CLI's own --yes
+// gate uses, so the hint cannot drift from the confirmation it mirrors.
+func annotationsFor(cmd manifest.Command) *ToolAnnotations {
+	// The SERVING TIER is the authority, not the HTTP method. The per-server
+	// allow-list is the real access-control boundary, so a command carried by
+	// a read tier cannot write whatever verb it uses. Several genuine reads
+	// are POSTs because they need a request body: virt/config-diff and
+	// storage-groups/inspect-device are both POST and both tier `read`.
+	// Keying on the method alone left those seven marked as writes.
+	write, read := false, false
+	for _, tier := range cmd.MCP {
+		switch tier {
+		case "write", "sensitive_write":
+			write = true
+		case "read", "sensitive_read":
+			read = true
+		}
+	}
+	if !write && read {
+		return &ToolAnnotations{ReadOnlyHint: true}
+	}
+	if !write && !read && strings.EqualFold(cmd.Method, "GET") {
+		// No tier declared. Fall back to the method, which is still sound:
+		// a GET changes nothing.
+		return &ToolAnnotations{ReadOnlyHint: true}
+	}
+	if dynacmd.IsDestructiveCommand(cmd) {
+		return &ToolAnnotations{DestructiveHint: true}
+	}
+	return &ToolAnnotations{}
 }
 
 // InputSchema defines the JSON Schema for a tool's input parameters.
@@ -775,6 +836,8 @@ func (s *Server) buildTools() []Tool {
 			// Add deploy tool with custom description and cid parameter
 			tools = append(tools, Tool{
 				Name: "deploy",
+				// Builds and rolls out to the cluster, so not read-only.
+				Annotations: &ToolAnnotations{},
 				Description: `Deploy an application. The CLI dispatches on the app's deployType:
 
   - CLI deploy (deployType: cli): tarballs the local source and uploads to /prepare-cli-deployment. The classic flow.
@@ -845,6 +908,7 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 				Type:       "object",
 				Properties: make(map[string]Property),
 			},
+			Annotations: annotationsFor(cmd),
 		}
 
 		// Add cid parameter if endpoint requires it. It is REQUIRED when

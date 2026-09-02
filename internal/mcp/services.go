@@ -25,6 +25,8 @@ func staticServicesTools(category string) []Tool {
 	if category == "read" {
 		tools = append(tools, Tool{
 			Name: "services_pull",
+			// Writes files into the user's workspace, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Pull a service's current config into a local runos.service.<cid>.<sid>.yaml.
 
 BEFORE CALLING: If the user's request didn't specify where the file should land, ASK them.
@@ -74,7 +76,8 @@ service type or field on conductor side flows through here without a CLI change.
 		})
 
 		tools = append(tools, Tool{
-			Name: "services_diff",
+			Name:        "services_diff",
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
 			Description: `Compare a local runos.service.<cid>.<sid>.yaml against the cluster. Reports drift in JSON without writing anything.
 
 Use this before services_sync to preview pushes, or as a CI gate (drift -> non-zero exit).
@@ -100,6 +103,8 @@ yaml_file is required when called via MCP.`,
 	if category == "write" {
 		tools = append(tools, Tool{
 			Name: "services_sync",
+			// Pushes to the cluster, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Push a local runos.service.<cid>.<sid>.yaml back to the cluster. Reverse of services_pull.
 
 Two modes are picked from the yaml's id field:
@@ -134,6 +139,8 @@ is auto-skipped when called via MCP.`,
 
 		tools = append(tools, Tool{
 			Name: "services_harbor_build-image",
+			// Pushes to the cluster, so not read-only.
+			Annotations: &ToolAnnotations{},
 			Description: `Build an auxiliary (non-app) container image from a LOCAL build context and push it to the cluster's system Harbor under the managed runos-apps project.
 
 Use this for images that are not an app's own Dockerfile: sidecar images, shared base images, one-off tooling images (e.g. an agent-sandbox image a DinD sidecar pulls at runtime). Decoupled from apps/deployments/VCS: no app id, no commit SHA, no phantom build-only app.
