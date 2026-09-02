@@ -66,3 +66,7 @@ tmp/
 temp/
 *.tmp
 gitignored/
+
+# Evaluation output. Agent answers quote live cluster and node identifiers, so
+# results never belong in a public repo. The leak gate blocks them anyway.
+scripts/gateway-eval/results.json
