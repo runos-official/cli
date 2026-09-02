@@ -245,11 +245,16 @@ IMPORTANT: Ensure you have called mcp_bootstrap on the runos (read-only) server 
 
 // Server is the MCP server that handles JSON-RPC requests over stdio.
 type Server struct {
-	manifest     *manifest.Manifest
-	executor     ToolExecutor
-	version      string
-	category     string // "read", "sensitive_read", "write", "sensitive_write"
-	bootstrapped bool   // true after mcp_bootstrap has been called successfully
+	manifest *manifest.Manifest
+	executor ToolExecutor
+	version  string
+	category string // "read", "sensitive_read", "write", "sensitive_write"
+	// gatewayMode, when non-empty, replaces the per-command tool surface
+	// with the gateway (FPL30). Set from argv at spawn; never from config,
+	// because `runos config set` is itself a runos command.
+	gatewayMode  Mode
+	gatewayIdx   commandIndex
+	bootstrapped bool // true after mcp_bootstrap has been called successfully
 	// bootstrapFailed is true once an mcp_bootstrap attempt has come back
 	// with an error and none has since succeeded. It downgrades the
 	// bootstrap gate from a refusal to a warning, because a caller that
@@ -297,6 +302,13 @@ type Server struct {
 
 // SetDefaultClusterID records the configured default cluster, so the
 // tool schema can mark `cid` required only when there is no fallback.
+// EnableGateway swaps the per-command tools for the gateway surface.
+// The mode is fixed for the life of the process.
+func (s *Server) EnableGateway(mode Mode) {
+	s.gatewayMode = mode
+	s.gatewayIdx = buildIndex(s.manifest)
+}
+
 func (s *Server) SetDefaultClusterID(cid string) {
 	s.defaultClusterID = cid
 }
@@ -484,7 +496,20 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	// the answer has changed since startup (B2). Silent on failure: an
 	// offline version check must not break tools/list.
 	s.refreshManifestIfDrifted()
-	tools := s.buildTools()
+	var tools []Tool
+	if s.gatewayMode != "" {
+		// The doc tools carry the bootstrap gate and the 71 topics, and
+		// are the same progressive-disclosure idea the gateway applies to
+		// commands. They survive unchanged.
+		for _, t := range s.buildTools() {
+			if strings.HasPrefix(t.Name, "mcp_") {
+				tools = append(tools, t)
+			}
+		}
+		tools = append(GatewayTools(s.gatewayMode), tools...)
+	} else {
+		tools = s.buildTools()
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -527,6 +552,19 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 				Message: "Invalid params",
 				Data:    err.Error(),
 			},
+		}
+	}
+
+	// Gateway tools, when the gateway surface is in use. They sit ahead of
+	// the bootstrap gate only for the catalog, which is documentation about
+	// the command surface and is what an agent needs BEFORE it can act.
+	if s.gatewayMode != "" {
+		switch params.Name {
+		case "runos_catalog":
+			return s.textResult(req, s.handleCatalog(params.Arguments))
+		case "runos":
+			text, isErr := s.handleGatewayExec(params.Arguments)
+			return s.errableResult(req, text, isErr)
 		}
 	}
 

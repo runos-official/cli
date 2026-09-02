@@ -33,6 +33,27 @@ var mcpServeCmd = &cobra.Command{
 	Hidden: true, // Internal command, users shouldn't call this directly
 }
 
+// The gateway: a handful of tools instead of one per command (FPL30).
+//
+// The mode is a FLAG ON THIS COMMAND and nowhere else. It must not come from
+// config, because `runos config set` is itself a runos command and a
+// config-scoped mode is one the model can flip after a refusal and retry.
+var gatewayMode string
+
+var mcpServeGatewayCmd = &cobra.Command{
+	Use:    "gateway",
+	Short:  "Run the gateway MCP server (few tools, catalog-driven)",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		switch gatewayMode {
+		case "ro", "rw":
+		default:
+			return fmt.Errorf("--mode must be ro or rw, got %q", gatewayMode)
+		}
+		return runMCPServeGateway(mcp.Mode(gatewayMode))
+	},
+}
+
 var mcpServeReadCmd = &cobra.Command{
 	Use:    "read",
 	Short:  "Run the read-only MCP server",
@@ -117,6 +138,8 @@ func init() {
 	mcpServeCmd.AddCommand(mcpServeSensitiveReadCmd)
 	mcpServeCmd.AddCommand(mcpServeWriteCmd)
 	mcpServeCmd.AddCommand(mcpServeSensitiveWriteCmd)
+	mcpServeCmd.AddCommand(mcpServeGatewayCmd)
+	mcpServeGatewayCmd.Flags().StringVar(&gatewayMode, "mode", "ro", "ro or rw. Fixed at spawn; not read from config.")
 	mcpCmd.AddCommand(mcpConfigureCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureClaudeCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureOpencodeCmd)
@@ -135,22 +158,39 @@ func runMCPConfigure(cmd *cobra.Command, args []string) {
 	fmt.Println("Usage: runos mcp configure <target>")
 }
 
+func runMCPServeGateway(mode mcp.Mode) error {
+	srv, err := newMCPServer("read")
+	if err != nil {
+		return err
+	}
+	srv.EnableGateway(mode)
+	return srv.Run()
+}
+
 func runMCPServe(category string) error {
+	srv, err := newMCPServer(category)
+	if err != nil {
+		return err
+	}
+	return srv.Run()
+}
+
+func newMCPServer(category string) (*mcp.Server, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	configDir := filepath.Join(home, ".runos")
 
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
-		return fmt.Errorf("failed to load manifest: %w", err)
+		return nil, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
 	executor := mcp.NewCommandExecutor(m, cfg.GetAPIURL())
@@ -162,7 +202,7 @@ func runMCPServe(category string) error {
 	// re-check refresh the command list without a restart (B2).
 	server.SetManifestReloader(loader)
 
-	return server.Run()
+	return server, nil
 }
 
 func runMCPConfigureClaude(cmd *cobra.Command, args []string) error {
