@@ -352,6 +352,15 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if msg, ok := formatDependentsError(err); ok {
 			err = fmt.Errorf("%s", msg)
 		}
+		// FPL31 D3: a route whose module this account switched off answers
+		// 403 module.not_enabled. Rewritten only for a person: under --json
+		// the envelope keeps `code` and `module`, which is what a machine
+		// consumer branches on.
+		if !jsonOutput {
+			if msg, ok := formatModuleNotEnabledError(err); ok {
+				err = fmt.Errorf("%s", msg)
+			}
+		}
 		// I25-H / I25-I: 401s get an actionable hint with revoked-vs-malformed
 		// distinction when the conductor's body carries the structured signal.
 		// foreman #145: skip the RUNOS_API_KEY remediation for endpoints that

@@ -152,3 +152,43 @@ func formatDependentsError(err error) (string, bool) {
 	sb.WriteString("Reconcile each dependent (e.g. update its requires: to point elsewhere, or delete it first) and re-run.")
 	return sb.String(), true
 }
+
+// ModuleNotEnabledCode is conductor's machine-readable reason for a route
+// whose module this account has switched off (FPL31 D3). A caller
+// branches on this rather than on the sentence, which is written for a
+// person and is expected to be reworded.
+const ModuleNotEnabledCode = "module.not_enabled"
+
+// formatModuleNotEnabledError renders a 403 from a module this account
+// has switched off as one line that names the module and the command
+// that switches it on.
+//
+// WHY IT NEEDS ITS OWN SENTENCE. Conductor's message is accurate and
+// still leaves the reader stuck: a 403 reads as "you are not allowed",
+// which sends an operator to audit roles and an agent to give up and
+// reach for the raw API. The real state is that the capability is
+// switched off for this account and one command switches it back on.
+// That command is what has to be in the line.
+//
+// Fires only on a body carrying BOTH the code and a non-empty module, so
+// a 403 this rule does not understand keeps describeAPIError's rendering
+// rather than a sentence naming an empty module.
+func formatModuleNotEnabledError(err error) (string, bool) {
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.StatusCode != http.StatusForbidden {
+		return "", false
+	}
+	var body struct {
+		Code   string `json:"code"`
+		Module string `json:"module"`
+	}
+	if json.Unmarshal(apiErr.Body, &body) != nil {
+		return "", false
+	}
+	if body.Code != ModuleNotEnabledCode || body.Module == "" {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"the %s module is not enabled for this account. Run `runos account modules enable %s` to switch it on. (HTTP %d, %s)",
+		body.Module, body.Module, apiErr.StatusCode, body.Code), true
+}

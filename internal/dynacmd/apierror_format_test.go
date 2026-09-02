@@ -128,3 +128,70 @@ func TestFormatDependentsError(t *testing.T) {
 		}
 	})
 }
+
+// FPL31 D3 and criteria 13/14. A 403 from a module this account switched
+// off has to name the module and the command that switches it on; every
+// other 403 keeps the rendering it has today.
+func TestFormatModuleNotEnabledError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		err    error
+		wantOk bool
+	}{
+		{
+			name:   "the module gate names the enable command",
+			err:    &APIError{StatusCode: 403, Body: []byte(`{"error":"Virtual Machines is not enabled","code":"module.not_enabled","module":"virt"}`)},
+			wantOk: true,
+		},
+		{
+			name: "a 403 with another code is left alone",
+			err:  &APIError{StatusCode: 403, Body: []byte(`{"error":"Admin role required","code":"auth.role_required"}`)},
+		},
+		{
+			name: "a 403 with no code is left alone",
+			err:  &APIError{StatusCode: 403, Body: []byte(`{"error":"Forbidden"}`)},
+		},
+		{
+			name: "the code without a module names nothing, so it is left alone",
+			err:  &APIError{StatusCode: 403, Body: []byte(`{"error":"nope","code":"module.not_enabled"}`)},
+		},
+		{
+			name: "the code on another status is left alone",
+			err:  &APIError{StatusCode: 404, Body: []byte(`{"error":"nope","code":"module.not_enabled","module":"virt"}`)},
+		},
+		{
+			name: "a body that is not JSON is left alone",
+			err:  &APIError{StatusCode: 403, Body: []byte(`<html>403</html>`)},
+		},
+		{
+			name: "a transport error is not an APIError",
+			err:  errString("dial tcp: connection refused"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, ok := formatModuleNotEnabledError(tc.err)
+			if ok != tc.wantOk {
+				t.Fatalf("ok = %v, want %v (msg %q)", ok, tc.wantOk, msg)
+			}
+			if !tc.wantOk {
+				return
+			}
+			// The command is the whole point of the line.
+			if !contains(msg, "runos account modules enable virt") {
+				t.Errorf("the line does not name the command that fixes it: %s", msg)
+			}
+			// One line: this is rendered beside cobra's "Error: " prefix.
+			if contains(msg, "\n") {
+				t.Errorf("the refusal must be one line, got:\n%s", msg)
+			}
+			for _, want := range []string{"virt", "403", "module.not_enabled"} {
+				if !contains(msg, want) {
+					t.Errorf("the line omits %q: %s", want, msg)
+				}
+			}
+		})
+	}
+}
