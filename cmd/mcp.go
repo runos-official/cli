@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/mcp"
@@ -59,6 +61,25 @@ var mcpServeSensitiveWriteCmd = &cobra.Command{
 	Short:  "Run the sensitive write MCP server",
 	Hidden: true,
 	RunE:   func(cmd *cobra.Command, args []string) error { return runMCPServe("sensitive_write") },
+}
+
+var mcpToolsetsCmd = &cobra.Command{
+	Use:   "toolsets",
+	Short: "Show which managed-service tools the MCP servers expose",
+	Long: `The MCP servers carry tools only for the managed-service types this account
+actually runs. 152 of the read server's 315 tools are service-type specific, so
+an account running seven of the twenty-two types stops paying for fifteen it
+has never deployed.
+
+Conductor decides this, not a local file: it already knows every service on
+every cluster, it recomputes when a service is created or deleted, and there is
+nothing here to refresh or go stale. If conductor cannot answer, every tool is
+exposed.
+
+To use a type this account does not run yet, call the runos_tools_enable tool
+from your agent. It loads that type's tools for the session and installs
+nothing.`,
+	RunE: func(cmd *cobra.Command, args []string) error { return runMCPToolsetsShow() },
 }
 
 var mcpConfigureCmd = &cobra.Command{
@@ -117,6 +138,7 @@ func init() {
 	mcpServeCmd.AddCommand(mcpServeSensitiveReadCmd)
 	mcpServeCmd.AddCommand(mcpServeWriteCmd)
 	mcpServeCmd.AddCommand(mcpServeSensitiveWriteCmd)
+	mcpCmd.AddCommand(mcpToolsetsCmd)
 	mcpCmd.AddCommand(mcpConfigureCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureClaudeCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureOpencodeCmd)
@@ -163,6 +185,15 @@ func newMCPServer(category string) (*mcp.Server, error) {
 
 	executor := mcp.NewCommandExecutor(m, cfg.GetAPIURL())
 	server := mcp.NewServer(m, executor, version.Version, category)
+	// Scope the managed-service tools to the types this account runs. Asked at
+	// startup because tools/list happens before any tool call, so the answer
+	// has to be known before the first list. A SHORT deadline on purpose: this
+	// sits in front of every session start, and a slow or unreachable
+	// conductor must cost a moment, not the session. Any failure leaves every
+	// tool exposed.
+	if token, err := auth.ResolveToken(cfg); err == nil {
+		server.SetToolsets(mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.AccountID, token, 3*time.Second))
+	}
 	// Without a default cluster the tool schema has to mark `cid`
 	// required, since there is nothing to fall back on (B13).
 	server.SetDefaultClusterID(cfg.GetDefaultClusterID())
@@ -921,5 +952,42 @@ trust_level = "trusted"
 	}
 
 	fmt.Printf("Updated %s (added project as trusted)\n", configPath)
+	return nil
+}
+
+// runMCPToolsetsShow reports what conductor says this account runs, and what
+// that hides. It asks conductor live rather than reading anything local: there
+// is no cache on this side to be out of date with.
+func runMCPToolsetsShow() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	loader := manifest.NewLoader(cfg.GetAPIURL(), filepath.Join(home, ".runos"))
+	m, err := loader.Load()
+	if err != nil {
+		return fmt.Errorf("failed to load manifest: %w", err)
+	}
+	token, err := auth.ResolveToken(cfg)
+	if err != nil {
+		return fmt.Errorf("not signed in: %w", err)
+	}
+	ts := mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.AccountID, token, 10*time.Second)
+	if !ts.Scoped() {
+		fmt.Println("Not scoped: every managed-service tool is exposed.")
+		fmt.Println("Conductor could not say which services this account runs, so nothing is hidden.")
+		return nil
+	}
+	hidden := ts.Hidden()
+	if len(hidden) == 0 {
+		fmt.Println("Scoped, but this account runs every service type, so nothing is hidden.")
+		return nil
+	}
+	fmt.Printf("Scoped. %d service types are not loaded: %s\n", len(hidden), strings.Join(hidden, ", "))
+	fmt.Println("Your agent can load one for a single session with the runos_tools_enable tool.")
 	return nil
 }

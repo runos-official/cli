@@ -38,7 +38,14 @@ const bootstrapToolName = "mcp_bootstrap"
 // keeping it behind the gate meant a server that could not bootstrap
 // could not be repaired either (review 2 item 2).
 func isGateExemptTool(toolName string) bool {
-	return toolName == bootstrapToolName || toolName == manifestUpdateToolName
+	// runos_tools_enable joins the exemption because it changes only which
+	// tool DEFINITIONS are listed. It reads nothing, writes nothing and
+	// touches no cluster, and gating it would leave a caller that needs a
+	// hidden service type unable to load it before reading a topic about a
+	// tool it cannot yet see.
+	return toolName == bootstrapToolName ||
+		toolName == manifestUpdateToolName ||
+		toolName == toolsEnableToolName
 }
 
 // bootstrapGateWarning is prepended to a tool result that ran with the

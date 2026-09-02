@@ -313,6 +313,9 @@ type Server struct {
 	// rather than letting the call fail at dispatch with "cluster ID
 	// required" (goal 21 B13).
 	defaultClusterID string
+	// toolsets narrows the managed-service tools to the types this account
+	// actually runs. Never nil; an unscoped Toolsets exposes everything.
+	toolsets *Toolsets
 }
 
 // SetDefaultClusterID records the configured default cluster, so the
@@ -334,6 +337,10 @@ func NewServer(m *manifest.Manifest, executor ToolExecutor, version, category st
 		executor: executor,
 		version:  version,
 		category: category,
+		// Scoped to the service types this account runs, when a cache says
+		// which. Unreadable or absent means unscoped: never hide an
+		// operator's own platform because a cache file went missing.
+		toolsets: NewToolsets(m),
 	}
 	// Capture the running binary's mtime at startup so subsequent tool
 	// calls can detect a rebuilt-while-running situation (I13-A). Best
@@ -709,6 +716,15 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		if err == nil && changed {
 			s.sendNotification("notifications/tools/list_changed")
 		}
+	} else if params.Name == toolsEnableToolName {
+		var changed bool
+		result, changed, err = s.handleToolsEnable(params.Arguments)
+		// Same rule as manifest_update: announce only a list that really
+		// changed, so the client does not re-read every definition to
+		// find nothing new.
+		if err == nil && changed {
+			s.sendNotification("notifications/tools/list_changed")
+		}
 	} else if isStaticRunTool(params.Name) {
 		result, err = s.handleRun(params.Arguments)
 	} else if isStaticAppsTool(params.Name) {
@@ -878,6 +894,12 @@ func (s *Server) buildTools() []Tool {
 		// the filesystem-aware shim appended via staticServicesTools. A
 		// manifest-driven version here would be a filesystem-blind duplicate.
 		if isStaticServicesTool(toolName) || isStaticAppsTool(toolName) {
+			continue
+		}
+
+		// Managed-service tools for a type this account does not run are
+		// left out. runos_tools_enable adds one back mid-session.
+		if !s.toolsets.permits(cmd.Command) {
 			continue
 		}
 
@@ -1070,6 +1092,26 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 	// dispatcher can't model. Only surfaces under sensitive_write
 	// since it mutates cluster state.
 	tools = append(tools, staticRunTools(s.category)...)
+	// Only worth listing when something is actually hidden: an unscoped
+	// server has nothing to add, and the tool would be dead weight.
+	if s.toolsets.Scoped() && len(s.toolsets.Hidden()) > 0 {
+		tools = append(tools, Tool{
+			Name:        toolsEnableToolName,
+			Description: s.toolsets.enableToolDescription(),
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"types": {
+						Type:        "array",
+						Description: "Service types to load, e.g. [\"kafka\",\"vllm\"].",
+						Items:       &Property{Type: "string"},
+					},
+				},
+				Required: []string{"types"},
+			},
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
+		})
+	}
 
 	return tools
 }

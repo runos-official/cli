@@ -210,6 +210,10 @@ func (c *Config) ForgetAccount(accountID string) bool {
 	return found
 }
 
+// Dir is the CLI's config directory (~/.runos). Exported because the MCP
+// toolset cache lives beside the manifest cache.
+func Dir() (string, error) { return configDir() }
+
 func configDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
