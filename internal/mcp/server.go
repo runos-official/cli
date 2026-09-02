@@ -601,10 +601,6 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		s.bootstrapFailed = false
 		s.bootstrapErr = ""
 		s.topicKeys = topicKeysFromBootstrap(result)
-		// The router already names every key with guidance; the bare array is
-		// the same index again, ~305 tokens on a payload every session must
-		// read. Kept for the search fallback above, dropped from the wire.
-		result = stripTopicKeys(result, routerNamesKey(instructionsFromBootstrap(result)), s.topicKeys)
 		// Bootstrap returns the instructions every session must follow,
 		// which is documentation. Counting it toward the read-at-least-N
 		// gate matters most in the case that gate handles worst: a search
