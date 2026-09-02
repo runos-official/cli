@@ -254,8 +254,64 @@ func (idx commandIndex) catalogSubgroups(group string, mode Mode, total int) str
 }
 
 // catalogGroup lists one group's commands, one line each.
+// clusterScoped reports whether a command is served on a cluster-scoped route.
+//
+// The manifest expresses cluster scope in the ENDPOINT (`/:aid/:cid/nodes`), not
+// as an input field, so `nodes list` has no fields at all and the catalog used to
+// describe it as "Takes no arguments". The CLI then refuses the call with
+// "cluster ID required". The catalog was stating something false about roughly
+// every cluster-scoped read, which is the one thing a discovery layer must never
+// do: the agent cannot check it against anything.
+func clusterScoped(c manifest.Command) bool {
+	return strings.Contains(c.Endpoint, "/:cid/") || strings.HasSuffix(c.Endpoint, "/:cid")
+}
+
+// signature renders a command's REQUIRED arguments inline, so a group listing is
+// enough to call most commands directly.
+//
+// Measured 2026-09-02 on a five-command task: the gateway spent 11 catalog calls
+// to run 5 commands, because the listing named commands but not their arguments,
+// so the agent drilled group -> command -> exec for every one. Discovery scaled
+// with the number of distinct commands, which is the opposite of what a cheap
+// discovery layer should do. Required args are the part the agent cannot guess;
+// optional ones stay behind the detail call so a 40-command group stays readable.
+func signature(c manifest.Command) string {
+	var req []string
+	optional := 0
+	if clusterScoped(c) {
+		req = append(req, "--cid")
+	}
+	if c.Input == nil || len(c.Input.Fields) == 0 {
+		if len(req) == 0 {
+			return "(no args)"
+		}
+		return strings.Join(req, " ")
+	}
+	for _, f := range c.Input.Fields {
+		if !f.Required {
+			optional++
+			continue
+		}
+		if f.Positional {
+			req = append(req, "<"+f.Name+">")
+		} else {
+			req = append(req, "--"+f.Name)
+		}
+	}
+	var parts []string
+	if len(req) > 0 {
+		parts = append(parts, strings.Join(req, " "))
+	} else {
+		parts = append(parts, "(no required args)")
+	}
+	if optional > 0 {
+		parts = append(parts, fmt.Sprintf("[+%d optional]", optional))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (idx commandIndex) catalogGroup(group string, mode Mode) string {
-	type row struct{ path, desc string }
+	type row struct{ path, sig, desc string }
 	var rows []row
 	for path, c := range idx {
 		if !strings.HasPrefix(path, group+"/") && path != group {
@@ -264,7 +320,7 @@ func (idx commandIndex) catalogGroup(group string, mode Mode) string {
 		if ok, _ := permits(c, mode); !ok {
 			continue
 		}
-		rows = append(rows, row{path, firstSentence(c.Description)})
+		rows = append(rows, row{path, signature(c), firstSentence(c.Description)})
 	}
 	if len(rows) == 0 {
 		return fmt.Sprintf("No commands in group `%s` are available in %s mode. Call runos_catalog with no argument for the groups that are.", group, mode)
@@ -274,9 +330,9 @@ func (idx commandIndex) catalogGroup(group string, mode Mode) string {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].path < rows[j].path })
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d commands in `%s`. Call runos_catalog with a full command path for its arguments.\n\n", len(rows), group)
+	fmt.Fprintf(&b, "%d commands in `%s`. REQUIRED arguments are shown, so you can call most of these directly with the runos tool. Fetch a full command path only when you need its optional arguments.\n\n", len(rows), group)
 	for _, r := range rows {
-		fmt.Fprintf(&b, "  %-42s %s\n", strings.ReplaceAll(r.path, "/", " "), r.desc)
+		fmt.Fprintf(&b, "  %-38s %-34s %s\n", strings.ReplaceAll(r.path, "/", " "), r.sig, r.desc)
 	}
 	return b.String()
 }
@@ -299,11 +355,17 @@ func (idx commandIndex) catalogCommand(path string, mode Mode) string {
 	if c.ReturnsJob {
 		fmt.Fprintf(&b, "Returns a job. Poll it rather than assuming completion.\n\n")
 	}
-	if c.Input == nil || len(c.Input.Fields) == 0 {
+	if clusterScoped(c) {
+		b.WriteString("Arguments:\n  --cid                      string  (required)  Target cluster. A configured default cid satisfies it; without either the call is refused.\n")
+		if c.Input == nil || len(c.Input.Fields) == 0 {
+			return b.String()
+		}
+	} else if c.Input == nil || len(c.Input.Fields) == 0 {
 		b.WriteString("Takes no arguments.\n")
 		return b.String()
+	} else {
+		b.WriteString("Arguments:\n")
 	}
-	b.WriteString("Arguments:\n")
 	for _, f := range c.Input.Fields {
 		req := ""
 		if f.Required {
@@ -372,24 +434,33 @@ func GatewayTools(mode Mode) []Tool {
 	return []Tool{
 		{
 			Name: "runos_catalog",
-			Description: "Discover RunOS commands. Call with no argument for the command groups, " +
-				"with `group` for that group's commands, or with `command` (e.g. \"vms/snapshot\") " +
-				"for one command's arguments. Read a command's entry before running it: this " +
-				"catalog is the only description of its arguments.",
+			// The wording is load-bearing. It previously said "Read a command's entry
+			// before running it", and the agent obeyed literally: measured at 11 to 12
+			// catalog calls to run 5 commands, drilling group -> command -> exec every
+			// time, even after the group listing began carrying the required arguments.
+			// The prose beat the structure, so the prose had to change too.
+			Description: "Discover RunOS commands. mcp_bootstrap already gave you the group index, " +
+				"so start at `group` rather than calling this with no argument. PASS EVERY GROUP YOU " +
+				"NEED AT ONCE: `group` takes a list, e.g. [\"nodes\",\"apps\",\"vms\"], and one call " +
+				"beats five. A group listing shows each command's REQUIRED arguments, so it is enough " +
+				"to call most commands: go straight to the runos tool from there. Use `command` " +
+				"(also a list) only when you need OPTIONAL arguments, enum values, or a full description.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
-					"group":   {Type: "string", Description: "A group name, e.g. \"vms\"."},
-					"command": {Type: "string", Description: "A full command path, e.g. \"vms/snapshot\"."},
+					"group":   {Type: "array", Description: "Group names, e.g. [\"vms\",\"nodes\"]. A single string is accepted too.", Items: &Property{Type: "string"}},
+					"command": {Type: "array", Description: "Full command paths, e.g. [\"vms/snapshot\"]. A single string is accepted too.", Items: &Property{Type: "string"}},
 				},
 			},
 			Annotations: &ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name: "runos",
-			Description: "Run one RunOS command. `args` is the command line as an ARRAY, " +
+			Description: "Run ONE RunOS command. `args` is the command line as an ARRAY, " +
 				"e.g. [\"vms\",\"snapshot\",\"--vmid\",\"abc12\"]. Never a single string. " +
-				"Output is JSON. Call runos_catalog first if you are unsure of a command or its arguments.",
+				"One command per call, so you see each result before deciding the next step. " +
+				"Output is JSON. If you do not know the command, call runos_catalog with " +
+				"its `group` once: that listing names the required arguments and is normally all you need.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -461,18 +532,76 @@ func (s *Server) errableResult(req *Request, text string, isErr bool) *Response 
 		Result: CallToolResult{Content: []ContentBlock{{Type: "text", Text: text}}, IsError: isErr}}
 }
 
-func (s *Server) handleCatalog(args map[string]any) string {
-	if c, ok := args["command"].(string); ok && c != "" {
-		return s.gatewayIdx.catalogCommand(strings.TrimSpace(c), s.gatewayMode)
+// maxBatch bounds a single batched call. A batch exists to remove round trips,
+// not to let one call return unbounded output or fan out unbounded work.
+const maxBatch = 20
+
+// stringOrList reads a field that accepts either one string or a list of them,
+// so `group` and `groups` are the same parameter to a caller.
+func stringOrList(args map[string]any, keys ...string) []string {
+	var out []string
+	for _, k := range keys {
+		switch v := args[k].(type) {
+		case string:
+			if s := strings.TrimSpace(v); s != "" {
+				out = append(out, s)
+			}
+		case []any:
+			for _, e := range v {
+				if s, ok := e.(string); ok {
+					if s = strings.TrimSpace(s); s != "" {
+						out = append(out, s)
+					}
+				}
+			}
+		}
 	}
-	if g, ok := args["group"].(string); ok && g != "" {
-		return s.gatewayIdx.catalogGroup(strings.Trim(strings.TrimSpace(g), "/"), s.gatewayMode)
+	return out
+}
+
+func (s *Server) handleCatalog(args map[string]any) string {
+	// Commands and groups both take a list. An agent inventorying a cluster asked
+	// for five groups in five calls; every one of those round trips re-sent the
+	// whole conversation to learn something the manifest already knew.
+	if cmds := stringOrList(args, "command", "commands"); len(cmds) > 0 {
+		return s.catalogMany(cmds, func(x string) string {
+			return s.gatewayIdx.catalogCommand(strings.TrimSpace(x), s.gatewayMode)
+		})
+	}
+	if groups := stringOrList(args, "group", "groups"); len(groups) > 0 {
+		return s.catalogMany(groups, func(x string) string {
+			return s.gatewayIdx.catalogGroup(strings.Trim(x, "/"), s.gatewayMode)
+		})
 	}
 	return s.gatewayIdx.catalogGroups(s.gatewayMode)
 }
 
+func (s *Server) catalogMany(items []string, render func(string) string) string {
+	if len(items) == 1 {
+		return render(items[0])
+	}
+	if len(items) > maxBatch {
+		return fmt.Sprintf("Too many at once (%d). Ask for at most %d per call.", len(items), maxBatch)
+	}
+	var b strings.Builder
+	for i, it := range items {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "===== %s =====\n%s", it, render(it))
+	}
+	return b.String()
+}
+
 // handleGatewayExec authorizes then runs. Authorization happens BEFORE the
 // process is spawned, never after.
+// handleGatewayExec runs exactly ONE command.
+//
+// Execution is deliberately NOT batchable, though discovery is. Every executed
+// command is a decision: the caller reads its result before choosing what to do
+// next, and a batch removes that decision point and buries a mid-sequence
+// failure inside one aggregate result. Discovery has no such property, which is
+// why runos_catalog takes lists and this does not.
 func (s *Server) handleGatewayExec(args map[string]any) (string, bool) {
 	argv, err := argvFrom(args)
 	if err != nil {

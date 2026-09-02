@@ -656,12 +656,25 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 			s.topicsRead = make(map[string]struct{})
 		}
 		s.topicsRead[bootstrapTopicKey] = struct{}{}
+		content := []ContentBlock{{Type: "text", Text: result}}
+		// On the gateway, the group index rides along with bootstrap. It was the
+		// agent's next call every single time (measured: mcp_bootstrap ->
+		// runos_catalog with no argument, in every run), it is ~270 tokens, and it
+		// comes from the local manifest rather than the API, so it costs nothing to
+		// include. A round trip re-sends the whole conversation, which is far more
+		// than the listing weighs. Sent as its OWN content block so the first block
+		// stays parseable JSON for topicKeysFromBootstrap and for callers.
+		if s.gatewayIdx != nil {
+			content = append(content, ContentBlock{
+				Type: "text",
+				Text: "RunOS command groups (no runos_catalog call needed for this):\n\n" +
+					s.gatewayIdx.catalogGroups(s.gatewayMode),
+			})
+		}
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: CallToolResult{
-				Content: []ContentBlock{{Type: "text", Text: result}},
-			},
+			Result: CallToolResult{Content: content},
 		}
 	}
 
