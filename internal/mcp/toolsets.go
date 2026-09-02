@@ -40,7 +40,39 @@ type Toolsets struct {
 	// known is every service type the manifest defines, so the enable tool can
 	// name what is available but hidden, and reject a type that does not exist.
 	known map[string]struct{}
+	// virtInstalled is false when no cluster on the account runs KubeVirt, and
+	// then the whole VM surface is hidden. That surface is 31 tools and about
+	// 17,000 tokens, roughly HALF the read server, because its tools carry the
+	// longest descriptions in the manifest. An account with no virtualisation
+	// was carrying all of it.
+	virtInstalled bool
 }
+
+// vmGroups are the top-level command groups that only mean anything once
+// KubeVirt is installed. Listed explicitly rather than matched on a "vm" prefix
+// so that a future group starting with those letters cannot be swept in by
+// accident, and so this list is somewhere a reader can find it.
+var vmGroups = map[string]struct{}{
+	"vms": {}, "virt": {}, "vm-groups": {}, "vm-images": {}, "vm-networks": {},
+	"vm-addresses": {}, "vm-address-blocks": {}, "vm-events": {}, "vm-usage": {},
+}
+
+// infraTypes are managed services the platform installs and runs for itself.
+//
+// They are hidden even though the account genuinely runs them, because nobody
+// asks an agent to manage the ingress or the certificate issuer in the ordinary
+// course of work: they arrive with a configured cluster rather than being
+// chosen. Every one is still one runos_tools_enable call away, and the enable
+// tool names them, which matters because cert-manager is exactly what you want
+// when a certificate is stuck and wireguard is what a node delete needs moved.
+var infraTypes = map[string]struct{}{
+	"cert-manager": {}, "traefik": {}, "wireguard": {},
+}
+
+// virtCapability is the name runos_tools_enable takes to load the whole VM
+// surface. Not a service type, so it is kept apart from the type names and
+// accepted alongside them.
+const virtCapability = "virt"
 
 // serviceTypeOf returns the managed-service type a manifest command belongs to.
 //
@@ -64,6 +96,8 @@ func newUnscoped(m *manifest.Manifest) *Toolsets {
 		inUse: map[string]struct{}{},
 		extra: map[string]struct{}{},
 		known: map[string]struct{}{},
+		// Unscoped hides nothing, VM tools included.
+		virtInstalled: true,
 	}
 	if m != nil {
 		for _, c := range m.Commands {
@@ -116,8 +150,9 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 		return ts
 	}
 	var out struct {
-		Scoped       bool     `json:"scoped"`
-		ServiceTypes []string `json:"serviceTypes"`
+		Scoped        bool     `json:"scoped"`
+		ServiceTypes  []string `json:"serviceTypes"`
+		VirtInstalled bool     `json:"virtInstalled"`
 	}
 	if json.Unmarshal(body, &out) != nil || !out.Scoped {
 		return ts
@@ -128,6 +163,7 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 	for _, x := range out.ServiceTypes {
 		ts.inUse[x] = struct{}{}
 	}
+	ts.virtInstalled = out.VirtInstalled
 	ts.scoped = true
 	return ts
 }
@@ -137,19 +173,38 @@ func (ts *Toolsets) permits(commandPath string) bool {
 	if ts == nil {
 		return true
 	}
-	t := serviceTypeOf(commandPath)
-	if t == "" {
-		return true // not service-type specific: always exposed
-	}
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	if !ts.scoped {
 		return true
 	}
-	if _, ok := ts.inUse[t]; ok {
+
+	// The VM surface goes as a whole: these groups are meaningless without
+	// KubeVirt, and half of them would only ever return "not installed".
+	group := commandPath
+	if i := strings.Index(group, "/"); i >= 0 {
+		group = group[:i]
+	}
+	if _, isVM := vmGroups[group]; isVM {
+		if ts.virtInstalled {
+			return true
+		}
+		_, on := ts.extra[virtCapability]
+		return on
+	}
+
+	t := serviceTypeOf(commandPath)
+	if t == "" {
+		return true // not service-type specific: always exposed
+	}
+	if _, ok := ts.extra[t]; ok {
 		return true
 	}
-	_, ok := ts.extra[t]
+	// Platform-run services are hidden even when present; see infraTypes.
+	if _, infra := infraTypes[t]; infra {
+		return false
+	}
+	_, ok := ts.inUse[t]
 	return ok
 }
 
@@ -165,13 +220,21 @@ func (ts *Toolsets) Hidden() []string {
 	}
 	var out []string
 	for t := range ts.known {
-		if _, ok := ts.inUse[t]; ok {
-			continue
-		}
 		if _, ok := ts.extra[t]; ok {
 			continue
 		}
-		out = append(out, t)
+		_, infra := infraTypes[t]
+		_, used := ts.inUse[t]
+		// An infra type is hidden even when in use; any other type is hidden
+		// only when the account does not run it.
+		if infra || !used {
+			out = append(out, t)
+		}
+	}
+	if !ts.virtInstalled {
+		if _, on := ts.extra[virtCapability]; !on {
+			out = append(out, virtCapability)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -192,12 +255,24 @@ func (ts *Toolsets) Enable(types []string) (added, unknown []string) {
 		if t == "" {
 			continue
 		}
+		if t == virtCapability {
+			if _, on := ts.extra[virtCapability]; on || ts.virtInstalled {
+				continue
+			}
+			ts.extra[virtCapability] = struct{}{}
+			added = append(added, virtCapability)
+			continue
+		}
 		if _, ok := ts.known[t]; !ok {
 			unknown = append(unknown, raw)
 			continue
 		}
-		if _, ok := ts.inUse[t]; ok {
-			continue
+		// An infra type is hidden despite being in use, so inUse must not
+		// short-circuit it here or it could never be enabled.
+		if _, infra := infraTypes[t]; !infra {
+			if _, ok := ts.inUse[t]; ok {
+				continue
+			}
 		}
 		if _, ok := ts.extra[t]; ok {
 			continue
@@ -231,7 +306,7 @@ func (ts *Toolsets) enableToolDescription() string {
 		return "Add managed-service tools to this session. Every service type this account runs is already available, so this is only needed for a type you are about to install."
 	}
 	return fmt.Sprintf(
-		"Add managed-service tools to this session. Tools are scoped to the service types this account runs; these types exist but are NOT loaded: %s. Pass one or more to load their tools immediately (this session only, nothing is installed or changed).",
+		"Load more RunOS tools into this session. The surface is scoped to what this account actually runs, so these are NOT loaded: %s. Pass one or more to load their tools immediately; this changes nothing on the account and installs nothing. `virt` loads the whole VM surface (vms, virt, vm-groups, vm-images, vm-networks). cert-manager, traefik and wireguard are running but hidden because the platform manages them; load one if you are debugging certificates, ingress or the VPN.",
 		strings.Join(hidden, ", "))
 }
 
