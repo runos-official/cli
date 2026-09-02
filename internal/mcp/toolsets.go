@@ -27,6 +27,13 @@ import (
 // FAIL OPEN, ALWAYS. Every unreadable, missing, empty or malformed state means
 // "expose everything". A cache that cannot be read must never leave an operator
 // unable to see their own platform, and a first run has no cache at all.
+//
+// MANAGED-SERVICE TYPES ONLY. The VM surface used to be hidden here too, on a
+// KubeVirt-installed flag and a hardcoded list of VM command groups. It is not
+// any more: virt is an account MODULE (FPL31), so conductor leaves a disabled
+// module's commands out of the account-scoped manifest and refuses its routes
+// with 403 module.not_enabled. A second copy of that decision in the CLI would
+// drift from conductor's and hide something the account may in fact call.
 type Toolsets struct {
 	mu sync.RWMutex
 	// scoped is false until a usable cache is loaded. False = expose everything.
@@ -47,21 +54,6 @@ type Toolsets struct {
 	// because cert-manager is what a stuck certificate needs and wireguard is
 	// what a node delete has to move.
 	platformManaged map[string]struct{}
-	// virtInstalled is false when no cluster on the account runs KubeVirt, and
-	// then the whole VM surface is hidden. That surface is 31 tools and about
-	// 17,000 tokens, roughly HALF the read server, because its tools carry the
-	// longest descriptions in the manifest. An account with no virtualisation
-	// was carrying all of it.
-	virtInstalled bool
-}
-
-// vmGroups are the top-level command groups that only mean anything once
-// KubeVirt is installed. Listed explicitly rather than matched on a "vm" prefix
-// so that a future group starting with those letters cannot be swept in by
-// accident, and so this list is somewhere a reader can find it.
-var vmGroups = map[string]struct{}{
-	"vms": {}, "virt": {}, "vm-groups": {}, "vm-images": {}, "vm-networks": {},
-	"vm-addresses": {}, "vm-address-blocks": {}, "vm-events": {}, "vm-usage": {},
 }
 
 // Platform-managed types come from conductor, which marks them
@@ -69,11 +61,6 @@ var vmGroups = map[string]struct{}{
 // here: a copy in the CLI drifts the moment a type is added or reclassified,
 // and this side would then hide something conductor no longer considers
 // platform-owned, or miss one it does.
-
-// virtCapability is the name runos_tools_enable takes to load the whole VM
-// surface. Not a service type, so it is kept apart from the type names and
-// accepted alongside them.
-const virtCapability = "virt"
 
 // serviceTypeOf returns the managed-service type a manifest command belongs to.
 //
@@ -98,8 +85,6 @@ func newUnscoped(m *manifest.Manifest) *Toolsets {
 		extra:           map[string]struct{}{},
 		known:           map[string]struct{}{},
 		platformManaged: map[string]struct{}{},
-		// Unscoped hides nothing, VM tools included.
-		virtInstalled: true,
 	}
 	if m != nil {
 		for _, c := range m.Commands {
@@ -154,7 +139,6 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 	var out struct {
 		Scoped               bool     `json:"scoped"`
 		ServiceTypes         []string `json:"serviceTypes"`
-		VirtInstalled        bool     `json:"virtInstalled"`
 		PlatformManagedTypes []string `json:"platformManagedTypes"`
 	}
 	if json.Unmarshal(body, &out) != nil || !out.Scoped {
@@ -169,7 +153,6 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 	for _, x := range out.PlatformManagedTypes {
 		ts.platformManaged[x] = struct{}{}
 	}
-	ts.virtInstalled = out.VirtInstalled
 	ts.scoped = true
 	return ts
 }
@@ -183,20 +166,6 @@ func (ts *Toolsets) permits(commandPath string) bool {
 	defer ts.mu.RUnlock()
 	if !ts.scoped {
 		return true
-	}
-
-	// The VM surface goes as a whole: these groups are meaningless without
-	// KubeVirt, and half of them would only ever return "not installed".
-	group := commandPath
-	if i := strings.Index(group, "/"); i >= 0 {
-		group = group[:i]
-	}
-	if _, isVM := vmGroups[group]; isVM {
-		if ts.virtInstalled {
-			return true
-		}
-		_, on := ts.extra[virtCapability]
-		return on
 	}
 
 	t := serviceTypeOf(commandPath)
@@ -237,11 +206,6 @@ func (ts *Toolsets) Hidden() []string {
 			out = append(out, t)
 		}
 	}
-	if !ts.virtInstalled {
-		if _, on := ts.extra[virtCapability]; !on {
-			out = append(out, virtCapability)
-		}
-	}
 	sort.Strings(out)
 	return out
 }
@@ -259,14 +223,6 @@ func (ts *Toolsets) Enable(types []string) (added, unknown []string) {
 		t = strings.TrimPrefix(t, "services/")
 		t = strings.TrimPrefix(t, "services_")
 		if t == "" {
-			continue
-		}
-		if t == virtCapability {
-			if _, on := ts.extra[virtCapability]; on || ts.virtInstalled {
-				continue
-			}
-			ts.extra[virtCapability] = struct{}{}
-			added = append(added, virtCapability)
 			continue
 		}
 		if _, ok := ts.known[t]; !ok {
@@ -312,7 +268,7 @@ func (ts *Toolsets) enableToolDescription() string {
 		return "Add managed-service tools to this session. Every service type this account runs is already available, so this is only needed for a type you are about to install."
 	}
 	return fmt.Sprintf(
-		"Load more RunOS tools into this session. The surface is scoped to what this account actually runs, so these are NOT loaded: %s. Pass one or more to load their tools immediately; this changes nothing on the account and installs nothing. `virt` loads the whole VM surface (vms, virt, vm-groups, vm-images, vm-networks). cert-manager, traefik and wireguard are running but hidden because the platform manages them; load one if you are debugging certificates, ingress or the VPN.",
+		"Load more RunOS tools into this session. The surface is scoped to what this account actually runs, so these are NOT loaded: %s. Pass one or more to load their tools immediately; this changes nothing on the account and installs nothing. cert-manager, traefik and wireguard are running but hidden because the platform manages them; load one if you are debugging certificates, ingress or the VPN.",
 		strings.Join(hidden, ", "))
 }
 
