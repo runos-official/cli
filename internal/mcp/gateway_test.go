@@ -234,3 +234,63 @@ func TestCatalogAcceptsSeveralGroupsInOneCall(t *testing.T) {
 		t.Errorf("single-string group broke:\n%s", one)
 	}
 }
+
+// A `{id}` segment is a positional argument, not a word in the command, so the
+// CLI drops it from the command path. Indexing only the raw manifest path left
+// EVERY per-instance service read unreachable through the gateway. Measured on a
+// 20-command audit: the agent tried five spellings of one such command, all were
+// refused, and it had to report the item as unavailable.
+func TestIdBearingCommandsResolveByTheirTypedPath(t *testing.T) {
+	m := &manifest.Manifest{Commands: []manifest.Command{
+		{Command: "services/postgresql/{id}/users", Endpoint: "/:aid/:cid/services/postgresql/:id/users",
+			Method: "GET", Description: "List database users", MCP: []string{"read"}},
+	}}
+	idx := buildIndex(m)
+	for _, argv := range [][]string{
+		{"services", "postgresql", "users", "--cid", "v6b", "--id", "tr642"},
+		{"services", "postgresql", "users", "tr642"},
+	} {
+		if _, _, ok := idx.resolveCommand(argv); !ok {
+			t.Errorf("argv %v did not resolve", argv)
+		}
+	}
+	// The raw manifest path stays addressable too.
+	if _, ok := idx["services/postgresql/{id}/users"]; !ok {
+		t.Error("raw manifest path was lost from the index")
+	}
+}
+
+// The write gate must be what refuses a write, not an accidental failure to
+// resolve the path. Before the fix, `exec-sql` was refused only because
+// `services/postgresql/tr642/exec-sql` matched nothing; the moment the path
+// resolved, the mode check had to be the thing standing in the way.
+func TestWriteIsRefusedByTheModeGateNotByAFailureToResolve(t *testing.T) {
+	m := &manifest.Manifest{Commands: []manifest.Command{
+		{Command: "services/postgresql/{id}/exec-sql", Endpoint: "/:aid/:cid/services/postgresql/:id/exec-sql",
+			Method: "POST", Description: "Execute SQL", MCP: []string{"sensitive_write"}},
+	}}
+	idx := buildIndex(m)
+	argv := []string{"services", "postgresql", "exec-sql", "--cid", "v6b", "--id", "tr642"}
+	if _, _, ok := idx.resolveCommand(argv); !ok {
+		t.Fatal("path must resolve, otherwise the gate is never consulted")
+	}
+	_, err := idx.authorize(argv, ModeRO)
+	if err == nil {
+		t.Fatal("a sensitive_write command was authorized in read-only mode")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("refusal should name the mode, got: %v", err)
+	}
+}
+
+// A derived path must never shadow a real manifest command that collides with it.
+func TestDerivedPathNeverShadowsARealCommand(t *testing.T) {
+	real := manifest.Command{Command: "services/postgresql/users", Endpoint: "/:aid/:cid/pg-users",
+		Method: "GET", Description: "REAL", MCP: []string{"read"}}
+	derived := manifest.Command{Command: "services/postgresql/{id}/users", Endpoint: "/:aid/:cid/services/postgresql/:id/users",
+		Method: "GET", Description: "DERIVED", MCP: []string{"read"}}
+	idx := buildIndex(&manifest.Manifest{Commands: []manifest.Command{derived, real}})
+	if got := idx["services/postgresql/users"].Description; got != "REAL" {
+		t.Errorf("derived key shadowed the real command: got %q", got)
+	}
+}

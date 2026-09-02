@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -78,10 +79,47 @@ var staticDenyReason = map[string]string{
 // commandIndex maps an exact manifest command path to its definition.
 type commandIndex map[string]manifest.Command
 
+// placeholderSegment matches a whole `{name}` path segment.
+var placeholderSegment = regexp.MustCompile(`^\{\w+\}$`)
+
+// cliPathFor turns a manifest command path into the path a user actually types.
+//
+// A `{id}` segment is a POSITIONAL ARGUMENT, not a word in the command, so the
+// CLI drops it from the command tree (see promoteURLPlaceholderFieldsToPositional
+// in internal/dynacmd/builder.go, which flips the matching field to positional).
+// `services/postgresql/{id}/users` is typed `runos services postgresql users tr642`.
+//
+// Indexing only the raw manifest path made every id-bearing command unreachable
+// through the gateway: argv resolved to `services/postgresql/users`, the index
+// held `services/postgresql/{id}/users`, and nothing matched. Measured on a
+// 20-command audit, the agent tried five different spellings of one such command,
+// all refused, and had to report the item as unavailable. That is a whole class of
+// commands (every per-instance service read: show, status, users, schema, logs).
+func cliPathFor(manifestPath string) string {
+	segs := strings.Split(manifestPath, "/")
+	kept := segs[:0]
+	for _, s := range segs {
+		if placeholderSegment.MatchString(s) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return strings.Join(kept, "/")
+}
+
 func buildIndex(m *manifest.Manifest) commandIndex {
 	idx := make(commandIndex, len(m.Commands))
 	for _, c := range m.Commands {
 		idx[c.Command] = c
+	}
+	// Second pass, so a raw manifest path always wins over a derived one and the
+	// derived key can never shadow a real command that happens to collide.
+	for _, c := range m.Commands {
+		if p := cliPathFor(c.Command); p != "" && p != c.Command {
+			if _, taken := idx[p]; !taken {
+				idx[p] = c
+			}
+		}
 	}
 	return idx
 }
