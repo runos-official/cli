@@ -157,6 +157,15 @@ func explainPossiblyStaleManifest(err error) {
 					"The COMMAND is fine; run it with --help to see the flags it does take.\n", cached)
 			return
 		}
+		// The cached list matching the server rules out staleness, not a
+		// module this account has switched off: conductor leaves a disabled
+		// module's commands out of the manifest it serves, so the command is
+		// absent and current at the same time (FPL31). Checked before the
+		// "really does not exist" sentence, which would otherwise be the
+		// wrong conclusion from true evidence.
+		if explainModuleGate(unknownCommandPath(err)) {
+			return
+		}
 		fmt.Fprintf(os.Stderr,
 			"\nYour cached command list is current (%s), so this command really does not exist.\n"+
 				"Run `runos --help` to see what does.\n", cached)
