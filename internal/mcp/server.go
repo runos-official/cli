@@ -230,32 +230,6 @@ type ContentBlock struct {
 // cheapest lever here and it is one line.
 const minTopicsRead = 1
 
-// MinTopicsReadOverride relaxes the documentation gate for a measurement or
-// for a surface that does not need it.
-//
-// WHY THE GATE EXISTS, before anyone lowers it casually: agents were
-// HALLUCINATING RunOS commands. The topics are the source of truth and the
-// gate forces the agent to read one before it can act.
-//
-// WHY IT MAY NOT NEED TO BE 2 ON THE GATEWAY: the gateway cannot execute a
-// command that does not exist. authorize() matches the exact command path
-// against the manifest, so `clusters describe`, `vms reboot` and
-// `services redis add` are all refused with a message naming runos_catalog.
-// The command-existence half of hallucination is handled structurally there,
-// which is not true of the per-command surface.
-//
-// What the topics still cover, and the catalog does not: procedure order,
-// semantics, and which VALUES are real. Lowering this trades those away, so
-// it is a measurement, not an assumption.
-var MinTopicsReadOverride = -1
-
-func (s *Server) minTopicsRequired() int {
-	if MinTopicsReadOverride >= 0 {
-		return MinTopicsReadOverride
-	}
-	return minTopicsRead
-}
-
 // Server instructions by category
 var serverInstructions = map[string]string{
 	"read": `RunOS MCP Server (Read-Only)
@@ -291,16 +265,11 @@ IMPORTANT: Ensure you have called mcp_bootstrap on the runos (read-only) server 
 
 // Server is the MCP server that handles JSON-RPC requests over stdio.
 type Server struct {
-	manifest *manifest.Manifest
-	executor ToolExecutor
-	version  string
-	category string // "read", "sensitive_read", "write", "sensitive_write"
-	// gatewayMode, when non-empty, replaces the per-command tool surface
-	// with the gateway (FPL30). Set from argv at spawn; never from config,
-	// because `runos config set` is itself a runos command.
-	gatewayMode  Mode
-	gatewayIdx   commandIndex
-	bootstrapped bool // true after mcp_bootstrap has been called successfully
+	manifest     *manifest.Manifest
+	executor     ToolExecutor
+	version      string
+	category     string // "read", "sensitive_read", "write", "sensitive_write"
+	bootstrapped bool   // true after mcp_bootstrap has been called successfully
 	// bootstrapFailed is true once an mcp_bootstrap attempt has come back
 	// with an error and none has since succeeded. It downgrades the
 	// bootstrap gate from a refusal to a warning, because a caller that
@@ -348,13 +317,6 @@ type Server struct {
 
 // SetDefaultClusterID records the configured default cluster, so the
 // tool schema can mark `cid` required only when there is no fallback.
-// EnableGateway swaps the per-command tools for the gateway surface.
-// The mode is fixed for the life of the process.
-func (s *Server) EnableGateway(mode Mode) {
-	s.gatewayMode = mode
-	s.gatewayIdx = buildIndex(s.manifest)
-}
-
 func (s *Server) SetDefaultClusterID(cid string) {
 	s.defaultClusterID = cid
 }
@@ -543,19 +505,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	// offline version check must not break tools/list.
 	s.refreshManifestIfDrifted()
 	var tools []Tool
-	if s.gatewayMode != "" {
-		// The doc tools carry the bootstrap gate and the 71 topics, and
-		// are the same progressive-disclosure idea the gateway applies to
-		// commands. They survive unchanged.
-		for _, t := range s.buildTools() {
-			if strings.HasPrefix(t.Name, "mcp_") {
-				tools = append(tools, t)
-			}
-		}
-		tools = append(GatewayTools(s.gatewayMode), tools...)
-	} else {
-		tools = s.buildTools()
-	}
+	tools = s.buildTools()
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -610,9 +560,6 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// on the gateway path, and the comment claimed it did not. The gate
 	// exists because agents were hallucinating RunOS commands, so exec stays
 	// behind it.
-	if s.gatewayMode != "" && params.Name == "runos_catalog" {
-		return s.textResult(req, s.handleCatalog(params.Arguments))
-	}
 
 	// Bootstrap gate: handle mcp_bootstrap specially and enforce bootstrap-first on read server
 	if params.Name == bootstrapToolName {
@@ -657,24 +604,10 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 		s.topicsRead[bootstrapTopicKey] = struct{}{}
 		content := []ContentBlock{{Type: "text", Text: result}}
-		// On the gateway, the group index rides along with bootstrap. It was the
-		// agent's next call every single time (measured: mcp_bootstrap ->
-		// runos_catalog with no argument, in every run), it is ~270 tokens, and it
-		// comes from the local manifest rather than the API, so it costs nothing to
-		// include. A round trip re-sends the whole conversation, which is far more
-		// than the listing weighs. Sent as its OWN content block so the first block
-		// stays parseable JSON for topicKeysFromBootstrap and for callers.
-		if s.gatewayIdx != nil {
-			content = append(content, ContentBlock{
-				Type: "text",
-				Text: "RunOS command groups (no runos_catalog call needed for this):\n\n" +
-					s.gatewayIdx.catalogGroups(s.gatewayMode),
-			})
-		}
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: CallToolResult{Content: content},
+			Result:  CallToolResult{Content: content},
 		}
 	}
 
@@ -746,10 +679,10 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// tools that open a gate are never behind it, and a bootstrap that
 	// failed took the topic tools with it, so holding the gate shut would
 	// leave the read server unusable rather than uninformed.
-	if s.category == "read" && len(s.topicsRead) < s.minTopicsRequired() && !isGateExemptTool(params.Name) && !s.bootstrapFailed {
+	if s.category == "read" && len(s.topicsRead) < minTopicsRead && !isGateExemptTool(params.Name) && !s.bootstrapFailed {
 		msg := fmt.Sprintf(
 			"ERROR: You have read %d/%d required documents. Before using other tools, READ at least %d documents relevant to the user's task: mcp_bootstrap counts as one, and each mcp_topics_show counts as one. Call mcp_topics_show with an exact key from the bootstrap topic index. mcp_topics_search finds the key by keywords (e.g. \"deploy\", \"postgresql\", \"dockerfile\") but does not read anything, so it does not count. This ensures you follow correct RunOS procedures instead of guessing.",
-			len(s.topicsRead), s.minTopicsRequired(), s.minTopicsRequired(),
+			len(s.topicsRead), minTopicsRead, minTopicsRead,
 		)
 		return &Response{
 			JSONRPC: "2.0",
@@ -759,12 +692,6 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 				IsError: true,
 			},
 		}
-	}
-
-	// Gateway execution, reached only once the gates above are satisfied.
-	if s.gatewayMode != "" && params.Name == "runos" {
-		text, isErr := s.handleGatewayExec(params.Arguments)
-		return s.errableResult(req, text, isErr)
 	}
 
 	var result string
@@ -919,6 +846,14 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
+// cidDescription is the one sentence every cluster-scoped tool carries.
+func cidDescription(hasDefault bool) string {
+	if hasDefault {
+		return "Cluster id. Omit to use the configured default cluster."
+	}
+	return "Cluster id."
+}
+
 func (s *Server) buildTools() []Tool {
 	var tools []Tool
 
@@ -981,7 +916,7 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 					Properties: map[string]Property{
 						"cid": {
 							Type:        "string",
-							Description: "Cluster ID to deploy to (the bare id, e.g. 'mycluster2'). REQUIRED if no default cluster is set. Get from user or use clusters_list.",
+							Description: "Cluster id to deploy to. Required when the CLI has no default cluster.",
 						},
 						"yaml_file": {
 							Type:        "string",
@@ -1032,8 +967,13 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 		// for a value the schema said could be left out (B13).
 		if strings.Contains(cmd.Endpoint, ":cid") {
 			tool.InputSchema.Properties["cid"] = Property{
-				Type:        "string",
-				Description: "Cluster ID (the bare id, e.g. 'mycluster2'). Get from user or use clusters_list. Falls back to the CLI's configured default cluster when omitted, and there is no default configured unless this parameter is optional.",
+				Type: "string",
+				// One short sentence. Repeated on every cluster-scoped tool (259
+				// of 315 on the read server); the 240-character version it
+				// replaces was 26% of the whole server. Whether cid may be
+				// omitted is stated STRUCTURALLY by `required` below, and
+				// "use clusters_list" lives in the bootstrap.
+				Description: cidDescription(s.defaultClusterID != ""),
 			}
 			if s.defaultClusterID == "" {
 				tool.InputSchema.Required = requireOnce(tool.InputSchema.Required, "cid")

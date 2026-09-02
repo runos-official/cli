@@ -33,33 +33,6 @@ var mcpServeCmd = &cobra.Command{
 	Hidden: true, // Internal command, users shouldn't call this directly
 }
 
-// The gateway: a handful of tools instead of one per command (FPL30).
-//
-// The mode is a FLAG ON THIS COMMAND and nowhere else. It must not come from
-// config, because `runos config set` is itself a runos command and a
-// config-scoped mode is one the model can flip after a refusal and retry.
-var (
-	gatewayMode      string
-	gatewayMinTopics int
-)
-
-var mcpServeGatewayCmd = &cobra.Command{
-	Use:    "gateway",
-	Short:  "Run the gateway MCP server (few tools, catalog-driven)",
-	Hidden: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		switch gatewayMode {
-		case "ro", "rw":
-		default:
-			return fmt.Errorf("--mode must be ro or rw, got %q", gatewayMode)
-		}
-		if gatewayMinTopics >= 0 {
-			mcp.MinTopicsReadOverride = gatewayMinTopics
-		}
-		return runMCPServeGateway(mcp.Mode(gatewayMode))
-	},
-}
-
 var mcpServeReadCmd = &cobra.Command{
 	Use:    "read",
 	Short:  "Run the read-only MCP server",
@@ -144,9 +117,6 @@ func init() {
 	mcpServeCmd.AddCommand(mcpServeSensitiveReadCmd)
 	mcpServeCmd.AddCommand(mcpServeWriteCmd)
 	mcpServeCmd.AddCommand(mcpServeSensitiveWriteCmd)
-	mcpServeCmd.AddCommand(mcpServeGatewayCmd)
-	mcpServeGatewayCmd.Flags().StringVar(&gatewayMode, "mode", "ro", "ro or rw. Fixed at spawn; not read from config.")
-	mcpServeGatewayCmd.Flags().IntVar(&gatewayMinTopics, "min-topics", -1, "Override the documentation gate. -1 keeps the default of 2. The gate exists because agents hallucinated RunOS commands; the gateway refuses unknown commands structurally, so this is worth measuring rather than assuming.")
 	mcpCmd.AddCommand(mcpConfigureCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureClaudeCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureOpencodeCmd)
@@ -163,15 +133,6 @@ func runMCPConfigure(cmd *cobra.Command, args []string) {
 	}
 	fmt.Println()
 	fmt.Println("Usage: runos mcp configure <target>")
-}
-
-func runMCPServeGateway(mode mcp.Mode) error {
-	srv, err := newMCPServer("read")
-	if err != nil {
-		return err
-	}
-	srv.EnableGateway(mode)
-	return srv.Run()
 }
 
 func runMCPServe(category string) error {

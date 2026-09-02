@@ -63,7 +63,7 @@ OUTPUT: the streamed work-item log + final status is returned as a single text p
 					},
 					"cid": {
 						Type:        "string",
-						Description: "Cluster ID (the bare id, e.g. 'mycluster2'). REQUIRED if no default cluster is set. Get from user or use clusters_list.",
+						Description: "Cluster id. Required when the CLI has no default cluster.",
 					},
 					"command": {
 						Type:        "array",
