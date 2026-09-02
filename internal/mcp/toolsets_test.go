@@ -75,6 +75,10 @@ func scopedTo(types ...string) *Toolsets {
 	for _, x := range types {
 		ts.inUse[x] = struct{}{}
 	}
+	// Conductor sends these; the CLI no longer carries its own copy.
+	for _, x := range []string{"cert-manager", "traefik", "wireguard"} {
+		ts.platformManaged[x] = struct{}{}
+	}
 	ts.scoped = true
 	return ts
 }
@@ -230,5 +234,27 @@ func TestPlatformServicesAreHiddenEvenWhenRunning(t *testing.T) {
 	}
 	if !ts.permits("services/cert-manager/list") {
 		t.Error("cert-manager still hidden after being enabled")
+	}
+}
+
+// The platform-owned list comes from conductor. A CLI-side copy would drift the
+// moment a type is added or reclassified there, hiding something conductor no
+// longer owns or missing one it does.
+func TestPlatformManagedListComesFromConductorNotFromHere(t *testing.T) {
+	ts := newUnscoped(testManifest())
+	ts.scoped = true
+	// Conductor said nothing is platform-owned, so nothing is hidden on that
+	// basis, even for the types this CLI used to hardcode.
+	ts.inUse["cert-manager"] = struct{}{}
+	if !ts.permits("services/cert-manager/list") {
+		t.Error("hid cert-manager although conductor did not mark it platform-owned")
+	}
+	// And conductor can mark something this CLI never knew about.
+	ts2 := newUnscoped(testManifest())
+	ts2.scoped = true
+	ts2.inUse["postgresql"] = struct{}{}
+	ts2.platformManaged["postgresql"] = struct{}{}
+	if ts2.permits("services/postgresql/list") {
+		t.Error("exposed a type conductor marked platform-owned")
 	}
 }

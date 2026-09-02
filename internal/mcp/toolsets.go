@@ -40,6 +40,13 @@ type Toolsets struct {
 	// known is every service type the manifest defines, so the enable tool can
 	// name what is available but hidden, and reject a type that does not exist.
 	known map[string]struct{}
+	// platformManaged are the types conductor says IT owns rather than the user:
+	// the TLS issuer, the ingress, the VPN. Hidden even when the account runs
+	// them, because nobody asks an agent to manage the ingress in the ordinary
+	// course of work. Every one is a runos_tools_enable call away, which matters
+	// because cert-manager is what a stuck certificate needs and wireguard is
+	// what a node delete has to move.
+	platformManaged map[string]struct{}
 	// virtInstalled is false when no cluster on the account runs KubeVirt, and
 	// then the whole VM surface is hidden. That surface is 31 tools and about
 	// 17,000 tokens, roughly HALF the read server, because its tools carry the
@@ -57,17 +64,11 @@ var vmGroups = map[string]struct{}{
 	"vm-addresses": {}, "vm-address-blocks": {}, "vm-events": {}, "vm-usage": {},
 }
 
-// infraTypes are managed services the platform installs and runs for itself.
-//
-// They are hidden even though the account genuinely runs them, because nobody
-// asks an agent to manage the ingress or the certificate issuer in the ordinary
-// course of work: they arrive with a configured cluster rather than being
-// chosen. Every one is still one runos_tools_enable call away, and the enable
-// tool names them, which matters because cert-manager is exactly what you want
-// when a certificate is stuck and wireguard is what a node delete needs moved.
-var infraTypes = map[string]struct{}{
-	"cert-manager": {}, "traefik": {}, "wireguard": {},
-}
+// Platform-managed types come from conductor, which marks them
+// `isPlatformManaged` in the service-type registry. Deliberately NOT a list
+// here: a copy in the CLI drifts the moment a type is added or reclassified,
+// and this side would then hide something conductor no longer considers
+// platform-owned, or miss one it does.
 
 // virtCapability is the name runos_tools_enable takes to load the whole VM
 // surface. Not a service type, so it is kept apart from the type names and
@@ -93,9 +94,10 @@ func serviceTypeOf(commandPath string) string {
 // newUnscoped builds the known-type index with no filtering applied.
 func newUnscoped(m *manifest.Manifest) *Toolsets {
 	ts := &Toolsets{
-		inUse: map[string]struct{}{},
-		extra: map[string]struct{}{},
-		known: map[string]struct{}{},
+		inUse:           map[string]struct{}{},
+		extra:           map[string]struct{}{},
+		known:           map[string]struct{}{},
+		platformManaged: map[string]struct{}{},
 		// Unscoped hides nothing, VM tools included.
 		virtInstalled: true,
 	}
@@ -150,9 +152,10 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 		return ts
 	}
 	var out struct {
-		Scoped        bool     `json:"scoped"`
-		ServiceTypes  []string `json:"serviceTypes"`
-		VirtInstalled bool     `json:"virtInstalled"`
+		Scoped               bool     `json:"scoped"`
+		ServiceTypes         []string `json:"serviceTypes"`
+		VirtInstalled        bool     `json:"virtInstalled"`
+		PlatformManagedTypes []string `json:"platformManagedTypes"`
 	}
 	if json.Unmarshal(body, &out) != nil || !out.Scoped {
 		return ts
@@ -162,6 +165,9 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 	// all took the !out.Scoped path above.
 	for _, x := range out.ServiceTypes {
 		ts.inUse[x] = struct{}{}
+	}
+	for _, x := range out.PlatformManagedTypes {
+		ts.platformManaged[x] = struct{}{}
 	}
 	ts.virtInstalled = out.VirtInstalled
 	ts.scoped = true
@@ -200,8 +206,8 @@ func (ts *Toolsets) permits(commandPath string) bool {
 	if _, ok := ts.extra[t]; ok {
 		return true
 	}
-	// Platform-run services are hidden even when present; see infraTypes.
-	if _, infra := infraTypes[t]; infra {
+	// Platform-owned services are hidden even when present.
+	if _, platform := ts.platformManaged[t]; platform {
 		return false
 	}
 	_, ok := ts.inUse[t]
@@ -223,11 +229,11 @@ func (ts *Toolsets) Hidden() []string {
 		if _, ok := ts.extra[t]; ok {
 			continue
 		}
-		_, infra := infraTypes[t]
+		_, platform := ts.platformManaged[t]
 		_, used := ts.inUse[t]
-		// An infra type is hidden even when in use; any other type is hidden
-		// only when the account does not run it.
-		if infra || !used {
+		// A platform-owned type is hidden even when in use; any other type is
+		// hidden only when the account does not run it.
+		if platform || !used {
 			out = append(out, t)
 		}
 	}
@@ -267,9 +273,9 @@ func (ts *Toolsets) Enable(types []string) (added, unknown []string) {
 			unknown = append(unknown, raw)
 			continue
 		}
-		// An infra type is hidden despite being in use, so inUse must not
-		// short-circuit it here or it could never be enabled.
-		if _, infra := infraTypes[t]; !infra {
+		// A platform-owned type is hidden despite being in use, so inUse must
+		// not short-circuit it here or it could never be enabled.
+		if _, platform := ts.platformManaged[t]; !platform {
 			if _, ok := ts.inUse[t]; ok {
 				continue
 			}
