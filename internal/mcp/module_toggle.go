@@ -39,6 +39,24 @@ func isModuleToggleTool(toolName string) bool {
 	return toolName == moduleEnableToolName || toolName == moduleDisableToolName
 }
 
+// handleModuleToggle runs the toggle, then refreshes this server's command
+// list when the toggle succeeded.
+//
+// Refreshed here rather than left to the 30 s tools/list re-check, because
+// the agent that ran the toggle wants the tools on its next turn.
+func (s *Server) handleModuleToggle(toolName string, args map[string]any) (string, error) {
+	result, err := s.executor.Execute(toolName, args)
+	if err != nil {
+		return "", err
+	}
+	result, changed := s.refreshAfterModuleToggle(result)
+	if !changed {
+		return result, nil
+	}
+	s.sendNotification("notifications/tools/list_changed")
+	return moduleToggleNote(result), nil
+}
+
 // refreshAfterModuleToggle refetches the command list after a toggle that
 // succeeded, and reports whether the tool list actually changed.
 //

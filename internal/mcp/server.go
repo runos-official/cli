@@ -731,18 +731,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 	} else if isModuleToggleTool(params.Name) {
 		// A module toggle changes what this account may call, so the tool
-		// list changes with it (FPL31 D15). Refreshed here rather than left
-		// to the 30 s tools/list re-check, because the agent that ran the
-		// toggle wants the tools on its next turn.
-		result, err = s.executor.Execute(params.Name, params.Arguments)
-		if err == nil {
-			var changed bool
-			result, changed = s.refreshAfterModuleToggle(result)
-			if changed {
-				result = moduleToggleNote(result)
-				s.sendNotification("notifications/tools/list_changed")
-			}
-		}
+		// list changes with it. See module_toggle.go.
+		result, err = s.handleModuleToggle(params.Name, params.Arguments)
 	} else if isStaticRunTool(params.Name) {
 		result, err = s.handleRun(params.Arguments)
 	} else if isStaticAppsTool(params.Name) {
