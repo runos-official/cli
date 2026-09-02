@@ -105,12 +105,13 @@ func TestBootstrapGate_ReadServerAllowsToolsAfterBootstrapAndTopics(t *testing.T
 	}
 }
 
+// The gate still refuses a caller that has read NOTHING. minTopicsRead is 1
+// and mcp_bootstrap counts as that one, so this asserts the floor rather than
+// the old extra-read requirement.
 func TestTopicsGate_ReadServerBlocksUntilMinTopicsRead(t *testing.T) {
 	srv := newTestServer("read", &mockExecutor{result: "cluster data"})
 	srv.bootstrapped = true
-	srv.topicsRead = map[string]struct{}{
-		"deploying-apps": {},
-	}
+	srv.topicsRead = map[string]struct{}{}
 
 	resp := srv.handleToolsCall(makeToolCallRequest("clusters_list"))
 
@@ -119,10 +120,23 @@ func TestTopicsGate_ReadServerBlocksUntilMinTopicsRead(t *testing.T) {
 		t.Fatal("expected CallToolResult")
 	}
 	if !result.IsError {
-		t.Fatal("expected IsError to be true when fewer than minTopicsRead topics have been read")
+		t.Fatal("expected IsError to be true when no documentation has been read")
 	}
-	if !strings.Contains(result.Content[0].Text, "1/2") {
-		t.Errorf("expected error to report 1/2 topics read, got: %s", result.Content[0].Text)
+	if !strings.Contains(result.Content[0].Text, "0/1") {
+		t.Errorf("expected the error to report 0/1 documents read, got: %s", result.Content[0].Text)
+	}
+}
+
+// Bootstrap alone opens the gate now that it actually carries the rules. It
+// used to deliver an empty instructions string, which is why a second read was
+// forced; see the minTopicsRead comment.
+func TestTopicsGate_BootstrapAloneOpensTheGate(t *testing.T) {
+	srv := newTestServer("read", &mockExecutor{result: "cluster data"})
+	srv.handleToolsCall(makeToolCallRequest("mcp_bootstrap"))
+
+	result := toolCallResult(t, srv.handleToolsCall(makeToolCallRequest("clusters_list")))
+	if result.IsError {
+		t.Fatalf("bootstrap alone must open the gate, got: %s", result.Content[0].Text)
 	}
 }
 

@@ -137,8 +137,8 @@ func TestTopicsGate_SearchDoesNotCountAsAReadTopic(t *testing.T) {
 	}
 }
 
-// mcp_bootstrap counts as ONE documentation read, so bootstrap plus one
-// mcp_topics_show opens the gate.
+// mcp_bootstrap counts as ONE documentation read. This asserts that a topic
+// show is still RECORDED (the counter works), not that one is required.
 func TestTopicsGate_BootstrapPlusOneShowOpensTheGate(t *testing.T) {
 	srv := newTestServer("read", &mockExecutor{result: `{"key":"vm-storage","content":"..."}`})
 
@@ -150,8 +150,8 @@ func TestTopicsGate_BootstrapPlusOneShowOpensTheGate(t *testing.T) {
 	})
 	srv.handleToolsCall(&Request{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: params})
 
-	if len(srv.topicsRead) != minTopicsRead {
-		t.Fatalf("expected %d reads recorded, got %v", minTopicsRead, srv.topicsRead)
+	if len(srv.topicsRead) != 2 {
+		t.Fatalf("expected bootstrap and the topic show both recorded, got %v", srv.topicsRead)
 	}
 	result := toolCallResult(t, srv.handleToolsCall(makeToolCallRequest("clusters_list")))
 	if result.IsError {

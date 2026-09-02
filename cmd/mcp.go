@@ -38,7 +38,10 @@ var mcpServeCmd = &cobra.Command{
 // The mode is a FLAG ON THIS COMMAND and nowhere else. It must not come from
 // config, because `runos config set` is itself a runos command and a
 // config-scoped mode is one the model can flip after a refusal and retry.
-var gatewayMode string
+var (
+	gatewayMode      string
+	gatewayMinTopics int
+)
 
 var mcpServeGatewayCmd = &cobra.Command{
 	Use:    "gateway",
@@ -49,6 +52,9 @@ var mcpServeGatewayCmd = &cobra.Command{
 		case "ro", "rw":
 		default:
 			return fmt.Errorf("--mode must be ro or rw, got %q", gatewayMode)
+		}
+		if gatewayMinTopics >= 0 {
+			mcp.MinTopicsReadOverride = gatewayMinTopics
 		}
 		return runMCPServeGateway(mcp.Mode(gatewayMode))
 	},
@@ -140,6 +146,7 @@ func init() {
 	mcpServeCmd.AddCommand(mcpServeSensitiveWriteCmd)
 	mcpServeCmd.AddCommand(mcpServeGatewayCmd)
 	mcpServeGatewayCmd.Flags().StringVar(&gatewayMode, "mode", "ro", "ro or rw. Fixed at spawn; not read from config.")
+	mcpServeGatewayCmd.Flags().IntVar(&gatewayMinTopics, "min-topics", -1, "Override the documentation gate. -1 keeps the default of 2. The gate exists because agents hallucinated RunOS commands; the gateway refuses unknown commands structurally, so this is worth measuring rather than assuming.")
 	mcpCmd.AddCommand(mcpConfigureCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureClaudeCmd)
 	mcpConfigureCmd.AddCommand(mcpConfigureOpencodeCmd)

@@ -210,7 +210,51 @@ type ContentBlock struct {
 // other tools become available on the read server. Kept low deliberately:
 // platform-overview plus one task topic is enough context, and the bootstrap's
 // topic router pulls further reads in naturally via `see also:` links.
-const minTopicsRead = 2
+// minTopicsRead counts mcp_bootstrap itself, so 1 means "bootstrap only" and
+// no extra topic read is forced.
+//
+// WAS 2. The gate exists because agents hallucinated RunOS commands, and it
+// forced one topic read on top of bootstrap. It was raised to 2 when
+// mcp_bootstrap was delivering an EMPTY instructions string: the agent got 75
+// bare topic keys and nothing else, so a second read was the only way it saw
+// any rule at all. Measured 2026-09-02, conductor dev served instructions ""
+// while foreman held 8,653 characters of them.
+//
+// With that pipeline repaired the bootstrap now carries the rules the gate was
+// standing in for: "read the topic before you claim", "NO hallucinating
+// services", and the opening-reads router that says WHICH topic to read for a
+// task. Forcing a second read no longer adds a rule the agent has not seen; it
+// adds a round trip, and a round trip re-sends the whole conversation.
+//
+// If hallucination returns, raise this before adding anything else: it is the
+// cheapest lever here and it is one line.
+const minTopicsRead = 1
+
+// MinTopicsReadOverride relaxes the documentation gate for a measurement or
+// for a surface that does not need it.
+//
+// WHY THE GATE EXISTS, before anyone lowers it casually: agents were
+// HALLUCINATING RunOS commands. The topics are the source of truth and the
+// gate forces the agent to read one before it can act.
+//
+// WHY IT MAY NOT NEED TO BE 2 ON THE GATEWAY: the gateway cannot execute a
+// command that does not exist. authorize() matches the exact command path
+// against the manifest, so `clusters describe`, `vms reboot` and
+// `services redis add` are all refused with a message naming runos_catalog.
+// The command-existence half of hallucination is handled structurally there,
+// which is not true of the per-command surface.
+//
+// What the topics still cover, and the catalog does not: procedure order,
+// semantics, and which VALUES are real. Lowering this trades those away, so
+// it is a measurement, not an assumption.
+var MinTopicsReadOverride = -1
+
+func (s *Server) minTopicsRequired() int {
+	if MinTopicsReadOverride >= 0 {
+		return MinTopicsReadOverride
+	}
+	return minTopicsRead
+}
 
 // Server instructions by category
 var serverInstructions = map[string]string{
@@ -555,17 +599,17 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 	}
 
-	// Gateway tools, when the gateway surface is in use. They sit ahead of
-	// the bootstrap gate only for the catalog, which is documentation about
-	// the command surface and is what an agent needs BEFORE it can act.
-	if s.gatewayMode != "" {
-		switch params.Name {
-		case "runos_catalog":
-			return s.textResult(req, s.handleCatalog(params.Arguments))
-		case "runos":
-			text, isErr := s.handleGatewayExec(params.Arguments)
-			return s.errableResult(req, text, isErr)
-		}
+	// The CATALOG sits ahead of the gates. It is documentation about the
+	// command surface, it is what an agent needs BEFORE it can act, and
+	// gating the map behind the territory is a lockout.
+	//
+	// `runos` DOES NOT. It executes. An earlier version of this block
+	// returned early for both, which silently removed the documentation gate
+	// on the gateway path, and the comment claimed it did not. The gate
+	// exists because agents were hallucinating RunOS commands, so exec stays
+	// behind it.
+	if s.gatewayMode != "" && params.Name == "runos_catalog" {
+		return s.textResult(req, s.handleCatalog(params.Arguments))
 	}
 
 	// Bootstrap gate: handle mcp_bootstrap specially and enforce bootstrap-first on read server
@@ -677,10 +721,10 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	// tools that open a gate are never behind it, and a bootstrap that
 	// failed took the topic tools with it, so holding the gate shut would
 	// leave the read server unusable rather than uninformed.
-	if s.category == "read" && len(s.topicsRead) < minTopicsRead && !isGateExemptTool(params.Name) && !s.bootstrapFailed {
+	if s.category == "read" && len(s.topicsRead) < s.minTopicsRequired() && !isGateExemptTool(params.Name) && !s.bootstrapFailed {
 		msg := fmt.Sprintf(
 			"ERROR: You have read %d/%d required documents. Before using other tools, READ at least %d documents relevant to the user's task: mcp_bootstrap counts as one, and each mcp_topics_show counts as one. Call mcp_topics_show with an exact key from the bootstrap topic index. mcp_topics_search finds the key by keywords (e.g. \"deploy\", \"postgresql\", \"dockerfile\") but does not read anything, so it does not count. This ensures you follow correct RunOS procedures instead of guessing.",
-			len(s.topicsRead), minTopicsRead, minTopicsRead,
+			len(s.topicsRead), s.minTopicsRequired(), s.minTopicsRequired(),
 		)
 		return &Response{
 			JSONRPC: "2.0",
@@ -690,6 +734,12 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 				IsError: true,
 			},
 		}
+	}
+
+	// Gateway execution, reached only once the gates above are satisfied.
+	if s.gatewayMode != "" && params.Name == "runos" {
+		text, isErr := s.handleGatewayExec(params.Arguments)
+		return s.errableResult(req, text, isErr)
 	}
 
 	var result string
