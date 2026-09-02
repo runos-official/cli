@@ -173,3 +173,82 @@ func topicKeysFromBootstrap(result string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// stripTopicKeys removes the topicKeys array from what the MODEL sees.
+//
+// The bootstrap's topic router already names every key, with a line saying when
+// to read each one, so the bare array was the same index a second time with the
+// guidance removed: measured at 73 keys and about 305 tokens, on the one payload
+// every session is required to read.
+//
+// The CLI still needs the array, which is why it is parsed out first: the search
+// fallback matches a caller's words against the keys when a keyword search finds
+// nothing (B1). So this drops the duplicate from the wire, not the capability.
+//
+// Fails OPEN, deliberately. Anything unparseable, or a payload whose router does
+// not name every key, returns the original text untouched. A malformed strip
+// would take the topic index away from the agent entirely, and a slightly larger
+// bootstrap is a much smaller problem than one that cannot route.
+func stripTopicKeys(result string, routerNames func(string) bool, keys []string) string {
+	if len(keys) == 0 {
+		return result
+	}
+	for _, k := range keys {
+		if !routerNames(k) {
+			return result
+		}
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result), &obj); err != nil {
+		return result
+	}
+	if _, ok := obj["topicKeys"]; !ok {
+		return result
+	}
+	delete(obj, "topicKeys")
+	out, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return result
+	}
+	return string(out)
+}
+
+// routerNamesKey reports whether the bootstrap instructions name a topic key on
+// one of the router's bullet lines, including the `a / b / c` shorthand it uses
+// for closely related topics.
+func routerNamesKey(instructions string) func(string) bool {
+	named := map[string]struct{}{}
+	for _, line := range strings.Split(instructions, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		head := strings.TrimPrefix(line, "- ")
+		if i := strings.Index(head, " - "); i >= 0 {
+			head = head[:i]
+		}
+		for _, part := range strings.Split(head, " / ") {
+			part = strings.TrimSpace(part)
+			if i := strings.Index(part, " ("); i >= 0 {
+				part = part[:i]
+			}
+			if part != "" {
+				named[part] = struct{}{}
+			}
+		}
+	}
+	return func(k string) bool { _, ok := named[k]; return ok }
+}
+
+// instructionsFromBootstrap pulls the instructions text out of a bootstrap
+// response. Empty on anything unparseable, which makes routerNamesKey match
+// nothing and stripTopicKeys leave the payload alone.
+func instructionsFromBootstrap(result string) string {
+	var resp struct {
+		Instructions string `json:"instructions"`
+	}
+	if json.Unmarshal([]byte(result), &resp) != nil {
+		return ""
+	}
+	return resp.Instructions
+}
