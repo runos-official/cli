@@ -80,19 +80,34 @@ func isManifestUpdateTool(toolName string) bool {
 // the executor holds the same *manifest.Manifest, so one write updates
 // both and no plumbing has to reach into the executor.
 func (s *Server) handleManifestUpdate() (string, bool, error) {
-	if s.reloader == nil {
-		return "", false, fmt.Errorf("%s: this server was started without a manifest loader, so it cannot refresh. Restart the MCP server to pick up a new command list", manifestUpdateToolName)
-	}
-	before := s.manifest.Version
-	updated, err := s.reloader.ForceUpdate()
+	before, after, err := s.reloadManifest()
 	if err != nil {
 		return "", false, fmt.Errorf("%s: %w", manifestUpdateToolName, err)
 	}
-	*s.manifest = *updated
-	if before == updated.Version {
-		return fmt.Sprintf("Command list is already current at %s. Nothing changed.", updated.Version), false, nil
+	if before == after {
+		return fmt.Sprintf("Command list is already current at %s. Nothing changed.", after), false, nil
 	}
-	return fmt.Sprintf("Command list refreshed from %s to %s. The tool list has changed; re-read it.", before, updated.Version), true, nil
+	return fmt.Sprintf("Command list refreshed from %s to %s. The tool list has changed; re-read it.", before, after), true, nil
+}
+
+// reloadManifest refetches the command list and swaps it in, returning
+// the version before and after so the caller can decide whether anything
+// worth announcing changed.
+//
+// Shared by manifest_update and by the module toggle, so both refresh the
+// same way and neither can drift into announcing a list that did not
+// change.
+func (s *Server) reloadManifest() (before, after string, err error) {
+	if s.reloader == nil {
+		return "", "", fmt.Errorf("this server was started without a manifest loader, so it cannot refresh. Restart the MCP server to pick up a new command list")
+	}
+	before = s.manifest.Version
+	updated, err := s.reloader.ForceUpdate()
+	if err != nil {
+		return "", "", err
+	}
+	*s.manifest = *updated
+	return before, updated.Version, nil
 }
 
 // refreshManifestIfDrifted compares the loaded manifest version against

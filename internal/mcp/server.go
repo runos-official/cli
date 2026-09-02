@@ -729,6 +729,10 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		if err == nil && changed {
 			s.sendNotification("notifications/tools/list_changed")
 		}
+	} else if isModuleToggleTool(params.Name) {
+		// A module toggle changes what this account may call, so the tool
+		// list changes with it. See module_toggle.go.
+		result, err = s.handleModuleToggle(params.Name, params.Arguments)
 	} else if isStaticRunTool(params.Name) {
 		result, err = s.handleRun(params.Arguments)
 	} else if isStaticAppsTool(params.Name) {
