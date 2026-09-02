@@ -329,7 +329,10 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// path used to send empty version, which produced a misleading
 	// `updateAvailable: true` and an alarming `releaseNotes` sentinel.
 	// Injection mirrors the MCP wrapper's behaviour at internal/mcp/server.go.
-	if cmdDef.Command == "cli/version-check" {
+	// mcp/bootstrap returns `cliUpdate` for the same reason, so the bare CLI
+	// path injects there too: without it the mandatory opening call would
+	// report an update against an empty version.
+	if cmdDef.Command == "cli/version-check" || cmdDef.Command == "mcp/bootstrap" {
 		if _, ok := body["version"]; !ok || isEmptyString(body["version"]) {
 			body["version"] = cliRuntimeVersion()
 		}

@@ -262,9 +262,11 @@ var serverInstructions = map[string]string{
 
 Query clusters, services, apps, and infrastructure state. No modifications.
 
-REQUIRED FIRST STEPS (in order):
-1. Call mcp_bootstrap to receive critical instructions and the topic index. It counts as the first of the two documentation reads below.
-2. READ at least one more topic with mcp_topics_show, using an exact key from the bootstrap index. Use mcp_topics_search first to find the key by keywords; a search finds topics but does not read them, so it does not count. Other tools are blocked until 2 documents have been read.
+REQUIRED FIRST STEP:
+Call mcp_bootstrap. It returns the instructions every session must follow, the topic
+index, and whether this CLI is behind. Then follow what it says; it is the only source
+of truth for the opening sequence. Read a topic with mcp_topics_show when the task needs
+one (mcp_topics_search finds the key).
 
 Do not guess or invent values. The documentation tells you the correct ones.`,
 
@@ -614,6 +616,16 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 
 	// Bootstrap gate: handle mcp_bootstrap specially and enforce bootstrap-first on read server
 	if params.Name == bootstrapToolName {
+		// Bootstrap carries `cliUpdate`, which is what removed the separate
+		// version-check round trip from every session. Conductor cannot tell
+		// what binary is calling unless we say so, and the model must never
+		// be asked to supply it. This is the ONLY dispatch point for
+		// mcp_bootstrap: the generic injection further down never runs for it.
+		if params.Arguments == nil {
+			params.Arguments = make(map[string]any)
+		}
+		params.Arguments["version"] = version.Version
+		params.Arguments["os"] = runtime.GOOS
 		result, err := s.executor.Execute(params.Name, params.Arguments)
 		if err != nil {
 			// An attempt that failed is what downgrades the gate below. The
@@ -774,7 +786,9 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		// text payload. Cheaper than polling jobs_show in a loop.
 		result, err = s.handleJobsCommand(params.Name, params.Arguments)
 	} else {
-		// Auto-inject CLI version and OS for version check tool
+		// Auto-inject CLI version and OS for version check tool.
+		// (mcp_bootstrap needs the same, but is dispatched earlier and
+		// injects there.)
 		if params.Name == "cli_version-check" {
 			if params.Arguments == nil {
 				params.Arguments = make(map[string]any)
