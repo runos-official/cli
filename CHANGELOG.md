@@ -49,6 +49,19 @@ itself: all three exit non-zero and name `runos account modules enable <key>`. A
 positional argument still says nothing about modules, because the unscoped manifest has to define
 the path before the module is ever mentioned.
 
+**A release candidate now reaches the people already on one.** `runos update` compared versions by
+truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not
+newer than `1.20.0-rc.1`. Measured on dev with the checksum-verified rc.1 artefact while dev
+advertised rc.2: `runos update --check` answered "The CLI is already up to date." Advertising an RC
+therefore reached nobody on an earlier RC of the same train, and the same function sits behind the
+update nag and the desktop installer. The comparison is SemVer 2.0.0 precedence now: build metadata
+is dropped, the numeric core decides, and the pre-release identifiers break a tie on an equal core,
+comparing left to right, numerically where both are all digits, with a numeric identifier ranking
+below an alphanumeric one and a longer list winning an equal prefix. So `1.20.0` beats
+`1.20.0-rc.2`, `1.20.0-rc.10` beats `1.20.0-rc.2`, and no version is ever offered a downgrade. This
+is NOT the manifest version rule: `45.3.0+virt` is still compared as an opaque string, because there
+the build metadata is the module set and a change in it must read as a change.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
