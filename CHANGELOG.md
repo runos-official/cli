@@ -35,9 +35,19 @@ scoping is untouched.
 **Two refusals name the fix.** A route whose module is off answers 403 `module.not_enabled`, and the
 CLI renders it as one line naming `runos account modules enable <key>`; under `--json` the envelope
 keeps `code` and `module` for a machine consumer. Separately, a command absent from the account's
-manifest reaches cobra as `unknown command`, where the old wording concluded it "really does not
-exist" — true evidence, wrong conclusion. The CLI now checks the unscoped manifest, and when the
-command exists there it says so and names the enable command instead.
+manifest never reaches its route at all, because the cobra tree is built from that manifest. The old
+wording concluded it "really does not exist" — true evidence, wrong conclusion. The CLI now checks
+the unscoped manifest, and when the command exists there it names the enable command instead.
+
+**A gate takes a leaf, not always a whole group, and the hint follows it either way.** `runos
+vm-groups list` loses its entire group and cobra says `unknown command`. But `runos vms list` keeps
+its parent, because `runos vms ssh` is a built-in rather than a manifest row, so cobra printed the
+`vms` help and exited **0** — a success code for a command the account cannot run. `runos nodes
+virt-shape --nid <id>` kept `nodes` and reported `unknown flag: --nid`, blaming the flag for a
+missing command. Neither message carries the path, so the CLI now recovers it from the command line
+itself: all three exit non-zero and name `runos account modules enable <key>`. A real typo or a
+positional argument still says nothing about modules, because the unscoped manifest has to define
+the path before the module is ever mentioned.
 
 ## v1.19.1
 
