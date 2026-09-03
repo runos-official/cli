@@ -37,7 +37,18 @@ set -euo pipefail
 
 # ---- constants -------------------------------------------------------------
 INTEGRATION_BRANCH="dev"     # where work lands; gates run here; this commit is tagged
-DEPLOYED_BRANCH="deployed"   # fast-forwarded to the shipped commit after a successful deploy
+# The branch recording what has shipped. Overridable so an OBJECTIVE-SCOPED
+# release can record to its own ref instead of the shared one (item 198): a
+# mid-objective RC that advances `deployed` to an unmerged item branch leaves
+# it no longer an ancestor of dev, and the preflight below then refuses every
+# later release until someone force-pushes it back. That happened twice.
+# The gate and the advance MUST read the same value, or the gate validates one
+# ref while the pipeline moves another. Default is unchanged, so a plain
+# `scripts/release.sh` from dev behaves exactly as before.
+DEPLOYED_BRANCH="${RUNOS_RELEASE_RECORD_BRANCH:-deployed}"
+# An unresolved pipeline placeholder arrives as literal "${{ ... }}" text,
+# which is non-empty, so :- above would happily accept it as a branch name.
+case "$DEPLOYED_BRANCH" in *'{'*|*'}'*|*' '*) DEPLOYED_BRANCH="deployed" ;; esac
 RELEASE_WORKFLOW="release.yml"
 ATTEST_ASSET="runos-linux-amd64.tar.gz"  # representative asset for attestation check
 CI_POLL_SECONDS=10

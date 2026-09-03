@@ -27,7 +27,7 @@ kind: github_release
 steps:
   - name: Gate chain
     description: "scripts/release.sh --check: preflight, sensitivity scan, leak gate, scannability gate and the build/vet/test suite. Every gate, no side effects, and it cannot be skipped."
-    run: scripts/release.sh "${{ version }}" --check
+    run: RUNOS_RELEASE_RECORD_BRANCH="${{ deployed_branch }}" scripts/release.sh "${{ version }}" --check
     timeout: 1800
 
   - name: Tag and push
@@ -76,6 +76,16 @@ steps:
   - name: Advance the deployed branch
     description: The record of what has actually shipped. Fast-forwarded only now, on success. main stays clean for the human.
     run: |
-      git branch -f deployed ${{ target.branch }}
-      git push --quiet origin deployed
-      echo "deployed now at $(git rev-parse --short deployed)"
+      # Item 198. Use the ref foreman rewrites for an objective-scoped deploy,
+      # so a mid-objective RC records to its own branch and leaves the shared
+      # one alone. Falls back to the literal when the target does not define
+      # one, which is exactly today's behaviour, so this cannot regress.
+      record="${{ deployed_branch }}"
+      case "$record" in ""|*'{'*) record="deployed" ;; esac
+      echo "recording this release on: $record"
+      # Push the commit straight at the ref. No local branch is created, so a
+      # local copy cannot drift from origin the way it did when the remote was
+      # corrected by hand and the stale local one then failed the preflight.
+      git push --quiet --force-with-lease origin "${{ target.branch }}:refs/heads/$record"
+      git fetch --quiet origin "$record"
+      echo "$record now at $(git rev-parse --short "origin/$record")"
