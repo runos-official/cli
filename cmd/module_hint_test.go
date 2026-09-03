@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/runos-official/cli/internal/manifest"
+
+	"github.com/spf13/cobra"
 )
 
 // FPL31 / story 177 criterion 9. `runos vms list` against an account with
@@ -227,4 +229,137 @@ func writeManifest(w http.ResponseWriter, version string, commands ...string) {
 		out.Commands = append(out.Commands, cmd{Command: c})
 	}
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// --- the second shape: a gated LEAF whose PARENT group survives ---
+//
+// Found by the story 177 live run against conductor rc.6. `runos vms
+// list` exited 0 and printed the `vms` help, and `runos nodes virt-shape
+// --nid X` reported an unknown flag. Neither said the module was off,
+// because neither produces cobra's "unknown command" wording.
+
+func TestTypedCommandPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"plain path", []string{"vms", "list"}, []string{"vms", "list"}},
+		{"stops at a long flag", []string{"nodes", "virt-shape", "--nid", "n1"}, []string{"nodes", "virt-shape"}},
+		{"stops at a short flag", []string{"vms", "list", "-j"}, []string{"vms", "list"}},
+		{"stops at a bare dash-dash", []string{"run", "--", "sh"}, []string{"run"}},
+		{"a leading flag leaves nothing", []string{"--help"}, nil},
+		{"no args", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := typedCommandPath(tc.args)
+			if len(got) != len(tc.want) {
+				t.Fatalf("typedCommandPath(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("typedCommandPath(%v) = %v, want %v", tc.args, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// survivorTree is the shape a module gate actually leaves behind: `vms`
+// survives because `vms ssh` is a static Go command, and `nodes`
+// survives because it is core, but the gated leaves are gone.
+func survivorTree() *cobra.Command {
+	root := &cobra.Command{Use: "runos"}
+	vms := &cobra.Command{Use: "vms"}
+	vms.AddCommand(&cobra.Command{Use: "ssh", Run: func(*cobra.Command, []string) {}})
+	nodes := &cobra.Command{Use: "nodes", Run: func(*cobra.Command, []string) {}}
+	nodes.AddCommand(&cobra.Command{Use: "cordon", Run: func(*cobra.Command, []string) {}})
+	root.AddCommand(vms, nodes)
+	return root
+}
+
+func TestUnresolvedTypedPath(t *testing.T) {
+	t.Parallel()
+	root := survivorTree()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"gated leaf under a surviving parent", []string{"vms", "list"}, "vms/list"},
+		{"gated leaf before a flag", []string{"nodes", "virt-shape", "--nid", "n1"}, "nodes/virt-shape"},
+		{"a fully resolved path is not unresolved", []string{"vms", "ssh"}, ""},
+		{"a resolved group alone is not unresolved", []string{"nodes"}, ""},
+		{"a positional argument still yields a path the bare manifest will reject", []string{"vms", "ssh", "myvm"}, "vms/ssh/myvm"},
+		{"nothing typed", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := unresolvedTypedPath(root, tc.args); got != tc.want {
+				t.Errorf("unresolvedTypedPath(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+	if got := unresolvedTypedPath(nil, []string{"vms", "list"}); got != "" {
+		t.Errorf("a nil root resolves nothing, got %q", got)
+	}
+}
+
+// Criterion 9, the case v1.20.0-rc.1 got wrong. `runos vms list` with
+// virt off must name the enable command, not print help and exit 0.
+func TestAGatedLeafUnderASurvivingParentNamesTheEnableCommand(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	var explained bool
+	out := captureStderr(t, func() {
+		explained = explainUnresolvedParentSurvivor(survivorTree(), []string{"vms", "list"})
+	})
+
+	if !explained {
+		t.Error("a gated leaf must be explained, so the caller can exit non-zero")
+	}
+	if !strings.Contains(out, "runos account modules enable virt") {
+		t.Errorf("stderr does not name the enable command:\n%s", out)
+	}
+}
+
+// The safety net: a path the BARE manifest does not define must stay
+// silent, so an ordinary typo or a positional argument is never blamed
+// on a module.
+func TestAnUnresolvedPathTheAPIDoesNotServeExplainsNothing(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	var explained bool
+	out := captureStderr(t, func() {
+		explained = explainUnresolvedParentSurvivor(survivorTree(), []string{"vms", "ssh", "myvm"})
+	})
+
+	if explained {
+		t.Error("a positional argument is not a module gate")
+	}
+	if strings.Contains(out, "account modules") {
+		t.Errorf("a module was blamed for a positional argument:\n%s", out)
+	}
+}
+
+// A module that is ON explains nothing here either.
+func TestAGatedLeafWithTheModuleOnExplainsNothing(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: true})
+	defer fake.Close()
+
+	var explained bool
+	out := captureStderr(t, func() {
+		explained = explainUnresolvedParentSurvivor(survivorTree(), []string{"vms", "list"})
+	})
+
+	if explained {
+		t.Error("an enabled module must not be offered for enabling")
+	}
+	if strings.Contains(out, "enable virt") {
+		t.Errorf("an enabled module was offered for enabling:\n%s", out)
+	}
 }

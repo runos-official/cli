@@ -226,6 +226,9 @@ var rootCmd = &cobra.Command{
 // otherwise. The ExitCode() unwrap lets commands signal a specific
 // non-zero code without bypassing cobra's error-formatting flow.
 func Execute() {
+	// Captured before cobra runs, because the raw line is what names the
+	// command the operator meant.
+	typed := os.Args[1:]
 	if err := rootCmd.Execute(); err != nil {
 		// An unknown command is very often a stale cached command list rather than a command
 		// that does not exist, and the two are indistinguishable from the error alone. This
@@ -247,6 +250,14 @@ func Execute() {
 		if errors.As(err, &ec) {
 			os.Exit(ec.ExitCode())
 		}
+		os.Exit(1)
+	}
+	// The one SUCCESS path that is really a failure. When a module gate
+	// takes a leaf but its parent group survives, cobra prints the
+	// parent's help and returns nil, so `runos vms list` against an
+	// account with virt off exits 0 having explained nothing. Name the
+	// module and fail, because the command did not run.
+	if explainUnresolvedParentSurvivor(rootCmd, typed) {
 		os.Exit(1)
 	}
 }

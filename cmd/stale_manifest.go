@@ -152,6 +152,15 @@ func explainPossiblyStaleManifest(err error) {
 		fmt.Fprintf(os.Stderr, "RunOS has refreshed it to %s. Run your command again.\n", server)
 	case verdictCommandUnknown:
 		if subject == "flag" {
+			// An unknown FLAG is also how a module gate surfaces once the
+			// parent group survives it: `runos nodes virt-shape --nid X`
+			// loses `virt-shape` to the gate, `nodes` swallows it as an
+			// argument, and `--nid` is merely the first token left that
+			// `nodes` does not define. Blaming the flag there is true of
+			// the flag and wrong about the cause, so check the gate first.
+			if explainModuleGate(unresolvedTypedPath(rootCmd, os.Args[1:])) {
+				return
+			}
 			fmt.Fprintf(os.Stderr,
 				"\nYour cached command list is current (%s), so this flag really does not exist on this command.\n"+
 					"The COMMAND is fine; run it with --help to see the flags it does take.\n", cached)

@@ -9,6 +9,8 @@ import (
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
+
+	"github.com/spf13/cobra"
 )
 
 // A command that is missing because its MODULE is off looks exactly like
@@ -117,12 +119,19 @@ func explainModuleGate(unknownPath string) bool {
 		return false
 	}
 
+	// Read the module list BEFORE printing anything. An account with
+	// every module ON has no module explanation to give, and printing
+	// the preamble first would commit to one before knowing that.
+	disabled, read := disabledModuleKeys(cfg)
+	if read && len(disabled) == 0 {
+		return false
+	}
+
 	fmt.Fprintf(os.Stderr,
 		"\n`%s` is a real RunOS command, but it is not available to this account.\n"+
 			"It belongs to an account module that is switched off.\n", strings.ReplaceAll(unknownPath, "/", " "))
 
-	disabled := disabledModuleKeys(cfg)
-	if len(disabled) == 0 {
+	if !read {
 		// Naming the wrong module key is worse than naming none, so an
 		// unreadable list points at the command that shows the real one.
 		fmt.Fprintf(os.Stderr, "Run `runos account modules` to see which, then `runos account modules enable <key>`.\n")
@@ -134,26 +143,112 @@ func explainModuleGate(unknownPath string) bool {
 	return true
 }
 
-// disabledModuleKeys lists the modules this account has switched off.
+// disabledModuleKeys lists the modules this account has switched off,
+// and reports whether the list could be READ at all.
 //
-// Returns nothing when the list cannot be read, and the caller then falls
-// back to naming the listing command. Every failure is silent: this runs
-// to explain a failure the user already has.
-func disabledModuleKeys(cfg *config.Config) []string {
+// The two answers must not be conflated. "No module is off" and "I could
+// not find out" both yield an empty slice, and they call for opposite
+// behaviour: the first means there is no module explanation to give, the
+// second means give a general one. Returning them as one value made an
+// account with every module ON print a module hint. Every failure is
+// silent: this runs to explain a failure the user already has.
+func disabledModuleKeys(cfg *config.Config) (keys []string, read bool) {
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	client := api.NewClientWithTimeout(cfg.GetAPIURL(), manifest.AdvisoryTimeout)
 	modules, err := client.AccountModules(cfg.GetAccountID(), token)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	var keys []string
 	for _, m := range modules {
 		if !m.Enabled {
 			keys = append(keys, m.Key)
 		}
 	}
-	return keys
+	return keys, true
+}
+
+// THE SECOND SHAPE OF THE SAME DEFECT (found by the story 177 live run).
+//
+// A module gate removes a LEAF while its parent group SURVIVES, because
+// the parent also carries commands the module does not own: `runos vms
+// ssh` is a static Go command, not a manifest row, so `vms` stays in the
+// tree with virt off. Cobra then resolves the parent, treats the missing
+// leaf as a stray argument, and never says "unknown command":
+//
+//	runos vms list                 -> prints the `vms` help, EXIT 0
+//	runos nodes virt-shape --nid X -> "unknown flag: --nid", exit 1
+//
+// Both are module gates. Neither reaches unknownCommandPath, which reads
+// only cobra's "unknown command" wording, so the account was told
+// nothing. These recover the path from the command LINE instead of the
+// message.
+
+// typedCommandPath returns the leading non-flag arguments of a command
+// line: the command path the user typed, up to the first flag.
+func typedCommandPath(args []string) []string {
+	var path []string
+	for _, a := range args {
+		if a == "--" || strings.HasPrefix(a, "-") {
+			break
+		}
+		path = append(path, a)
+	}
+	return path
+}
+
+// unresolvedTypedPath reports the manifest path the user typed when cobra
+// resolved only a PREFIX of it, and "" when cobra found the whole path.
+//
+// Everything cobra could not resolve stays in the path, so a legitimate
+// positional argument (`runos vms ssh myvm`) also lands here. That is
+// harmless and deliberate: the caller's only test is whether the BARE
+// manifest defines the path, and `vms/ssh/myvm` is not a command any
+// account has. A wrong guess therefore prints nothing rather than
+// blaming a module.
+func unresolvedTypedPath(root *cobra.Command, args []string) string {
+	typed := typedCommandPath(args)
+	if root == nil || len(typed) == 0 {
+		return ""
+	}
+	_, rest, err := root.Find(typed)
+	if err != nil || len(rest) == 0 {
+		return ""
+	}
+	return strings.Join(typed, "/")
+}
+
+// explainUnresolvedParentSurvivor explains a command line whose leaf
+// cobra could not resolve although its parent group survived, and
+// reports whether it printed anything.
+//
+// The caller turns true into a non-zero exit. Cobra printed the parent's
+// help and returned nil, so without this the operator gets a SUCCESS
+// exit code for a command this account cannot run, which is the one
+// success path that is really a failure.
+//
+// Only a CURRENT cache proves the absence is a module gate rather than a
+// stale command list. The other two verdicts already have their own
+// wording on the error path, and saying it twice would be worse than
+// saying it once.
+func explainUnresolvedParentSurvivor(root *cobra.Command, args []string) bool {
+	path := unresolvedTypedPath(root, args)
+	if path == "" {
+		return false
+	}
+	loader, err := newAdvisoryManifestLoader()
+	if err != nil {
+		return false
+	}
+	cached := ""
+	if m, merr := loader.LoadLocal(); merr == nil && m != nil {
+		cached = m.Version
+	}
+	server, serr := loader.ServerVersion()
+	if judgeStaleManifest(cached, server, serr) != verdictCommandUnknown {
+		return false
+	}
+	return explainModuleGate(path)
 }
