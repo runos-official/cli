@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.20.0
+
+**Virtual machines are an account MODULE now, so the CLI serves each account only the commands it
+may call.** A module governs one whole capability across the Console, the CLI, the MCP tool list and
+the API at once. `virt` is the first, and it is premium: off until someone switches it on. Conductor
+serves the command list per account, so the CLI stops carrying its own idea of what a VM account
+looks like.
+
+**The manifest is fetched per account.** The loader asks `/:aid/cli/manifest-version` and
+`/:aid/cli/manifest` first, and retries the unscoped route on a 404 and on a 404 ONLY, so an older
+conductor still serves this CLI while a 500 stays the error it is. Each of the two routes falls back
+on its own, because they ship independently. The account id is cached in `~/.runos/manifest.account`
+beside the manifest: two accounts have two different command surfaces, so a manifest cached for
+another account is never handed back without a fetch attempt first. When that fetch fails the cached
+manifest is still returned, because the CLI fails open and conductor refuses what it must.
+
+**The served version carries the enabled module set as semver build metadata**, `45.3.0+virt`. The
+CLI compares it as a string, which it already did, so a module toggle changes the string and
+triggers a refetch. Nothing parses it.
+
+**A module toggle refreshes the MCP tool list in the same session.** `account_modules_enable` and
+`account_modules_disable` refetch the command list and emit `notifications/tools/list_changed`, but
+only when the version actually changed, so no client re-reads hundreds of tool definitions to find
+nothing new. A refetch that fails names `manifest_update` rather than turning a toggle that already
+succeeded into an error.
+
+**`runos_tools_enable virt` is gone.** The VM surface used to be hidden on a KubeVirt-installed flag
+and a hardcoded list of VM command groups. Both are deleted: the gate is conductor's now, and a
+second copy of that decision in the CLI would drift from it. The spelling is refused rather than
+silently ignored, so an agent reading an older document learns it has changed. The managed-service
+scoping is untouched.
+
+**Two refusals name the fix.** A route whose module is off answers 403 `module.not_enabled`, and the
+CLI renders it as one line naming `runos account modules enable <key>`; under `--json` the envelope
+keeps `code` and `module` for a machine consumer. Separately, a command absent from the account's
+manifest reaches cobra as `unknown command`, where the old wording concluded it "really does not
+exist" — true evidence, wrong conclusion. The CLI now checks the unscoped manifest, and when the
+command exists there it says so and names the enable command instead.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
