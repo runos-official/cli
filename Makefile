@@ -74,6 +74,13 @@ leakcheck-update:
 leakcheck-test:
 	@python3 scripts/leakcheck_test.py
 
+# Replay the release record-ref rule in a scratch bare repo: two consecutive
+# releases, a stale local copy, both refusals, the objective-scoped exemption,
+# the explicit lease and an unreachable origin. Needs no network, no gh, no go.
+.PHONY: replay-record-ref
+replay-record-ref:
+	@bash scripts/record_ref_replay.sh
+
 # Fail on a tracked file leakcheck cannot READ. leakcheck reads UTF-8 text; a
 # file holding a NUL byte or other bytes is read best effort at most, and some
 # encodings escape it entirely (measured on checker 1.2.0: a token in a UTF-32
@@ -118,6 +125,7 @@ help:
 	@echo "  make leakcheck-staged Scan only the staged diff"
 	@echo "  make leakcheck-update Ratchet the baseline down after removing an identifier"
 	@echo "  make leakcheck-test   Test the leak checker itself"
+	@echo "  make replay-record-ref Replay the release record-ref rule in a scratch repo"
 	@echo "  make unscannable      Fail on a tracked file leakcheck cannot read"
 	@echo ""
 	@echo "  make release VERSION=vX.Y.Z         Cut a release (gates, tag, push, verify)"
