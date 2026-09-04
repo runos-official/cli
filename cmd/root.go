@@ -257,6 +257,10 @@ func Execute() {
 	// parent's help and returns nil, so `runos vms list` against an
 	// account with virt off exits 0 having explained nothing. Name the
 	// module and fail, because the command did not run.
+	//
+	// This costs no request when cobra DID run a command. The probe
+	// returns before any I/O unless cobra resolved a command that is not
+	// runnable and left tokens over, which is the shape a gate leaves.
 	if explainUnresolvedParentSurvivor(rootCmd, typed) {
 		os.Exit(1)
 	}
