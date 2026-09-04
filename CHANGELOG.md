@@ -47,7 +47,30 @@ virt-shape --nid <id>` kept `nodes` and reported `unknown flag: --nid`, blaming 
 missing command. Neither message carries the path, so the CLI now recovers it from the command line
 itself: all three exit non-zero and name `runos account modules enable <key>`. A real typo or a
 positional argument still says nothing about modules, because the unscoped manifest has to define
-the path before the module is ever mentioned.
+the path before the module is ever mentioned. It also COSTS nothing: the CLI probes on the failure
+path only. A command cobra RAN is never probed, because a runnable command took the leftover tokens
+as positional arguments and did what you asked, so `runos vms ssh myvm` and every `<TAB>` shell
+completion make no extra request at all. A command cobra REFUSED still gets the hint, including
+`runos nodes virt-shape --nid <id>`, because that is the failure the hint was written for.
+
+**The release record branch is read and moved in one place.** The pipeline pushed the shipped
+commit straight at `refs/heads/<record>` and then ran `git fetch origin <record>`, which moves
+`FETCH_HEAD` and the remote-tracking ref and nothing else, so the local branch never moved. The
+preflight in `scripts/release.sh` read that local branch, and a release from the persistent host
+died with "`deployed` is not in sync with origin/deployed" — or, when the local branch was absent,
+skipped every record-branch check in silence. The rule now lives once, in `scripts/record_ref.sh`,
+which the preflight, the pipeline step and the manual record step all call. Origin is the
+authority, so a stale local copy is a warning the advance repairs rather than a failed release: the
+old local-vs-origin refusal is deliberately gone, because no check reads the local copy any more.
+The shared `deployed` is still REFUSED when origin's copy is not an ancestor of dev, and a release
+still stops when origin cannot be reached at all, because the check fails closed rather than
+reading a transport failure as a first release. An
+objective-scoped record ref (`deployed-rc/obj-N`) is exempt from the ancestor test on purpose,
+because a release candidate records an unmerged branch, and the run says so in its output. The
+advance now states the value it expects to replace in its `--force-with-lease`, which a bare lease
+cannot do on a single-branch clone, and it prints the local and remote values and fails if they
+disagree. `make replay-record-ref` rehearses all of it in a scratch repository, including every
+refusal.
 
 **A release candidate now reaches the people already on one.** `runos update` compared versions by
 truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not
