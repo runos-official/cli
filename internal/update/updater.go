@@ -136,9 +136,10 @@ func CurrentVersion() string {
 // "dev-<timestamp>" build emitted by `make local`). Mirrors the
 // dev-build guard conductor's `cli/version-check` endpoint already
 // applies; used by `runos update` to refuse running a release binary
-// fetch on top of a fresh local build (`isNewerVersion` parses
-// non-semver strings to 0.0.0, so without this guard every dev build
-// thinks every release is newer and would silently downgrade itself).
+// fetch on top of a fresh local build (`isNewerVersion` in
+// version_compare.go parses a non-numeric core to 0.0.0, so without this
+// guard every dev build thinks every release is newer and would silently
+// downgrade itself).
 func IsDevBuild() bool {
 	v := version.Version
 	return v == "dev" || strings.HasPrefix(v, "dev-")
@@ -153,46 +154,6 @@ func (u *Updater) NeedsUpdate(latest string) bool {
 	}
 	current := u.CurrentVersion()
 	return isNewerVersion(latest, current)
-}
-
-// IsNewerVersion reports whether a is newer than b. Exported because the DESKTOP update path needs
-// the same rule: it treated any difference as needing an install, which downgraded a build that was
-// AHEAD of the latest release. One comparison, so the two can never disagree again.
-func IsNewerVersion(a, b string) bool { return isNewerVersion(a, b) }
-
-// isNewerVersion returns true if version a is newer than version b.
-// Versions are expected in semver format: major.minor.patch (e.g., "0.1.12")
-func isNewerVersion(a, b string) bool {
-	parseVersion := func(v string) (int, int, int) {
-		v = strings.TrimPrefix(v, "v")
-		// Strip pre-release suffix (e.g., "0.1.12-beta" -> "0.1.12")
-		if idx := strings.IndexByte(v, '-'); idx >= 0 {
-			v = v[:idx]
-		}
-		parts := strings.Split(v, ".")
-		var major, minor, patch int
-		if len(parts) >= 1 {
-			fmt.Sscanf(parts[0], "%d", &major)
-		}
-		if len(parts) >= 2 {
-			fmt.Sscanf(parts[1], "%d", &minor)
-		}
-		if len(parts) >= 3 {
-			fmt.Sscanf(parts[2], "%d", &patch)
-		}
-		return major, minor, patch
-	}
-
-	aMajor, aMinor, aPatch := parseVersion(a)
-	bMajor, bMinor, bPatch := parseVersion(b)
-
-	if aMajor != bMajor {
-		return aMajor > bMajor
-	}
-	if aMinor != bMinor {
-		return aMinor > bMinor
-	}
-	return aPatch > bPatch
 }
 
 // DownloadAndInstall downloads the specified version and replaces the current binary.
