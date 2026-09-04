@@ -50,8 +50,8 @@ positional argument still says nothing about modules, because the unscoped manif
 the path before the module is ever mentioned. It also COSTS nothing: the CLI probes on the failure
 path only. A command cobra RAN is never probed, because a runnable command took the leftover tokens
 as positional arguments and did what you asked, so `runos vms ssh myvm` and every `<TAB>` shell
-completion make no extra request at all. A gate that takes a leaf leaves a parent GROUP behind, and
-a group runs nothing, which is the shape the probe still looks at.
+completion make no extra request at all. A command cobra REFUSED still gets the hint, including
+`runos nodes virt-shape --nid <id>`, because that is the failure the hint was written for.
 
 **A release candidate now reaches the people already on one.** `runos update` compared versions by
 truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not

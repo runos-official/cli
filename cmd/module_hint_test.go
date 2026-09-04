@@ -153,9 +153,12 @@ func TestAnEnabledModuleProducesNoHint(t *testing.T) {
 // --- fixtures ---
 
 type moduleConductorOpts struct {
-	bareHasVMs    bool
-	virtEnabled   bool
-	modulesStatus int
+	bareHasVMs bool
+	// bareHasVirtShape adds the gated leaf that surfaces as an unknown
+	// FLAG rather than an unknown command: `runos nodes virt-shape --nid X`.
+	bareHasVirtShape bool
+	virtEnabled      bool
+	modulesStatus    int
 }
 
 // newModuleConductor serves the scoped manifest (never carrying the VM
@@ -177,11 +180,14 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *moduleConductor
 		writeManifest(w, version, "clusters/list")
 	})
 	mux.HandleFunc("/cli/manifest", func(w http.ResponseWriter, r *http.Request) {
+		bare := []string{"clusters/list"}
 		if opts.bareHasVMs {
-			writeManifest(w, version, "clusters/list", "vms/list", "vms/{id}/show")
-			return
+			bare = append(bare, "vms/list", "vms/{id}/show")
 		}
-		writeManifest(w, version, "clusters/list")
+		if opts.bareHasVirtShape {
+			bare = append(bare, "nodes/{nid}/virt-shape")
+		}
+		writeManifest(w, version, bare...)
 	})
 	mux.HandleFunc("/"+aid+"/modules", func(w http.ResponseWriter, r *http.Request) {
 		if opts.modulesStatus != 0 && opts.modulesStatus != http.StatusOK {
@@ -301,18 +307,33 @@ func TestTypedCommandPath(t *testing.T) {
 // survives because `vms ssh` is a static Go command, and `nodes`
 // survives because it is core, but the gated leaves are gone.
 //
-// NEITHER GROUP CARRIES A Run. The dynamic builder gives an intermediate
-// command only a Use and a Short (internal/dynacmd/builder.go), and the
-// static `vms` parent has no Run either (cmd/vms.go). A fixture that gave
-// a group a Run would model a tree the product does not build, and the
-// gated-leaf cases below would then report a failure RunOS does not have.
+// THE TWO GROUPS HAVE DIFFERENT SHAPES, AND THE PRODUCT IS WHY. This
+// fixture runs the REAL strictenParentExitCodes (cmd/parents.go) at the
+// point cmd/root.go's init runs it, so the fixture follows that function
+// if it ever changes.
+//
+// `nodes` already has a child then, so the strictener gives it
+// `Args: cobra.NoArgs` and a dummy RunE, and it comes out RUNNABLE. Every
+// dynamic group (nodes, jobs, account, integrations, services/<type>) is
+// built during registerDynamicCommands and so has the same shape.
+//
+// `vms` escapes, because cmd/vms.go's init adds `vms ssh` AFTER
+// cmd/root.go's init has run (Go initializes files in filename order), so
+// vmsCmd is childless when the strictener walks past it.
+//
+// A fixture that gave BOTH groups no Run would hide the defect objective
+// 84 rework cycle 1 found: a runnable test in the shared helper kills the
+// `runos nodes virt-shape --nid X` hint on the error path.
 func survivorTree() *cobra.Command {
 	root := &cobra.Command{Use: "runos"}
 	vms := &cobra.Command{Use: "vms"}
-	vms.AddCommand(&cobra.Command{Use: "ssh", Run: func(*cobra.Command, []string) {}})
 	nodes := &cobra.Command{Use: "nodes"}
 	nodes.AddCommand(&cobra.Command{Use: "cordon", Run: func(*cobra.Command, []string) {}})
 	root.AddCommand(vms, nodes)
+
+	strictenParentExitCodes(root)
+
+	vms.AddCommand(&cobra.Command{Use: "ssh", Run: func(*cobra.Command, []string) {}})
 	return root
 }
 
@@ -328,9 +349,10 @@ func TestUnresolvedTypedPath(t *testing.T) {
 		{"gated leaf before a flag", []string{"nodes", "virt-shape", "--nid", "n1"}, "nodes/virt-shape"},
 		{"a fully resolved path is not unresolved", []string{"vms", "ssh"}, ""},
 		{"a resolved group alone is not unresolved", []string{"nodes"}, ""},
-		// A command that RAN is never probed. `vms ssh` is runnable, so
-		// cobra took `myvm` as a positional and did what the user asked.
-		{"a command that ran with a positional argument is not unresolved", []string{"vms", "ssh", "myvm"}, ""},
+		// The helper keeps every leftover token. The SUCCESS-path caller
+		// drops this one, because `vms ssh` is runnable and cobra RAN it;
+		// the ERROR-path caller must still see paths of this shape.
+		{"a positional argument still yields a path the bare manifest will reject", []string{"vms", "ssh", "myvm"}, "vms/ssh/myvm"},
 		{"nothing typed", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -401,6 +423,49 @@ func TestAnUnresolvedPathTheAPIDoesNotServeKeepsTheUnknownCommandText(t *testing
 	}
 	if strings.Contains(out, "account modules") {
 		t.Errorf("a path the bare manifest lacks must not be blamed on a module:\n%s", out)
+	}
+}
+
+// REGRESSION, objective 84 rework cycle 1. The runnable test belongs to
+// the SUCCESS-path caller only. `runos nodes virt-shape --nid n1` reaches
+// the ERROR path instead: the gate takes `virt-shape`, `nodes` swallows it
+// as an argument, and cobra refuses `--nid`. Cobra RAN nothing there, so
+// the runnable test does not apply, although `nodes` IS runnable after
+// strictenParentExitCodes. A guard in the shared helper made this hint
+// silent and printed "this flag really does not exist" instead.
+func TestAGatedLeafUnderAStrictenedGroupIsExplainedOnTheErrorPath(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVirtShape: true, virtEnabled: false})
+	defer fake.Close()
+
+	// The error path reads the GLOBAL rootCmd, so the group has to live
+	// there. Take out anything the process-start init already registered
+	// under that name, and put it back afterwards.
+	if existing, _, err := rootCmd.Find([]string{"nodes"}); err == nil && existing != rootCmd {
+		rootCmd.RemoveCommand(existing)
+		defer rootCmd.AddCommand(existing)
+	}
+	nodes := &cobra.Command{Use: "nodes"}
+	nodes.AddCommand(&cobra.Command{Use: "cordon", Run: func(*cobra.Command, []string) {}})
+	strictenParentExitCodes(nodes)
+	if !nodes.Runnable() {
+		t.Fatal("the fixture must model the strictened tree, so `nodes` has to be runnable")
+	}
+	rootCmd.AddCommand(nodes)
+	defer rootCmd.RemoveCommand(nodes)
+
+	oldArgs := os.Args
+	os.Args = []string{"runos", "nodes", "virt-shape", "--nid", "n1"}
+	defer func() { os.Args = oldArgs }()
+
+	out := captureStderr(t, func() {
+		explainPossiblyStaleManifest(errors.New("unknown flag: --nid"))
+	})
+
+	if !strings.Contains(out, "runos account modules enable virt") {
+		t.Errorf("stderr does not name the enable command:\n%s", out)
+	}
+	if strings.Contains(out, "this flag really does not exist") {
+		t.Errorf("a module gate was blamed on the flag:\n%s", out)
 	}
 }
 

@@ -31,18 +31,26 @@ import (
 // therefore a module gate, not a typo.
 //
 // THE COST, AND WHERE IT IS PAID. The probe makes two extra requests at
-// AdvisoryTimeout, so it runs on the FAILURE path ONLY. A command that
-// cobra RAN is never probed: a runnable command consumed the leftover
-// tokens as positionals and did what the user asked, so a module gate
-// cannot be the cause. Cobra's `__complete` command is runnable too, so
-// shell completion pays nothing. A gate that takes a leaf leaves a
-// surviving GROUP, and a group carries no Run (see the intermediate
-// command in internal/dynacmd/builder.go), so the hint keeps working.
+// AdvisoryTimeout, so it runs on the FAILURE path ONLY. The SUCCESS-path
+// caller therefore drops any command that cobra RAN: a runnable command
+// consumed the leftover tokens as positionals and did what the user
+// asked, so a module gate cannot be the cause. Cobra's `__complete`
+// command is runnable too, so shell completion pays nothing.
 //
-// THE ONE SHAPE THIS RULE DROPS. A group that is runnable AND takes
-// arbitrary positionals runs with the leftover token as an argument, so
-// the command did run and the "success that is really a failure" case
-// does not apply to it. No RunOS group has that shape today.
+// THAT GUARD BELONGS TO THE SUCCESS-PATH CALLER ALONE, and it lives in
+// explainUnresolvedParentSurvivor for that reason. unresolvedTypedPath is
+// shared with the ERROR path in stale_manifest.go, which cobra reaches
+// when it REFUSED the command (`runos nodes virt-shape --nid X` ->
+// "unknown flag: --nid"). Cobra ran nothing there, so the runnable test
+// does not apply, and applying it would kill the hint for exactly the
+// case the hint was written for.
+//
+// DO NOT ASSUME A SURVIVING GROUP CARRIES NO Run. strictenParentExitCodes
+// (cmd/parents.go) retrofits `Args: cobra.NoArgs` and a dummy RunE onto
+// every group that already has children when cmd/root.go's init calls it,
+// so nodes, jobs, account and the other dynamic groups are all runnable.
+// `vms` escapes only because cmd/vms.go's init adds `vms ssh` AFTER
+// cmd/root.go's init has run.
 
 // unknownCommandPath turns cobra's message into the manifest path the
 // user was reaching for.
@@ -210,38 +218,37 @@ func typedCommandPath(args []string) []string {
 }
 
 // unresolvedTypedPath reports the manifest path the user typed when cobra
-// resolved only a PREFIX of it, and "" when cobra ran a command or found
-// the whole path.
+// resolved only a PREFIX of it, and "" when cobra found the whole path.
 //
-// Two conditions must both hold. Cobra must leave tokens over, AND the
-// command cobra resolved must not be runnable. A runnable command took
-// the leftover tokens as positionals and ran (`runos vms ssh myvm`), so
-// the user got the behaviour the user asked for and no module gate is
-// involved. Probing that command spends two requests on a command that
-// already succeeded (objective 84, findings 25 and 18).
+// Everything cobra could not resolve stays in the path, so a legitimate
+// positional argument (`runos vms ssh myvm`) also lands here. The caller
+// decides what to do about that. The ERROR-path caller wants every such
+// path, because cobra refused the command and the leftover token is the
+// gated leaf. The SUCCESS-path caller drops the ones cobra RAN, which is
+// what explainUnresolvedParentSurvivor tests for.
 //
-// A module gate leaves the opposite shape. The gated leaf is gone, the
-// parent GROUP survives, and a group carries no Run, so `runos vms list`
-// still reaches the probe.
-//
-// The caller keeps its own safety net: the BARE manifest has to define
-// the path before any module is named, so a wrong guess prints nothing.
+// Both callers keep the same safety net: the BARE manifest has to define
+// the path before any module is named, and `vms/ssh/myvm` is not a
+// command any account has, so a wrong guess prints nothing.
 func unresolvedTypedPath(root *cobra.Command, args []string) string {
+	path, _ := resolveTypedPath(root, args)
+	return path
+}
+
+// resolveTypedPath returns the unresolved typed path AND the command that
+// cobra's Find resolved, so a caller can ask whether cobra RAN it.
+//
+// One Find call serves both answers, because two Find calls could drift.
+func resolveTypedPath(root *cobra.Command, args []string) (string, *cobra.Command) {
 	typed := typedCommandPath(args)
 	if root == nil || len(typed) == 0 {
-		return ""
+		return "", nil
 	}
 	found, rest, err := root.Find(typed)
 	if err != nil || len(rest) == 0 {
-		return ""
+		return "", nil
 	}
-	if found.Runnable() {
-		// Cobra dispatched this command and took the leftover tokens as
-		// positional arguments. The command ran, so nothing failed and
-		// nothing needs an explanation.
-		return ""
-	}
-	return strings.Join(typed, "/")
+	return strings.Join(typed, "/"), found
 }
 
 // explainUnresolvedParentSurvivor explains a command line whose leaf
@@ -258,8 +265,16 @@ func unresolvedTypedPath(root *cobra.Command, args []string) string {
 // wording on the error path, and saying it twice would be worse than
 // saying it once.
 func explainUnresolvedParentSurvivor(root *cobra.Command, args []string) bool {
-	path := unresolvedTypedPath(root, args)
+	path, found := resolveTypedPath(root, args)
 	if path == "" {
+		return false
+	}
+	if found.Runnable() {
+		// Cobra DISPATCHED this command and took the leftover tokens as
+		// positional arguments. The command ran, so nothing failed and
+		// nothing needs an explanation. This is the success path only:
+		// the error-path caller must not apply this test, because there
+		// cobra refused the command and ran nothing (findings 25, 18).
 		return false
 	}
 	loader, err := newAdvisoryManifestLoader()
