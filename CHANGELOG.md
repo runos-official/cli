@@ -1,5 +1,67 @@
 # Changelog
 
+## v1.20.0
+
+**Virtual machines are an account MODULE now, so the CLI serves each account only the commands it
+may call.** A module governs one whole capability across the Console, the CLI, the MCP tool list and
+the API at once. `virt` is the first, and it is premium: off until someone switches it on. Conductor
+serves the command list per account, so the CLI stops carrying its own idea of what a VM account
+looks like.
+
+**The manifest is fetched per account.** The loader asks `/:aid/cli/manifest-version` and
+`/:aid/cli/manifest` first, and retries the unscoped route on a 404 and on a 404 ONLY, so an older
+conductor still serves this CLI while a 500 stays the error it is. Each of the two routes falls back
+on its own, because they ship independently. The account id is cached in `~/.runos/manifest.account`
+beside the manifest: two accounts have two different command surfaces, so a manifest cached for
+another account is never handed back without a fetch attempt first. When that fetch fails the cached
+manifest is still returned, because the CLI fails open and conductor refuses what it must.
+
+**The served version carries the enabled module set as semver build metadata**, `45.3.0+virt`. The
+CLI compares it as a string, which it already did, so a module toggle changes the string and
+triggers a refetch. Nothing parses it.
+
+**A module toggle refreshes the MCP tool list in the same session.** `account_modules_enable` and
+`account_modules_disable` refetch the command list and emit `notifications/tools/list_changed`, but
+only when the version actually changed, so no client re-reads hundreds of tool definitions to find
+nothing new. A refetch that fails names `manifest_update` rather than turning a toggle that already
+succeeded into an error.
+
+**`runos_tools_enable virt` is gone.** The VM surface used to be hidden on a KubeVirt-installed flag
+and a hardcoded list of VM command groups. Both are deleted: the gate is conductor's now, and a
+second copy of that decision in the CLI would drift from it. The spelling is refused rather than
+silently ignored, so an agent reading an older document learns it has changed. The managed-service
+scoping is untouched.
+
+**Two refusals name the fix.** A route whose module is off answers 403 `module.not_enabled`, and the
+CLI renders it as one line naming `runos account modules enable <key>`; under `--json` the envelope
+keeps `code` and `module` for a machine consumer. Separately, a command absent from the account's
+manifest never reaches its route at all, because the cobra tree is built from that manifest. The old
+wording concluded it "really does not exist" — true evidence, wrong conclusion. The CLI now checks
+the unscoped manifest, and when the command exists there it names the enable command instead.
+
+**A gate takes a leaf, not always a whole group, and the hint follows it either way.** `runos
+vm-groups list` loses its entire group and cobra says `unknown command`. But `runos vms list` keeps
+its parent, because `runos vms ssh` is a built-in rather than a manifest row, so cobra printed the
+`vms` help and exited **0** — a success code for a command the account cannot run. `runos nodes
+virt-shape --nid <id>` kept `nodes` and reported `unknown flag: --nid`, blaming the flag for a
+missing command. Neither message carries the path, so the CLI now recovers it from the command line
+itself: all three exit non-zero and name `runos account modules enable <key>`. A real typo or a
+positional argument still says nothing about modules, because the unscoped manifest has to define
+the path before the module is ever mentioned.
+
+**A release candidate now reaches the people already on one.** `runos update` compared versions by
+truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not
+newer than `1.20.0-rc.1`. Measured on dev with the checksum-verified rc.1 artefact while dev
+advertised rc.2: `runos update --check` answered "The CLI is already up to date." Advertising an RC
+therefore reached nobody on an earlier RC of the same train, and the same function sits behind the
+update nag and the desktop installer. The comparison is SemVer 2.0.0 precedence now: build metadata
+is dropped, the numeric core decides, and the pre-release identifiers break a tie on an equal core,
+comparing left to right, numerically where both are all digits, with a numeric identifier ranking
+below an alphanumeric one and a longer list winning an equal prefix. So `1.20.0` beats
+`1.20.0-rc.2`, `1.20.0-rc.10` beats `1.20.0-rc.2`, and no version is ever offered a downgrade. This
+is NOT the manifest version rule: `45.3.0+virt` is still compared as an opaque string, because there
+the build metadata is the module set and a change in it must read as a change.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The

@@ -19,10 +19,18 @@ type Client struct {
 
 // NewClient creates a new API client configured with the given base URL.
 func NewClient(baseURL string) *Client {
+	return NewClientWithTimeout(baseURL, 10*time.Second)
+}
+
+// NewClientWithTimeout creates a client whose calls carry the given
+// deadline. Used by a probe made only to EXPLAIN a failure the user
+// already has, which must give up quickly rather than add its own wait
+// to a command that has already failed.
+func NewClientWithTimeout(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }

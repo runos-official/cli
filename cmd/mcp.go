@@ -192,7 +192,7 @@ func newMCPServer(category string) (*mcp.Server, error) {
 	// conductor must cost a moment, not the session. Any failure leaves every
 	// tool exposed.
 	if token, err := auth.ResolveToken(cfg); err == nil {
-		server.SetToolsets(mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.AccountID, token, 3*time.Second))
+		server.SetToolsets(mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.GetAccountID(), token, 3*time.Second))
 	}
 	// Without a default cluster the tool schema has to mark `cid`
 	// required, since there is nothing to fall back on (B13).
@@ -976,7 +976,7 @@ func runMCPToolsetsShow() error {
 	if err != nil {
 		return fmt.Errorf("not signed in: %w", err)
 	}
-	ts := mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.AccountID, token, 10*time.Second)
+	ts := mcp.FetchToolsets(m, cfg.GetAPIURL(), cfg.GetAccountID(), token, 10*time.Second)
 	if !ts.Scoped() {
 		fmt.Println("Not scoped: every managed-service tool is exposed.")
 		fmt.Println("Conductor could not say which services this account runs, so nothing is hidden.")
