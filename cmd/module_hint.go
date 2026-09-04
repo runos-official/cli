@@ -30,9 +30,19 @@ import (
 // A path missing from this account's tree but present in the bare list is
 // therefore a module gate, not a typo.
 //
-// Two extra requests, on the failure path only, at AdvisoryTimeout: this
-// runs to explain a failure the user already has, so it must not add ten
-// seconds to a command that has already failed.
+// THE COST, AND WHERE IT IS PAID. The probe makes two extra requests at
+// AdvisoryTimeout, so it runs on the FAILURE path ONLY. A command that
+// cobra RAN is never probed: a runnable command consumed the leftover
+// tokens as positionals and did what the user asked, so a module gate
+// cannot be the cause. Cobra's `__complete` command is runnable too, so
+// shell completion pays nothing. A gate that takes a leaf leaves a
+// surviving GROUP, and a group carries no Run (see the intermediate
+// command in internal/dynacmd/builder.go), so the hint keeps working.
+//
+// THE ONE SHAPE THIS RULE DROPS. A group that is runnable AND takes
+// arbitrary positionals runs with the leftover token as an argument, so
+// the command did run and the "success that is really a failure" case
+// does not apply to it. No RunOS group has that shape today.
 
 // unknownCommandPath turns cobra's message into the manifest path the
 // user was reaching for.
@@ -200,21 +210,35 @@ func typedCommandPath(args []string) []string {
 }
 
 // unresolvedTypedPath reports the manifest path the user typed when cobra
-// resolved only a PREFIX of it, and "" when cobra found the whole path.
+// resolved only a PREFIX of it, and "" when cobra ran a command or found
+// the whole path.
 //
-// Everything cobra could not resolve stays in the path, so a legitimate
-// positional argument (`runos vms ssh myvm`) also lands here. That is
-// harmless and deliberate: the caller's only test is whether the BARE
-// manifest defines the path, and `vms/ssh/myvm` is not a command any
-// account has. A wrong guess therefore prints nothing rather than
-// blaming a module.
+// Two conditions must both hold. Cobra must leave tokens over, AND the
+// command cobra resolved must not be runnable. A runnable command took
+// the leftover tokens as positionals and ran (`runos vms ssh myvm`), so
+// the user got the behaviour the user asked for and no module gate is
+// involved. Probing that command spends two requests on a command that
+// already succeeded (objective 84, findings 25 and 18).
+//
+// A module gate leaves the opposite shape. The gated leaf is gone, the
+// parent GROUP survives, and a group carries no Run, so `runos vms list`
+// still reaches the probe.
+//
+// The caller keeps its own safety net: the BARE manifest has to define
+// the path before any module is named, so a wrong guess prints nothing.
 func unresolvedTypedPath(root *cobra.Command, args []string) string {
 	typed := typedCommandPath(args)
 	if root == nil || len(typed) == 0 {
 		return ""
 	}
-	_, rest, err := root.Find(typed)
+	found, rest, err := root.Find(typed)
 	if err != nil || len(rest) == 0 {
+		return ""
+	}
+	if found.Runnable() {
+		// Cobra dispatched this command and took the leftover tokens as
+		// positional arguments. The command ran, so nothing failed and
+		// nothing needs an explanation.
 		return ""
 	}
 	return strings.Join(typed, "/")

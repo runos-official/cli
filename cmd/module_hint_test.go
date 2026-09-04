@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/runos-official/cli/internal/manifest"
@@ -161,11 +163,12 @@ type moduleConductorOpts struct {
 // HOME at it. The cached manifest is seeded at the version the fake
 // serves, so judgeStaleManifest reaches verdictCommandUnknown, which is
 // the branch under test.
-func newModuleConductor(t *testing.T, opts moduleConductorOpts) *httptest.Server {
+func newModuleConductor(t *testing.T, opts moduleConductorOpts) *moduleConductor {
 	t.Helper()
 	const aid = "acct1"
 	const version = "45.3.0"
 
+	fake := &moduleConductor{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/"+aid+"/cli/manifest-version", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": version})
@@ -190,7 +193,7 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *httptest.Server
 			{"key": "virt", "name": "Virtual Machines", "tier": "premium", "enabled": opts.virtEnabled},
 		}})
 	})
-	srv := httptest.NewServer(mux)
+	fake.Server = httptest.NewServer(fake.record(mux))
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -201,7 +204,7 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *httptest.Server
 	if err := os.MkdirAll(runosDir, 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	cfg := fmt.Sprintf(`{"api_key":"pat-test-token","account_id":%q,"conductor_url":%q}`, aid, srv.URL)
+	cfg := fmt.Sprintf(`{"api_key":"pat-test-token","account_id":%q,"conductor_url":%q}`, aid, fake.URL)
 	if err := os.WriteFile(filepath.Join(runosDir, "config.json"), []byte(cfg), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -214,7 +217,34 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *httptest.Server
 	if err := os.WriteFile(filepath.Join(runosDir, "manifest.account"), []byte(aid), 0600); err != nil {
 		t.Fatalf("write sidecar: %v", err)
 	}
-	return srv
+	return fake
+}
+
+// moduleConductor is the fake conductor and the log of every request the
+// CLI made to it. The log is what proves a cost: objective 84 finding 25
+// was measured as requests, so the tests assert requests, not source text.
+type moduleConductor struct {
+	*httptest.Server
+
+	mu       sync.Mutex
+	requests []string
+}
+
+// record wraps the routes and appends the method and path of each request.
+func (c *moduleConductor) record(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.mu.Lock()
+		c.requests = append(c.requests, r.Method+" "+r.URL.Path)
+		c.mu.Unlock()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// recorded returns the requests made so far, in order.
+func (c *moduleConductor) recorded() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.requests...)
 }
 
 func writeManifest(w http.ResponseWriter, version string, commands ...string) {
@@ -270,11 +300,17 @@ func TestTypedCommandPath(t *testing.T) {
 // survivorTree is the shape a module gate actually leaves behind: `vms`
 // survives because `vms ssh` is a static Go command, and `nodes`
 // survives because it is core, but the gated leaves are gone.
+//
+// NEITHER GROUP CARRIES A Run. The dynamic builder gives an intermediate
+// command only a Use and a Short (internal/dynacmd/builder.go), and the
+// static `vms` parent has no Run either (cmd/vms.go). A fixture that gave
+// a group a Run would model a tree the product does not build, and the
+// gated-leaf cases below would then report a failure RunOS does not have.
 func survivorTree() *cobra.Command {
 	root := &cobra.Command{Use: "runos"}
 	vms := &cobra.Command{Use: "vms"}
 	vms.AddCommand(&cobra.Command{Use: "ssh", Run: func(*cobra.Command, []string) {}})
-	nodes := &cobra.Command{Use: "nodes", Run: func(*cobra.Command, []string) {}}
+	nodes := &cobra.Command{Use: "nodes"}
 	nodes.AddCommand(&cobra.Command{Use: "cordon", Run: func(*cobra.Command, []string) {}})
 	root.AddCommand(vms, nodes)
 	return root
@@ -292,7 +328,9 @@ func TestUnresolvedTypedPath(t *testing.T) {
 		{"gated leaf before a flag", []string{"nodes", "virt-shape", "--nid", "n1"}, "nodes/virt-shape"},
 		{"a fully resolved path is not unresolved", []string{"vms", "ssh"}, ""},
 		{"a resolved group alone is not unresolved", []string{"nodes"}, ""},
-		{"a positional argument still yields a path the bare manifest will reject", []string{"vms", "ssh", "myvm"}, "vms/ssh/myvm"},
+		// A command that RAN is never probed. `vms ssh` is runnable, so
+		// cobra took `myvm` as a positional and did what the user asked.
+		{"a command that ran with a positional argument is not unresolved", []string{"vms", "ssh", "myvm"}, ""},
 		{"nothing typed", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -327,22 +365,109 @@ func TestAGatedLeafUnderASurvivingParentNamesTheEnableCommand(t *testing.T) {
 }
 
 // The safety net: a path the BARE manifest does not define must stay
-// silent, so an ordinary typo or a positional argument is never blamed
-// on a module.
+// silent, so an ordinary typo is never blamed on a module. `vms nope`
+// takes the same route a gated leaf takes, because `vms` is a group with
+// no Run: cobra prints the `vms` help and exits 0.
 func TestAnUnresolvedPathTheAPIDoesNotServeExplainsNothing(t *testing.T) {
 	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
 	defer fake.Close()
 
 	var explained bool
 	out := captureStderr(t, func() {
-		explained = explainUnresolvedParentSurvivor(survivorTree(), []string{"vms", "ssh", "myvm"})
+		explained = explainUnresolvedParentSurvivor(survivorTree(), []string{"vms", "nope"})
 	})
 
 	if explained {
-		t.Error("a positional argument is not a module gate")
+		t.Error("a path the bare manifest does not define is not a module gate")
+	}
+	if strings.Contains(out, "account modules") {
+		t.Errorf("a module was blamed for a wrong guess:\n%s", out)
+	}
+}
+
+// Criterion 4, the error half of the same rule. A typed path the bare
+// manifest also lacks keeps the unknown-command wording, so a wrong guess
+// never blames a module even when the module the group belongs to is off.
+func TestAnUnresolvedPathTheAPIDoesNotServeKeepsTheUnknownCommandText(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	out := captureStderr(t, func() {
+		explainPossiblyStaleManifest(errors.New(`unknown command "nope" for "runos vms"`))
+	})
+
+	if !strings.Contains(out, "really does not exist") {
+		t.Errorf("expected the unchanged missing-command wording:\n%s", out)
+	}
+	if strings.Contains(out, "account modules") {
+		t.Errorf("a path the bare manifest lacks must not be blamed on a module:\n%s", out)
+	}
+}
+
+// --- the cost of the probe (objective 84, findings 25 and 18) ---
+//
+// The probe made two conductor requests after EVERY successful command,
+// because a consumed positional argument leaves the same leftover token a
+// gated leaf leaves. These tests measure requests, which is the unit the
+// reviewers measured the defect in.
+
+// Criterion 1. `runos vms ssh myvm` succeeds, and the probe that runs
+// after it must reach the network zero times.
+func TestASuccessfulCommandWithAPositionalArgumentMakesNoRequest(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	root := survivorTree()
+	args := []string{"vms", "ssh", "myvm"}
+	root.SetArgs(args)
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("the command must succeed before the probe runs: %v", err)
+	}
+
+	var explained bool
+	out := captureStderr(t, func() {
+		explained = explainUnresolvedParentSurvivor(root, args)
+	})
+
+	if explained {
+		t.Error("a command that ran is not a module gate")
+	}
+	if got := fake.recorded(); len(got) != 0 {
+		t.Errorf("a successful command made %d conductor requests, want 0: %v", len(got), got)
 	}
 	if strings.Contains(out, "account modules") {
 		t.Errorf("a module was blamed for a positional argument:\n%s", out)
+	}
+}
+
+// Criterion 2. Shell completion runs on every TAB, so it must cost
+// nothing. Cobra registers `__complete` from Execute and gives it a RunE,
+// which is why the probe returns before any request.
+func TestShellCompletionMakesNoRequest(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	root := survivorTree()
+	args := []string{"__complete", "vms", ""}
+	root.SetArgs(args)
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("cobra must serve the completion request: %v", err)
+	}
+
+	var explained bool
+	captureStderr(t, func() {
+		explained = explainUnresolvedParentSurvivor(root, args)
+	})
+
+	if explained {
+		t.Error("a completion request is not a module gate")
+	}
+	if got := fake.recorded(); len(got) != 0 {
+		t.Errorf("a completion request made %d conductor requests, want 0: %v", len(got), got)
 	}
 }
 

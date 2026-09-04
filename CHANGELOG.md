@@ -47,7 +47,11 @@ virt-shape --nid <id>` kept `nodes` and reported `unknown flag: --nid`, blaming 
 missing command. Neither message carries the path, so the CLI now recovers it from the command line
 itself: all three exit non-zero and name `runos account modules enable <key>`. A real typo or a
 positional argument still says nothing about modules, because the unscoped manifest has to define
-the path before the module is ever mentioned.
+the path before the module is ever mentioned. It also COSTS nothing: the CLI probes on the failure
+path only. A command cobra RAN is never probed, because a runnable command took the leftover tokens
+as positional arguments and did what you asked, so `runos vms ssh myvm` and every `<TAB>` shell
+completion make no extra request at all. A gate that takes a leaf leaves a parent GROUP behind, and
+a group runs nothing, which is the shape the probe still looks at.
 
 **A release candidate now reaches the people already on one.** `runos update` compared versions by
 truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not
