@@ -20,9 +20,10 @@
 #   4. CI watch    - wait for the Release workflow run for this tag to succeed.
 #   5. Attest      - download a published asset and verify its build-provenance
 #                    attestation is bound to release.yml @ refs/tags/<VERSION>.
-#   6. Record      - only after a successful deploy, fast-forward the `deployed`
-#                    branch to the shipped commit and push it. `deployed` is the
-#                    record of what is live; main stays clean for the human.
+#   6. Record      - only after a successful deploy, advance the `deployed`
+#                    branch to the shipped commit and push it, through
+#                    scripts/record_ref.sh, which the pipeline calls too.
+#                    `deployed` is the record of what is live; main stays clean.
 #
 # Branch model: dev = local development; deployed = what has shipped (advanced by
 # this script on success); main = human-controlled, never touched here. The human
@@ -45,6 +46,8 @@ INTEGRATION_BRANCH="dev"     # where work lands; gates run here; this commit is 
 # The gate and the advance MUST read the same value, or the gate validates one
 # ref while the pipeline moves another. Default is unchanged, so a plain
 # `scripts/release.sh` from dev behaves exactly as before.
+# Both now go through scripts/record_ref.sh, so they read the same value by
+# construction rather than by two copies agreeing.
 DEPLOYED_BRANCH="${RUNOS_RELEASE_RECORD_BRANCH:-deployed}"
 # An unresolved pipeline placeholder arrives as literal "${{ ... }}" text,
 # which is non-empty, so :- above would happily accept it as a branch name.
@@ -115,34 +118,25 @@ git rev-parse -q --verify "refs/heads/$INTEGRATION_BRANCH" >/dev/null || die "mi
 [[ "$(git rev-parse "$INTEGRATION_BRANCH")" == "$(git rev-parse "origin/$INTEGRATION_BRANCH")" ]] || \
   die "$INTEGRATION_BRANCH is not in sync with origin/$INTEGRATION_BRANCH (push or pull first)"
 
-# If `deployed` already exists, it must be fast-forwardable to dev (i.e. an
-# ancestor) and in sync with its remote, so the post-deploy advance is a clean FF.
-DEPLOYED_EXISTS="false"
-if git rev-parse -q --verify "refs/heads/$DEPLOYED_BRANCH" >/dev/null; then
-  DEPLOYED_EXISTS="true"
-  git fetch --quiet origin "$DEPLOYED_BRANCH" || true
-  if git rev-parse -q --verify "origin/$DEPLOYED_BRANCH" >/dev/null; then
-    [[ "$(git rev-parse "$DEPLOYED_BRANCH")" == "$(git rev-parse "origin/$DEPLOYED_BRANCH")" ]] || \
-      die "$DEPLOYED_BRANCH is not in sync with origin/$DEPLOYED_BRANCH"
-  fi
-  git merge-base --is-ancestor "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH" || \
-    die "$DEPLOYED_BRANCH cannot fast-forward to $INTEGRATION_BRANCH (histories diverged); reconcile manually"
-fi
-if [[ "$DEPLOYED_EXISTS" == "true" ]]; then
-  ok "dev clean & synced; $DEPLOYED_BRANCH present and fast-forwardable to dev"
-else
-  ok "dev clean & synced; $DEPLOYED_BRANCH will be created on first deploy"
-fi
-
-# Base for the deploy payload = last shipped point: the `deployed` branch if it
-# exists, else the most recent tag, else dev's root. Used by the sensitivity scan.
-if [[ "$DEPLOYED_EXISTS" == "true" ]]; then
-  PAYLOAD_BASE="$DEPLOYED_BRANCH"
-elif PAYLOAD_BASE="$(git describe --tags --abbrev=0 "$INTEGRATION_BRANCH" 2>/dev/null)"; then
-  :
-else
-  PAYLOAD_BASE="$(git rev-list --max-parents=0 "$INTEGRATION_BRANCH" | tail -1)"
-fi
+# The record-ref preflight. The GATE ORDER IS UNCHANGED: this block stays where
+# it was, between the dev sync check and the sensitivity scan, and only its BODY
+# moved (CLAUDE.md forbids reordering the gates without saying why; nothing is
+# reordered here).
+#
+# The body now lives in scripts/record_ref.sh, which the pipeline's advance step
+# and the manual step 6 below also call, so ONE definition site decides what the
+# record ref is and how it moves. Three copies of this rule existed before and
+# two of them drifted: the pipeline moved origin only, this preflight read the
+# LOCAL branch, and deployment 36 died on the mismatch.
+#
+# `check` reads origin as the authority, keeps the in-sync and ancestor checks
+# armed for the shared `deployed`, exempts an objective-scoped record ref from
+# the ancestor test deliberately, prints the local and the remote value, and
+# emits PAYLOAD_BASE on stdout only when it passes.
+PAYLOAD_BASE="$("$REPO_ROOT/scripts/record_ref.sh" check "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH")" || \
+  die "record-ref preflight failed for $DEPLOYED_BRANCH"
+[[ -n "$PAYLOAD_BASE" ]] || die "record-ref preflight produced no payload base for $DEPLOYED_BRANCH"
+ok "dev clean & synced; $DEPLOYED_BRANCH checked against origin (payload base $PAYLOAD_BASE)"
 
 # ---- Sensitivity scan: this is a PUBLIC repo ------------------------------
 # Deterministic, fail-closed floor over the exact payload being deployed
@@ -321,12 +315,14 @@ ok "attestation bound to $ACTUAL_SAN"
 # =============================================================================
 # 6. Record: advance `deployed` to the shipped commit (only now, on success)
 # =============================================================================
-step "Recording deploy: fast-forward $DEPLOYED_BRANCH to $RELEASE_SHA"
-# Preflight guaranteed deployed (if it exists) is an ancestor of dev, so this is
-# a clean fast-forward; -f also creates the branch on first deploy. main is never
+step "Recording deploy: advance $DEPLOYED_BRANCH to $RELEASE_SHA"
+# The SAME advance the pipeline runs, from the SAME file, so the manual flow and
+# the pipeline can no longer disagree about which ref is authoritative. It pushes
+# with a lease that states the value it expects to replace, then moves the local
+# copy AND the remote-tracking ref, and asserts the two agree. main is never
 # touched: the human merges it after personal verification.
-git branch -f "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH"
-git push --quiet origin "$DEPLOYED_BRANCH"
+"$REPO_ROOT/scripts/record_ref.sh" advance "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH" \
+  || die "could not advance $DEPLOYED_BRANCH to $RELEASE_SHA"
 ok "$DEPLOYED_BRANCH now at $RELEASE_SHA"
 
 # =============================================================================

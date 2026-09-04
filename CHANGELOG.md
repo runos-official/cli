@@ -53,6 +53,22 @@ as positional arguments and did what you asked, so `runos vms ssh myvm` and ever
 completion make no extra request at all. A command cobra REFUSED still gets the hint, including
 `runos nodes virt-shape --nid <id>`, because that is the failure the hint was written for.
 
+**The release record branch is read and moved in one place.** The pipeline pushed the shipped
+commit straight at `refs/heads/<record>` and then ran `git fetch origin <record>`, which moves
+`FETCH_HEAD` and the remote-tracking ref and nothing else, so the local branch never moved. The
+preflight in `scripts/release.sh` read that local branch, and a release from the persistent host
+died with "`deployed` is not in sync with origin/deployed" — or, when the local branch was absent,
+skipped every record-branch check in silence. The rule now lives once, in `scripts/record_ref.sh`,
+which the preflight, the pipeline step and the manual record step all call. Origin is the
+authority, so a stale local copy is a warning the advance repairs rather than a failed release. The
+checks on the shared `deployed` are unchanged: in sync with origin, and an ancestor of dev. An
+objective-scoped record ref (`deployed-rc/obj-N`) is exempt from the ancestor test on purpose,
+because a release candidate records an unmerged branch, and the run says so in its output. The
+advance now states the value it expects to replace in its `--force-with-lease`, which a bare lease
+cannot do on a single-branch clone, and it prints the local and remote values and fails if they
+disagree. `make replay-record-ref` rehearses all of it in a scratch repository, including every
+refusal.
+
 **A release candidate now reaches the people already on one.** `runos update` compared versions by
 truncating at the first `-`, so every identifier after it was thrown away and `1.20.0-rc.2` was not
 newer than `1.20.0-rc.1`. Measured on dev with the checksum-verified rc.1 artefact while dev
