@@ -129,10 +129,14 @@ git rev-parse -q --verify "refs/heads/$INTEGRATION_BRANCH" >/dev/null || die "mi
 # two of them drifted: the pipeline moved origin only, this preflight read the
 # LOCAL branch, and deployment 36 died on the mismatch.
 #
-# `check` reads origin as the authority, keeps the in-sync and ancestor checks
-# armed for the shared `deployed`, exempts an objective-scoped record ref from
-# the ancestor test deliberately, prints the local and the remote value, and
-# emits PAYLOAD_BASE on stdout only when it passes.
+# `check` reads origin as the authority. For the shared `deployed` that means
+# the ancestor-of-dev test stays armed and still REFUSES, and an unreachable
+# origin refuses too, because discovery fails closed. A stale LOCAL copy is a
+# WARNING, not a refusal: no check reads it any more, and the advance re-points
+# it, so dying on it would only reproduce deployment 36. `check` also exempts an
+# objective-scoped record ref from the ancestor test deliberately, prints the
+# local and the remote value, and emits PAYLOAD_BASE on stdout only when it
+# passes.
 PAYLOAD_BASE="$("$REPO_ROOT/scripts/record_ref.sh" check "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH")" || \
   die "record-ref preflight failed for $DEPLOYED_BRANCH"
 [[ -n "$PAYLOAD_BASE" ]] || die "record-ref preflight produced no payload base for $DEPLOYED_BRANCH"

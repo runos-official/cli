@@ -110,8 +110,9 @@ cmd_check() {
     #
     # The pipeline never reads the local copy, and `advance` re-points it, so
     # the drift is self-healing. Dying on it IS the deployment 36 failure this
-    # story removes. The shared checks below stay armed either way, because they
-    # read origin.
+    # story removes. So the old local-vs-origin refusal is GONE, deliberately.
+    # What still refuses for the shared `deployed` is the ancestor test below,
+    # which reads origin, and a failed discovery, which dies before this point.
     if [[ "$local_sha" != "absent" && "$local_sha" != "$remote_sha" ]]; then
       say "warning: the local copy of $record ($local_sha) differs from origin ($remote_sha). The advance re-points it; no check below reads it."
     fi

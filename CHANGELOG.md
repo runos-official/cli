@@ -60,8 +60,11 @@ preflight in `scripts/release.sh` read that local branch, and a release from the
 died with "`deployed` is not in sync with origin/deployed" — or, when the local branch was absent,
 skipped every record-branch check in silence. The rule now lives once, in `scripts/record_ref.sh`,
 which the preflight, the pipeline step and the manual record step all call. Origin is the
-authority, so a stale local copy is a warning the advance repairs rather than a failed release. The
-checks on the shared `deployed` are unchanged: in sync with origin, and an ancestor of dev. An
+authority, so a stale local copy is a warning the advance repairs rather than a failed release: the
+old local-vs-origin refusal is deliberately gone, because no check reads the local copy any more.
+The shared `deployed` is still REFUSED when origin's copy is not an ancestor of dev, and a release
+still stops when origin cannot be reached at all, because the check fails closed rather than
+reading a transport failure as a first release. An
 objective-scoped record ref (`deployed-rc/obj-N`) is exempt from the ancestor test on purpose,
 because a release candidate records an unmerged branch, and the run says so in its output. The
 advance now states the value it expects to replace in its `--force-with-lease`, which a bare lease
