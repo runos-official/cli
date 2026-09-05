@@ -217,6 +217,12 @@ func destructiveVerb(cmdPath string) string {
 // `set-data --value SECRET` and `exec-sql --query "... password ..."` used
 // to echo the secret back to the terminal. Ids, paths and hostnames stay
 // readable, because spotting a typo in them is the point of the line.
+//
+// A positional target goes through decorateNodeTarget (node_name.go),
+// which adds the node NAME when the displayed field is the node id field,
+// because `nid=<node-id>` alone never told the operator which machine the
+// node id was. Every other field, and every failure of that lookup, keeps
+// the `<field>=<value>` line this function has always printed.
 func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
 	if cmdDef.Input == nil {
 		return destructiveVerb(cmdDef.Command) + noTargetGiven(cmdDef)
@@ -227,7 +233,7 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 			continue
 		}
 		if idx < len(args) && args[idx] != "" {
-			return fmt.Sprintf("%s=%s", field.Name, args[idx])
+			return decorateNodeTarget(c, cmdDef, args, field.Name, args[idx])
 		}
 		if c != nil {
 			// f.Value.String(), not GetString: an integer positional
@@ -236,7 +242,7 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 			// An unset flag renders its zero value, which is not a target.
 			if f := c.Flags().Lookup(flagNameFor(field.Name)); f != nil && f.Changed {
 				if v := f.Value.String(); v != "" {
-					return fmt.Sprintf("%s=%s", field.Name, v)
+					return decorateNodeTarget(c, cmdDef, args, field.Name, v)
 				}
 			}
 		}

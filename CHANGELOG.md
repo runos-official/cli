@@ -85,6 +85,16 @@ below an alphanumeric one and a longer list winning an equal prefix. So `1.20.0`
 is NOT the manifest version rule: `45.3.0+virt` is still compared as an opaque string, because there
 the build metadata is the module set and a change in it must read as a change.
 
+**The destructive confirmation for a node now names the node.** `runos nodes delete <node-id>` and
+`runos nodes drain <node-id>` printed the node id alone, so the one line you read before an
+irreversible command never told you which machine that node id was. Both now print the node id and
+the node name together, as `nid=<node-id> name=<node-name>`. The node id stays on the line, because
+you type the node id and can mistype it. The refusal you get with no terminal attached carries the
+same text, so a script and a person see the same target. When the name cannot be read, for any
+reason, the line falls back to the node id alone: no warning, no error, and no delay, because the
+whole lookup gives up after two seconds. A node with no assigned name prints the node id alone too,
+which is what the Console does. The `--yes` flag is unchanged and makes no lookup at all.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
