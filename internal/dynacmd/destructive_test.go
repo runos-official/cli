@@ -7,7 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/spf13/cobra"
 )
@@ -115,7 +117,15 @@ func TestIsDestructiveCommand(t *testing.T) {
 // user answers y/N. Without a positional it lists the changed flags,
 // and without those it says "no target given"; it never prints the
 // manifest description.
+//
+// Every entry that displays the node id flag also carries the node name,
+// under both rules. The fake node read below is what keeps this test off
+// the network; a case that expects no ` name=` part proves the line was
+// built without a lookup, not that a lookup failed.
 func TestDestructiveSummary(t *testing.T) {
+	srv, _ := countingNodeRead(t)
+	useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
 	cmdWithID := manifest.Command{
 		Command:     "apps/{id}/delete",
 		Description: "Delete an application",
@@ -204,16 +214,17 @@ func TestDestructiveSummary(t *testing.T) {
 		{name: "flag empty says no target", cmd: clusterReset, args: []string{}, flags: map[string]string{"cid": ""}, want: "clusters reset (no target given)"},
 		// Goal 23 review. wipe-device has no positional field, so the prompt printed the 250-word
 		// manifest description as the "target". The changed non-positional flags are the target.
-		{name: "wipe-device lists changed flags in field order", cmd: wipeDevice, args: []string{}, flags: map[string]string{"device-path": "/dev/sdb", "nid": "n1abc"}, want: "nid=n1abc device-path=/dev/sdb"},
-		{name: "wipe-device with only nid lists nid", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": ""}, want: "nid=n1abc"},
-		{name: "maintenance script names the node via --nid", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": ""}, want: "nid=n1abc"},
-		{name: "maintenance script with two flags", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": "bind"}, want: "nid=n1abc mode=bind"},
+		// Story 191: each of these displays the node id flag, so each names the node too.
+		{name: "wipe-device lists changed flags in field order", cmd: wipeDevice, args: []string{}, flags: map[string]string{"device-path": "/dev/sdb", "nid": "n1abc"}, want: "nid=n1abc name=node-alpha device-path=/dev/sdb"},
+		{name: "wipe-device with only nid lists nid", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": ""}, want: "nid=n1abc name=node-alpha"},
+		{name: "maintenance script names the node via --nid", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": ""}, want: "nid=n1abc name=node-alpha"},
+		{name: "maintenance script with two flags", cmd: bindGPU, args: []string{}, flags: map[string]string{"nid": "n1abc", "mode": "bind"}, want: "nid=n1abc name=node-alpha mode=bind"},
 		// Adversarial review, finding 4: the flag list printed every value, so `set-data --value
 		// SECRET` and `exec-sql --query "... password ..."` echoed the secret to the terminal.
 		// Secret-shaped field names are redacted; ids, paths and hostnames stay readable.
 		{name: "set-data redacts value and keeps the key", cmd: setData, args: []string{}, flags: map[string]string{"key": "db-pass", "value": "hunter2"}, want: "key=db-pass value=<redacted>"},
 		{name: "exec-sql redacts the query", cmd: execSQL, args: []string{}, flags: map[string]string{"query": "UPDATE users SET password='x'"}, want: "query=<redacted>"},
-		{name: "wipe-device shows nid and device path in full", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": "/dev/sdb"}, want: "nid=n1abc device-path=/dev/sdb"},
+		{name: "wipe-device shows nid and device path in full", cmd: wipeDevice, args: []string{}, flags: map[string]string{"nid": "n1abc", "device-path": "/dev/sdb"}, want: "nid=n1abc name=node-alpha device-path=/dev/sdb"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,27 +445,24 @@ func countingNodeRead(t *testing.T) (*httptest.Server, *atomic.Int64) {
 }
 
 // destructiveSummary sits on the prompt path for EVERY destructive
-// command, so the commands that display some other field first must print
-// exactly the line they printed before, and must make no lookup at all.
+// command, so a command whose target line displays no node id must print
+// exactly the line it printed before, and must make no lookup at all.
 //
 // Measured against the live manifest, three gated commands stand for that
 // group: storage-groups remove-node displays the storage group id first,
-// storage-groups evict-node carries no positional field, and clusters
-// networks leave displays the cluster id first.
+// clusters networks leave displays the cluster id first, and valkey
+// set-data carries no positional field at all and no node id flag either,
+// so it stands for the changed-flag rule that story 191 touched.
+//
+// storage-groups evict-node used to stand here too. It DOES display the
+// node id flag, so story 191 moved it to the group that gains the node
+// name (TestDestructiveSummary_FlagOnlyTargetNamesTheNode).
 func TestDestructiveSummary_NonNodeTargetsUnchanged(t *testing.T) {
 	removeNode := manifest.Command{
 		Command: "storage-groups/{gid}/remove-node",
 		Method:  "POST",
 		Input: &manifest.Input{Fields: []manifest.Field{
 			{Name: "gid", Type: "string", Positional: true, Required: true},
-			{Name: "nid", Type: "string", Required: true},
-		}},
-	}
-	evictNode := manifest.Command{
-		Command: "storage-groups/evict-node",
-		Method:  "POST",
-		Input: &manifest.Input{Fields: []manifest.Field{
-			{Name: "gid", Type: "string", Required: true},
 			{Name: "nid", Type: "string", Required: true},
 		}},
 	}
@@ -486,7 +494,6 @@ func TestDestructiveSummary_NonNodeTargetsUnchanged(t *testing.T) {
 		want  string
 	}{
 		{name: "remove-node shows the storage group id", cmd: removeNode, args: []string{"sg-1"}, flags: map[string]string{"nid": "node-1"}, want: "gid=sg-1"},
-		{name: "evict-node lists its changed flags", cmd: evictNode, flags: map[string]string{"gid": "sg-1", "nid": "node-1"}, want: "gid=sg-1 nid=node-1"},
 		{name: "networks leave shows the cluster id", cmd: networksLeave, args: []string{"cluster1", "net-1"}, want: "cid=cluster1"},
 		{name: "a secret shaped flag still prints the redacted marker", cmd: setData, flags: map[string]string{"key": "db-pass", "value": "hunter2"}, want: "key=db-pass value=<redacted>"},
 	}
@@ -564,4 +571,342 @@ func TestConfirmDestructive_NodeNameInTheRefusal(t *testing.T) {
 			t.Errorf("the skip path made %d node reads, want 0", count)
 		}
 	})
+}
+
+// wipeDeviceCmd and maintenanceRunCmd are the two shapes story 191 is
+// about: a destructive command that declares NO positional field and
+// carries the node id as a flag. wipe-device spells the field `nid`; a
+// maintenance script spells the SAME field `NODE_NID` on the wire and
+// `--nid` on the command line, and the prompt must name the node for both.
+var wipeDeviceCmd = manifest.Command{
+	Command: "storage-groups/wipe-device",
+	Method:  "POST",
+	Input: &manifest.Input{Fields: []manifest.Field{
+		{Name: "nid", Type: "string", Required: true},
+		{Name: "devicePath", Type: "string", Required: true},
+		{Name: "acknowledgeDataLoss", Type: "boolean"},
+	}},
+}
+
+var maintenanceRunCmd = manifest.Command{
+	Command: "maintenance-scripts/node-apt-upgrade-reboot/run",
+	Method:  "POST",
+	Input: &manifest.Input{Fields: []manifest.Field{
+		{Name: "NODE_NID", Type: "string", Required: true},
+		{Name: "REBOOT_TIMEOUT_SECONDS", Type: "string"},
+	}},
+}
+
+// seedFlags builds the cobra command a changed-flag target line is read
+// from. Every flag is registered; only a non-empty value is Set, because
+// an unchanged flag is not part of the target line.
+func seedFlags(t *testing.T, flags map[string]string) *cobra.Command {
+	t.Helper()
+	c := &cobra.Command{Use: "x"}
+	for name, value := range flags {
+		c.Flags().String(name, "", "")
+		if value == "" {
+			continue
+		}
+		if err := c.Flags().Set(name, value); err != nil {
+			t.Fatalf("seed the flag %s: %v", name, err)
+		}
+	}
+	return c
+}
+
+// The defect story 191 fixes. `storage-groups wipe-device --nid <node-id>`
+// destroys every byte on one disk of one machine, and its prompt named no
+// machine, because the changed-flag rule never reached the name lookup.
+// The node id stays on the line beside the node name, because the operator
+// types the node id and can mistype it.
+func TestDestructiveSummary_FlagOnlyTargetNamesTheNode(t *testing.T) {
+	evictNode := manifest.Command{
+		Command: "storage-groups/evict-node",
+		Method:  "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "nid", Type: "string"},
+			{Name: "hostname", Type: "string"},
+		}},
+	}
+
+	cases := []struct {
+		name  string
+		cmd   manifest.Command
+		flags map[string]string
+		want  string
+	}{
+		{
+			name:  "wipe-device names the node beside the node id",
+			cmd:   wipeDeviceCmd,
+			flags: map[string]string{"nid": testNodeID, "device-path": "/dev/sdb"},
+			want:  "nid=node-1 name=node-alpha device-path=/dev/sdb",
+		},
+		{
+			name:  "the node name lands on the node id entry, not on the last entry",
+			cmd:   wipeDeviceCmd,
+			flags: map[string]string{"nid": testNodeID, "device-path": "/dev/sdb", "acknowledge-data-loss": "true"},
+			want:  "nid=node-1 name=node-alpha device-path=/dev/sdb acknowledge-data-loss=true",
+		},
+		// AC 6. A maintenance script run cordons, drains or reboots a
+		// machine, and it carries the node id under the wire field name
+		// NODE_NID. The one definition of the node id field is the FLAG
+		// spelling, so this command names the node too.
+		{
+			name:  "a maintenance script run names the node through NODE_NID",
+			cmd:   maintenanceRunCmd,
+			flags: map[string]string{"nid": testNodeID, "reboot-timeout-seconds": "600"},
+			want:  "nid=node-1 name=node-alpha reboot-timeout-seconds=600",
+		},
+		{
+			name:  "evict-node names the node too",
+			cmd:   evictNode,
+			flags: map[string]string{"nid": testNodeID},
+			want:  "nid=node-1 name=node-alpha",
+		},
+		// The hostname is never a fallback and never a node id: an
+		// evict-node run addressed by hostname names no node.
+		{
+			name:  "the hostname entry is not a node id and gains nothing",
+			cmd:   evictNode,
+			flags: map[string]string{"hostname": "host-alpha"},
+			want:  "hostname=host-alpha",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := countingNodeRead(t)
+			useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+			var got string
+			stderr := captureStderr(t, func() {
+				got = destructiveSummary(seedFlags(t, tc.flags), tc.cmd, nil)
+			})
+			if got != tc.want {
+				t.Errorf("target = %q, want %q", got, tc.want)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q, want nothing: the lookup only decorates", stderr)
+			}
+		})
+	}
+}
+
+// AC 3 for the changed-flag rule. Every one of these prints the node id
+// alone, silently. The label cases ride nodeLabel, which the positional
+// rule already proves; they are asserted here too, because the two rules
+// must not be able to disagree about the same node.
+func TestDestructiveSummary_FlagOnlyFallsBackToTheNodeID(t *testing.T) {
+	t.Run("an unusable node name", func(t *testing.T) {
+		cases := []struct{ name, body string }{
+			{"the node carries no name", `{"nid":"node-1","name":""}`},
+			{"the name is only space characters", `{"name":"   "}`},
+			// The JSON escape below decodes to a real escape character, so
+			// the case proves that no escape sequence reaches the line the
+			// operator reads before an irreversible command.
+			{"the name carries an escape character", `{"name":"\u001b[2Knode-beta"}`},
+			{"the name carries a newline", `{"name":"node-alpha\nProceed? [y/N] y"}`},
+			{"the record carries no name field at all", `{"nid":"node-1"}`},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := stubNodeRead(t, http.StatusOK, tc.body)
+				useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+				var got string
+				stderr := captureStderr(t, func() {
+					got = destructiveSummary(seedFlags(t, map[string]string{"nid": testNodeID, "device-path": "/dev/sdb"}), wipeDeviceCmd, nil)
+				})
+				if want := "nid=node-1 device-path=/dev/sdb"; got != want {
+					t.Errorf("target = %q, want %q", got, want)
+				}
+				if stderr != "" {
+					t.Errorf("stderr = %q, want nothing", stderr)
+				}
+				if strings.ContainsAny(got, "\x1b\n\r") {
+					t.Errorf("target = %q, want no control character in the line", got)
+				}
+			})
+		}
+	})
+
+	t.Run("the lookup does not succeed", func(t *testing.T) {
+		reachable := stubNodeRead(t, http.StatusOK, `{"name":"node-alpha"}`)
+		// A closed server keeps its address, so a request to it fails at once.
+		closed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+		closedURL := localhostURL(closed.URL)
+		closed.Close()
+
+		cases := []struct {
+			name string
+			cfg  *config.Config
+		}{
+			{"no credential on the machine", &config.Config{AccountID: testAccountID, DefaultClusterID: testClusterID, ConductorURL: localhostURL(reachable.URL)}},
+			{"no cluster id from any source", &config.Config{AccountID: testAccountID, APIKey: testPAT, ConductorURL: localhostURL(reachable.URL)}},
+			{"the request fails", patConfig(closedURL)},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				useNodeNameConfig(t, tc.cfg)
+				var got string
+				stderr := captureStderr(t, func() {
+					got = destructiveSummary(seedFlags(t, map[string]string{"nid": testNodeID, "device-path": "/dev/sdb"}), wipeDeviceCmd, nil)
+				})
+				if want := "nid=node-1 device-path=/dev/sdb"; got != want {
+					t.Errorf("target = %q, want %q", got, want)
+				}
+				if stderr != "" {
+					t.Errorf("stderr = %q, want nothing", stderr)
+				}
+			})
+		}
+	})
+
+	t.Run("the node read answers an error status", func(t *testing.T) {
+		for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusUnauthorized, http.StatusInternalServerError} {
+			srv := stubNodeRead(t, status, `{"error":"Node not found"}`)
+			useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+			got := destructiveSummary(seedFlags(t, map[string]string{"nid": testNodeID}), wipeDeviceCmd, nil)
+			if want := "nid=node-1"; got != want {
+				t.Errorf("HTTP %d target = %q, want %q", status, got, want)
+			}
+		}
+	})
+}
+
+// AC 3 and AC 4 for the changed-flag rule: the decoration stays inside the
+// EXISTING deadline. The config load carries its own ten second client, so
+// a slow one would cost the operator ten seconds if the deadline did not
+// already cover the whole decoration.
+func TestDestructiveSummary_FlagOnlyDeadline(t *testing.T) {
+	// The margin allows for a loaded machine. The point is that the caller
+	// returns in about the deadline rather than in the ten seconds the slow
+	// step would otherwise take.
+	const margin = 4 * time.Second
+
+	release := make(chan struct{})
+	clearNodeNameEnv(t)
+	previousLoader := loadNodeNameConfig
+	loadNodeNameConfig = func() (*config.Config, error) {
+		<-release
+		return nil, fmt.Errorf("config not found")
+	}
+	t.Cleanup(func() { loadNodeNameConfig = previousLoader })
+	waitForWorker := waitForNodeNameWorker(t)
+
+	start := time.Now()
+	got := destructiveSummary(seedFlags(t, map[string]string{"nid": testNodeID, "device-path": "/dev/sdb"}), wipeDeviceCmd, nil)
+	elapsed := time.Since(start)
+
+	if want := "nid=node-1 device-path=/dev/sdb"; got != want {
+		t.Errorf("target = %q, want %q", got, want)
+	}
+	if elapsed < nodeNameDeadline {
+		t.Errorf("returned in %v, want at least the deadline %v", elapsed, nodeNameDeadline)
+	}
+	if elapsed > nodeNameDeadline+margin {
+		t.Errorf("returned in %v, want about the deadline %v", elapsed, nodeNameDeadline)
+	}
+
+	close(release)
+	waitForWorker()
+}
+
+// AC 4. The lookup carries a deadline the operator waits out, so a target
+// line that lists several changed flags must not multiply it. One prompt
+// asks once.
+func TestDestructiveSummary_OneLookupPerPrompt(t *testing.T) {
+	t.Run("a target line of several flags reads the node once", func(t *testing.T) {
+		srv, requests := countingNodeRead(t)
+		useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+		got := destructiveSummary(seedFlags(t, map[string]string{
+			"nid":                   testNodeID,
+			"device-path":           "/dev/sdb",
+			"acknowledge-data-loss": "true",
+		}), wipeDeviceCmd, nil)
+		if want := "nid=node-1 name=node-alpha device-path=/dev/sdb acknowledge-data-loss=true"; got != want {
+			t.Errorf("target = %q, want %q", got, want)
+		}
+		if count := requests.Load(); count != 1 {
+			t.Errorf("made %d node reads, want exactly 1", count)
+		}
+	})
+
+	// The guard counts the ATTEMPT, not the success. A command that
+	// declared the node id field twice would otherwise pay the deadline
+	// twice on the FAILURE path, which is the slow path the operator feels.
+	// No manifest command declares both spellings; the guard is what keeps
+	// that fact from being the only thing holding the invariant up.
+	t.Run("a second node id field does not buy a second lookup", func(t *testing.T) {
+		twoNodeFields := manifest.Command{
+			Command: "storage-groups/wipe-device",
+			Method:  "POST",
+			Input: &manifest.Input{Fields: []manifest.Field{
+				{Name: "nid", Type: "string", Required: true},
+				{Name: "NODE_NID", Type: "string"},
+			}},
+		}
+		var requests atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+		// Both fields render the SAME flag, so cobra holds one flag and
+		// both entries read it.
+		got := destructiveSummary(seedFlags(t, map[string]string{"nid": testNodeID}), twoNodeFields, nil)
+		if want := "nid=node-1 nid=node-1"; got != want {
+			t.Errorf("target = %q, want %q", got, want)
+		}
+		if count := requests.Load(); count != 1 {
+			t.Errorf("made %d node reads, want exactly 1", count)
+		}
+	})
+}
+
+// AC 7. A destructive command that declares a positional target field
+// prints the line it printed before this story, byte for byte. The
+// positional rule's ONE behaviour change is that a positional field the
+// CLI spells --nid now qualifies whatever its wire name is, and the served
+// manifest declares no such field.
+func TestDestructiveSummary_PositionalPromptsUnchanged(t *testing.T) {
+	srv, requests := countingNodeRead(t)
+	useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+	cases := []struct {
+		name string
+		cmd  manifest.Command
+		args []string
+		want string
+		// reads is the number of node reads this case must produce.
+		reads int64
+	}{
+		{name: "nodes delete still names the node", cmd: nodesDelete, args: []string{testNodeID}, want: "nid=node-1 name=node-alpha", reads: 1},
+		{name: "nodes drain still names the node", cmd: nodesDrain, args: []string{testNodeID}, want: "nid=node-1 name=node-alpha", reads: 1},
+		{
+			name: "a positional that is not a node id makes no lookup",
+			cmd: manifest.Command{
+				Command: "apps/{id}/delete",
+				Method:  "DELETE",
+				Input:   &manifest.Input{Fields: []manifest.Field{{Name: "id", Type: "string", Positional: true, Required: true}}},
+			},
+			args: []string{"d2eow"},
+			want: "id=d2eow",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := requests.Load()
+			if got := destructiveSummary(nil, tc.cmd, tc.args); got != tc.want {
+				t.Errorf("target = %q, want %q", got, tc.want)
+			}
+			if got := requests.Load() - before; got != tc.reads {
+				t.Errorf("made %d node reads, want %d", got, tc.reads)
+			}
+		})
+	}
 }

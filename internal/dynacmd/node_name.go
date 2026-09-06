@@ -31,11 +31,25 @@ import (
 //     types the node id, so the operator must be able to see a mistyped
 //     node id as well as a wrong machine.
 
-// nodeIDFieldName is the manifest field whose displayed value names a
-// node. Exactly two gated commands display it: `nodes delete` and
-// `nodes drain`. Every other destructive command displays some other
-// field first and keeps its current target line.
-const nodeIDFieldName = "nid"
+// nodeIDFlagName is the flag the CLI spells the node id as, everywhere on
+// the surface.
+const nodeIDFlagName = "nid"
+
+// isNodeIDField reports whether a manifest field's displayed value names a
+// node, and it is the ONE definition both prompt rules use, so the two
+// rules cannot disagree about the same command.
+//
+// The test is the FLAG spelling, not the wire field name. The manifest
+// carries the node id under two field names: `nid` on the nodes and
+// storage-groups commands, and `NODE_NID` on every
+// maintenance-scripts/<script>/run command, which flagSpellingOverrides
+// (builder.go) maps to the same `--nid` flag. Keying on the field name
+// alone left a maintenance script run naming no node, and a script run
+// cordons, drains or reboots a machine. No manifest command declares both
+// names, so the predicate is unambiguous.
+func isNodeIDField(fieldName string) bool {
+	return flagNameFor(fieldName) == nodeIDFlagName
+}
 
 // nodeNameDeadline bounds the whole decoration: the config load, the
 // credential check, the token resolution and the node read together.
@@ -68,15 +82,30 @@ var nodeNameWorkerDone func()
 // usable node name. Returns `<field>=<value>` unchanged for every other
 // field, and for every failure of the lookup.
 func decorateNodeTarget(c *cobra.Command, cmdDef manifest.Command, args []string, fieldName, value string) string {
-	target := fmt.Sprintf("%s=%s", fieldName, value)
-	if fieldName != nodeIDFieldName {
-		return target
+	return fmt.Sprintf("%s=%s", fieldName, value) + nodeNameSuffix(c, cmdDef, args, fieldName, value)
+}
+
+// nodeNameSuffix is the node name part of one target line entry, and it
+// is the ONE place the lookup and the label rule are reached from.
+//
+// The prompt has two rules that render an entry differently: the
+// positional rule prints the manifest FIELD name, the changed-flag rule
+// prints the FLAG name. The two rules share this suffix rather than the
+// rendering, so a node is named the same way whichever rule builds the
+// line.
+//
+// Returns ` name=<node-name>` when the field is the node id field and the
+// lookup resolves a usable name. Returns the empty string for every other
+// field, and for every failure, blank name or timeout.
+func nodeNameSuffix(c *cobra.Command, cmdDef manifest.Command, args []string, fieldName, value string) string {
+	if !isNodeIDField(fieldName) {
+		return ""
 	}
 	name := resolveNodeName(c, cmdDef, args, value)
 	if name == "" {
-		return target
+		return ""
 	}
-	return target + " name=" + name
+	return " name=" + name
 }
 
 // resolveNodeName runs the whole decoration under one deadline and returns
