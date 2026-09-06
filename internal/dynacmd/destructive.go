@@ -218,11 +218,20 @@ func destructiveVerb(cmdPath string) string {
 // to echo the secret back to the terminal. Ids, paths and hostnames stay
 // readable, because spotting a typo in them is the point of the line.
 //
-// A positional target goes through decorateNodeTarget (node_name.go),
-// which adds the node NAME when the displayed field is the node id field,
-// because `nid=<node-id>` alone never told the operator which machine the
-// node id was. Every other field, and every failure of that lookup, keeps
-// the `<field>=<value>` line this function has always printed.
+// BOTH rules name the node, because `nid=<node-id>` alone never told the
+// operator which machine the node id was. Each entry that displays the
+// node id field gains ` name=<node-name>` from nodeNameSuffix
+// (node_name.go). The changed-flag rule needs it most: `storage-groups
+// wipe-device` and every `maintenance-scripts <script> run` declare no
+// positional field and take the node id as a flag, so a disk wipe named
+// no machine at all. Every other field, and every failure of that lookup,
+// keeps the `<field>=<value>` entry this function has always printed.
+//
+// One prompt performs at most ONE name lookup. The positional rule
+// returns on the first field it resolves, and the changed-flag rule asks
+// once and never asks again, whether that one ask succeeded or not, so a
+// target line that lists several flags never multiplies the lookup's
+// deadline.
 func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string) string {
 	if cmdDef.Input == nil {
 		return destructiveVerb(cmdDef.Command) + noTargetGiven(cmdDef)
@@ -249,6 +258,14 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 		idx++
 	}
 	var parts []string
+	// lookedUp keeps the prompt to one name lookup however many flags the
+	// target line lists. It counts the ATTEMPT, not the success, so a
+	// lookup that fails or times out is not retried on a later flag and
+	// the operator waits the one deadline at most. A flag name is unique
+	// within a command, so only one entry can be the node id today; the
+	// guard makes that invariant local and testable rather than
+	// incidental.
+	lookedUp := false
 	if c != nil {
 		for _, field := range cmdDef.Input.Fields {
 			if field.Positional {
@@ -260,10 +277,17 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 				continue
 			}
 			value := f.Value.String()
+			suffix := ""
+			// A redacted value is not a node id and must not be looked up:
+			// `nid` matches no redaction pattern today, and this guard keeps
+			// the secret off the wire if that pattern ever widens.
 			if redactedFlagName(flagName) {
 				value = "<redacted>"
+			} else if !lookedUp && isNodeIDField(field.Name) {
+				lookedUp = true
+				suffix = nodeNameSuffix(c, cmdDef, args, field.Name, value)
 			}
-			parts = append(parts, fmt.Sprintf("%s=%s", flagName, value))
+			parts = append(parts, fmt.Sprintf("%s=%s", flagName, value)+suffix)
 		}
 	}
 	if len(parts) == 0 {

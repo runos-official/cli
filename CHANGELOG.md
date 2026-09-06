@@ -95,6 +95,20 @@ reason, the line falls back to the node id alone: no warning, no error, and no d
 whole lookup gives up after two seconds. A node with no assigned name prints the node id alone too,
 which is what the Console does. The `--yes` flag is unchanged and makes no lookup at all.
 
+**A destructive command that takes the node as a FLAG now names the node too.** The line above
+covered a command that takes the node id as a positional argument. A command that declares no
+positional target instead lists its changed flags, and that list never carried the node name. So
+`runos storage-groups wipe-device --nid <node-id> --device-path <path>`, which destroys every byte
+on one disk of one machine, named no machine at all. It does now, and so does `storage-groups
+evict-node` and every `maintenance-scripts <script> run`, which cordons, drains or reboots the box.
+The node name lands on the node id entry and nowhere else: `nid=<node-id> name=<node-name>
+device-path=<path>`. A maintenance script carries the node id under a different body key, and the
+CLI spells it `--nid` like everywhere else, so the prompt names the node there too. Everything the
+line already did is unchanged: a secret-shaped flag value still prints as `<redacted>`, a prompt
+that shows no node id keeps its exact text, and a prompt built from a positional target is
+untouched. The fallbacks are the same as above and there is still only ONE lookup per prompt,
+however many flags the line lists, so a target line never multiplies the two second wait.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
