@@ -24,6 +24,20 @@ name: Release the RunOS CLI
 description: Run this repo's full gate chain, tag and push, then watch the GitHub Actions release and verify what it published.
 kind: github_release
 
+# What this pipeline publishes, so foreman can advertise it after a successful
+# deploy (FCR #230, foreman v0.148.0). The engine does the advertising itself:
+# there is deliberately no advertise step and no call back into foreman from a
+# shell step here, because a second implementation of a foreman decision is the
+# one that drifts.
+#
+# The environment is a PLACEHOLDER, never a literal. The same pipeline serves
+# more than one environment, so a constant would advertise the wrong one. It
+# reads the `env` key of the deployment target, the same target-scoped spelling
+# the steps below use for `branch` and `deployed_branch`.
+advertises:
+  component: cli
+  env: "${{ target.env }}"
+
 steps:
   - name: Gate chain
     description: "scripts/release.sh --check: preflight, sensitivity scan, leak gate, scannability gate and the build/vet/test suite. Every gate, no side effects, and it cannot be skipped."
