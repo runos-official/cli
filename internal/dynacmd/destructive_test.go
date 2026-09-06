@@ -1,7 +1,11 @@
 package dynacmd
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/runos-official/cli/internal/manifest"
@@ -413,4 +417,151 @@ func TestVmPowerVerbsAreGated(t *testing.T) {
 			}
 		})
 	}
+}
+
+// countingNodeRead answers every node read with a name and counts the
+// requests, so a test can prove that a command made NO lookup. The counter
+// is atomic because an abandoned worker can still be in flight.
+func countingNodeRead(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `{"name":"node-alpha"}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &requests
+}
+
+// destructiveSummary sits on the prompt path for EVERY destructive
+// command, so the commands that display some other field first must print
+// exactly the line they printed before, and must make no lookup at all.
+//
+// Measured against the live manifest, three gated commands stand for that
+// group: storage-groups remove-node displays the storage group id first,
+// storage-groups evict-node carries no positional field, and clusters
+// networks leave displays the cluster id first.
+func TestDestructiveSummary_NonNodeTargetsUnchanged(t *testing.T) {
+	removeNode := manifest.Command{
+		Command: "storage-groups/{gid}/remove-node",
+		Method:  "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "gid", Type: "string", Positional: true, Required: true},
+			{Name: "nid", Type: "string", Required: true},
+		}},
+	}
+	evictNode := manifest.Command{
+		Command: "storage-groups/evict-node",
+		Method:  "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "gid", Type: "string", Required: true},
+			{Name: "nid", Type: "string", Required: true},
+		}},
+	}
+	networksLeave := manifest.Command{
+		Command: "clusters/{cid}/networks/{networkId}/leave",
+		Method:  "POST",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "cid", Type: "string", Positional: true, Required: true},
+			{Name: "networkId", Type: "string", Positional: true, Required: true},
+		}},
+	}
+	setData := manifest.Command{
+		Command: "services/valkey/{id}/set-data",
+		Method:  "PATCH",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "key", Type: "string", Required: true},
+			{Name: "value", Type: "string", Required: true},
+		}},
+	}
+
+	srv, requests := countingNodeRead(t)
+	useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+	cases := []struct {
+		name  string
+		cmd   manifest.Command
+		args  []string
+		flags map[string]string
+		want  string
+	}{
+		{name: "remove-node shows the storage group id", cmd: removeNode, args: []string{"sg-1"}, flags: map[string]string{"nid": "node-1"}, want: "gid=sg-1"},
+		{name: "evict-node lists its changed flags", cmd: evictNode, flags: map[string]string{"gid": "sg-1", "nid": "node-1"}, want: "gid=sg-1 nid=node-1"},
+		{name: "networks leave shows the cluster id", cmd: networksLeave, args: []string{"cluster1", "net-1"}, want: "cid=cluster1"},
+		{name: "a secret shaped flag still prints the redacted marker", cmd: setData, flags: map[string]string{"key": "db-pass", "value": "hunter2"}, want: "key=db-pass value=<redacted>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c *cobra.Command
+			if tc.flags != nil {
+				c = &cobra.Command{Use: "x"}
+				for name, value := range tc.flags {
+					c.Flags().String(name, "", "")
+					if err := c.Flags().Set(name, value); err != nil {
+						t.Fatalf("seed the flag %s: %v", name, err)
+					}
+				}
+			}
+			if got := destructiveSummary(c, tc.cmd, tc.args); got != tc.want {
+				t.Errorf("target = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if count := requests.Load(); count != 0 {
+		t.Errorf("the non node commands made %d node reads, want 0", count)
+	}
+}
+
+// The prompt and the non interactive refusal carry the SAME target text,
+// because confirmDestructive builds that text once. The refusal path
+// therefore names the node too.
+//
+// The skip flag returns before that text is built, so the skip path makes
+// no lookup at all. Test binaries run without a terminal on stdin, so the
+// refusal branch is the branch this test reaches.
+func TestConfirmDestructive_NodeNameInTheRefusal(t *testing.T) {
+	nodesDeleteWithYes := func() *cobra.Command {
+		c := &cobra.Command{Use: "delete"}
+		c.Flags().BoolP("yes", "y", false, "skip the destructive-action confirmation prompt")
+		return c
+	}
+
+	t.Run("the refusal carries the node id and the node name", func(t *testing.T) {
+		srv, requests := countingNodeRead(t)
+		useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+		err := confirmDestructive(nodesDeleteWithYes(), nodesDelete, []string{testNodeID})
+		if err == nil {
+			t.Fatal("a run with no terminal and no --yes must refuse")
+		}
+		if !strings.Contains(err.Error(), "--yes") {
+			t.Errorf("refusal %q should name the --yes flag", err)
+		}
+		target := destructiveSummary(nil, nodesDelete, []string{testNodeID})
+		if target != "nid=node-1 name=node-alpha" {
+			t.Fatalf("the prompt target = %q, want the node id and the node name", target)
+		}
+		if !strings.Contains(err.Error(), "(target: "+target+")") {
+			t.Errorf("refusal %q should carry the prompt target %q", err, target)
+		}
+		if count := requests.Load(); count != 2 {
+			t.Errorf("made %d node reads, want 2 (one for the refusal, one for the comparison)", count)
+		}
+	})
+
+	t.Run("the skip flag makes no lookup", func(t *testing.T) {
+		srv, requests := countingNodeRead(t)
+		useNodeNameConfig(t, patConfig(localhostURL(srv.URL)))
+
+		c := nodesDeleteWithYes()
+		if err := c.ParseFlags([]string{"--yes"}); err != nil {
+			t.Fatalf("parse the flags: %v", err)
+		}
+		if err := confirmDestructive(c, nodesDelete, []string{testNodeID}); err != nil {
+			t.Fatalf("--yes must proceed, got %v", err)
+		}
+		if count := requests.Load(); count != 0 {
+			t.Errorf("the skip path made %d node reads, want 0", count)
+		}
+	})
 }
