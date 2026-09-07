@@ -787,6 +787,40 @@ func formatArray(items []any, indent int) string {
 	return strings.Join(strs, ", ")
 }
 
+// summarisableBy reports whether every key of obj is one of `keys`,
+// i.e. whether a pattern branch whose summary consumes exactly `keys`
+// can describe obj WITHOUT DISCARDING ANYTHING.
+//
+// Objective 93 / story 217. formatNestedObject's pattern branches used
+// to fire on the mere PRESENCE of their trigger key and then build a
+// summary out of that key alone, so every other key in the object was
+// silently dropped. The `state` branch is the one that mattered: every
+// RunOS status sub-object carries `state`, so a status enriched with
+// the failing backing service's name, type or reason had exactly that
+// attribution eaten in the one place an operator scanning a list would
+// look for it.
+//
+// Containment fixes the gate rather than the summary. An object the
+// branch already described in full still takes the branch and renders
+// byte-identically; anything richer falls through to the default
+// alphabetised `k=v` branch below, which is lossless. One rule, used by
+// all three branches, so there is no second copy to drift.
+func summarisableBy(obj map[string]any, keys ...string) bool {
+	for k := range obj {
+		known := false
+		for _, allowed := range keys {
+			if k == allowed {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return false
+		}
+	}
+	return true
+}
+
 // formatNestedObject formats a nested object intelligently
 func formatNestedObject(obj map[string]any, indent int) string {
 	if len(obj) == 0 {
@@ -795,8 +829,8 @@ func formatNestedObject(obj map[string]any, indent int) string {
 
 	// Check for common patterns and format them nicely
 
-	// Pattern: network access entry (has link, name, type)
-	if link, hasLink := obj["link"]; hasLink {
+	// Pattern: network access entry (has link, name)
+	if link, hasLink := obj["link"]; hasLink && summarisableBy(obj, "link", "name") {
 		name, hasName := obj["name"]
 		if hasName {
 			return fmt.Sprintf("%s: %s", formatValueWithIndent(name, indent), formatValueWithIndent(link, indent))
@@ -805,7 +839,7 @@ func formatNestedObject(obj map[string]any, indent int) string {
 	}
 
 	// Pattern: status object (has state, message)
-	if state, hasState := obj["state"]; hasState {
+	if state, hasState := obj["state"]; hasState && summarisableBy(obj, "state", "message") {
 		msg, hasMsg := obj["message"]
 		if hasMsg && msg != "" {
 			return fmt.Sprintf("%s (%s)", formatValueWithIndent(state, indent), formatValueWithIndent(msg, indent))
@@ -814,7 +848,7 @@ func formatNestedObject(obj map[string]any, indent int) string {
 	}
 
 	// Pattern: replicas info (has desired, ready, available)
-	if desired, hasDesired := obj["desired"]; hasDesired {
+	if desired, hasDesired := obj["desired"]; hasDesired && summarisableBy(obj, "desired", "ready", "available") {
 		ready, hasReady := obj["ready"]
 		available, hasAvailable := obj["available"]
 		if hasReady && hasAvailable {

@@ -1,0 +1,22 @@
+{
+  "coreReady": true,
+  "dependencies": [
+    {
+      "message": "no usable drives",
+      "name": "images-object-store",
+      "osid": "ms001",
+      "state": "unhealthy",
+      "type": "minio"
+    },
+    {
+      "message": "all replicas ready",
+      "name": "registry-metadata-db",
+      "osid": "pg001",
+      "state": "healthy",
+      "type": "postgresql"
+    }
+  ],
+  "faultDomain": "backend",
+  "message": "a recorded backing service cannot serve",
+  "state": "unhealthy"
+}
