@@ -70,13 +70,18 @@ File: `src/util/cliManifest/advancedConfigFields.ts`.
 Commands affected: every `set-advanced-configs`, `set-router-config`,
 `set-lmcache-engine-config` and `set-lmcache-server-config` entry.
 
-The mapper declares `type: 'string'` for every advanced-config field, with no branch on the
-catalog's own type. The catalog already carries the answer and the manifest throws it away.
-Measured on manifest 45.5.0 against `/service-info/<type>/advanced-config-schema`:
+The mapper declares `type: 'string'` for every advanced-config field, with no branch on what
+the catalog says the value is. The catalog already carries the answer and the manifest throws
+it away.
 
-| catalog | fields | `inputType: number` | `toggle` | `valueShape: json` | declared `string` in the manifest |
+MEASURED on conductor `9f626657` (the post-change build this story bounds), from the
+`advancedConfigSchemas` block of `testdata/vllm/manifest-post-45.6.0.json`. The commit is the
+label, not the manifest version: `45.5.0` names two different manifests, which is why
+`testdata/vllm/PROVENANCE.md` keys off the commit.
+
+| catalog | fields | `inputType: number` | `inputType: toggle` | `valueShape: json` | declared `string` in the manifest |
 |---|---|---|---|---|---|
-| `vllm-router` | 25 | 19 | 2 | 0 | 25 |
+| `vllm-router` | 43 | 36 | 2 | 1 | 43 |
 | `lmcache-server` | 34 | 17 | 5 | 2 | 34 |
 
 Three costs, in the order they bite an operator:
@@ -85,24 +90,46 @@ Three costs, in the order they bite an operator:
    a string flag that takes anything. Declared `integer` it would be refused at the flag, with
    no round trip. (What conductor then does with the bad value is conductor's business; the
    point is that the CLI cannot refuse it even though the catalog knows the type.)
-2. `--disable-retries` needs an explicit value instead of being a switch.
+2. `--disable-retries` needs an explicit value instead of being a switch. Seven keys are
+   affected: `disable_retries` and `disable_circuit_breaker` on `vllm-router`, and
+   `l1_use_lazy`, `disable_observability`, `disable_metrics`, `disable_logging` and
+   `enable_tracing` on `lmcache-server`.
 3. A json-shaped field gets ONE opaque string flag instead of the repeatable
-   `--flag key=value` map form the CLI has had since goal 19 A9. Two fields ship in this
-   state today, both on `lmcache-server`: `l2_adapters` and `runtime_plugin_config`. The
-   vLLM ENGINE's `extra-env` on `set-advanced-configs` is the same case, and objective 92's
-   story 205 adds the router's `extra_env` to it.
+   `--flag key=value` map form the CLI has had since goal 19 A9. THREE fields are in this
+   state on the post-change build: `extra_env` on `vllm-router`, and `l2_adapters` and
+   `runtime_plugin_config` on `lmcache-server`. The vLLM ENGINE's kebab-case `extra-env` on
+   `set-advanced-configs` is the same case and shipped that way before objective 92.
 
 THE CHANGE. Make the mapper type-aware, deriving the manifest type from what the catalog
 already declares:
 
-> `valueShape: 'json'`  ->  `type: 'object'`
-> `type: 'integer'`     ->  `type: 'integer'`
-> everything else       ->  `type: 'string'` (unchanged)
+> `valueShape: 'json'`    ->  `type: 'object'`
+> `inputType: 'number'`   ->  `type: 'integer'`
+> `inputType: 'toggle'`   ->  `type: 'boolean'`
+> everything else         ->  `type: 'string'` (unchanged)
 
-`type: 'object'` alone is what the CLI needs for the map flag. For a map whose VALUES are
-not strings the CLI reads `valueType` first (`internal/manifest/types.go`), so declare
-`valueType` only where the values genuinely are not strings — `extra_env`'s are strings, so
-it needs `object` and nothing more.
+Those are the property names the PUBLISHED schema carries, and they are the ones checkable
+against the snapshot beside this file: the full key union of every catalog field there is
+`category, delivery, inputType, isAdvanced, key, longDescription, max, min, openOptions,
+options, requiresRestart, shortDescription, step, suggestedDefault, title, unsetBy,
+valueShape`. There is no `type` property on a published field. The Conductor implementer
+states that the catalog SOURCE carries its own `type: 'integer'` and `type: 'json'` at the
+mapper's input; if so those are the same two signals under different names, and either
+spelling produces the mapping above. Branch on whichever the mapper actually receives.
+
+WHAT EACH JSON-SHAPED KEY NEEDS BESIDE `object`. The CLI reads `valueType` to decide whether
+`key=value` can express the map (`internal/dynacmd/object_flag.go`): `valueType: 'string'`,
+or no `valueType` at all, accepts `key=value`; any other `valueType` refuses it and names the
+shape with a copyable JSON example.
+
+- `extra_env` (both surfaces): values are environment-variable values, so they ARE strings.
+  `type: 'object'` alone is enough; no `valueType` is needed.
+- `l2_adapters` and `runtime_plugin_config`: free-form JSON whose values are NOT plain
+  strings, so each needs a non-string `valueType` (`object` unless conductor knows better) so
+  the CLI refuses `key=value` and names the JSON form instead of inventing a map of strings.
+  This story did not determine their exact value shape: the catalog publishes only
+  `valueShape: json`, and neither key was exercised against a live service. Conductor should
+  state the shape rather than inherit this guess.
 
 SCOPE AND COST, agreed with the Conductor implementer on objective 92. This is a manifest
 contract change on existing commands, so it is a MAJOR manifest bump and it needs its own
@@ -118,6 +145,14 @@ type switch already has `integer`, `object`, `array` and `boolean` arms beside `
 (`internal/dynacmd/builder.go`), and the object flag already reads `ValueType` to decide whether
 to refuse `key=value` (`internal/dynacmd/object_flag.go`). Each of those arms starts working the
 moment the manifest declares the type.
+
+THIS RECORD IS CHECKED, not just written. `TestNotesSection5MatchesTheSnapshot` and
+`TestNotesSection5PrescribesPropertiesTheCatalogCarries` in
+`internal/dynacmd/vllm_fields_test.go` derive the census, the toggle key names and the
+json-shaped key names from the checked-in snapshot and compare them here, and they parse the
+mapping above and refuse a left-hand property that no field in that snapshot carries. So
+regenerating the artefact against a later build fails a test rather than silently dating this
+record, and a mapping arm that would match nothing cannot be written here unnoticed.
 
 ## 6. Eight vLLM fields are write-only, so IaC cannot round-trip them (objective 92 / story 212)
 

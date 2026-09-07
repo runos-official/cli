@@ -2,6 +2,7 @@ package dynacmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -520,4 +521,171 @@ func writeOnlyVLLMFields(byCommand map[string]manifest.Command) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// --- The change-due record ------------------------------------------------
+
+// notesSection5 returns the body of NOTES-manifest.md section 5, the record
+// criterion 7 requires for a gap this story does not fix in the CLI.
+func notesSection5(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../NOTES-manifest.md")
+	if err != nil {
+		t.Fatalf("read NOTES-manifest.md: %v", err)
+	}
+	notes := string(raw)
+	start := strings.Index(notes, "## 5. ")
+	if start < 0 {
+		t.Fatal("NOTES-manifest.md has no section 5; the class-B gap would be unrecorded")
+	}
+	end := strings.Index(notes[start:], "\n## 6. ")
+	if end < 0 {
+		return notes[start:]
+	}
+	return notes[start : start+end]
+}
+
+// TestNotesSection5MatchesTheSnapshot pins the change-due record to the
+// artefact it claims to describe.
+//
+// Review cycle 2 found section 5 measured against the PRE-change build while
+// the story bounds the POST one, so its census understated the gap and put a
+// key that already exists in the future tense. Nothing could catch that,
+// because the only check on the record was that it contained a key's name
+// somewhere. A record a conductor implementer cannot trust is worse than no
+// record, so the numbers and the key lists are now derived from the snapshot
+// and compared, and regenerating the artefact against a later build fails here
+// rather than dating the note silently.
+func TestNotesSection5MatchesTheSnapshot(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	if !strings.Contains(section, snap.ConductorCommit) {
+		t.Errorf("section 5 does not name conductor %s, the build its census is measured on; "+
+			"the manifest version is not an identifier (45.5.0 names two manifests)",
+			snap.ConductorCommit)
+	}
+
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		var number, toggle, jsonShaped int
+		var toggleKeys, jsonKeys []string
+		for _, f := range schema.Fields {
+			switch f.InputType {
+			case "number":
+				number++
+			case "toggle":
+				toggle++
+				toggleKeys = append(toggleKeys, f.Key)
+			}
+			if f.ValueShape == "json" {
+				jsonShaped++
+				jsonKeys = append(jsonKeys, f.Key)
+			}
+		}
+
+		// The row is `| `<catalog>` | fields | number | toggle | json | fields |`.
+		wantRow := fmt.Sprintf("| `%s` | %d | %d | %d | %d | %d |",
+			catalogType, len(schema.Fields), number, toggle, jsonShaped, len(schema.Fields))
+		if !strings.Contains(section, wantRow) {
+			t.Errorf("section 5's census has no row matching the snapshot for %q.\n"+
+				"  want row: %s\n"+
+				"  re-measure section 5 against the checked-in post snapshot",
+				catalogType, wantRow)
+		}
+
+		// Cost 2 names the toggle keys and cost 3 names the json-shaped ones.
+		// A key the record does not name is a key the conductor implementer
+		// does not know to fix.
+		for _, key := range toggleKeys {
+			if !strings.Contains(section, key) {
+				t.Errorf("%s: toggle key %q is not named in section 5, so the switch cost the "+
+					"section itself lists is under-recorded", catalogType, key)
+			}
+		}
+		for _, key := range jsonKeys {
+			if !strings.Contains(section, key) {
+				t.Errorf("%s: json-shaped key %q is not named in section 5, so the map-flag cost "+
+					"is under-recorded", catalogType, key)
+			}
+		}
+	}
+}
+
+// prescribedMapping returns the "> left -> right" lines of section 5, which
+// are the mapping a conductor implementer applies. Checking the whole section
+// is not enough: a property name that appears in the census table would mask a
+// prescription that branches on a property no field carries.
+func prescribedMapping(t *testing.T, section string) []string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "> ") && strings.Contains(trimmed, "->") {
+			lines = append(lines, strings.TrimPrefix(trimmed, "> "))
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatal("section 5 prescribes no mapping; there is nothing for conductor to apply")
+	}
+	return lines
+}
+
+// TestNotesSection5PrescribesPropertiesTheCatalogCarries guards the thing that
+// makes the record unusable rather than merely stale: a prescribed mapping
+// that branches on a property no published catalog field has. Review cycle 2
+// found `type: 'integer'` prescribed where the catalog publishes
+// `inputType: 'number'`, so the arm covering most of the gap matched nothing.
+//
+// The assertion is on the LEFT side of each mapping arm, checked against the
+// key union of the snapshot, because that is the side a conductor implementer
+// has to find in their own code.
+func TestNotesSection5PrescribesPropertiesTheCatalogCarries(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	carried := map[string]bool{}
+	for _, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			if f.InputType != "" {
+				carried["inputType"] = true
+			}
+			if f.ValueShape != "" {
+				carried["valueShape"] = true
+			}
+			if f.Delivery != "" {
+				carried["delivery"] = true
+			}
+			carried["key"] = true
+		}
+	}
+	if !carried["inputType"] || !carried["valueShape"] {
+		t.Fatal("the snapshot carries neither inputType nor valueShape; this test's premise is wrong")
+	}
+
+	produced := map[string]bool{}
+	for _, arm := range prescribedMapping(t, section) {
+		parts := strings.SplitN(arm, "->", 2)
+		left, right := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		produced[right] = true
+
+		// "everything else" is the default arm and names no property.
+		if !strings.Contains(left, ":") {
+			continue
+		}
+		property := strings.TrimSpace(strings.SplitN(strings.Trim(left, "`"), ":", 2)[0])
+		if !carried[property] {
+			t.Errorf("section 5 prescribes branching on %q, which NO field in the snapshot "+
+				"carries. A conductor implementer applying this arm matches nothing. The "+
+				"published properties are inputType, valueShape and delivery.", property)
+		}
+	}
+
+	// Each arm the mapping must produce. `boolean` is here because section 5
+	// lists the switch cost, and a mapping without a boolean arm does not fix it.
+	for _, want := range []string{"`type: 'object'`", "`type: 'integer'`", "`type: 'boolean'`"} {
+		if !produced[want] && !strings.Contains(strings.Join(prescribedMapping(t, section), "\n"), want) {
+			t.Errorf("section 5's prescribed mapping has no arm producing %s, so a cost it "+
+				"lists would survive the change it prescribes", want)
+		}
+	}
 }
