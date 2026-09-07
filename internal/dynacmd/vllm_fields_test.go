@@ -1123,3 +1123,132 @@ func TestRetypingWouldRemoveTheEmptyStringUnsetPath(t *testing.T) {
 	t.Logf("%d of %d catalog fields would lose the empty-string unset path if retyped",
 		wouldLose, total)
 }
+
+// numberArmQualifierMatches interprets the LIMITED vocabulary section 5's
+// number arms are allowed to use, so the prose can be executed against the
+// snapshot instead of merely read.
+//
+// Only three qualifiers are recognised. That is deliberate: an arm written in
+// vocabulary this function does not know fails the test below rather than
+// passing unchecked, which is the point — a qualifier nobody can evaluate is a
+// qualifier an implementer has to guess at.
+func numberArmQualifierMatches(qualifier string, f catalogField) (matched, understood bool) {
+	hasStep := f.Step != nil
+	integralStep := hasStep && *f.Step == math.Trunc(*f.Step)
+	q := strings.ToLower(qualifier)
+
+	switch {
+	case strings.Contains(q, "fractional"):
+		return fractionalCatalogField(f), true
+	case strings.Contains(q, "no `step`"):
+		// "no `step` or an integral one".
+		return !fractionalCatalogField(f) && (!hasStep || integralStep), true
+	case strings.Contains(q, "integral"):
+		return integralStep, true
+	}
+	return false, false
+}
+
+// TestNotesSection5NumberArmsFireOnRealFields is the check the earlier
+// section-5 guards could not make, and it closes the last surviving corner of
+// the same blind spot.
+//
+// Cycle 2 checked the PROPERTY NAME on the left of each arm. Cycle 3 checked
+// what the arm PRODUCED. Neither looked at the QUALIFIER between them, so an
+// arm reading "`inputType: 'number'`, integral `step`" passed — while NO field
+// in the snapshot carries an integral step. `step` marks the seven fractional
+// exceptions; the other 46 number fields have no step at all. The prose sent
+// all 46 down the default `string` arm, making the change a near no-op for the
+// number class, while the Go twin (which treats a nil step as not fractional)
+// routed them to `integer` and kept every count and test passing.
+//
+// So this test runs the PROSE against the snapshot: every number field must be
+// matched by the arm that produces the type the twin gives it, and by that arm
+// only. An arm that fires on nothing cannot ship again.
+func TestNotesSection5NumberArmsFireOnRealFields(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	// The number arms of the prose mapping, as {qualifier -> produced type}.
+	type arm struct{ qualifier, produced string }
+	var numberArms []arm
+	for _, line := range prescribedMapping(t, section) {
+		parts := strings.SplitN(line, "->", 2)
+		left, right := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if !strings.Contains(left, "inputType") || !strings.Contains(left, "'number'") {
+			continue
+		}
+		qualifier := left
+		if i := strings.Index(left, "`,"); i >= 0 {
+			qualifier = left[i+2:]
+		}
+		produced := strings.Trim(strings.TrimSpace(strings.TrimPrefix(right, "`type: ")), "`' ")
+		produced = strings.TrimSuffix(produced, "(unchanged)")
+		numberArms = append(numberArms, arm{strings.TrimSpace(qualifier), strings.Trim(strings.TrimSpace(produced), "`' ")})
+	}
+	if len(numberArms) < 2 {
+		t.Fatalf("section 5 has %d `inputType: 'number'` arm(s); the class needs one for the "+
+			"integral case and one for the fractional carve-out", len(numberArms))
+	}
+
+	fired := map[string]int{}
+	checked := 0
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			if f.InputType != "number" {
+				continue
+			}
+			checked++
+			want := prescribedManifestType(f) // the executable twin
+			var matches []string
+			for _, a := range numberArms {
+				matched, understood := numberArmQualifierMatches(a.qualifier, f)
+				if !understood {
+					t.Fatalf("section 5's number arm %q uses a qualifier this test cannot "+
+						"evaluate. Either word it in terms of `step` presence, integrality or "+
+						"fractionality, or teach numberArmQualifierMatches the new vocabulary "+
+						"— an unevaluable qualifier is one an implementer has to guess at.",
+						a.qualifier)
+				}
+				if matched {
+					matches = append(matches, a.produced)
+					fired[a.qualifier]++
+				}
+			}
+
+			switch {
+			case len(matches) == 0:
+				t.Errorf("%s/%s (step=%v) is matched by NO number arm in section 5, so an "+
+					"implementer applying the prose leaves it on the default `string` arm. "+
+					"The twin types it %q.\n"+
+					"  This is the failure mode where the prose and the executable rule "+
+					"disagree: `step` marks the fractional EXCEPTION, so the integer arm must "+
+					"fire on the absence of a step.",
+					catalogType, f.Key, f.Step, want)
+			case len(matches) > 1:
+				t.Errorf("%s/%s is matched by %d number arms (%v); the arms must partition the "+
+					"class or an implementer cannot tell which applies",
+					catalogType, f.Key, len(matches), matches)
+			case matches[0] != want:
+				t.Errorf("%s/%s: the prose arm gives it %q but prescribedManifestType gives it "+
+					"%q. Section 5 says to change both together; they have drifted.",
+					catalogType, f.Key, matches[0], want)
+			}
+		}
+	}
+
+	// An arm that matches nothing is the defect this test exists for, so name
+	// it directly rather than leaving it to the per-field errors.
+	for _, a := range numberArms {
+		if fired[a.qualifier] == 0 {
+			t.Errorf("section 5's number arm %q -> %q matches NO field in the snapshot. "+
+				"Measured: 7 number fields carry a fractional `step`, 46 carry none, and "+
+				"zero carry an integral one.", a.qualifier, a.produced)
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no number field in the snapshot; this test's premise is wrong")
+	}
+	t.Logf("ran section 5's prose number arms against %d `inputType: number` field(s)", checked)
+}

@@ -172,13 +172,25 @@ It is not a licence to apply it alone; read the two blockers above first:
 
 > `valueShape: 'json'`                       ->  `type: 'object'`
 > `inputType: 'toggle'`                      ->  `type: 'boolean'`
-> `inputType: 'number'`, integral `step`     ->  `type: 'integer'`
-> `inputType: 'number'`, fractional `step`   ->  `type: 'string'` (unchanged)
-> everything else                            ->  `type: 'string'` (unchanged)
+> `inputType: 'number'`, no `step` or an integral one   ->  `type: 'integer'`
+> `inputType: 'number'`, fractional `step`              ->  `type: 'string'` (unchanged)
+> everything else                                       ->  `type: 'string'` (unchanged)
+
+READ THE NUMBER ARMS THE WAY THE CATALOG IS ACTUALLY SHAPED. `step` is a MARKER OF THE
+EXCEPTION, not a property every number field carries. Measured over all 53 `inputType:
+'number'` fields in the snapshot: 7 carry a `step`, every one of them fractional (`0.01`);
+the other 46 carry NO `step` property at all (`max_concurrent_requests`,
+`request_timeout_secs`, every `*_probe_*` key, `cpu_request_mc`, `prometheus_port`, ...); and
+ZERO carry an integral `step`. So the integer arm has to fire on the ABSENCE of a step, which
+is why it is worded that way. An arm keyed only on an integral `step` — as an earlier draft of
+this section was — matches nothing, leaves all 46 on the default `string` arm, and makes the
+change a near no-op for the number class. `min`, `max` and `suggestedDefault` are read the
+same way: a fractional value in any of them marks the exception too, though on this build none
+of the 46 has one.
 
 THE NUMBER ARM IS CONDITIONAL, AND MUST STAY THAT WAY. `inputType: 'number'` is a UI
-numeric-input hint, and it covers FRACTIONAL values; the catalog says which through `step`.
-The CLI's `integer` type registers a `ParseInt` flag and there is no float manifest type on
+numeric-input hint that covers FRACTIONAL values, and the 7 above are where the catalog says
+so. The CLI's `integer` type registers a `ParseInt` flag and there is no float manifest type on
 either side, so retyping a fractional field `integer` REGRESSES it from reachable to
 unreachable: measured against the checked-in snapshot, `cache_threshold` declared `integer`
 gives a pflag `int` that refuses `--cache-threshold 0.3` with
@@ -247,7 +259,7 @@ claim that "the CLI needs no change", and it was too broad: the flag needs none,
 CLI sends changes shape (blocker 1), and a replacement for the empty-string unset (blocker 2)
 would need CLI work that does not exist yet.
 
-THIS RECORD IS CHECKED, not just written. Seven tests in
+THIS RECORD IS CHECKED, not just written. Eight tests in
 `internal/dynacmd/vllm_fields_test.go` hold it to the checked-in snapshot and to the CLI's
 real behaviour:
 
@@ -264,6 +276,11 @@ real behaviour:
   fields unreachable in the first draft of this section.
 - `TestNotesSection5NamesEveryFractionalKey` keeps the seven names above in step with the
   snapshot.
+- `TestNotesSection5NumberArmsFireOnRealFields` runs the PROSE number arms against every
+  `inputType: 'number'` field and requires each to be matched by exactly one arm, producing
+  the type the Go twin gives it. It is the qualifier check: cycle 2 checked the property name
+  on the left of an arm and cycle 3 checked what the arm produced, so an arm keyed on an
+  integral `step` — which no field has — passed both while matching nothing.
 - `TestRetypingWouldSendANonStringBody` sends EVERY catalog field's own `suggestedDefault`
   through the real executor twice — as declared today, and under the type the mapping would
   give it — and reads the request BODY, not the flag. It asserts the body carries a JSON
