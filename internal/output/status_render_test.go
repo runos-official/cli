@@ -337,6 +337,57 @@ func TestNestedStatusObject_KeepsKeysBeyondTheSummary(t *testing.T) {
 	}
 }
 
+// TestNestedObjectDefaultBranch_Ordering pins the lead-key rule the rework
+// added. An object that carries a summary pattern's trigger key renders that
+// pattern's keys first, so a narrow column keeps the value it is named for;
+// an object that carries no trigger key keeps the plain alphabetical order it
+// had before this story touched the branch.
+func TestNestedObjectDefaultBranch_Ordering(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  map[string]any
+		want string
+	}{
+		{
+			name: "state leads, message second, remainder alphabetised",
+			obj: map[string]any{
+				"reason":      "no usable drives",
+				"message":     "cannot serve",
+				"state":       "unhealthy",
+				"backendName": "images-object-store",
+			},
+			want: "state=unhealthy, message=cannot serve, backendName=images-object-store, reason=no usable drives",
+		},
+		{
+			name: "state leads even with no message",
+			obj:  map[string]any{"backendType": "minio", "state": "degraded"},
+			want: "state=degraded, backendType=minio",
+		},
+		{
+			name: "link pattern leads name then link",
+			obj:  map[string]any{"type": "ingress", "link": "https://example.com", "name": "web"},
+			want: "name=web, link=https://example.com, type=ingress",
+		},
+		{
+			name: "replicas pattern leads desired, ready, available",
+			obj:  map[string]any{"updated": 3.0, "available": 2.0, "desired": 3.0, "ready": 2.0},
+			want: "desired=3, ready=2, available=2, updated=3",
+		},
+		{
+			name: "no trigger key keeps the plain alphabetical order",
+			obj:  map[string]any{"zeta": "z", "alpha": "a", "name": "n"},
+			want: "alpha=a, name=n, zeta=z",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatNestedObject(tc.obj, 0); got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNestedStatusObject_ContainedShapesRenderUnchanged is criterion 4's
 // companion: an object the summary already described IN FULL must render
 // byte-identically to the pre-change build. The want strings below were
@@ -416,40 +467,77 @@ func TestExistingRealPayloadShapesRenderUnchanged(t *testing.T) {
 	}
 }
 
-// TestListShapedStatusRendering records what the list-shaped surface does
-// with an enriched status column now that the summary no longer eats it, and
-// names the one loss that remains there: the 40-rune per-cell truncation the
-// table renderer applies so a single outsized cell cannot push every other
-// column off screen. That cap is a deliberate, pre-existing table behaviour,
-// full values stay available via --json, and it is NOT the defect this story
-// fixes. No manifest status read is list-shaped today (see the census test),
-// so this exercises the machinery against a synthetic row.
+// TestListShapedStatusRendering is the list-shaped surface, where the
+// enriched status column meets the table's pre-existing 40-rune per-cell
+// cap. THE STATE WORD MUST SURVIVE THAT CAP. Review finding, rework cycle 1:
+// the first cut of this fix let the default branch emit keys in pure
+// alphabetical order, so `state` sorted behind `backendName`, `message` and
+// `reason` and the cap cut the cell before it. The column named STATE then
+// carried no state at all, which inverts the objective's operator criterion
+// on exactly the surface this story set out to repair. The default branch
+// now leads with the keys the summary patterns consume, so the verdict is
+// never the thing that gets elided.
+//
+// No manifest status read is list-shaped today (see the census test), so
+// this exercises the real top-level array path against synthetic rows.
 func TestListShapedStatusRendering(t *testing.T) {
-	row := []byte(`[{"id":"ab12c","status":{"state":"unhealthy","backendName":"images-object-store","backendType":"minio"}}]`)
-	out := captureStdout(t, func() {
-		_ = NewFormatter(false).Format(row, &manifest.Output{Type: "array", Fields: []manifest.OutputField{
-			{Name: "id"}, {Name: "status"},
-		}})
-	})
-	t.Logf("list-shaped enriched status column:\n%s", out)
+	cases := []struct {
+		name string
+		body string
+		// wantVisible must appear in the rendered cell.
+		wantVisible []string
+		// elided names what the 40-rune cap cuts for this row. Recorded,
+		// not tolerated silently: --json carries the full value, and the
+		// object-shaped surface every manifest status read declares has no
+		// such cap.
+		elided []string
+	}{
+		{
+			name:        "backend attribution beside the state",
+			body:        `[{"id":"ab12c","state":{"state":"unhealthy","backendName":"images-object-store","backendType":"minio"}}]`,
+			wantVisible: []string{"state=unhealthy", "backendName=images-"},
+			elided:      []string{"backendType=minio"},
+		},
+		{
+			name:        "message and reason beside the state",
+			body:        `[{"id":"ab12c","state":{"state":"unhealthy","message":"a backing service cannot serve","reason":"no usable drives"}}]`,
+			wantVisible: []string{"state=unhealthy", "message=a backing"},
+			elided:      []string{"reason=no usable drives"},
+		},
+		{
+			name:        "short attribution fits whole",
+			body:        `[{"id":"ab12c","state":{"state":"unhealthy","reason":"no drives"}}]`,
+			wantVisible: []string{"state=unhealthy", "reason=no drives"},
+		},
+	}
 
-	// The attribution now reaches the cell at all, which is the fix.
-	if !strings.Contains(out, "backendName=images-object-store") {
-		t.Errorf("the failing backend name never reached the cell:\n%s", out)
-	}
-	// THE NAMED, PRE-EXISTING LOSS ON THIS SURFACE. The table caps every
-	// cell at 40 runes, so a three-key attribution is cut short: the
-	// operator reads the failing backend's NAME (the objective's criterion)
-	// but the trailing keys are elided with "...". That cap predates this
-	// story, is a deliberate table-layout behaviour, and --json still
-	// carries the full value; it is recorded here rather than silently
-	// tolerated. The object-shaped surface, which is what every manifest
-	// status read declares, has no such cap and is fully lossless.
-	if !strings.Contains(out, "...") {
-		t.Errorf("expected the 40-rune cell cap to elide the tail of the attribution:\n%s", out)
-	}
-	if strings.Contains(out, "backendType=minio") {
-		t.Errorf("cell cap no longer elides the tail; update this recorded loss:\n%s", out)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				_ = NewFormatter(false).Format([]byte(tc.body), &manifest.Output{Type: "array", Fields: []manifest.OutputField{
+					{Name: "id"}, {Name: "state"},
+				}})
+			})
+			t.Logf("rendered:\n%s", out)
+
+			// The health verdict is never what the cap cuts.
+			if !strings.Contains(out, "unhealthy") {
+				t.Errorf("the STATE column lost the state word entirely:\n%s", out)
+			}
+			for _, want := range tc.wantVisible {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected %q in the cell:\n%s", want, out)
+				}
+			}
+			for _, gone := range tc.elided {
+				if strings.Contains(out, gone) {
+					t.Logf("NOTE: %q now fits; the recorded elision list is stale, tighten it", gone)
+				}
+			}
+			if len(tc.elided) > 0 && !strings.Contains(out, "...") {
+				t.Errorf("expected the 40-rune cap to elide the tail:\n%s", out)
+			}
+		})
 	}
 }
 

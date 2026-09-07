@@ -859,21 +859,64 @@ func formatNestedObject(obj map[string]any, indent int) string {
 		}
 	}
 
-	// Default: show all keys as key=value pairs inline, alphabetised
-	// so the output is deterministic across runs. Pre-fix the default
-	// branch iterated `for k := range obj` which is Go-spec non-
-	// deterministic, making `agents list` render different field orders
-	// on consecutive invocations and breaking screenshot/diff-based
-	// comparisons. JSON output is already alphabetical, so text now
-	// matches that contract.
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
+	// Default: show all keys as key=value pairs inline. The keys the
+	// summary patterns above consume lead, in the order those summaries
+	// put them; every remaining key follows alphabetised.
+	//
+	// ALPHABETISED, because pre-fix this branch iterated
+	// `for k := range obj`, which is Go-spec non-deterministic, making
+	// `agents list` render different field orders on consecutive
+	// invocations and breaking screenshot/diff-based comparisons.
+	//
+	// LEAD KEYS FIRST, because a top-level table cell is capped at
+	// maxTextCellWidth runes (truncateCell). Under a purely alphabetised
+	// order `state` sorts behind `backendName`, `message` and `reason`,
+	// so an enriched status cell was cut before the state was ever
+	// reached and the column named STATE carried no state word at all.
+	// That inverts the operator criterion this whole change exists to
+	// serve, so the value the column is named for leads and the extra
+	// keys are what a narrow column elides. Determinism is preserved:
+	// the lead sequence is fixed and the remainder stays sorted.
+	//
+	// The lead applies ONLY to an object carrying a pattern's trigger
+	// key, i.e. exactly the objects this change routed here from a
+	// summary branch. Everything else that already reached this branch
+	// keeps its plain alphabetical order.
+	parts := make([]string, 0, len(obj))
+	seen := make(map[string]bool, len(obj))
+	for _, k := range nestedObjectLeadKeys(obj) {
+		if _, ok := obj[k]; ok {
+			seen[k] = true
+			parts = append(parts, fmt.Sprintf("%s=%s", k, formatValueWithIndent(obj[k], indent)))
+		}
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
+	rest := make([]string, 0, len(obj))
+	for k := range obj {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
 		parts = append(parts, fmt.Sprintf("%s=%s", k, formatValueWithIndent(obj[k], indent)))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// nestedObjectLeadKeys returns the keys that should render first for obj:
+// the keys consumed by the summary pattern whose trigger key obj carries,
+// in the order that summary puts them. Returns nil for an object that
+// triggers no pattern, so objects that always reached the default branch
+// keep the plain alphabetical order they have always had.
+func nestedObjectLeadKeys(obj map[string]any) []string {
+	if _, ok := obj["link"]; ok {
+		return []string{"name", "link"}
+	}
+	if _, ok := obj["state"]; ok {
+		return []string{"state", "message"}
+	}
+	if _, ok := obj["desired"]; ok {
+		return []string{"desired", "ready", "available"}
+	}
+	return nil
 }
