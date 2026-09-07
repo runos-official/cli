@@ -790,3 +790,45 @@ func TestNestedSubTableExpandsStructuredCells(t *testing.T) {
 		}
 	}
 }
+
+// Objective 92 / story 211. The advisory renderer suppresses the
+// `warnings` key by STRIPPING it from the response body in
+// internal/dynacmd before the formatter ever sees it, deliberately
+// leaving this package alone. These two cases pin that: a body that
+// still carries `warnings` renders it exactly as any other key, so a
+// later reader cannot mistake the suppression for a formatter rule and
+// "tidy it up" into here, where it would also hit --json and the MCP
+// path.
+func TestFormatter_WarningsKeyIsNotSpecialToTheFormatter(t *testing.T) {
+	t.Run("object output renders it via the I24-D forward-compat branch", func(t *testing.T) {
+		body := []byte(`{"id":"svc1","warnings":["an advisory"]}`)
+		def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{{Name: "id"}}}
+		out := captureStdout(t, func() {
+			if err := NewFormatter(false).Format(body, def); err != nil {
+				t.Fatalf("format: %v", err)
+			}
+		})
+		if !strings.Contains(out, "warnings") || !strings.Contains(out, "an advisory") {
+			t.Errorf("the formatter must still render an undeclared warnings key as an ordinary row:\n%s", out)
+		}
+	})
+
+	t.Run("declared warnings field renders as an ordinary row", func(t *testing.T) {
+		// apps/add, apps/update, services/umami/add,
+		// services/umami/{id}/update, nodes/configure-gpu-shape and
+		// storage-groups/delete all DECLARE this field in the served
+		// manifest, so the declared case is not hypothetical.
+		body := []byte(`{"jobId":"job-1","warnings":["an advisory"]}`)
+		def := &manifest.Output{Type: "object", Fields: []manifest.OutputField{
+			{Name: "jobId"}, {Name: "warnings"},
+		}}
+		out := captureStdout(t, func() {
+			if err := NewFormatter(false).Format(body, def); err != nil {
+				t.Fatalf("format: %v", err)
+			}
+		})
+		if !strings.Contains(out, "an advisory") {
+			t.Errorf("a declared warnings field must still render when it reaches the formatter:\n%s", out)
+		}
+	})
+}

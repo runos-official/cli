@@ -109,6 +109,30 @@ that shows no node id keeps its exact text, and a prompt built from a positional
 untouched. The fallbacks are the same as above and there is still only ONE lookup per prompt,
 however many flags the line lists, so a target line never multiplies the two second wait.
 
+**Conductor's advisory warnings are printed as warnings on every command, not buried in the table.**
+When conductor wants an operator to know something about the change they just made, it returns
+`warnings`, an array of plain strings, in the response body of that call. Only `runos deploy` ever
+read it. Every other command goes through the manifest-driven path, which had no idea what a warning
+was: on an object-shaped response the advisory came out as one more aligned `warnings: ...` data row
+among the fields, and on a list-shaped response the envelope unwrap threw it away without a trace.
+With `--follow`, whatever it did manage to print scrolled off under the job progress. So an operator
+enabling KV-aware routing on a vLLM lane whose served model name is not a HuggingFace hub id, a
+combination that can stall the router's request loop until its liveness probe kills the container
+(objective 92), had no way to be told at the moment they made the change.
+
+Now every manifest-driven command prints one `Warning: <entry>` line per entry on standard error,
+before the response is rendered and before the first job-progress line, in the same words and on the
+same stream `runos deploy` has always used. The key is then suppressed from the plain-text table so
+the same text is not shown twice; the six live commands that already declared the field (`apps add`,
+`apps update`, `services umami add`, `services umami update`, `nodes configure-gpu-shape`,
+`storage-groups delete`) show their advisories as warnings instead of as a row. `--json` is
+deliberately untouched: standard output is still exactly what conductor sent, `warnings` included,
+so scripts and the MCP tool path keep the machine-readable form. The renderer is keyed on the shape
+of the response and on nothing else, so it works for any command conductor ever adds an advisory to,
+with no CLI release. The singular `warning` string is not touched at all, and the one-shot-token
+banner on `account api-keys add` prints exactly as it did. The CLI renders conductor's text and
+decides nothing: whether to warn, and what to say, stays conductor's.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The

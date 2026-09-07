@@ -558,9 +558,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// Conductor advisory warnings (e.g. a nodeAffinityTags pin that
 	// currently matches zero nodes, so pods would sit Unschedulable).
 	// Surfaced on stderr; the deploy proceeds.
-	for _, w := range prepResp.Warnings {
-		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
-	}
+	printPrepareWarnings(os.Stderr, prepResp.Warnings)
 
 	// Persist the IDs the prepare response just minted before the
 	// upload starts; if the upload fails afterwards a re-run of deploy
@@ -2008,4 +2006,22 @@ func envKeyConflicts(secret, plain map[string]string) []string {
 	}
 	sort.Strings(conflicts)
 	return conflicts
+}
+
+// printPrepareWarnings renders conductor's advisory warnings from a
+// prepare response, one `Warning: <entry>` line per entry on the given
+// writer, and never blocks the deploy.
+//
+// This is the shape story 211 copied into the manifest-driven path
+// (internal/dynacmd/warnings.go), and `deploy` is deliberately NOT
+// manifest-driven: cmd/root.go hands deployCmd to the dynamic builder as
+// an existing command, so the builder's `deploy` manifest entry merges
+// into this static command and never grows a dynacmd leaf. That is what
+// keeps the two renderers from both firing on one response. Extracted
+// from runDeploy purely so the "one line per entry, and no more" contract
+// is assertable; the bytes it writes are unchanged.
+func printPrepareWarnings(w io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(w, "Warning: %s\n", warning)
+	}
 }

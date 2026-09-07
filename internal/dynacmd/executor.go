@@ -396,6 +396,35 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// they're about to see a stale listing if they query right after.
 	warnIfRawDDLBypassedCache(cmd, cmdDef, body)
 
+	// Objective 92 / story 211: conductor returns an advisory as
+	// `warnings`, an array of plain strings, in the response body of the
+	// call that creates the condition it warns about, so the caller
+	// learns at the moment of the change rather than from a job log that
+	// arrives later. Before this, `runos deploy` was the only reader of
+	// that array (cmd/deploy.go prints `Warning: <entry>` per entry on
+	// stderr and proceeds); every manifest-driven command reached the
+	// formatter instead, which has no warnings concept. On an object
+	// output the advisory rendered as one more aligned data row via the
+	// I24-D forward-compat branch, and on an array output the envelope
+	// unwrap discarded it outright.
+	//
+	// Printed HERE, before the --follow branch and before every render
+	// and early-return path below it, so one site covers object output,
+	// array output, the raw-single-string path, the pod-logs diagnostic
+	// and --follow, and so the lines land before job progress scrolls
+	// over them. The CLI renders conductor's array and owns none of its
+	// text: deciding to warn, and what to say, stays conductor's.
+	advisories, allEntriesPrinted := advisoryWarnings(respBody)
+	printAdvisoryWarnings(cmd.ErrOrStderr(), advisories)
+	// Suppress the key from the plain-text table so the same text is not
+	// shown twice. --json is deliberately left structurally intact, so
+	// scripts and the MCP path still receive `warnings` in the body.
+	// A mixed array (some entry was not a string, so it was not printed)
+	// keeps its key: stripping it would lose what no line carried.
+	if len(advisories) > 0 && allEntriesPrinted && !jsonOutput {
+		respBody = stripAdvisoryWarnings(respBody)
+	}
+
 	// Handle --follow flag for commands that return jobs (detected by jobId in output)
 	if hasJobIdOutput(cmdDef) {
 		follow, _ := cmd.Flags().GetBool("follow")

@@ -38,3 +38,28 @@ hardcoded carve-out in `internal/dynacmd/object_flag.go` and
 Same fields. The MCP schema for `requires` is still a hardcoded fallback in the CLI
 (`projectObjectValue`, I26-N). Declaring `valueType: "object"` plus `valueFields`
 (`id`, `type`, `config`, `env`) removes it.
+
+## 4. `warnings` is a reserved response key now (objective 92 / story 211)
+
+Files: every `src/util/cliManifest/` entry that declares an output field named `warnings`.
+As of manifest 45.5.0 that is `apps/add`, `apps/update`, `services/umami/add`,
+`services/umami/{id}/update`, `nodes/configure-gpu-shape`, `storage-groups/delete` and
+`deploy`.
+
+The CLI now treats a top-level `warnings` key on a SUCCESSFUL response as a conductor
+advisory, not as data: it prints one `Warning: <entry>` line per entry on stderr and
+suppresses the key from the plain-text table (`internal/dynacmd/warnings.go`). `--json` and
+the MCP path are unaffected — the key is still in the body they return.
+
+Two consequences for the manifest:
+
+1. Declaring `warnings` on a command's output no longer buys a table row. It is harmless to
+   leave the declaration in place (the CLI skips a declared-but-absent field), and it is
+   still the honest schema for MCP and `--json`, so nothing needs changing today.
+2. Do NOT introduce a top-level `warnings` field that means something OTHER than "advisory
+   strings for the caller to read". The renderer is keyed on shape, not on the command, so a
+   `warnings` array of strings anywhere will be rendered as advisories. A non-string array is
+   left alone (printed as nothing, key kept), which is the only escape hatch.
+
+The singular `warning` string is untouched and stays a per-command data field (the one-shot
+token banner on `account/api-keys/add` and `account/notify-keys/add` reads it).
