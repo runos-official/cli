@@ -1,0 +1,3694 @@
+{
+  "manifestVersion": "45.5.0",
+  "conductorCommit": "0fd5d0f2",
+  "environment": "dev",
+  "apiUrl": "https://api.dev.runos.com",
+  "fetchedAt": "2026-09-07T14:50:00Z",
+  "commandCountInFullManifest": 690,
+  "commands": [
+    {
+      "command": "service-info/{type}/advanced-config-schema",
+      "description": "Describe a service type's advanced-config fields: per field a title, short and long description, suggested default, category, whether it's advanced, whether changing it needs a restart, plus the render schema (input type, options, bounds). Use this to understand which advanced configs exist and how to set them before calling set-advanced-configs, set-router-config, set-lmcache-engine-config, set-lmcache-server-config, or building a config set. Currently postgresql, vllm, vllm-router (the KV-aware router knobs), lmcache-engine (in-pod LMCache engine), and lmcache-server (standalone LMCache server).",
+      "endpoint": "/service-info/:type/advanced-config-schema",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "type",
+            "type": "string",
+            "description": "Service type: postgresql, vllm, vllm-router, lmcache-engine, or lmcache-server",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "type",
+          "fields"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/add",
+      "description": "Add a new vLLM instance",
+      "endpoint": "/:aid/:cid/services/vllm",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Instance name",
+            "required": false
+          },
+          {
+            "name": "model",
+            "type": "string",
+            "description": "HuggingFace model name (e.g., meta-llama/Llama-3.2-1B)",
+            "required": true
+          },
+          {
+            "name": "servedModelName",
+            "type": "string",
+            "description": "Optional API-facing alias clients send as \"model\". When set, vLLM serves ONLY under this name (single token, no whitespace); omit to serve under the model path.",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "description": "Resource class",
+            "required": false,
+            "default": "vllm.c0.beff",
+            "enum": [
+              "vllm.c0.beff",
+              "vllm.c0.small",
+              "vllm.c0.medium",
+              "vllm.c0.large",
+              "vllm.c2.medium",
+              "vllm.c2.large",
+              "vllm.c4.large",
+              "vllm.c1.beff",
+              "vllm.c1.small",
+              "vllm.c1.medium",
+              "vllm.c1.large",
+              "custom"
+            ]
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "description": "Replica count. Overrides the seed baked into the resource class. Set to 2 or more to activate the KV-aware vLLM router. (foreman #37)",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "description": "vLLM version",
+            "required": false,
+            "default": "0.25.1",
+            "enum": [
+              "0.25.1",
+              "0.25.1-perf",
+              "0.24.0",
+              "0.23.0",
+              "0.22.0",
+              "0.21.0"
+            ]
+          },
+          {
+            "name": "image",
+            "type": "string",
+            "description": "Custom container image, replacing the published image for --version (e.g. a source-patched or locally-built engine). Must pin a tag or digest. An image on a Harbor belonging to this account is authenticated automatically; any other private registry is not supported yet, so the image must be public. Cannot be combined with --omni.",
+            "required": false
+          },
+          {
+            "name": "omni",
+            "type": "boolean",
+            "description": "Switches the service to the vllm-omni image variant (-omni tag) and adds --omni to serve; valid with versions 0.22.0 and 0.24.0.",
+            "required": false,
+            "default": false
+          },
+          {
+            "name": "gdsEnabled",
+            "type": "boolean",
+            "description": "GPUDirect Storage opt-in: stamps the cdi.k8s.io/gds annotation (nvidia.com/gds=all) on the pod so a CDI-enabled runtime injects the host /dev/nvidia-fs* devices. Requires the NVIDIA device plugin in CDI mode with a GDS CDI spec (nvidia-fs loaded); inert otherwise.",
+            "required": false,
+            "default": false
+          },
+          {
+            "name": "publicHttps",
+            "type": "boolean",
+            "description": "Expose the API on standard HTTPS port 443 (opt-in): the external endpoints also ride the websecure Traefik entrypoint next to the always-on 8890 one. Ingress-only, no pod roll. Consider setting an API key first (set-api-key); the deploy warns when enabled keyless.",
+            "required": false,
+            "default": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "description": "Storage size in MiB for model cache (immutable after creation)",
+            "required": false,
+            "default": 20480
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "description": "Which storage group backs this instance, from storage-groups/list. REQUIRED for a distributed tier (a c1/c3/c4 class), ignored by a local one. Measured 2026-08-19: without it a distributed create used to return a job id and then die at apply with \"Storage group not found: undefined\", because no manifest offered the field although the API accepted it. The create now refuses up front and names the groups this cluster has.",
+            "required": false
+          },
+          {
+            "name": "gpuCount",
+            "type": "integer",
+            "description": "Number of GPUs to allocate (0 for CPU-only)",
+            "required": false,
+            "default": 0
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "description": "Node affinity tag names (\"key\" or \"key:value\"; must exist, see tags/list; tags pin scheduling to nodes carrying them).",
+            "format": "string_array"
+          },
+          {
+            "name": "modelSourceIntegrationId",
+            "type": "string",
+            "description": "Provider integration ID for S3 model source (mutually exclusive with modelSourceMinioServiceId)",
+            "required": false
+          },
+          {
+            "name": "modelSourceMinioServiceId",
+            "type": "string",
+            "description": "MinIO service ID for local model source (mutually exclusive with modelSourceIntegrationId)",
+            "required": false
+          },
+          {
+            "name": "modelSourceBucket",
+            "type": "string",
+            "description": "Bucket name containing the model (required when using S3/MinIO source)",
+            "required": false
+          },
+          {
+            "name": "modelSourcePath",
+            "type": "string",
+            "description": "Path to the model within the bucket (required when using S3/MinIO source)",
+            "required": false
+          },
+          {
+            "name": "configType",
+            "type": "string",
+            "description": "Advanced-config mode: 'custom' (edit configs directly, default) or 'config_set' (inherit from an account config set). See the config-sets topic.",
+            "required": false,
+            "default": "custom",
+            "enum": [
+              "custom",
+              "config_set"
+            ]
+          },
+          {
+            "name": "configSetId",
+            "type": "string",
+            "description": "Config set lineage handle to adopt when configType is 'config_set'. The set's current version is pinned at creation. Must be a vllm-type set.",
+            "required": false
+          },
+          {
+            "name": "lmcacheMode",
+            "type": "string",
+            "description": "LMCache KV-cache tiering mode: 'off' (default), 'local' (in-pod engine offload to CPU/disk), or 'remote' (auto-deploy a standalone LMCache server the engine connects to). See the lmcache topic.",
+            "required": false,
+            "default": "off",
+            "enum": [
+              "off",
+              "local",
+              "remote"
+            ]
+          },
+          {
+            "name": "lmcacheValkeyOsid",
+            "type": "string",
+            "description": "OSID of a deployed Valkey instance to attach as the LMCache remote store (e.g. valkey-ab2cd). Optional; works in local or remote mode.",
+            "required": false
+          },
+          {
+            "name": "lmcacheMinioOsid",
+            "type": "string",
+            "description": "OSID of a deployed MinIO instance to attach as the LMCache cold/durable store (e.g. minio-ab2cd). Requires lmcacheMode=remote.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "id",
+          "name",
+          "status",
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/list",
+      "description": "List all vLLM instances",
+      "endpoint": "/:aid/:cid/services/vllm",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": []
+      },
+      "output": {
+        "type": "array",
+        "fields": [
+          "id",
+          "name",
+          "type",
+          "model",
+          "gpuCount",
+          "storageMb",
+          "resourceRequirementClassId",
+          "createdAt"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/api-key-credentials",
+      "description": "Read the service's API key from the namespace Secret (RunOS readable-credentials norm, like postgresql admin-credentials). Returns apiKey null when none is set. Manage the key with set-api-key.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/api-key-credentials",
+      "method": "GET",
+      "mcp": [
+        "sensitive_read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "apiKeySet",
+          "apiKey",
+          "apiKeyUpdatedAt"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/chat",
+      "description": "Chat with the vLLM model (single-turn inference)",
+      "endpoint": "/:aid/:cid/services/vllm/:id/chat",
+      "method": "PATCH",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "query",
+            "type": "string",
+            "description": "Message to send to the model",
+            "required": true
+          },
+          {
+            "name": "system",
+            "type": "string",
+            "description": "Optional system prompt",
+            "required": false
+          },
+          {
+            "name": "endpoint",
+            "type": "string",
+            "description": "Route the request through 'stable' (default; the LB / router URL) or 'direct' (a specific replica pod). With 'direct' on a multi-replica service, supply 'pod' to disambiguate.",
+            "required": false,
+            "enum": [
+              "stable",
+              "direct"
+            ]
+          },
+          {
+            "name": "pod",
+            "type": "string",
+            "description": "Target pod name when endpoint='direct'. Use the 'pod' value from one of the show response's directReplicas entries (e.g. 'vllm-ab2cd-0'). Ignored when endpoint='stable'. Single-replica services may omit this; multi-replica services must provide it.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "model",
+          "response",
+          "totalDurationMs",
+          "promptTokens",
+          "completionTokens"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/convert-to-custom",
+      "description": "Flip a config_set vLLM service to custom mode, copying the pinned values in so they become editable. Sync; no cluster re-apply. See the config-sets topic.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/convert-to-custom",
+      "method": "PATCH",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "osid",
+          "configType",
+          "advanced",
+          "message"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/delete",
+      "description": "Delete a vLLM instance",
+      "endpoint": "/:aid/:cid/services/vllm/:id",
+      "method": "DELETE",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/logs",
+      "description": "Get vLLM container logs",
+      "endpoint": "/:aid/:cid/services/vllm/:id/logs",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "tail",
+            "type": "integer",
+            "description": "Number of lines to return from end of logs",
+            "default": 100
+          },
+          {
+            "name": "since",
+            "type": "integer",
+            "description": "Return logs from the last N seconds"
+          },
+          {
+            "name": "pod",
+            "type": "string",
+            "description": "Restrict logs to a single pod. Use a pod name from the show response's directReplicas[*].pod (e.g. 'vllm-ab2cd-0') or the router pod identifier ('vllm-ab2cd-router-...'). Omitted: aggregate across every runos.com/osid-labelled pod. (foreman #42)",
+            "required": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "previous",
+            "description": "Return logs from previous container instance",
+            "default": false
+          }
+        ]
+      },
+      "output": {
+        "type": "array",
+        "fields": [
+          "podName",
+          "containerName",
+          "timestamp",
+          "message"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/rename",
+      "description": "Update a vLLM instance display name",
+      "endpoint": "/:aid/:cid/services/vllm/:id/update-name",
+      "method": "PATCH",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "New display name for the service",
+            "required": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "osid",
+          "name"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/resource-metrics",
+      "description": "Get CPU and memory usage time series from Prometheus",
+      "endpoint": "/:aid/:cid/services/vllm/:id/resource-metrics",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "rangeHours",
+            "type": "integer",
+            "description": "Time range in hours (1-72)",
+            "required": false,
+            "default": 1
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "cpu",
+          "memory",
+          "dashboardUrl",
+          "inferredForInfinite"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/restart",
+      "description": "Trigger a rolling restart of the vLLM deployment",
+      "endpoint": "/:aid/:cid/services/vllm/:id/restart",
+      "method": "PATCH",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "osid",
+          "message"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/set-advanced-configs",
+      "description": "Set vLLM advanced runtime configs (serve flags, VLLM_* env, probes, and managed files such as chat-template) on a custom-mode service. Validated against the curated vLLM config catalog. See the config-sets topic.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/set-advanced-configs",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "dtype",
+            "type": "string",
+            "description": "Model weight/activation data type. `auto` picks per the model config.",
+            "required": false,
+            "enum": [
+              "auto",
+              "half",
+              "float16",
+              "bfloat16",
+              "float",
+              "float32"
+            ]
+          },
+          {
+            "name": "quantization",
+            "type": "string",
+            "description": "Weight quantization method. Leave unset for unquantized weights.",
+            "required": false,
+            "enum": [
+              "awq",
+              "gptq",
+              "fp8",
+              "bitsandbytes",
+              "compressed-tensors",
+              "marlin",
+              "gguf",
+              "modelopt"
+            ]
+          },
+          {
+            "name": "kv-cache-dtype",
+            "type": "string",
+            "description": "KV cache data type. `auto` matches the model dtype; fp8 halves KV memory. Model-specific dtypes (e.g. fp8_ds_mla for DeepSeek/GLM MLA) are accepted. Common values: auto, fp8, fp8_e5m2, fp8_e4m3, fp8_ds_mla (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "gpu-memory-utilization",
+            "type": "string",
+            "description": "Fraction of GPU memory to use for the model + KV cache (0\u20131).",
+            "required": false
+          },
+          {
+            "name": "max-model-len",
+            "type": "string",
+            "description": "Maximum context length (prompt + output) in tokens. Defaults to the model max.",
+            "required": false
+          },
+          {
+            "name": "enable-prefix-caching",
+            "type": "string",
+            "description": "Reuse KV cache across requests sharing a prefix. Prefilled on for a serving profile.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "block-size",
+            "type": "string",
+            "description": "KV cache block size in tokens.",
+            "required": false,
+            "enum": [
+              "1",
+              "8",
+              "16",
+              "32",
+              "64",
+              "128"
+            ]
+          },
+          {
+            "name": "cpu-offload-gb",
+            "type": "string",
+            "description": "Per-GPU CPU memory (GiB) to offload weights to, extending effective GPU memory.",
+            "required": false
+          },
+          {
+            "name": "prefix-caching-hash-algo",
+            "type": "string",
+            "description": "Hash algorithm for prefix-cache block keys.",
+            "required": false,
+            "enum": [
+              "builtin",
+              "sha256",
+              "sha256_cbor_64bit"
+            ]
+          },
+          {
+            "name": "tensor-parallel-size",
+            "type": "string",
+            "description": "Number of GPUs to shard each layer across (tensor parallelism).",
+            "required": false
+          },
+          {
+            "name": "decode-context-parallel-size",
+            "type": "string",
+            "description": "Number of context-parallel ranks used for decode attention.",
+            "required": false
+          },
+          {
+            "name": "pipeline-parallel-size",
+            "type": "string",
+            "description": "Number of pipeline-parallel stages.",
+            "required": false
+          },
+          {
+            "name": "data-parallel-size",
+            "type": "string",
+            "description": "Data-parallel replica count (replaces the removed --uvicorn-workers).",
+            "required": false
+          },
+          {
+            "name": "enable-expert-parallel",
+            "type": "string",
+            "description": "Use expert parallelism instead of tensor parallelism for MoE layers.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "max-parallel-loading-workers",
+            "type": "string",
+            "description": "Load model shards in this many parallel workers to cut startup time.",
+            "required": false
+          },
+          {
+            "name": "max-num-batched-tokens",
+            "type": "string",
+            "description": "Max tokens processed per scheduler iteration. Higher = more throughput, more memory.",
+            "required": false
+          },
+          {
+            "name": "max-num-seqs",
+            "type": "string",
+            "description": "Max concurrent sequences per iteration.",
+            "required": false
+          },
+          {
+            "name": "enable-chunked-prefill",
+            "type": "string",
+            "description": "Chunk large prefills so they batch with decodes. Prefilled on for a serving profile.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "async-scheduling",
+            "type": "string",
+            "description": "Overlap engine-core scheduling with GPU execution to cut scheduling overhead.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "scheduling-policy",
+            "type": "string",
+            "description": "Request scheduling policy.",
+            "required": false,
+            "enum": [
+              "fcfs",
+              "priority"
+            ]
+          },
+          {
+            "name": "long-prefill-token-threshold",
+            "type": "string",
+            "description": "A prefill longer than this many tokens is treated as a long request.",
+            "required": false
+          },
+          {
+            "name": "max-num-partial-prefills",
+            "type": "string",
+            "description": "Max concurrent partial prefills when chunked prefill is on.",
+            "required": false
+          },
+          {
+            "name": "num-lookahead-slots",
+            "type": "string",
+            "description": "Lookahead KV slots reserved for speculative decoding.",
+            "required": false
+          },
+          {
+            "name": "attention-backend",
+            "type": "string",
+            "description": "Attention kernel backend (replaces the removed VLLM_ATTENTION_BACKEND env).",
+            "required": false,
+            "enum": [
+              "FLASH_ATTN",
+              "FLASHINFER",
+              "XFORMERS",
+              "TORCH_SDPA",
+              "FLASHMLA"
+            ]
+          },
+          {
+            "name": "gdn-prefill-backend",
+            "type": "string",
+            "description": "Prefill kernel backend for gated delta networks such as Qwen3.6.",
+            "required": false,
+            "enum": [
+              "flashinfer",
+              "triton",
+              "cutedsl"
+            ]
+          },
+          {
+            "name": "enable-prompt-embeds",
+            "type": "string",
+            "description": "Accept pre-computed prompt embeddings via the API.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "limit-mm-per-prompt",
+            "type": "string",
+            "description": "Per-modality input cap, JSON object e.g. {\"image\":2,\"video\":0}.",
+            "required": false
+          },
+          {
+            "name": "trust-remote-code",
+            "type": "string",
+            "description": "Allow executing custom model code from the HF repo (needed by some architectures).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "mm-processor-kwargs",
+            "type": "string",
+            "description": "Extra kwargs passed to the multimodal processor, JSON object.",
+            "required": false
+          },
+          {
+            "name": "disable-mm-preprocessor-cache",
+            "type": "string",
+            "description": "Disable caching of processed multimodal inputs.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "enable-auto-tool-choice",
+            "type": "string",
+            "description": "Enable automatic tool/function calling (pair with tool-call-parser).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "tool-call-parser",
+            "type": "string",
+            "description": "Parser for model tool-call output. Model-specific. Common values: hermes, mistral, llama3_json, llama4_pythonic, pythonic, granite, jamba, qwen3_coder, deepseek_v3, deepseek_v4, internlm, phi4_mini_json, gemma4, glm45, glm47 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "reasoning-parser",
+            "type": "string",
+            "description": "Parser that splits reasoning traces from the final answer. Model-specific. Common values: deepseek_r1, deepseek_v4, qwen3, granite, hunyuan_a13b, glm45, glm47, gemma4 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "chat-template",
+            "type": "string",
+            "description": "Custom Jinja chat template mounted as a managed read-only file.",
+            "required": false
+          },
+          {
+            "name": "chat-template-content-format",
+            "type": "string",
+            "description": "How chat message content is rendered into the template.",
+            "required": false,
+            "enum": [
+              "auto",
+              "string",
+              "openai"
+            ]
+          },
+          {
+            "name": "enable-auto-tool-choice-strict",
+            "type": "string",
+            "description": "Enforce strict JSON-schema adherence for tool arguments.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "enable-lora",
+            "type": "string",
+            "description": "Enable serving LoRA adapters on top of the base model.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "max-loras",
+            "type": "string",
+            "description": "Max LoRA adapters resident in a single batch.",
+            "required": false
+          },
+          {
+            "name": "max-lora-rank",
+            "type": "string",
+            "description": "Maximum LoRA rank supported.",
+            "required": false,
+            "enum": [
+              "8",
+              "16",
+              "32",
+              "64",
+              "128",
+              "256"
+            ]
+          },
+          {
+            "name": "max-cpu-loras",
+            "type": "string",
+            "description": "Max LoRA adapters held in CPU memory (>= max-loras).",
+            "required": false
+          },
+          {
+            "name": "fully-sharded-loras",
+            "type": "string",
+            "description": "Fully shard LoRA computation across tensor-parallel ranks.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "speculative-config",
+            "type": "string",
+            "description": "Speculative decoding config, JSON object e.g. {\"method\":\"ngram\",\"num_speculative_tokens\":5}.",
+            "required": false
+          },
+          {
+            "name": "max-logprobs",
+            "type": "string",
+            "description": "Max logprobs returnable per token.",
+            "required": false
+          },
+          {
+            "name": "logits-processor-pattern",
+            "type": "string",
+            "description": "Regex allowing per-request custom logits processors by qualified name.",
+            "required": false
+          },
+          {
+            "name": "seed",
+            "type": "string",
+            "description": "Random seed for reproducible sampling.",
+            "required": false
+          },
+          {
+            "name": "generation-config",
+            "type": "string",
+            "description": "Where to load default generation config from: 'auto', 'vllm', or a path.",
+            "required": false
+          },
+          {
+            "name": "enforce-eager",
+            "type": "string",
+            "description": "Disable CUDA graphs and run in eager mode (lower memory, lower throughput).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "compilation-config",
+            "type": "string",
+            "description": "torch.compile / CUDA-graph config, JSON object e.g. {\"level\":3}.",
+            "required": false
+          },
+          {
+            "name": "max-seq-len-to-capture",
+            "type": "string",
+            "description": "Max sequence length covered by captured CUDA graphs.",
+            "required": false
+          },
+          {
+            "name": "cuda-graph-sizes",
+            "type": "string",
+            "description": "Comma-separated batch sizes to capture CUDA graphs for (e.g. 1,2,4,8).",
+            "required": false
+          },
+          {
+            "name": "distributed-executor-backend",
+            "type": "string",
+            "description": "Backend for multi-GPU/multi-node execution.",
+            "required": false,
+            "enum": [
+              "mp",
+              "ray",
+              "uni",
+              "external_launcher"
+            ]
+          },
+          {
+            "name": "disable-custom-all-reduce",
+            "type": "string",
+            "description": "Disable the custom all-reduce kernel and fall back to NCCL.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "tokenizer-mode",
+            "type": "string",
+            "description": "Tokenizer implementation. Model-specific modes are accepted. Common values: auto, slow, mistral, custom, deepseek_v4 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "load-format",
+            "type": "string",
+            "description": "Weight load format.",
+            "required": false,
+            "enum": [
+              "auto",
+              "pt",
+              "safetensors",
+              "npcache",
+              "dummy",
+              "bitsandbytes",
+              "gguf",
+              "runai_streamer"
+            ]
+          },
+          {
+            "name": "extra-serve-args",
+            "type": "string",
+            "description": "Guarded JSON argv array for upstream serve flags not yet modeled by RunOS.",
+            "required": false
+          },
+          {
+            "name": "enable-log-requests",
+            "type": "string",
+            "description": "Log every request (replaces the removed --disable-log-requests, inverted).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "disable-log-stats",
+            "type": "string",
+            "description": "Disable periodic throughput/latency stats logging.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "max-log-len",
+            "type": "string",
+            "description": "Max prompt characters printed in request logs.",
+            "required": false
+          },
+          {
+            "name": "otlp-traces-endpoint",
+            "type": "string",
+            "description": "OTLP endpoint to export request traces to.",
+            "required": false
+          },
+          {
+            "name": "deploy-config",
+            "type": "string",
+            "description": "Deploy config YAML path (or bundled name, e.g. moss_tts) replacing the vllm_omni/deploy/<model_type>.yaml that --omni auto-loads; mutually exclusive with stage-configs-path. Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "stage-configs-path",
+            "type": "string",
+            "description": "Legacy-model variant of deploy-config: path to a stage_args-format stage configs YAML (deprecated upstream; still mandatory for legacy models). Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "stage-overrides",
+            "type": "string",
+            "description": "Per-stage engine-arg overrides, JSON object keyed by stage id, e.g. {\"0\":{\"gpu_memory_utilization\":0.8}}; for the matching stage these beat global CLI flags, which beat the deploy YAML. Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "stage-id",
+            "type": "string",
+            "description": "Select and launch a single pipeline stage by stage id in this process; requires omni-master-address and omni-master-port (parse-time error otherwise). Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "omni-master-address",
+            "type": "string",
+            "description": "Hostname or IP of the Omni orchestrator (master) a stage process registers with; required whenever stage-id is set. Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "omni-master-port",
+            "type": "string",
+            "description": "Port of the Omni orchestrator (master); required whenever stage-id is set. Omni services only; a non-omni image fails at engine start.",
+            "required": false
+          },
+          {
+            "name": "async-chunk",
+            "type": "string",
+            "description": "Override the deploy YAML async_chunk (inter-stage streaming): true emits --async-chunk, false emits --no-async-chunk, unset leaves the YAML value in force. Omni services only; a non-omni image fails at engine start.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "VLLM_LOGGING_LEVEL",
+            "type": "string",
+            "description": "Engine log verbosity.",
+            "required": false,
+            "enum": [
+              "DEBUG",
+              "INFO",
+              "WARNING",
+              "ERROR"
+            ]
+          },
+          {
+            "name": "VLLM_USE_FLASHINFER_SAMPLER",
+            "type": "string",
+            "description": "Use the FlashInfer sampling kernel. Default auto/on in 0.21.0. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_FLASH_ATTN_VERSION",
+            "type": "string",
+            "description": "Pin the FlashAttention major version.",
+            "required": false,
+            "enum": [
+              "2",
+              "3"
+            ]
+          },
+          {
+            "name": "VLLM_USE_TRITON_FLASH_ATTN",
+            "type": "string",
+            "description": "Use the Triton FlashAttention implementation. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+            "type": "string",
+            "description": "Permit a max-model-len larger than the model derives from its config. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_ENABLE_V1_MULTIPROCESSING",
+            "type": "string",
+            "description": "Run the V1 engine core in a separate process. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_WORKER_MULTIPROC_METHOD",
+            "type": "string",
+            "description": "Multiprocessing start method for workers.",
+            "required": false,
+            "enum": [
+              "fork",
+              "spawn"
+            ]
+          },
+          {
+            "name": "VLLM_RPC_TIMEOUT",
+            "type": "string",
+            "description": "Inter-process RPC timeout in milliseconds.",
+            "required": false
+          },
+          {
+            "name": "VLLM_ENGINE_ITERATION_TIMEOUT_S",
+            "type": "string",
+            "description": "Per-iteration engine timeout in seconds.",
+            "required": false
+          },
+          {
+            "name": "VLLM_IMAGE_FETCH_TIMEOUT",
+            "type": "string",
+            "description": "Timeout (s) for fetching a remote image input.",
+            "required": false
+          },
+          {
+            "name": "VLLM_VIDEO_FETCH_TIMEOUT",
+            "type": "string",
+            "description": "Timeout (s) for fetching a remote video input.",
+            "required": false
+          },
+          {
+            "name": "VLLM_AUDIO_FETCH_TIMEOUT",
+            "type": "string",
+            "description": "Timeout (s) for fetching a remote audio input.",
+            "required": false
+          },
+          {
+            "name": "VLLM_MM_INPUT_CACHE_GIB",
+            "type": "string",
+            "description": "Size (GiB) of the multimodal input cache.",
+            "required": false
+          },
+          {
+            "name": "VLLM_ALLOW_RUNTIME_LORA_UPDATING",
+            "type": "string",
+            "description": "Allow loading/unloading LoRA adapters at runtime via the API. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_DISABLE_COMPILE_CACHE",
+            "type": "string",
+            "description": "Disable the torch.compile artifact cache. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_NO_DEPRECATION_WARNING",
+            "type": "string",
+            "description": "Suppress deprecation warnings in logs. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_API_KEY_HEADER",
+            "type": "string",
+            "description": "Custom header name the API key is read from.",
+            "required": false
+          },
+          {
+            "name": "VLLM_SERVER_DEV_MODE",
+            "type": "string",
+            "description": "Expose extra dev/debug endpoints. Do not enable in production. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_LOG_STATS_INTERVAL",
+            "type": "string",
+            "description": "Interval (s) between engine stats log lines.",
+            "required": false
+          },
+          {
+            "name": "VLLM_TORCH_PROFILER_DIR",
+            "type": "string",
+            "description": "Directory to write torch profiler traces to (enables profiling).",
+            "required": false
+          },
+          {
+            "name": "VLLM_SKIP_WARMUP",
+            "type": "string",
+            "description": "Skip the startup warmup pass (faster start, first requests slower). Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_KEEP_ALIVE_ON_ENGINE_DEATH",
+            "type": "string",
+            "description": "Keep the HTTP server up if the engine core dies (for debugging). Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "VLLM_USE_DEEP_GEMM",
+            "type": "string",
+            "description": "Enable DeepGEMM kernels for supported quantized matmuls. Emitted verbatim: vLLM parses this one as an integer, so use '1'/'0', not 'true'/'false'. Common values: 1, 0 (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "extra-env",
+            "type": "string",
+            "description": "Guarded JSON object of extra environment variables not yet modeled by RunOS.",
+            "required": false
+          },
+          {
+            "name": "startup-probe-initial-delay-seconds",
+            "type": "string",
+            "description": "Seconds after container start before the first startup probe.",
+            "required": false
+          },
+          {
+            "name": "startup-probe-period-seconds",
+            "type": "string",
+            "description": "Seconds between startup probe checks.",
+            "required": false
+          },
+          {
+            "name": "startup-probe-timeout-seconds",
+            "type": "string",
+            "description": "Seconds before a single startup probe check times out.",
+            "required": false
+          },
+          {
+            "name": "startup-probe-failure-threshold",
+            "type": "string",
+            "description": "Consecutive startup failures before the pod is failed. Startup grace \u2248 this \u00d7 period.",
+            "required": false
+          },
+          {
+            "name": "startup-probe-success-threshold",
+            "type": "string",
+            "description": "Consecutive startup successes required to be considered healthy.",
+            "required": false
+          },
+          {
+            "name": "liveness-probe-initial-delay-seconds",
+            "type": "string",
+            "description": "Seconds after container start before the first liveness probe.",
+            "required": false
+          },
+          {
+            "name": "liveness-probe-period-seconds",
+            "type": "string",
+            "description": "Seconds between liveness probe checks.",
+            "required": false
+          },
+          {
+            "name": "liveness-probe-timeout-seconds",
+            "type": "string",
+            "description": "Seconds before a single liveness probe check times out.",
+            "required": false
+          },
+          {
+            "name": "liveness-probe-failure-threshold",
+            "type": "string",
+            "description": "Consecutive liveness failures before the pod is restarted.",
+            "required": false
+          },
+          {
+            "name": "liveness-probe-success-threshold",
+            "type": "string",
+            "description": "Consecutive liveness successes required to be considered healthy.",
+            "required": false
+          },
+          {
+            "name": "readiness-probe-initial-delay-seconds",
+            "type": "string",
+            "description": "Seconds after container start before the first readiness probe.",
+            "required": false
+          },
+          {
+            "name": "readiness-probe-period-seconds",
+            "type": "string",
+            "description": "Seconds between readiness probe checks.",
+            "required": false
+          },
+          {
+            "name": "readiness-probe-timeout-seconds",
+            "type": "string",
+            "description": "Seconds before a single readiness probe check times out.",
+            "required": false
+          },
+          {
+            "name": "readiness-probe-failure-threshold",
+            "type": "string",
+            "description": "Consecutive readiness failures before the pod is marked not-ready.",
+            "required": false
+          },
+          {
+            "name": "readiness-probe-success-threshold",
+            "type": "string",
+            "description": "Consecutive readiness successes required to be considered healthy.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/set-api-key",
+      "description": "Set, rotate, or clear the service's API key. When set, vLLM guards its /v1/* endpoints with it (clients send `Authorization: Bearer <key>`). The key is stored in a Kubernetes Secret in the service namespace; read it back via services/vllm/{id}/api-key-credentials (`show` only reports apiKeySet/apiKeyUpdatedAt). Setting, rotating, or clearing rolls the pod (the model reloads; expect a brief outage). Setting is refused on multi-replica services (the KV-aware router's backend discovery would be locked out); clearing is always allowed.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/set-api-key",
+      "method": "PATCH",
+      "mcp": [
+        "sensitive_write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "apiKey",
+            "type": "string",
+            "description": "The new API key (16-512 printable ASCII characters, no spaces; use a generated high-entropy value). Send an empty string to clear the key and reopen the endpoint.",
+            "required": true,
+            "allowEmpty": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "apiKeySet",
+          "rolled",
+          "message"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/set-lmcache-engine-config",
+      "description": "Set the per-service LMCache engine config (the in-pod LMCache engine, delivered as LMCACHE_* env; used in local + remote mode). Validated against the lmcache-engine schema; run `service-info advanced-config-schema lmcache-engine` to see the fields. Re-applies the manifest.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/set-lmcache-engine-config",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "chunk_size",
+            "type": "string",
+            "description": "KV cache chunk size in tokens.",
+            "required": false
+          },
+          {
+            "name": "local_cpu",
+            "type": "string",
+            "description": "Offload KV cache to pinned CPU RAM (hot tier).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "max_local_cpu_size",
+            "type": "string",
+            "description": "Max CPU RAM for the cache, in GB.",
+            "required": false
+          },
+          {
+            "name": "max_local_disk_size",
+            "type": "string",
+            "description": "Max local-disk cache size in GB (0 = disabled).",
+            "required": false
+          },
+          {
+            "name": "local_disk",
+            "type": "string",
+            "description": "Local disk cache path (e.g. file:///cache/), empty = off.",
+            "required": false
+          },
+          {
+            "name": "remote_url",
+            "type": "string",
+            "description": "Remote store URL (e.g. redis://host:6379); RunOS sets this from the attached store.",
+            "required": false
+          },
+          {
+            "name": "remote_serde",
+            "type": "string",
+            "description": "Wire serialization for the remote store.",
+            "required": false,
+            "enum": [
+              "naive",
+              "cachegen"
+            ]
+          },
+          {
+            "name": "cache_policy",
+            "type": "string",
+            "description": "Eviction policy for the local cache.",
+            "required": false,
+            "enum": [
+              "LRU",
+              "LFU",
+              "FIFO"
+            ]
+          },
+          {
+            "name": "local_cpu_use_hugepages",
+            "type": "string",
+            "description": "Back the CPU cache with hugepages.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "reserve_local_cpu_size",
+            "type": "string",
+            "description": "CPU RAM (GB) reserved (not used for cache).",
+            "required": false
+          },
+          {
+            "name": "local_disk_path_sharding",
+            "type": "string",
+            "description": "How disk paths are sharded (e.g. by_gpu).",
+            "required": false
+          },
+          {
+            "name": "store_location",
+            "type": "string",
+            "description": "Where new chunks are stored (multi-backend routing).",
+            "required": false
+          },
+          {
+            "name": "retrieve_locations",
+            "type": "string",
+            "description": "Comma-separated backends to read from, in order.",
+            "required": false
+          },
+          {
+            "name": "use_layerwise",
+            "type": "string",
+            "description": "Pipeline cache transfer layer-by-layer.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "save_decode_cache",
+            "type": "string",
+            "description": "Also cache KV produced during decode, not just prefill.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "save_unfull_chunk",
+            "type": "string",
+            "description": "Persist partial (< chunk_size) trailing chunks.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "pre_caching_hash_algorithm",
+            "type": "string",
+            "description": "Hash used to key chunks.",
+            "required": false,
+            "enum": [
+              "builtin",
+              "sha256_cbor",
+              "blake3"
+            ]
+          },
+          {
+            "name": "py_enable_gc",
+            "type": "string",
+            "description": "Leave Python GC enabled in the engine.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "numa_mode",
+            "type": "string",
+            "description": "NUMA pinning mode (empty = off).",
+            "required": false
+          },
+          {
+            "name": "enable_async_loading",
+            "type": "string",
+            "description": "Load cache asynchronously off the critical path.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "blocking_timeout_secs",
+            "type": "string",
+            "description": "Seconds to block on a cache op before giving up.",
+            "required": false
+          },
+          {
+            "name": "priority_limit",
+            "type": "string",
+            "description": "Max request priority value honoured (empty = off).",
+            "required": false
+          },
+          {
+            "name": "min_retrieve_tokens",
+            "type": "string",
+            "description": "Skip retrieval for prefixes shorter than this many tokens.",
+            "required": false
+          },
+          {
+            "name": "hit_miss_ratio",
+            "type": "string",
+            "description": "Target hit/miss ratio hint (empty = off).",
+            "required": false
+          },
+          {
+            "name": "enable_blending",
+            "type": "string",
+            "description": "Enable cache blending (forces save_unfull_chunk=true).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "blend_recompute_ratios",
+            "type": "string",
+            "description": "Comma-separated per-layer recompute ratios.",
+            "required": false
+          },
+          {
+            "name": "blend_thresholds",
+            "type": "string",
+            "description": "Comma-separated blending thresholds.",
+            "required": false
+          },
+          {
+            "name": "blend_check_layers",
+            "type": "string",
+            "description": "Comma-separated layer indices to check for blending.",
+            "required": false
+          },
+          {
+            "name": "blend_min_tokens",
+            "type": "string",
+            "description": "Minimum tokens before blending applies.",
+            "required": false
+          },
+          {
+            "name": "blend_special_str",
+            "type": "string",
+            "description": "Separator string marking blendable segments.",
+            "required": false
+          },
+          {
+            "name": "enable_p2p",
+            "type": "string",
+            "description": "Enable peer-to-peer KV transfer (requires controller).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "p2p_host",
+            "type": "string",
+            "description": "This instance's P2P host (ports are RunOS-managed).",
+            "required": false
+          },
+          {
+            "name": "transfer_channel",
+            "type": "string",
+            "description": "P2P transfer channel backend (e.g. nixl).",
+            "required": false
+          },
+          {
+            "name": "enable_controller",
+            "type": "string",
+            "description": "Join an LMCache controller (multi-instance routing; deferred in v1).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "lmcache_instance_id",
+            "type": "string",
+            "description": "Stable id for this engine instance (controller membership).",
+            "required": false
+          },
+          {
+            "name": "lmcache_worker_heartbeat_delay_time",
+            "type": "string",
+            "description": "Initial delay (s) before worker heartbeats start.",
+            "required": false
+          },
+          {
+            "name": "lmcache_worker_heartbeat_time",
+            "type": "string",
+            "description": "Worker heartbeat interval in seconds (empty = default).",
+            "required": false
+          },
+          {
+            "name": "enable_pd",
+            "type": "string",
+            "description": "Enable prefill/decode disaggregation (deferred in v1).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "pd_role",
+            "type": "string",
+            "description": "This instance role in PD.",
+            "required": false,
+            "enum": [
+              "sender",
+              "receiver"
+            ]
+          },
+          {
+            "name": "pd_buffer_size",
+            "type": "string",
+            "description": "PD transfer buffer size.",
+            "required": false
+          },
+          {
+            "name": "pd_buffer_device",
+            "type": "string",
+            "description": "Device for the PD buffer (e.g. cuda, cpu).",
+            "required": false
+          },
+          {
+            "name": "pd_backend_mode",
+            "type": "string",
+            "description": "PD backend mode.",
+            "required": false,
+            "enum": [
+              "sync",
+              "async"
+            ]
+          },
+          {
+            "name": "pd_allocation_timeout_sec",
+            "type": "string",
+            "description": "Timeout (s) waiting for a PD buffer allocation.",
+            "required": false
+          },
+          {
+            "name": "pd_shutdown_timeout_sec",
+            "type": "string",
+            "description": "Grace period (s) on PD shutdown.",
+            "required": false
+          },
+          {
+            "name": "pd_condition_poll_interval_sec",
+            "type": "string",
+            "description": "Poll interval (s) for PD readiness conditions.",
+            "required": false
+          },
+          {
+            "name": "pd_max_prefill_len",
+            "type": "string",
+            "description": "Max prefill length routed through PD (0 = unbounded).",
+            "required": false
+          },
+          {
+            "name": "pd_skip_proxy_notification",
+            "type": "string",
+            "description": "Skip notifying the PD proxy on transfer.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "pd_bidirectional",
+            "type": "string",
+            "description": "Allow bidirectional PD transfer.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "nixl_backends",
+            "type": "string",
+            "description": "Comma-separated NIXL backends.",
+            "required": false
+          },
+          {
+            "name": "nixl_buffer_size",
+            "type": "string",
+            "description": "NIXL buffer size in bytes.",
+            "required": false
+          },
+          {
+            "name": "nixl_buffer_device",
+            "type": "string",
+            "description": "Device for the NIXL buffer.",
+            "required": false
+          },
+          {
+            "name": "gds_path",
+            "type": "string",
+            "description": "GPUDirect Storage path (empty = off).",
+            "required": false
+          },
+          {
+            "name": "gds_path_sharding",
+            "type": "string",
+            "description": "How GDS paths are sharded (e.g. by_gpu).",
+            "required": false
+          },
+          {
+            "name": "gds_buffer_size",
+            "type": "string",
+            "description": "GDS buffer size in bytes.",
+            "required": false
+          },
+          {
+            "name": "use_gds",
+            "type": "string",
+            "description": "Use GPUDirect Storage where available.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "gds_backend",
+            "type": "string",
+            "description": "GDS backend (e.g. cufile).",
+            "required": false
+          },
+          {
+            "name": "maru_path",
+            "type": "string",
+            "description": "Maru storage path (empty = off).",
+            "required": false
+          },
+          {
+            "name": "maru_pool_size",
+            "type": "string",
+            "description": "Maru pool size in GB.",
+            "required": false
+          },
+          {
+            "name": "enable_lazy_memory_allocator",
+            "type": "string",
+            "description": "Grow the CPU cache buffer lazily instead of up front.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "lazy_memory_initial_ratio",
+            "type": "string",
+            "description": "Initial fraction of the buffer to allocate.",
+            "required": false
+          },
+          {
+            "name": "lazy_memory_expand_trigger_ratio",
+            "type": "string",
+            "description": "Fill ratio that triggers an expansion.",
+            "required": false
+          },
+          {
+            "name": "lazy_memory_step_ratio",
+            "type": "string",
+            "description": "Fraction of the buffer added per expansion.",
+            "required": false
+          },
+          {
+            "name": "lazy_memory_safe_size",
+            "type": "string",
+            "description": "Always-allocated safe size in GB.",
+            "required": false
+          },
+          {
+            "name": "enable_chunk_statistics",
+            "type": "string",
+            "description": "Collect per-chunk usage statistics.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "chunk_statistics_auto_start_statistics",
+            "type": "string",
+            "description": "Start collecting statistics automatically.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "chunk_statistics_auto_exit_timeout_hours",
+            "type": "string",
+            "description": "Auto-stop statistics after this many hours (0 = never).",
+            "required": false
+          },
+          {
+            "name": "chunk_statistics_auto_exit_target_unique_chunks",
+            "type": "string",
+            "description": "Auto-stop after this many unique chunks (0 = never).",
+            "required": false
+          },
+          {
+            "name": "chunk_statistics_strategy",
+            "type": "string",
+            "description": "Statistics strategy (e.g. memory_bloom_filter).",
+            "required": false
+          },
+          {
+            "name": "internal_api_server_enabled",
+            "type": "string",
+            "description": "Expose the engine internal API server.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "internal_api_server_port_start",
+            "type": "string",
+            "description": "First port for the internal API server.",
+            "required": false
+          },
+          {
+            "name": "internal_api_server_include_index_list",
+            "type": "string",
+            "description": "Comma-separated worker indices to expose.",
+            "required": false
+          },
+          {
+            "name": "internal_api_server_socket_path_prefix",
+            "type": "string",
+            "description": "Unix-socket path prefix for the internal API server.",
+            "required": false
+          },
+          {
+            "name": "pin_timeout_sec",
+            "type": "string",
+            "description": "Seconds before a pinned buffer times out.",
+            "required": false
+          },
+          {
+            "name": "pin_check_interval_sec",
+            "type": "string",
+            "description": "Interval (s) between pin-monitor checks.",
+            "required": false
+          },
+          {
+            "name": "runtime_plugin_locations",
+            "type": "string",
+            "description": "Comma-separated runtime plugin locations.",
+            "required": false
+          },
+          {
+            "name": "storage_plugins",
+            "type": "string",
+            "description": "Comma-separated storage plugins.",
+            "required": false
+          },
+          {
+            "name": "remote_storage_plugins",
+            "type": "string",
+            "description": "Comma-separated remote storage plugins.",
+            "required": false
+          },
+          {
+            "name": "lookup_timeout_ms",
+            "type": "string",
+            "description": "Lookup timeout in milliseconds.",
+            "required": false
+          },
+          {
+            "name": "lookup_server_worker_ids",
+            "type": "string",
+            "description": "Comma-separated worker ids that serve lookups.",
+            "required": false
+          },
+          {
+            "name": "enable_scheduler_bypass_lookup",
+            "type": "string",
+            "description": "Let the scheduler bypass the lookup step.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "script_allowed_imports",
+            "type": "string",
+            "description": "Comma-separated modules plugin scripts may import.",
+            "required": false
+          },
+          {
+            "name": "external_lookup_client",
+            "type": "string",
+            "description": "External lookup client implementation (empty = off).",
+            "required": false
+          },
+          {
+            "name": "enable_kv_events",
+            "type": "string",
+            "description": "Emit KV cache events.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "use_gpu_connector_v3",
+            "type": "string",
+            "description": "Use the v3 GPU connector.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "remote_config_url",
+            "type": "string",
+            "description": "External config service URL (empty = off; deferred in v1).",
+            "required": false
+          },
+          {
+            "name": "app_id",
+            "type": "string",
+            "description": "Application id for the remote config service.",
+            "required": false
+          },
+          {
+            "name": "extra_config",
+            "type": "string",
+            "description": "Free-form JSON map of extra LMCACHE_EC_* keys (escape hatch).",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/set-lmcache-server-config",
+      "description": "Set the per-service LMCache standalone-server config (the auto-deployed server's own CLI flags; remote mode only). Validated against the lmcache-server schema; run `service-info advanced-config-schema lmcache-server` to see the fields. Re-applies the manifest.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/set-lmcache-server-config",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "chunk_size",
+            "type": "string",
+            "description": "KV chunk size in tokens (must match the engine).",
+            "required": false
+          },
+          {
+            "name": "l1_size_gb",
+            "type": "string",
+            "description": "Server in-memory (L1) cache size in GB.",
+            "required": false
+          },
+          {
+            "name": "eviction_policy",
+            "type": "string",
+            "description": "L1 eviction policy.",
+            "required": false,
+            "enum": [
+              "LRU",
+              "IsolatedLRU",
+              "noop"
+            ]
+          },
+          {
+            "name": "max_workers",
+            "type": "string",
+            "description": "Worker processes the server runs.",
+            "required": false
+          },
+          {
+            "name": "engine_type",
+            "type": "string",
+            "description": "Server engine type.",
+            "required": false,
+            "enum": [
+              "default",
+              "blend"
+            ]
+          },
+          {
+            "name": "hash_algorithm",
+            "type": "string",
+            "description": "Chunk hashing algorithm.",
+            "required": false,
+            "enum": [
+              "builtin",
+              "sha256_cbor",
+              "blake3"
+            ]
+          },
+          {
+            "name": "transfer_mode",
+            "type": "string",
+            "description": "Supported KV transfer mode. 0.25.x engines: auto/lmcache_driven/engine_driven; older engines (0.4.6 server): gpu/non_gpu.",
+            "required": false,
+            "enum": [
+              "auto",
+              "lmcache_driven",
+              "engine_driven",
+              "gpu",
+              "non_gpu"
+            ]
+          },
+          {
+            "name": "l1_use_lazy",
+            "type": "string",
+            "description": "Allocate the L1 buffer lazily (upstream default: on).",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "l1_init_size_gb",
+            "type": "string",
+            "description": "Initial L1 allocation in GB (lazy mode).",
+            "required": false
+          },
+          {
+            "name": "l1_align_bytes",
+            "type": "string",
+            "description": "L1 allocation alignment in bytes.",
+            "required": false
+          },
+          {
+            "name": "l1_write_ttl_seconds",
+            "type": "string",
+            "description": "TTL for written L1 entries, in seconds.",
+            "required": false
+          },
+          {
+            "name": "l1_read_ttl_seconds",
+            "type": "string",
+            "description": "TTL refresh on read for L1 entries, in seconds.",
+            "required": false
+          },
+          {
+            "name": "eviction_trigger_watermark",
+            "type": "string",
+            "description": "Fill ratio that triggers eviction.",
+            "required": false
+          },
+          {
+            "name": "eviction_ratio",
+            "type": "string",
+            "description": "Fraction of L1 evicted per sweep.",
+            "required": false
+          },
+          {
+            "name": "l2_store_policy",
+            "type": "string",
+            "description": "L2 write/store policy (built-in: default; plugins may register more). Common values: default (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "l2_prefetch_policy",
+            "type": "string",
+            "description": "L2 prefetch policy (built-in: default, retain; plugins may register more). Common values: default, retain (not exhaustive; other values accepted).",
+            "required": false
+          },
+          {
+            "name": "l2_prefetch_max_in_flight",
+            "type": "string",
+            "description": "Max concurrent L2 prefetch operations.",
+            "required": false
+          },
+          {
+            "name": "l2_adapters",
+            "type": "string",
+            "description": "Raw L2 adapter JSON escape hatch (RunOS renders this from the attached store).",
+            "required": false
+          },
+          {
+            "name": "max_gpu_workers",
+            "type": "string",
+            "description": "Max GPU workers (defaults to max_workers).",
+            "required": false
+          },
+          {
+            "name": "max_cpu_workers",
+            "type": "string",
+            "description": "Max CPU workers (defaults to max_workers).",
+            "required": false
+          },
+          {
+            "name": "runtime_plugin_locations",
+            "type": "string",
+            "description": "Runtime plugin locations (comma-separated; each becomes its own argument).",
+            "required": false
+          },
+          {
+            "name": "runtime_plugin_config",
+            "type": "string",
+            "description": "JSON config passed to runtime plugins.",
+            "required": false
+          },
+          {
+            "name": "lookup_hash_log_dir",
+            "type": "string",
+            "description": "Directory for lookup-hash logs (empty = off).",
+            "required": false
+          },
+          {
+            "name": "lookup_hash_log_rotation_interval",
+            "type": "string",
+            "description": "Lookup-hash log rotation interval in seconds.",
+            "required": false
+          },
+          {
+            "name": "lookup_hash_log_rotation_max_size",
+            "type": "string",
+            "description": "Max lookup-hash log size before rotation, in bytes.",
+            "required": false
+          },
+          {
+            "name": "lookup_hash_log_max_files",
+            "type": "string",
+            "description": "Max retained lookup-hash log files.",
+            "required": false
+          },
+          {
+            "name": "disable_observability",
+            "type": "string",
+            "description": "Disable all server observability.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "disable_metrics",
+            "type": "string",
+            "description": "Disable metrics emission.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "disable_logging",
+            "type": "string",
+            "description": "Disable server logging.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "enable_tracing",
+            "type": "string",
+            "description": "Enable distributed tracing.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "event_bus_queue_size",
+            "type": "string",
+            "description": "Event-bus queue size.",
+            "required": false
+          },
+          {
+            "name": "otlp_endpoint",
+            "type": "string",
+            "description": "OTLP collector endpoint (sink wiring deferred in v1).",
+            "required": false
+          },
+          {
+            "name": "prometheus_port",
+            "type": "string",
+            "description": "Prometheus scrape port (scrape wiring deferred in v1).",
+            "required": false
+          },
+          {
+            "name": "service_instance_id",
+            "type": "string",
+            "description": "Stable service-instance id for telemetry.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/set-router-config",
+      "description": "Set the KV-aware vLLM Router config for a multi-replica vLLM service (routing policy, capacity, retries, circuit breaker, etc.). Validated against the vllm-router schema; run `service-info advanced-config-schema vllm-router` to see the fields. Re-applies the router. Editable at any replica count; only takes effect while the router runs (replicas > 1).",
+      "endpoint": "/:aid/:cid/services/vllm/:id/set-router-config",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "routing_logic",
+            "type": "string",
+            "description": "Load-balancing / routing logic across vLLM replicas.",
+            "required": false,
+            "enum": [
+              "roundrobin",
+              "session",
+              "kvaware",
+              "prefixaware",
+              "disaggregated_prefill",
+              "disaggregated_prefill_orchestrated"
+            ]
+          },
+          {
+            "name": "max_concurrent_requests",
+            "type": "string",
+            "description": "Max in-flight requests the router admits at once.",
+            "required": false
+          },
+          {
+            "name": "queue_timeout_secs",
+            "type": "string",
+            "description": "Max seconds a request waits in the queue.",
+            "required": false
+          },
+          {
+            "name": "request_timeout_secs",
+            "type": "string",
+            "description": "Overall per-request timeout in seconds.",
+            "required": false
+          },
+          {
+            "name": "cors_allowed_origins",
+            "type": "string",
+            "description": "Comma-separated CORS allowed origins (empty = none).",
+            "required": false
+          },
+          {
+            "name": "cache_threshold",
+            "type": "string",
+            "description": "Prefix-match ratio above which a cached worker is preferred.",
+            "required": false
+          },
+          {
+            "name": "balance_abs_threshold",
+            "type": "string",
+            "description": "Absolute load gap before rebalancing off the cached worker.",
+            "required": false
+          },
+          {
+            "name": "balance_rel_threshold",
+            "type": "string",
+            "description": "Relative load ratio before rebalancing off the cached worker.",
+            "required": false
+          },
+          {
+            "name": "eviction_interval_secs",
+            "type": "string",
+            "description": "Seconds between prefix-tree eviction sweeps.",
+            "required": false
+          },
+          {
+            "name": "max_tree_size",
+            "type": "string",
+            "description": "Max nodes in the prefix-cache radix tree.",
+            "required": false
+          },
+          {
+            "name": "rate_limit_tokens_per_second",
+            "type": "string",
+            "description": "Token-bucket rate limit (defaults to max concurrent).",
+            "required": false
+          },
+          {
+            "name": "max_payload_size",
+            "type": "string",
+            "description": "Max request body size in bytes.",
+            "required": false
+          },
+          {
+            "name": "disable_retries",
+            "type": "string",
+            "description": "Turn off automatic retries of failed upstream requests.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "retry_max_retries",
+            "type": "string",
+            "description": "Maximum retry attempts per request.",
+            "required": false
+          },
+          {
+            "name": "retry_initial_backoff_ms",
+            "type": "string",
+            "description": "Initial retry backoff in milliseconds.",
+            "required": false
+          },
+          {
+            "name": "retry_max_backoff_ms",
+            "type": "string",
+            "description": "Maximum retry backoff in milliseconds.",
+            "required": false
+          },
+          {
+            "name": "retry_backoff_multiplier",
+            "type": "string",
+            "description": "Exponential backoff growth factor between retries.",
+            "required": false
+          },
+          {
+            "name": "retry_jitter_factor",
+            "type": "string",
+            "description": "Random jitter fraction added to each backoff.",
+            "required": false
+          },
+          {
+            "name": "disable_circuit_breaker",
+            "type": "string",
+            "description": "Turn off the per-worker circuit breaker.",
+            "required": false,
+            "enum": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "cb_failure_threshold",
+            "type": "string",
+            "description": "Failures before a worker circuit opens.",
+            "required": false
+          },
+          {
+            "name": "cb_success_threshold",
+            "type": "string",
+            "description": "Successes in half-open before the circuit closes.",
+            "required": false
+          },
+          {
+            "name": "cb_timeout_duration_secs",
+            "type": "string",
+            "description": "Seconds a circuit stays open before half-opening.",
+            "required": false
+          },
+          {
+            "name": "cb_window_duration_secs",
+            "type": "string",
+            "description": "Sliding window (s) over which failures are counted.",
+            "required": false
+          },
+          {
+            "name": "log_level",
+            "type": "string",
+            "description": "Router log verbosity.",
+            "required": false,
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ]
+          },
+          {
+            "name": "request_id_headers",
+            "type": "string",
+            "description": "Comma-separated headers to read a request id from.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/show",
+      "description": "Show vLLM instance static config; for runtime state use services/vllm/{id}/status",
+      "endpoint": "/:aid/:cid/services/vllm/:id",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "id",
+          "name",
+          "type",
+          "model",
+          "servedModelName",
+          "version",
+          "omni",
+          "gdsEnabled",
+          "publicHttps",
+          "apiKeySet",
+          "apiKeyUpdatedAt",
+          "gpuCount",
+          "storageMb",
+          "resourceRequirementClassId",
+          "modelSource",
+          "routerActive",
+          "stableInternalEndpoint",
+          "stableExternalEndpoint",
+          "directInternalEndpoint",
+          "directExternalEndpoint",
+          "stablePublicEndpoint",
+          "directPublicEndpoint",
+          "directReplicas",
+          "lmcacheMode",
+          "lmcacheValkeyOsid",
+          "lmcacheMinioOsid",
+          "nodeAffinityTags",
+          "createdAt"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/status",
+      "description": "Get vLLM deployment status",
+      "endpoint": "/:aid/:cid/services/vllm/:id/status",
+      "method": "GET",
+      "mcp": [
+        "read"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "state",
+          "replicas",
+          "message"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/update",
+      "description": "Update a vLLM instance. Omitted fields preserve their current value.",
+      "endpoint": "/:aid/:cid/services/vllm/:id",
+      "method": "PATCH",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "description": "Node affinity tag names (\"key\" or \"key:value\"; must exist, see tags/list; tags pin scheduling to nodes carrying them).",
+            "format": "string_array",
+            "required": false
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "description": "Instance name",
+            "required": false
+          },
+          {
+            "name": "model",
+            "type": "string",
+            "description": "HuggingFace model name",
+            "required": false
+          },
+          {
+            "name": "servedModelName",
+            "type": "string",
+            "description": "API-facing alias clients send as \"model\" (single token, no whitespace). Changing it rolls the pod and changes what clients must send.",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "description": "Resource class",
+            "required": false,
+            "enum": [
+              "vllm.c0.beff",
+              "vllm.c0.small",
+              "vllm.c0.medium",
+              "vllm.c0.large",
+              "vllm.c2.medium",
+              "vllm.c2.large",
+              "vllm.c4.large",
+              "vllm.c1.beff",
+              "vllm.c1.small",
+              "vllm.c1.medium",
+              "vllm.c1.large",
+              "custom"
+            ]
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "description": "Replica count. Overrides the seed baked into the resource class. Set to 2 or more to activate the KV-aware vLLM router; set to 1 to deactivate it. (foreman #37)",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "description": "vLLM version",
+            "required": false,
+            "enum": [
+              "0.25.1",
+              "0.25.1-perf",
+              "0.24.0",
+              "0.23.0",
+              "0.22.0",
+              "0.21.0"
+            ]
+          },
+          {
+            "name": "image",
+            "type": "string",
+            "description": "Custom container image, replacing the published image for --version. Send an empty string to drop back to the published image. Must pin a tag or digest. Cannot be combined with --omni.",
+            "required": false,
+            "allowEmpty": true
+          },
+          {
+            "name": "omni",
+            "type": "boolean",
+            "description": "Switches the service to the vllm-omni image variant (-omni tag) and adds --omni to serve; valid with versions 0.22.0 and 0.24.0. Toggling it rolls the pod.",
+            "required": false
+          },
+          {
+            "name": "gdsEnabled",
+            "type": "boolean",
+            "description": "GPUDirect Storage opt-in: stamps the cdi.k8s.io/gds annotation (nvidia.com/gds=all) on the pod so a CDI-enabled runtime injects the host /dev/nvidia-fs* devices. Requires the NVIDIA device plugin in CDI mode with a GDS CDI spec (nvidia-fs loaded); inert otherwise. Toggling it rolls the pod.",
+            "required": false
+          },
+          {
+            "name": "publicHttps",
+            "type": "boolean",
+            "description": "Expose the API on standard HTTPS port 443 (opt-in): the external endpoints also ride the websecure Traefik entrypoint next to the always-on 8890 one. Ingress-only, toggling does NOT roll the pod. The deploy warns when enabled without an API key set.",
+            "required": false
+          },
+          {
+            "name": "gpuCount",
+            "type": "integer",
+            "description": "Number of GPUs to allocate (0 for CPU-only)",
+            "required": false
+          },
+          {
+            "name": "modelSourceIntegrationId",
+            "type": "string",
+            "description": "Provider integration ID for S3 model source",
+            "required": false
+          },
+          {
+            "name": "modelSourceMinioServiceId",
+            "type": "string",
+            "description": "MinIO service ID for local model source",
+            "required": false
+          },
+          {
+            "name": "modelSourceBucket",
+            "type": "string",
+            "description": "Bucket name containing the model",
+            "required": false
+          },
+          {
+            "name": "modelSourcePath",
+            "type": "string",
+            "description": "Path to the model within the bucket",
+            "required": false
+          },
+          {
+            "name": "configType",
+            "type": "string",
+            "description": "Set to 'config_set' (with configSetId) to adopt/re-pin a config set; the set's current version is pinned. Switching to 'custom' is done via convert-to-custom, not here.",
+            "required": false,
+            "enum": [
+              "custom",
+              "config_set"
+            ]
+          },
+          {
+            "name": "configSetId",
+            "type": "string",
+            "description": "Config set lineage handle to adopt when configType is 'config_set'.",
+            "required": false
+          },
+          {
+            "name": "lmcacheMode",
+            "type": "string",
+            "description": "LMCache mode: 'off', 'local', or 'remote'. In-place switching is supported (deploys/tears down the standalone server live). See the lmcache topic.",
+            "required": false,
+            "enum": [
+              "off",
+              "local",
+              "remote"
+            ]
+          },
+          {
+            "name": "lmcacheValkeyOsid",
+            "type": "string",
+            "description": "OSID of a deployed Valkey instance to attach as the LMCache remote store.",
+            "required": false
+          },
+          {
+            "name": "lmcacheMinioOsid",
+            "type": "string",
+            "description": "OSID of a deployed MinIO instance to attach as the LMCache cold store. Requires lmcacheMode=remote.",
+            "required": false
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/upgrade-config-set",
+      "description": "Re-pin a config_set vLLM service to the latest version of its set and re-apply. Latest only; cannot pick a version. See the config-sets topic.",
+      "endpoint": "/:aid/:cid/services/vllm/:id/upgrade-config-set",
+      "method": "POST",
+      "mcp": [
+        "write"
+      ],
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "description": "Service ID (5-character identifier)",
+            "required": true,
+            "positional": true
+          }
+        ]
+      },
+      "output": {
+        "type": "object",
+        "fields": [
+          "jobId"
+        ]
+      }
+    }
+  ],
+  "advancedConfigSchemas": {
+    "vllm-router": {
+      "type": "vllm-router",
+      "fields": [
+        {
+          "key": "routing_logic",
+          "title": "Routing Logic",
+          "shortDescription": "Load-balancing / routing logic across vLLM replicas.",
+          "longDescription": "How the router picks which vLLM replica serves a request (`--routing-logic`). `roundrobin` (default) load-balances evenly and always works; `session` pins a client/session to a replica; `kvaware` routes to the replica most likely to already hold the prompt prefix in its KV cache (the cache-aware mode, integrates with LMCache); `prefixaware` routes by prompt-prefix locality; the `disaggregated_prefill*` modes split prefill and decode across replicas.",
+          "suggestedDefault": "roundrobin",
+          "category": "Routing",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "select",
+          "options": [
+            "roundrobin",
+            "session",
+            "kvaware",
+            "prefixaware",
+            "disaggregated_prefill",
+            "disaggregated_prefill_orchestrated"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_concurrent_requests",
+          "title": "Max Concurrent Requests",
+          "shortDescription": "Max in-flight requests the router admits at once.",
+          "longDescription": "Upper bound on requests the router processes simultaneously. Beyond this, requests are rejected. Raise for high-throughput fleets; lower to protect backends.",
+          "suggestedDefault": "32768",
+          "category": "Capacity",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "queue_timeout_secs",
+          "title": "Queue Timeout",
+          "shortDescription": "Max seconds a request waits in the queue.",
+          "longDescription": "Maximum seconds a request may sit in the admission queue before it is failed. Prevents requests from waiting indefinitely during sustained overload.",
+          "suggestedDefault": "60",
+          "category": "Capacity",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "request_timeout_secs",
+          "title": "Request Timeout",
+          "shortDescription": "Overall per-request timeout in seconds.",
+          "longDescription": "Overall timeout for a single request through the router, including generation time. Set high enough for your longest legitimate completion; the default 1800s suits long generations.",
+          "suggestedDefault": "1800",
+          "category": "Capacity",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cors_allowed_origins",
+          "title": "CORS Allowed Origins",
+          "shortDescription": "Comma-separated CORS allowed origins (empty = none).",
+          "longDescription": "Comma-separated list of browser origins permitted via CORS. Leave empty to disallow cross-origin browser requests; set when calling the router directly from a web app.",
+          "suggestedDefault": null,
+          "category": "HTTP",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "text",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cache_threshold",
+          "title": "Cache Threshold",
+          "shortDescription": "Prefix-match ratio above which a cached worker is preferred.",
+          "longDescription": "Minimum fraction of a prompt that must already be cached on a worker for cache_aware routing to prefer that worker over load balancing. Higher values demand a stronger prefix match before sacrificing balance.",
+          "suggestedDefault": "0.3",
+          "category": "Cache-aware tuning",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "balance_abs_threshold",
+          "title": "Balance Absolute Threshold",
+          "shortDescription": "Absolute load gap before rebalancing off the cached worker.",
+          "longDescription": "Absolute difference in in-flight requests between the cached worker and the least-loaded worker beyond which the router rebalances away from cache locality. Guards against overloading a hot cached replica.",
+          "suggestedDefault": "64",
+          "category": "Cache-aware tuning",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "balance_rel_threshold",
+          "title": "Balance Relative Threshold",
+          "shortDescription": "Relative load ratio before rebalancing off the cached worker.",
+          "longDescription": "Relative load ratio (cached worker vs least-loaded) above which the router prefers balance over cache locality. Works with the absolute threshold to bound cache-induced imbalance.",
+          "suggestedDefault": "1.5",
+          "category": "Cache-aware tuning",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "eviction_interval_secs",
+          "title": "Eviction Interval",
+          "shortDescription": "Seconds between prefix-tree eviction sweeps.",
+          "longDescription": "How often (seconds) the router sweeps its prefix-cache radix tree to evict stale entries, keeping the tree within max_tree_size and its view of worker caches fresh.",
+          "suggestedDefault": "120",
+          "category": "Cache-aware tuning",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_tree_size",
+          "title": "Max Tree Size",
+          "shortDescription": "Max nodes in the prefix-cache radix tree.",
+          "longDescription": "Maximum number of nodes in the router\u2019s prefix-cache radix tree. Larger tracks more prompt prefixes (better cache_aware decisions) using more router memory; the default is 2^26.",
+          "suggestedDefault": "67108864",
+          "category": "Cache-aware tuning",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "rate_limit_tokens_per_second",
+          "title": "Rate Limit (tokens/sec)",
+          "shortDescription": "Token-bucket rate limit (defaults to max concurrent).",
+          "longDescription": "Token-bucket cap on tokens admitted per second across the router. Leave unset to default to the max-concurrent setting; set to throttle aggregate token throughput.",
+          "suggestedDefault": null,
+          "category": "Capacity",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_payload_size",
+          "title": "Max Payload Size",
+          "shortDescription": "Max request body size in bytes.",
+          "longDescription": "Largest request body (bytes) the router accepts. Raise for very large multimodal or batch payloads; the default is 512 MB.",
+          "suggestedDefault": "536870912",
+          "category": "Capacity",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "disable_retries",
+          "title": "Disable Retries",
+          "shortDescription": "Turn off automatic retries of failed upstream requests.",
+          "longDescription": "When true, the router does not retry a request that fails against a worker. Leave false so transient worker errors are retried against another replica.",
+          "suggestedDefault": "false",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "retry_max_retries",
+          "title": "Max Retries",
+          "shortDescription": "Maximum retry attempts per request.",
+          "longDescription": "How many times the router retries a failed request (against other workers) before giving up. Higher improves resilience to flaky workers at the cost of added latency on failures.",
+          "suggestedDefault": "5",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "retry_initial_backoff_ms",
+          "title": "Initial Retry Backoff",
+          "shortDescription": "Initial retry backoff in milliseconds.",
+          "longDescription": "Delay before the first retry, in milliseconds. Grows by the backoff multiplier on each subsequent attempt.",
+          "suggestedDefault": "50",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "retry_max_backoff_ms",
+          "title": "Max Retry Backoff",
+          "shortDescription": "Maximum retry backoff in milliseconds.",
+          "longDescription": "Ceiling on the exponential retry backoff, in milliseconds, so retries do not wait unboundedly long.",
+          "suggestedDefault": "30000",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "retry_backoff_multiplier",
+          "title": "Retry Backoff Multiplier",
+          "shortDescription": "Exponential backoff growth factor between retries.",
+          "longDescription": "Factor the retry backoff is multiplied by after each attempt (exponential backoff). 1.5 grows delays moderately.",
+          "suggestedDefault": "1.5",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "retry_jitter_factor",
+          "title": "Retry Jitter Factor",
+          "shortDescription": "Random jitter fraction added to each backoff.",
+          "longDescription": "Random fraction (0\u20131) added to each backoff to de-correlate retries across concurrent requests and avoid thundering-herd retries.",
+          "suggestedDefault": "0.2",
+          "category": "Retries",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "disable_circuit_breaker",
+          "title": "Disable Circuit Breaker",
+          "shortDescription": "Turn off the per-worker circuit breaker.",
+          "longDescription": "When true, the router keeps sending to a worker even after repeated failures. Leave false so a failing replica is temporarily removed from rotation.",
+          "suggestedDefault": "false",
+          "category": "Circuit breaker",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cb_failure_threshold",
+          "title": "Failure Threshold",
+          "shortDescription": "Failures before a worker circuit opens.",
+          "longDescription": "Number of failures within the window before a worker\u2019s circuit opens (the router stops sending to it). Lower trips faster on bad workers.",
+          "suggestedDefault": "10",
+          "category": "Circuit breaker",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cb_success_threshold",
+          "title": "Success Threshold",
+          "shortDescription": "Successes in half-open before the circuit closes.",
+          "longDescription": "Consecutive successes required while half-open before a worker\u2019s circuit fully closes and it returns to normal rotation.",
+          "suggestedDefault": "3",
+          "category": "Circuit breaker",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cb_timeout_duration_secs",
+          "title": "Circuit Open Duration",
+          "shortDescription": "Seconds a circuit stays open before half-opening.",
+          "longDescription": "How long (seconds) a circuit stays fully open before the router probes the worker again (half-open).",
+          "suggestedDefault": "60",
+          "category": "Circuit breaker",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cb_window_duration_secs",
+          "title": "Failure Window",
+          "shortDescription": "Sliding window (s) over which failures are counted.",
+          "longDescription": "Sliding time window (seconds) over which failures are counted toward the failure threshold.",
+          "suggestedDefault": "120",
+          "category": "Circuit breaker",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "log_level",
+          "title": "Log Level",
+          "shortDescription": "Router log verbosity.",
+          "longDescription": "Verbosity of the router\u2019s own logs. `debug`/`trace` help diagnose routing decisions; `info` is the production default.",
+          "suggestedDefault": "info",
+          "category": "Logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "options": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "request_id_headers",
+          "title": "Request ID Headers",
+          "shortDescription": "Comma-separated headers to read a request id from.",
+          "longDescription": "Comma-separated header names the router reads a request/correlation id from for logging and tracing. Defaults to the common x-request-id family.",
+          "suggestedDefault": null,
+          "category": "Logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "text",
+          "unsetBy": "empty-string"
+        }
+      ]
+    },
+    "lmcache-server": {
+      "type": "lmcache-server",
+      "fields": [
+        {
+          "key": "chunk_size",
+          "title": "Chunk Size",
+          "shortDescription": "KV chunk size in tokens (must match the engine).",
+          "longDescription": "KV chunk size in tokens for the server. Must match the engine chunk_size so chunks line up; mismatched sizes prevent reuse. Default 256.",
+          "suggestedDefault": "256",
+          "category": "Core",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_size_gb",
+          "title": "L1 Cache Size (GB)",
+          "shortDescription": "Server in-memory (L1) cache size in GB.",
+          "longDescription": "Size of the server in-memory (L1) cache, in gigabytes. L1 is the hot tier in front of the L2 backend (Valkey/MinIO); size it against the server pod memory.",
+          "suggestedDefault": "20",
+          "category": "L1 memory",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "eviction_policy",
+          "title": "Eviction Policy",
+          "shortDescription": "L1 eviction policy.",
+          "longDescription": "How the server evicts from L1 when full. LRU is the default; IsolatedLRU partitions the LRU set; noop disables eviction (L1 must not overflow).",
+          "suggestedDefault": "LRU",
+          "category": "Eviction",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "LRU",
+            "IsolatedLRU",
+            "noop"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_workers",
+          "title": "Max Workers",
+          "shortDescription": "Worker processes the server runs.",
+          "longDescription": "Number of worker processes the server runs to handle transfers. Higher increases throughput and memory use; defaults to 1.",
+          "suggestedDefault": "1",
+          "category": "Workers",
+          "isAdvanced": false,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "engine_type",
+          "title": "Engine Type",
+          "shortDescription": "Server engine type.",
+          "longDescription": "Server engine type.",
+          "suggestedDefault": "default",
+          "category": "Core",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "default",
+            "blend"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "hash_algorithm",
+          "title": "Hash Algorithm",
+          "shortDescription": "Chunk hashing algorithm.",
+          "longDescription": "Chunk hashing algorithm.",
+          "suggestedDefault": "blake3",
+          "category": "Core",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "builtin",
+            "sha256_cbor",
+            "blake3"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "transfer_mode",
+          "title": "Transfer Mode",
+          "shortDescription": "Supported KV transfer mode. 0.25.x engines: auto/lmcache_driven/engine_driven; older engines (0.4.6 server): gpu/non_gpu.",
+          "longDescription": "Supported KV transfer mode. 0.25.x engines: auto/lmcache_driven/engine_driven; older engines (0.4.6 server): gpu/non_gpu.",
+          "suggestedDefault": "auto",
+          "category": "Core",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "auto",
+            "lmcache_driven",
+            "engine_driven",
+            "gpu",
+            "non_gpu"
+          ],
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_use_lazy",
+          "title": "L1 Use Lazy",
+          "shortDescription": "Allocate the L1 buffer lazily (upstream default: on).",
+          "longDescription": "Allocate the L1 buffer lazily (upstream default: on).",
+          "suggestedDefault": "true",
+          "category": "L1 memory",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_init_size_gb",
+          "title": "L1 Init Size Gb",
+          "shortDescription": "Initial L1 allocation in GB (lazy mode).",
+          "longDescription": "Initial L1 allocation in GB (lazy mode).",
+          "suggestedDefault": "20",
+          "category": "L1 memory",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_align_bytes",
+          "title": "L1 Align Bytes",
+          "shortDescription": "L1 allocation alignment in bytes.",
+          "longDescription": "L1 allocation alignment in bytes.",
+          "suggestedDefault": "4096",
+          "category": "L1 memory",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_write_ttl_seconds",
+          "title": "L1 Write Ttl Seconds",
+          "shortDescription": "TTL for written L1 entries, in seconds.",
+          "longDescription": "TTL for written L1 entries, in seconds.",
+          "suggestedDefault": "600",
+          "category": "L1 memory",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l1_read_ttl_seconds",
+          "title": "L1 Read Ttl Seconds",
+          "shortDescription": "TTL refresh on read for L1 entries, in seconds.",
+          "longDescription": "TTL refresh on read for L1 entries, in seconds.",
+          "suggestedDefault": "300",
+          "category": "L1 memory",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "eviction_trigger_watermark",
+          "title": "Eviction Trigger Watermark",
+          "shortDescription": "Fill ratio that triggers eviction.",
+          "longDescription": "Fill ratio that triggers eviction.",
+          "suggestedDefault": "0.8",
+          "category": "Eviction",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "eviction_ratio",
+          "title": "Eviction Ratio",
+          "shortDescription": "Fraction of L1 evicted per sweep.",
+          "longDescription": "Fraction of L1 evicted per sweep.",
+          "suggestedDefault": "0.2",
+          "category": "Eviction",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l2_store_policy",
+          "title": "L2 Store Policy",
+          "shortDescription": "L2 write/store policy (built-in: default; plugins may register more).",
+          "longDescription": "L2 write/store policy (built-in: default; plugins may register more).",
+          "suggestedDefault": "default",
+          "category": "L2 store",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "default"
+          ],
+          "openOptions": true,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l2_prefetch_policy",
+          "title": "L2 Prefetch Policy",
+          "shortDescription": "L2 prefetch policy (built-in: default, retain; plugins may register more).",
+          "longDescription": "L2 prefetch policy (built-in: default, retain; plugins may register more).",
+          "suggestedDefault": "default",
+          "category": "L2 store",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "select",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "options": [
+            "default",
+            "retain"
+          ],
+          "openOptions": true,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l2_prefetch_max_in_flight",
+          "title": "L2 Prefetch Max In Flight",
+          "shortDescription": "Max concurrent L2 prefetch operations.",
+          "longDescription": "Max concurrent L2 prefetch operations.",
+          "suggestedDefault": "8",
+          "category": "L2 store",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "l2_adapters",
+          "title": "L2 Adapters (JSON)",
+          "shortDescription": "Raw L2 adapter JSON escape hatch (RunOS renders this from the attached store).",
+          "longDescription": "Raw L2 storage-adapter JSON. Normally RunOS renders this for you from the Valkey/MinIO store you attach (resp / s3 adapters). Set it directly only as an escape hatch for exotic backends (e.g. mooncake_store, nixl_store) that are out of v1 scope.",
+          "suggestedDefault": null,
+          "category": "L2 store",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "json",
+          "valueShape": "json",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_gpu_workers",
+          "title": "Max Gpu Workers",
+          "shortDescription": "Max GPU workers (defaults to max_workers).",
+          "longDescription": "Max GPU workers (defaults to max_workers).",
+          "suggestedDefault": null,
+          "category": "Workers",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "max_cpu_workers",
+          "title": "Max Cpu Workers",
+          "shortDescription": "Max CPU workers (defaults to max_workers).",
+          "longDescription": "Max CPU workers (defaults to max_workers).",
+          "suggestedDefault": null,
+          "category": "Workers",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "runtime_plugin_locations",
+          "title": "Runtime Plugin Locations",
+          "shortDescription": "Runtime plugin locations (comma-separated; each becomes its own argument).",
+          "longDescription": "Runtime plugin locations (comma-separated; each becomes its own argument).",
+          "suggestedDefault": null,
+          "category": "Plugins",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "runtime_plugin_config",
+          "title": "Runtime Plugin Config",
+          "shortDescription": "JSON config passed to runtime plugins.",
+          "longDescription": "JSON config passed to runtime plugins.",
+          "suggestedDefault": null,
+          "category": "Plugins",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "json",
+          "valueShape": "json",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "lookup_hash_log_dir",
+          "title": "Lookup Hash Log Dir",
+          "shortDescription": "Directory for lookup-hash logs (empty = off).",
+          "longDescription": "Directory for lookup-hash logs (empty = off).",
+          "suggestedDefault": null,
+          "category": "Lookup logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "lookup_hash_log_rotation_interval",
+          "title": "Lookup Hash Log Rotation Interval",
+          "shortDescription": "Lookup-hash log rotation interval in seconds.",
+          "longDescription": "Lookup-hash log rotation interval in seconds.",
+          "suggestedDefault": "21600",
+          "category": "Lookup logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "lookup_hash_log_rotation_max_size",
+          "title": "Lookup Hash Log Rotation Max Size",
+          "shortDescription": "Max lookup-hash log size before rotation, in bytes.",
+          "longDescription": "Max lookup-hash log size before rotation, in bytes.",
+          "suggestedDefault": "104857600",
+          "category": "Lookup logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "lookup_hash_log_max_files",
+          "title": "Lookup Hash Log Max Files",
+          "shortDescription": "Max retained lookup-hash log files.",
+          "longDescription": "Max retained lookup-hash log files.",
+          "suggestedDefault": "100",
+          "category": "Lookup logging",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 0,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "disable_observability",
+          "title": "Disable Observability",
+          "shortDescription": "Disable all server observability.",
+          "longDescription": "Disable all server observability.",
+          "suggestedDefault": "false",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "disable_metrics",
+          "title": "Disable Metrics",
+          "shortDescription": "Disable metrics emission.",
+          "longDescription": "Disable metrics emission.",
+          "suggestedDefault": "false",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "disable_logging",
+          "title": "Disable Logging",
+          "shortDescription": "Disable server logging.",
+          "longDescription": "Disable server logging.",
+          "suggestedDefault": "false",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "enable_tracing",
+          "title": "Enable Tracing",
+          "shortDescription": "Enable distributed tracing.",
+          "longDescription": "Enable distributed tracing.",
+          "suggestedDefault": "false",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "event_bus_queue_size",
+          "title": "Event Bus Queue Size",
+          "shortDescription": "Event-bus queue size.",
+          "longDescription": "Event-bus queue size.",
+          "suggestedDefault": "10000",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 1,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "otlp_endpoint",
+          "title": "Otlp Endpoint",
+          "shortDescription": "OTLP collector endpoint (sink wiring deferred in v1).",
+          "longDescription": "OTLP collector endpoint (sink wiring deferred in v1).",
+          "suggestedDefault": null,
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "prometheus_port",
+          "title": "Prometheus Port",
+          "shortDescription": "Prometheus scrape port (scrape wiring deferred in v1).",
+          "longDescription": "Prometheus scrape port (scrape wiring deferred in v1).",
+          "suggestedDefault": "9090",
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "min": 1,
+          "max": 65535,
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "service_instance_id",
+          "title": "Service Instance Id",
+          "shortDescription": "Stable service-instance id for telemetry.",
+          "longDescription": "Stable service-instance id for telemetry.",
+          "suggestedDefault": null,
+          "category": "Observability",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        }
+      ]
+    }
+  }
+}
