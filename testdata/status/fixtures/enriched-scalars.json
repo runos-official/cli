@@ -1,0 +1,14 @@
+{
+  "backendName": "images-object-store",
+  "backendType": "minio",
+  "dependencyCheck": "unreadable",
+  "faultDomain": "backend",
+  "message": "the backing service health check could not answer",
+  "reason": "backend-unreadable",
+  "replicas": {
+    "available": 1,
+    "desired": 1,
+    "ready": 1
+  },
+  "state": "degraded"
+}

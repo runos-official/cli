@@ -1,0 +1,13 @@
+{
+  "backend": {
+    "name": "images-object-store",
+    "osid": "ms001",
+    "reason": "no usable drives",
+    "state": "unhealthy",
+    "type": "minio"
+  },
+  "coreReady": true,
+  "faultDomain": "backend",
+  "message": "a recorded backing service cannot serve",
+  "state": "unhealthy"
+}

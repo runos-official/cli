@@ -1,0 +1,277 @@
+{
+  "generated_by": "scripts/status_command_set.py",
+  "rule": "every manifest command whose path ends in the segment 'status', plus the cluster deployment-readiness command clusters/is-app-deployment-ready",
+  "manifest_version": "45.4.0",
+  "source": "live unfiltered /cli/manifest fetch from the RunOS dev environment, 2026-09-07",
+  "count": 26,
+  "commands": [
+    {
+      "command": "apps/status",
+      "endpoint": "/:aid/:cid/apps/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "reason",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "clusters/is-app-deployment-ready",
+      "endpoint": "/:aid/clusters/:cid/is-app-deployment-ready",
+      "output_type": "object",
+      "output_fields": [
+        "ready",
+        "harbor",
+        "minio",
+        "buildkit"
+      ]
+    },
+    {
+      "command": "integrations/github-arc/status",
+      "endpoint": "/:aid/:cid/integrations/:integrationId/status",
+      "output_type": "object",
+      "output_fields": [
+        "activated",
+        "status",
+        "metadata",
+        "activatedAt"
+      ]
+    },
+    {
+      "command": "integrations/gitlab-runner/status",
+      "endpoint": "/:aid/:cid/integrations/:integrationId/status",
+      "output_type": "object",
+      "output_fields": [
+        "activated",
+        "status",
+        "metadata",
+        "activatedAt"
+      ]
+    },
+    {
+      "command": "services/cert-manager/{id}/status",
+      "endpoint": "/:aid/:cid/services/cert-manager/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "ready"
+      ]
+    },
+    {
+      "command": "services/clickhouse/{id}/status",
+      "endpoint": "/:aid/:cid/services/clickhouse/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/grafana/{id}/status",
+      "endpoint": "/:aid/:cid/services/grafana/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "services/harbor/{id}/status",
+      "endpoint": "/:aid/:cid/services/harbor/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "coreReady",
+        "message"
+      ]
+    },
+    {
+      "command": "services/kafka/{id}/status",
+      "endpoint": "/:aid/:cid/services/kafka/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "reason",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "services/langfuse/{id}/status",
+      "endpoint": "/:aid/:cid/services/langfuse/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "webReady",
+        "workerReady",
+        "message"
+      ]
+    },
+    {
+      "command": "services/linstor/{id}/status",
+      "endpoint": "/:aid/:cid/services/linstor/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "services/litellm/{id}/status",
+      "endpoint": "/:aid/:cid/services/litellm/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/minio/{id}/status",
+      "endpoint": "/:aid/:cid/services/minio/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "healthStatus",
+        "message"
+      ]
+    },
+    {
+      "command": "services/mysql/{id}/status",
+      "endpoint": "/:aid/:cid/services/mysql/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "reason",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/netbird-client/{id}/status",
+      "endpoint": "/:aid/:cid/services/netbird-client/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/netbird-server/{id}/status",
+      "endpoint": "/:aid/:cid/services/netbird-server/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/ollama/{id}/status",
+      "endpoint": "/:aid/:cid/services/ollama/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "services/postgresql/{id}/status",
+      "endpoint": "/:aid/:cid/services/postgresql/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "reason",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/prometheus/{id}/status",
+      "endpoint": "/:aid/:cid/services/prometheus/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/rabbitmq/{id}/status",
+      "endpoint": "/:aid/:cid/services/rabbitmq/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/traefik/{id}/status",
+      "endpoint": "/:aid/:cid/services/traefik/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/umami/{id}/status",
+      "endpoint": "/:aid/:cid/services/umami/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "reason",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "services/valkey/{id}/status",
+      "endpoint": "/:aid/:cid/services/valkey/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/vector/{id}/status",
+      "endpoint": "/:aid/:cid/services/vector/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas"
+      ]
+    },
+    {
+      "command": "services/vllm/{id}/status",
+      "endpoint": "/:aid/:cid/services/vllm/:id/status",
+      "output_type": "object",
+      "output_fields": [
+        "state",
+        "replicas",
+        "message"
+      ]
+    },
+    {
+      "command": "virt/status",
+      "endpoint": "/:aid/:cid/virt",
+      "output_type": "object",
+      "output_fields": [
+        "installed",
+        "unreadable",
+        "unreadableReason",
+        "kubevirt",
+        "cdi",
+        "cpuBaseline",
+        "cpuAllocationRatio",
+        "requestedFeatureGates",
+        "disabledFeatureGates",
+        "ready",
+        "reason",
+        "remediation",
+        "code",
+        "availableVersions"
+      ]
+    }
+  ]
+}
