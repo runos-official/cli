@@ -103,10 +103,33 @@ Three costs, in the order they bite an operator:
 THE CHANGE. Make the mapper type-aware, deriving the manifest type from what the catalog
 already declares:
 
-> `valueShape: 'json'`    ->  `type: 'object'`
-> `inputType: 'number'`   ->  `type: 'integer'`
-> `inputType: 'toggle'`   ->  `type: 'boolean'`
-> everything else         ->  `type: 'string'` (unchanged)
+> `valueShape: 'json'`                       ->  `type: 'object'`
+> `inputType: 'toggle'`                      ->  `type: 'boolean'`
+> `inputType: 'number'`, integral `step`     ->  `type: 'integer'`
+> `inputType: 'number'`, fractional `step`   ->  `type: 'string'` (unchanged)
+> everything else                            ->  `type: 'string'` (unchanged)
+
+THE NUMBER ARM IS CONDITIONAL, AND MUST STAY THAT WAY. `inputType: 'number'` is a UI
+numeric-input hint, and it covers FRACTIONAL values; the catalog says which through `step`.
+The CLI's `integer` type registers a `ParseInt` flag and there is no float manifest type on
+either side, so retyping a fractional field `integer` REGRESSES it from reachable to
+unreachable: measured against the checked-in snapshot, `cache_threshold` declared `integer`
+gives a pflag `int` that refuses `--cache-threshold 0.3` with
+`strconv.ParseInt: parsing "0.3": invalid syntax`, while the `string` it has today accepts
+that value and sends it. Four of the seven have `min: 0, max: 1`, so an integer flag would
+leave an operator nothing but 0 and 1 for a field whose own suggested default is 0.3 or 0.8.
+
+The seven fractional keys on this build, all `step: 0.01`, named the way cost 2 names the
+toggles so the carve-out is visible rather than inferred:
+
+> `vllm-router`: `cache_threshold` (default 0.3), `balance_rel_threshold` (1.5),
+> `retry_backoff_multiplier` (1.5), `retry_jitter_factor` (0.2)
+> `lmcache-server`: `eviction_trigger_watermark` (0.8), `eviction_ratio` (0.2), `l1_size_gb`
+
+THE RESIDUAL, STATED. Those seven stay `string` and stay unvalidated at the flag. Closing
+that needs a float type on BOTH sides — a manifest type conductor emits and a matching arm in
+the CLI's registration switch — which is a separate and smaller change due than this one. Do
+not fold it in by widening the integer arm.
 
 Those are the property names the PUBLISHED schema carries, and they are the ones checkable
 against the snapshot beside this file: the full key union of every catalog field there is
@@ -146,13 +169,26 @@ type switch already has `integer`, `object`, `array` and `boolean` arms beside `
 to refuse `key=value` (`internal/dynacmd/object_flag.go`). Each of those arms starts working the
 moment the manifest declares the type.
 
-THIS RECORD IS CHECKED, not just written. `TestNotesSection5MatchesTheSnapshot` and
-`TestNotesSection5PrescribesPropertiesTheCatalogCarries` in
-`internal/dynacmd/vllm_fields_test.go` derive the census, the toggle key names and the
-json-shaped key names from the checked-in snapshot and compare them here, and they parse the
-mapping above and refuse a left-hand property that no field in that snapshot carries. So
-regenerating the artefact against a later build fails a test rather than silently dating this
-record, and a mapping arm that would match nothing cannot be written here unnoticed.
+THIS RECORD IS CHECKED, not just written. Four tests in
+`internal/dynacmd/vllm_fields_test.go` hold it to the checked-in snapshot:
+
+- `TestNotesSection5MatchesTheSnapshot` derives the census and the toggle and json-shaped key
+  names from the snapshot and compares them here, so regenerating the artefact against a later
+  build fails a test rather than silently dating this record.
+- `TestNotesSection5PrescribesPropertiesTheCatalogCarries` parses the mapping above and
+  refuses a LEFT-hand property no field in the snapshot carries, so an arm that would match
+  nothing cannot be written here unnoticed.
+- `TestNotesSection5PrescriptionAcceptsEveryFieldsOwnDefault` applies the mapping to every
+  catalog field and asserts the flag it produces accepts that field's own `suggestedDefault`,
+  and its `step` where that is fractional. This is the RIGHT-hand check: an arm that fires and
+  produces a type the field's own values cannot pass through is what turned seven reachable
+  fields unreachable in the first draft of this section.
+- `TestNotesSection5NamesEveryFractionalKey` keeps the seven names above in step with the
+  snapshot.
+
+The mapping is duplicated as `prescribedManifestType` in that file, deliberately: prose cannot
+be executed, and the point of the last two tests is to run this prescription rather than read
+it. Change both together.
 
 ## 6. Eight vLLM fields are write-only, so IaC cannot round-trip them (objective 92 / story 212)
 

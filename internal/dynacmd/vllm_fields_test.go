@@ -3,11 +3,13 @@ package dynacmd
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -65,10 +67,16 @@ type vllmSnapshot struct {
 	AdvancedConfigSchemas map[string]struct {
 		Type   string `json:"type"`
 		Fields []struct {
-			Key        string `json:"key"`
-			InputType  string `json:"inputType"`
-			ValueShape string `json:"valueShape"`
-			Delivery   string `json:"delivery"`
+			Key        string   `json:"key"`
+			InputType  string   `json:"inputType"`
+			ValueShape string   `json:"valueShape"`
+			Delivery   string   `json:"delivery"`
+			Step       *float64 `json:"step"`
+			Min        *float64 `json:"min"`
+			Max        *float64 `json:"max"`
+			// suggestedDefault is a STRING in the catalog ("0.3", "24") and is
+			// null when the field has no default.
+			SuggestedDefault *string `json:"suggestedDefault"`
 		} `json:"fields"`
 	} `json:"advancedConfigSchemas"`
 }
@@ -688,4 +696,166 @@ func TestNotesSection5PrescribesPropertiesTheCatalogCarries(t *testing.T) {
 				"lists would survive the change it prescribes", want)
 		}
 	}
+}
+
+// catalogField is one advanced-config field as the snapshot publishes it.
+type catalogField = struct {
+	Key              string   `json:"key"`
+	InputType        string   `json:"inputType"`
+	ValueShape       string   `json:"valueShape"`
+	Delivery         string   `json:"delivery"`
+	Step             *float64 `json:"step"`
+	Min              *float64 `json:"min"`
+	Max              *float64 `json:"max"`
+	SuggestedDefault *string  `json:"suggestedDefault"`
+}
+
+// fractionalCatalogField reports whether a numeric catalog field carries
+// fractional values. `inputType: number` is only a UI hint; `step` is where the
+// catalog says whether the value is a whole number.
+func fractionalCatalogField(f catalogField) bool {
+	if f.Step != nil && *f.Step != math.Trunc(*f.Step) {
+		return true
+	}
+	for _, v := range []*float64{f.Min, f.Max} {
+		if v != nil && *v != math.Trunc(*v) {
+			return true
+		}
+	}
+	return f.SuggestedDefault != nil && strings.Contains(*f.SuggestedDefault, ".")
+}
+
+// prescribedManifestType is NOTES-manifest.md section 5's mapping in
+// EXECUTABLE form. The section is prose a conductor implementer applies by
+// hand; this is the same rule as code, so the test below can check what the
+// prescription PRODUCES rather than only how it is spelled.
+//
+// Keep the two in step. TestNotesSection5PrescribesPropertiesTheCatalogCarries
+// checks the section still spells these arms; this function is what decides
+// whether they are right.
+func prescribedManifestType(f catalogField) string {
+	switch {
+	case f.ValueShape == "json":
+		return "object"
+	case f.InputType == "toggle":
+		return "boolean"
+	case f.InputType == "number" && !fractionalCatalogField(f):
+		return "integer"
+	default:
+		// Fractional numbers land here deliberately: there is no float
+		// manifest type and no float arm in the registration switch, so
+		// `integer` would refuse the field's own default.
+		return "string"
+	}
+}
+
+// buildOneFieldCommand registers a single manifest field through the REAL
+// builder, so the flag under test is the one an operator would get.
+func buildOneFieldCommand(t *testing.T, fieldName, manifestType string) *cobra.Command {
+	t.Helper()
+	cmdDef := manifest.Command{
+		Command:  "services/vllm/{id}/set-router-config",
+		Endpoint: "/:aid/:cid/services/vllm/:id/set-router-config",
+		Method:   http.MethodPost,
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+			{Name: fieldName, Type: manifestType},
+		}},
+	}
+	m := &manifest.Manifest{Commands: []manifest.Command{cmdDef}}
+	return findLeafCommand(t, NewBuilder(m, NewExecutor("http://127.0.0.1:1")).BuildCommands(), cmdDef.Command)
+}
+
+// TestNotesSection5PrescriptionAcceptsEveryFieldsOwnDefault is the check that
+// the earlier section-5 tests could not make.
+//
+// Review cycle 3 found the prescribed `inputType: 'number' -> integer` arm was
+// UNCONDITIONAL, so applying it verbatim would have retyped seven fractional
+// fields to a ParseInt flag that refuses their own suggested defaults —
+// turning reachable fields unreachable, which is the exact harm this story
+// exists to prevent. The cycle-2 tests missed it because they only validated
+// the LEFT side of each arm: an arm that fires and produces the wrong type
+// passed.
+//
+// So this one applies the prescription to every catalog field in the snapshot
+// and asserts the resulting flag ACCEPTS that field's own suggestedDefault. A
+// prescription that cannot carry the catalog's own default value is wrong,
+// whatever it is spelled.
+func TestNotesSection5PrescriptionAcceptsEveryFieldsOwnDefault(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+
+	checked := 0
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			if f.SuggestedDefault == nil || *f.SuggestedDefault == "" {
+				continue // No default to carry.
+			}
+			manifestType := prescribedManifestType(f)
+			if _, known := pflagTypeForManifestType[manifestType]; !known {
+				t.Errorf("%s/%s: the prescription produces manifest type %q, which the "+
+					"builder's registration switch has no arm for", catalogType, f.Key, manifestType)
+				continue
+			}
+			checked++
+
+			leaf := buildOneFieldCommand(t, f.Key, manifestType)
+			flagName := flagNameFor(f.Key)
+
+			// A field can declare a fractional step and still have a WHOLE
+			// suggested default (l1_size_gb: step 0.01, default "20"), so the
+			// default alone would not reveal a wrong type. Probe the step
+			// value too, which is by definition a legal increment.
+			if f.Step != nil && *f.Step != math.Trunc(*f.Step) {
+				probe := strconv.FormatFloat(*f.Step, 'f', -1, 64)
+				if err := leaf.Flags().Set(flagName, probe); err != nil {
+					t.Errorf("%s/%s: NOTES section 5 prescribes manifest type %q, but the flag "+
+						"it builds REFUSES the field's own step %q: %v\n"+
+						"  A fractional field typed %q cannot take a fractional value.",
+						catalogType, f.Key, manifestType, probe, err, manifestType)
+				}
+				leaf = buildOneFieldCommand(t, f.Key, manifestType)
+			}
+
+			if err := leaf.Flags().Set(flagName, *f.SuggestedDefault); err != nil {
+				t.Errorf("%s/%s: NOTES section 5 prescribes manifest type %q, but the flag it "+
+					"builds REFUSES the field's own suggested default %q: %v\n"+
+					"  (inputType=%q valueShape=%q step=%v)\n"+
+					"  A prescription that makes a reachable field unreachable is wrong; "+
+					"re-read the conditional number arm in section 5.",
+					catalogType, f.Key, manifestType, *f.SuggestedDefault, err,
+					f.InputType, f.ValueShape, f.Step)
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no catalog field carried a suggested default; the prescription was never applied")
+	}
+	t.Logf("applied section 5's prescription to %d catalog field(s) with a default", checked)
+}
+
+// TestNotesSection5NamesEveryFractionalKey keeps the human half of the record
+// in step with the executable half: a fractional key the section does not name
+// is a carve-out the conductor implementer has to infer.
+func TestNotesSection5NamesEveryFractionalKey(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	fractional := 0
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			if f.InputType != "number" || !fractionalCatalogField(f) {
+				continue
+			}
+			fractional++
+			if !strings.Contains(section, f.Key) {
+				t.Errorf("%s: fractional key %q is not named in section 5, so a reader cannot "+
+					"see which fields the conditional number arm covers", catalogType, f.Key)
+			}
+		}
+	}
+	if fractional == 0 {
+		t.Fatal("no fractional number field found in the snapshot; the carve-out is vacuous")
+	}
+	t.Logf("section 5 names all %d fractional number key(s)", fractional)
 }
