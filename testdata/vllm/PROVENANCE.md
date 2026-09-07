@@ -15,7 +15,7 @@ The cheap runtime discriminator is the input-field count of
 
 ## manifest-pre-45.5.0.json
 
-- Source: live fetch, `GET https://api.dev.runos.com/cli/manifest`, 2026-09-07, rjwrn dev PAT.
+- Source: live fetch, `GET https://api.dev.runos.com/cli/manifest`, 2026-09-07, with a dev PAT.
 - Conductor: `0fd5d0f2` on `origin/dev` (merge of objective 91), deployed to runos-dev as
   deployment 70, resolved version 1.29.0-rc.17.
 - Verified pre-change on BOTH dependencies before it was used as a baseline: `set-router-config`
