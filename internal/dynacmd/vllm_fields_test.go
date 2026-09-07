@@ -889,62 +889,173 @@ func buildRecordingCommand(t *testing.T, fieldName, manifestType string, sent *[
 	return leaf, cmdDef, exec
 }
 
+// sendOneField declares ONE manifest field of the given type, sets it to
+// value, runs it through the real executor, and returns what the request body
+// carried for that field. Reading the body is the point: the earlier section-5
+// tests all stopped at the flag.
+func sendOneField(t *testing.T, fieldName, manifestType, value string) any {
+	t.Helper()
+	var sent []byte
+	leaf, cmdDef, exec := buildRecordingCommand(t, fieldName, manifestType, &sent)
+	if err := leaf.Flags().Set(flagNameFor(fieldName), value); err != nil {
+		t.Fatalf("declared %q: set --%s %q: %v", manifestType, flagNameFor(fieldName), value, err)
+	}
+	if err := exec.Execute(leaf, []string{"svc1"}, cmdDef); err != nil {
+		t.Fatalf("declared %q: Execute: %v", manifestType, err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(sent, &body); err != nil {
+		t.Fatalf("request body is not JSON: %v (%q)", err, sent)
+	}
+	return body[fieldName]
+}
+
 // TestRetypingWouldSendANonStringBody measures NOTES-manifest.md section 5's
-// FIRST blocker.
+// FIRST blocker, at the WIRE rather than at the flag.
 //
-// The operator decision on this story narrowed the section from "retype these
-// fields" to "here is what a complete change has to move together", because a
-// typed flag does not only change what the CLI accepts — it changes the JSON
-// the CLI SENDS, and the set-*-config family takes a string-to-string record.
-// The earlier draft said the CLI needed no change, which was true of the flag
-// and false of the body.
+// The set-*-config family is string-valued by contract: foreman #40 was this
+// exact failure on the -f path, where a YAML `queue_size: 128` reached the
+// wire as a number and conductor refused it with "expected a string but got
+// number" (see coerceBodyFileValue in executor.go and its test). The flag path
+// has the same contract, so a retyped field breaks it the same way.
 //
-// This is the measurement behind that claim, so the record cannot quietly stop
-// being true: the same value, declared three ways, reaches the wire as three
-// different JSON types.
+// Every earlier section-5 test stopped at flag registration — cycle 2 checked
+// the left side of each arm, cycle 3 checked that the arm produced a flag the
+// field's own default could pass through. None of them asked what the field
+// then PUT IN THE BODY. So this one sends every catalog field's own
+// suggestedDefault through the real executor, twice: as declared today, and
+// under the type the mapping would give it.
 func TestRetypingWouldSendANonStringBody(t *testing.T) {
-	cases := []struct {
-		manifestType string
-		field        string
-		value        string
-		wantGoType   string
-	}{
-		{"string", "max_concurrent_requests", "128", "string"},
-		{"integer", "max_concurrent_requests", "128", "float64"}, // JSON number
-		{"boolean", "disable_retries", "true", "bool"},
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	total, wouldStopBeingAString, measured := 0, 0, 0
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			total++
+			prescribed := prescribedManifestType(f)
+			if prescribed != "string" {
+				wouldStopBeingAString++
+			}
+			if f.SuggestedDefault == nil || *f.SuggestedDefault == "" {
+				continue // Nothing of the field's own to send.
+			}
+			measured++
+
+			// As DECLARED today the body carries a JSON string, which is what
+			// the Record<string,string> validator requires.
+			if got := sendOneField(t, f.Key, "string", *f.SuggestedDefault); !isJSONString(got) {
+				t.Errorf("%s/%s: declared `string` today, the body carries %#v, not a JSON "+
+					"string; blocker 1's premise is wrong and must be re-measured",
+					catalogType, f.Key, got)
+			}
+			if prescribed == "string" {
+				continue
+			}
+
+			// Retyped, the same value stops being a string on the wire. That
+			// is the regression, so assert it rather than assume it.
+			if got := sendOneField(t, f.Key, prescribed, *f.SuggestedDefault); isJSONString(got) {
+				t.Errorf("%s/%s: retyped %q the body still carries the string %#v, so section "+
+					"5's blocker 1 OVERSTATES the cost; re-measure it",
+					catalogType, f.Key, prescribed, got)
+			}
+		}
 	}
 
-	for _, tc := range cases {
+	// The three json-shaped keys carry no suggestedDefault, so the loop above
+	// never exercises the `object` arm. extra_env is the one that matters:
+	// section 5 says it works TODAY as a JSON string through conductor's
+	// parseRouterExtraEnv, and the mapping would stop sending that string.
+	const wholeJSON = `{"HF_HUB_OFFLINE":"1"}`
+	if got := sendOneField(t, "extra_env", "string", wholeJSON); !isJSONString(got) {
+		t.Errorf("extra_env declared `string` sent %#v, not the JSON string section 5 says "+
+			"parseRouterExtraEnv reads", got)
+	}
+	if got := sendOneField(t, "extra_env", "object", wholeJSON); isJSONString(got) {
+		t.Errorf("extra_env declared `object` still sent a string (%#v); section 5's "+
+			"parseRouterExtraEnv precondition would be unnecessary", got)
+	}
+
+	if measured == 0 {
+		t.Fatal("no catalog field was sent; blocker 1 is unmeasured")
+	}
+	// The record states the count, so derive it here rather than trust prose.
+	wantCount := fmt.Sprintf("%d of the %d", wouldStopBeingAString, total)
+	if !strings.Contains(section, wantCount) {
+		t.Errorf("section 5's blocker 1 does not say %q; measured %d of %d fields that stop "+
+			"sending a JSON string when retyped", wantCount, wouldStopBeingAString, total)
+	}
+	// The precedent and the parser precondition are the two things a conductor
+	// implementer acts on. Neither may be dropped by a later edit.
+	// Each phrase is chosen to be unique to the statement it stands for.
+	// "parseRouterExtraEnv" alone is not enough: the section names that parser
+	// elsewhere just to say extra_env works today, so matching the bare name
+	// would pass even with the precondition deleted.
+	for _, want := range []string{
+		"foreman #40",
+		"Record<string,string>",
+		"must accept an object as well as a JSON string",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("section 5 no longer states %q, so a reader could apply the mapping "+
+				"without knowing what it breaks", want)
+		}
+	}
+	t.Logf("sent %d catalog default(s) through the executor; %d of %d keys stop sending a "+
+		"JSON string when retyped", measured, wouldStopBeingAString, total)
+}
+
+// isJSONString reports whether a decoded JSON body value is a string. A number
+// decodes to float64 and a boolean to bool, which is the whole distinction
+// blocker 1 turns on.
+func isJSONString(v any) bool {
+	_, ok := v.(string)
+	return ok
+}
+
+// TestTheBodyFileStillCarriesTheUnsetAfterRetyping is the correction the
+// fourth review cycle earned.
+//
+// An earlier draft of blocker 2 said retyping removes the ONLY way to unset a
+// field. That was too strong: coerceBodyFileValue returns a value it cannot
+// convert UNCHANGED (foreman #40's deliberate escape hatch), so an empty
+// string in a -f body file still reaches the wire whatever the field is
+// declared. The loss is on the FLAG surface, and the record now says that.
+//
+// If this ever stops being true the correction becomes wrong, so it is
+// measured rather than asserted.
+func TestTheBodyFileStillCarriesTheUnsetAfterRetyping(t *testing.T) {
+	for _, manifestType := range []string{"string", "integer", "boolean"} {
 		var sent []byte
-		leaf, cmdDef, exec := buildRecordingCommand(t, tc.field, tc.manifestType, &sent)
-		if err := leaf.Flags().Set(flagNameFor(tc.field), tc.value); err != nil {
-			t.Fatalf("%s: set --%s: %v", tc.manifestType, flagNameFor(tc.field), err)
+		leaf, cmdDef, exec := buildRecordingCommand(t, "max_concurrent_requests", manifestType, &sent)
+
+		path := filepath.Join(t.TempDir(), "body.yaml")
+		if err := os.WriteFile(path, []byte("max_concurrent_requests: \"\"\n"), 0o600); err != nil {
+			t.Fatalf("write body file: %v", err)
+		}
+		if err := leaf.Flags().Set("file", path); err != nil {
+			t.Fatalf("set --file: %v", err)
 		}
 		if err := exec.Execute(leaf, []string{"svc1"}, cmdDef); err != nil {
-			t.Fatalf("%s: Execute: %v", tc.manifestType, err)
+			t.Fatalf("declared %q: Execute: %v", manifestType, err)
 		}
 
 		var body map[string]any
 		if err := json.Unmarshal(sent, &body); err != nil {
-			t.Fatalf("%s: request body is not JSON: %v (%q)", tc.manifestType, err, sent)
+			t.Fatalf("declared %q: body is not JSON: %v (%q)", manifestType, err, sent)
 		}
-		got := body[tc.field]
-		if gotType := fmt.Sprintf("%T", got); gotType != tc.wantGoType {
-			t.Errorf("declared %q, --%s %s sent %v (%s), want a %s on the wire.\n"+
-				"  NOTES section 5 blocker 1 says retyping changes the BODY, not just the "+
-				"flag; if this changed, re-measure that table.",
-				tc.manifestType, flagNameFor(tc.field), tc.value, got, gotType, tc.wantGoType)
+		if got := body["max_concurrent_requests"]; got != "" {
+			t.Errorf("declared %q, a -f body file carrying the empty-string unset sent %#v, "+
+				"want \"\". Section 5 blocker 2 calls the -f path the surviving unset route; "+
+				"if that is no longer true, retyping loses the unset ENTIRELY and the record "+
+				"understates the cost.", manifestType, got)
 		}
 	}
 
-	// The measurement and the record have to move together, which is the whole
-	// point of writing the blocker down.
-	section := notesSection5(t)
-	for _, want := range []string{"BLOCKER 1", "string-to-string record"} {
-		if !strings.Contains(section, want) {
-			t.Errorf("section 5 no longer states %q, so a reader could apply the mapping "+
-				"without knowing the endpoint contract has to move with it", want)
-		}
+	if section := notesSection5(t); !strings.Contains(section, "FLAG-SURFACE LOSS") {
+		t.Error("section 5 no longer distinguishes the flag-surface loss from total " +
+			"unreachability, which is the distinction this test exists to keep honest")
 	}
 }
 

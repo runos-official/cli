@@ -106,17 +106,42 @@ is in scope for this story, and neither is designed here. Both blockers are meas
 against the checked-in snapshot and the CLI as it stands. Do the whole thing or do not start:
 a mapper-only change breaks every field it retypes.
 
-BLOCKER 1, THE REQUEST BODY. The `set-*-config` family takes a string-to-string record. The
-CLI serialises each field by its MANIFEST type (the `collectInput` type switch in
-`internal/dynacmd/executor.go`), so retyping changes the value ON THE WIRE, not just the flag.
-Measured against a recording stub, one field declared each way:
+BLOCKER 1, THE REQUEST BODY. The `set-*-config` family is string-valued BY CONTRACT, not by
+mapper laziness, and this repo already paid for learning that. The CLI serialises each field
+by its MANIFEST type (the `collectInput` type switch in `internal/dynacmd/executor.go`), so
+retyping changes the value ON THE WIRE, not just the flag. Measured against a recording stub,
+one field declared each way:
 
-    type: 'string'    --max-concurrent-requests 128   ->  {"max_concurrent_requests":"128"}
-    type: 'integer'   --max-concurrent-requests 128   ->  {"max_concurrent_requests":128}
-    type: 'boolean'   --disable-retries true          ->  {"disable_retries":true}
+    type: 'string'    --max-concurrent-requests 128        ->  {"max_concurrent_requests":"128"}
+    type: 'integer'   --max-concurrent-requests 128        ->  {"max_concurrent_requests":128}
+    type: 'boolean'   --disable-retries true               ->  {"disable_retries":true}
+    type: 'string'    --extra-env '{"HF_HUB_OFFLINE":"1"}' ->  {"extra_env":"{\"HF_HUB_OFFLINE\":\"1\"}"}
+    type: 'object'    --extra-env '{"HF_HUB_OFFLINE":"1"}' ->  {"extra_env":{"HF_HUB_OFFLINE":"1"}}
 
-So the endpoint has to start accepting the typed value in the same change, or every retyped
-field sends a JSON number or boolean where the handler expects a string.
+56 of the 77 keys stop sending a JSON string under the mapping below (46 integral numbers, 7
+toggles, 3 json-shaped); only the 21 that stay `string` are unaffected.
+
+THE PRECEDENT IS IN THIS REPO, so nobody has to take the contract on trust. Foreman #40 was
+exactly this failure on the `-f` path: a YAML `queue_size: 128` reached the wire as a number
+and conductor refused it with `expected a string but got number`. The fix comments say so
+(`coerceBodyFileValue` in `internal/dynacmd/executor.go`, "the string the set-*-config
+`Record<string,string>` validator requires"), its test names `set-router-config` as the
+example (`internal/dynacmd/executor_test.go`), and the CHANGELOG carries the entry. Applying
+the mapping without moving the validator reintroduces foreman #40 on the FLAG path for every
+retyped key. The catalog corroborates the same contract from the other end: every
+`suggestedDefault` in the snapshot is a STRING, including `"32768"`, `"false"` and `"0.3"`.
+
+So the body validator has to move off `Record<string,string>` in the same change, for all four
+`set-*-config` commands, or every retyped field sends a JSON number, boolean or object where
+the handler expects a string.
+
+AND `extra_env` NEEDS ITS PARSER CHECKED FIRST. This section says below that `extra_env` is
+reachable today as a JSON STRING that conductor's `parseRouterExtraEnv` reads. Retyping it
+`object` stops sending that string and sends an object, as the last two rows above show. So
+`parseRouterExtraEnv` must accept an object as well as a JSON string, in the same change. This
+story could not check that — the parser is conductor's code — so conductor must confirm it
+rather than inherit the assumption. If it cannot, `extra_env` stays `string` and only the
+`valueType` guidance below applies to it.
 
 BLOCKER 2, THE UNSET PATH. Every one of the 77 catalog fields on this build declares
 `unsetBy: 'empty-string'`, and that is how an operator clears a value. The CLI has no concept
@@ -128,11 +153,18 @@ real builder registers:
     type: 'integer'   --cache-threshold ""   ->  refused: strconv.ParseInt: parsing "": invalid syntax
     type: 'boolean'   --disable-retries ""   ->  refused: strconv.ParseBool: parsing "": invalid syntax
 
-So retyping removes the ONLY way to unset a field, for 53 of the 77 (the 46 integral numbers
-and the 7 toggles that the mapping below retypes `integer` and `boolean`); the 21 that stay
-`string` and the 3 that become `object` keep it. A replacement unset path has to land in the
-same change, and it is a two-repository design: conductor names the mechanism, and the CLI
-most likely needs a flag for it. Nothing here designs it, and it must not be improvised by
+So retyping takes the unset operation off the FLAG surface for 53 of the 77 (the 46 integral
+numbers and the 7 toggles); the 21 that stay `string` and the 3 that become `object` keep it.
+
+IT IS A FLAG-SURFACE LOSS, NOT TOTAL UNREACHABILITY, and the difference matters to whoever
+picks this up. The `-f body.yaml` path still carries the unset: `coerceBodyFileValue` returns
+a value it cannot convert UNCHANGED, so an empty string survives whatever the field is
+declared. Measured end to end on `set-router-config`, `max_concurrent_requests: ""` in a body
+file reaches the wire as `{"max_concurrent_requests":""}` under `string`, `integer` AND
+`boolean`. So after retyping, an operator can still unset — but only by writing a YAML file,
+with no flag for it and nothing telling them that is now the way. A replacement flag-level
+unset has to land in the same change; it is a two-repository design (conductor names the
+mechanism, the CLI needs the flag), nothing here designs it, and it must not be improvised by
 whoever picks up the mapper.
 
 THE TYPE MAPPING A COMPLETE CHANGE WOULD USE, recorded so it does not have to be re-derived.
@@ -215,7 +247,7 @@ claim that "the CLI needs no change", and it was too broad: the flag needs none,
 CLI sends changes shape (blocker 1), and a replacement for the empty-string unset (blocker 2)
 would need CLI work that does not exist yet.
 
-THIS RECORD IS CHECKED, not just written. Six tests in
+THIS RECORD IS CHECKED, not just written. Seven tests in
 `internal/dynacmd/vllm_fields_test.go` hold it to the checked-in snapshot and to the CLI's
 real behaviour:
 
@@ -232,8 +264,14 @@ real behaviour:
   fields unreachable in the first draft of this section.
 - `TestNotesSection5NamesEveryFractionalKey` keeps the seven names above in step with the
   snapshot.
-- `TestRetypingWouldSendANonStringBody` executes a field declared each way against a recording
-  stub, so blocker 1's table is measured rather than asserted.
+- `TestRetypingWouldSendANonStringBody` sends EVERY catalog field's own `suggestedDefault`
+  through the real executor twice — as declared today, and under the type the mapping would
+  give it — and reads the request BODY, not the flag. It asserts the body carries a JSON
+  string today and stops doing so when retyped, covers `extra_env` explicitly because the
+  json-shaped keys carry no default, and derives the 56-of-77 count above.
+- `TestTheBodyFileStillCarriesTheUnsetAfterRetyping` proves the `-f` escape hatch really does
+  survive retyping, which is what makes blocker 2 a flag-surface loss rather than total
+  unreachability. If that stops being true this record understates the cost.
 - `TestRetypingWouldRemoveTheEmptyStringUnsetPath` reads `unsetBy` from every catalog field and
   proves the typed flag refuses the empty value that field's own catalog entry depends on, so
   blocker 2 cannot quietly stop being true.
