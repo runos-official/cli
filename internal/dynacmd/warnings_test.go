@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Objective 92 / story 211. advisoryWarnings is the whole shape contract
+// Objective 92 / story 211. AdvisoryWarnings is the whole shape contract
 // the generic renderer keys on, so every malformed input it can be handed
 // by a conductor that has not shipped yet is pinned here. It must be
 // total: no case may panic, and no case that did not print may report
@@ -102,7 +102,7 @@ func TestAdvisoryWarnings(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			lines, complete := advisoryWarnings([]byte(c.body))
+			lines, complete := AdvisoryWarnings([]byte(c.body))
 			if !reflect.DeepEqual(lines, c.wantLines) {
 				t.Errorf("lines = %#v, want %#v", lines, c.wantLines)
 			}
@@ -175,14 +175,14 @@ func TestStripAdvisoryWarnings(t *testing.T) {
 // and all, so an operator sees one shape whichever command they ran.
 func TestPrintAdvisoryWarnings(t *testing.T) {
 	var buf bytes.Buffer
-	printAdvisoryWarnings(&buf, []string{"first", "second"})
+	PrintAdvisoryWarnings(&buf, []string{"first", "second"})
 	want := "Warning: first\nWarning: second\n"
 	if buf.String() != want {
 		t.Errorf("output = %q, want %q", buf.String(), want)
 	}
 
 	buf.Reset()
-	printAdvisoryWarnings(&buf, nil)
+	PrintAdvisoryWarnings(&buf, nil)
 	if buf.Len() != 0 {
 		t.Errorf("no advisories must write nothing, got %q", buf.String())
 	}

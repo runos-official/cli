@@ -414,11 +414,13 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// and --follow, and so the lines land before job progress scrolls
 	// over them. The CLI renders conductor's array and owns none of its
 	// text: deciding to warn, and what to say, stays conductor's.
-	advisories, allEntriesPrinted := advisoryWarnings(respBody)
-	printAdvisoryWarnings(cmd.ErrOrStderr(), advisories)
+	advisories, allEntriesPrinted := AdvisoryWarnings(respBody)
+	PrintAdvisoryWarnings(cmd.ErrOrStderr(), advisories)
 	// Suppress the key from the plain-text table so the same text is not
-	// shown twice. --json is deliberately left structurally intact, so
-	// scripts and the MCP path still receive `warnings` in the body.
+	// shown twice. --json is deliberately left structurally intact, so a
+	// script parsing stdout still receives `warnings` in the body. (The
+	// MCP server never reaches this function at all: it has its own
+	// CommandExecutor in internal/mcp, which returns the body verbatim.)
 	// A mixed array (some entry was not a string, so it was not printed)
 	// keeps its key: stripping it would lose what no line carried.
 	if len(advisories) > 0 && allEntriesPrinted && !jsonOutput {

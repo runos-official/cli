@@ -133,6 +133,13 @@ with no CLI release. The singular `warning` string is not touched at all, and th
 banner on `account api-keys add` prints exactly as it did. The CLI renders conductor's text and
 decides nothing: whether to warn, and what to say, stays conductor's.
 
+**`runos services sync` surfaces the same advisory.** The declarative path applies its plan through
+a different entry point than the one every typed command uses, and it reads only the ids out of the
+response, so it printed `Sync complete.` and nothing else when conductor had something to say about
+the change. It now prints the same `Warning:` lines, from the same renderer, before the completion
+message. That matters because a checked-in yaml is how a served model name or a replica count
+usually gets changed, which is exactly the change conductor warns about.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The

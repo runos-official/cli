@@ -19,7 +19,7 @@ import (
 // table renders in place; touching it here would print those twice.
 const advisoryWarningsKey = "warnings"
 
-// advisoryWarnings returns the advisory strings a response body carries
+// AdvisoryWarnings returns the advisory strings a response body carries
 // under the top-level `warnings` key, in body order, and reports whether
 // EVERY entry of that array was a string.
 //
@@ -33,7 +33,7 @@ const advisoryWarningsKey = "warnings"
 // Total on malformed input: a missing key, a body that is not a JSON
 // object, a `warnings` value that is not an array, a null, an empty
 // array and unparseable bytes all return (nil, false).
-func advisoryWarnings(respBody []byte) (lines []string, complete bool) {
+func AdvisoryWarnings(respBody []byte) (lines []string, complete bool) {
 	trimmed := bytes.TrimSpace(respBody)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil, false
@@ -91,11 +91,17 @@ func stripAdvisoryWarnings(respBody []byte) []byte {
 	return stripped
 }
 
-// printAdvisoryWarnings writes one `Warning: <entry>` line per advisory.
+// PrintAdvisoryWarnings writes one `Warning: <entry>` line per advisory.
 // The text and the stream are copied from `runos deploy`, the only
 // reader of a conductor advisory before this (cmd/deploy.go), so an
 // operator sees the same shape whichever command they ran.
-func printAdvisoryWarnings(w io.Writer, lines []string) {
+//
+// Exported, with AdvisoryWarnings, because `Execute` is NOT the only
+// entry point that reaches a conductor advisory: `runos services sync`
+// applies its plan through ExecuteWithInput (internal/services/sync.go),
+// which does no rendering of its own. Both surfaces call these two so
+// there is one text and one stream, never a second renderer.
+func PrintAdvisoryWarnings(w io.Writer, lines []string) {
 	for _, line := range lines {
 		fmt.Fprintf(w, "Warning: %s\n", line)
 	}

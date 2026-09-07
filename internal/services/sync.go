@@ -441,6 +441,22 @@ func FilterAllowed(fields map[string]any, allowed map[string]bool) map[string]an
 type ApplyResult struct {
 	JobID string
 	NewID string
+	// Warnings carries conductor's advisory `warnings` array from the
+	// apply response, so `runos services sync` can surface it the way
+	// every manifest-driven command does (objective 92 / story 211).
+	//
+	// It is RETURNED rather than printed because this package does no
+	// I/O; cmd/services_sync.go renders it with
+	// dynacmd.PrintAdvisoryWarnings, which is the same renderer the
+	// executor uses, so there is one text and one stream.
+	//
+	// The apply path needs its own hook because it goes through
+	// ExecuteWithInput, not Execute, and ExecuteWithInput returns the
+	// raw body without rendering anything. Both callers below then
+	// unmarshal three id fields and discard the rest, so before this the
+	// advisory was dropped on the declarative path while the imperative
+	// one printed it.
+	Warnings []string
 }
 
 // ApplySyncPlan executes the plan via the dynacmd Executor. POST for
@@ -462,6 +478,7 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 		if err != nil {
 			return nil, fmt.Errorf("create %s: %w", plan.Type, err)
 		}
+		warnings, _ := dynacmd.AdvisoryWarnings(respBody)
 		var resp struct {
 			ID    string `json:"id"`
 			OSID  string `json:"osid"`
@@ -486,7 +503,7 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 				}
 			}
 		}
-		return &ApplyResult{JobID: resp.JobID, NewID: newID}, nil
+		return &ApplyResult{JobID: resp.JobID, NewID: newID, Warnings: warnings}, nil
 	}
 	if plan.PatchBody != nil {
 		if updateCmd == nil {
@@ -506,11 +523,12 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 		if err != nil {
 			return nil, fmt.Errorf("update %s/%s: %w", plan.Type, plan.ID, err)
 		}
+		warnings, _ := dynacmd.AdvisoryWarnings(respBody)
 		var resp struct {
 			JobID string `json:"jobId"`
 		}
 		_ = json.Unmarshal(respBody, &resp)
-		return &ApplyResult{JobID: resp.JobID}, nil
+		return &ApplyResult{JobID: resp.JobID, Warnings: warnings}, nil
 	}
 	return &ApplyResult{}, nil
 }
