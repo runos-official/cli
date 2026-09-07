@@ -1,0 +1,229 @@
+{
+  "generatedBy": "scripts/vllm_field_diff.py",
+  "pre": {
+    "manifestVersion": "45.5.0",
+    "conductorCommit": "0fd5d0f2",
+    "environment": "dev"
+  },
+  "post": {
+    "manifestVersion": "45.6.0",
+    "conductorCommit": "9f626657",
+    "environment": "local build, not deployed"
+  },
+  "counts": {
+    "commandsWithNewFields": 4,
+    "distinctNewFieldNames": 22,
+    "writeOnlyFields": 8
+  },
+  "commands": [
+    {
+      "command": "services/vllm/add",
+      "newInManifest": false,
+      "newInputFields": [
+        {
+          "name": "routerImage",
+          "type": "string",
+          "class": "A",
+          "required": false
+        },
+        {
+          "name": "lmcacheServerImage",
+          "type": "string",
+          "class": "A",
+          "required": false
+        },
+        {
+          "name": "lmcacheServerGeneration",
+          "type": "string",
+          "class": "A",
+          "required": false,
+          "enum": [
+            "current",
+            "legacy"
+          ]
+        }
+      ],
+      "newOutputFields": []
+    },
+    {
+      "command": "services/vllm/{id}/set-router-config",
+      "newInManifest": false,
+      "newInputFields": [
+        {
+          "name": "cpu_request_mc",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "memory_request_mb",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "extra_env",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "startup_probe_initial_delay_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "startup_probe_period_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "startup_probe_timeout_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "startup_probe_failure_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "startup_probe_success_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "liveness_probe_initial_delay_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "liveness_probe_period_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "liveness_probe_timeout_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "liveness_probe_failure_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "liveness_probe_success_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "readiness_probe_initial_delay_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "readiness_probe_period_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "readiness_probe_timeout_seconds",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "readiness_probe_failure_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        },
+        {
+          "name": "readiness_probe_success_threshold",
+          "type": "string",
+          "class": "B",
+          "required": false
+        }
+      ],
+      "newOutputFields": []
+    },
+    {
+      "command": "services/vllm/{id}/show",
+      "newInManifest": false,
+      "newInputFields": [],
+      "newOutputFields": [
+        {
+          "name": "image",
+          "class": "A"
+        },
+        {
+          "name": "routerImage",
+          "class": "A"
+        },
+        {
+          "name": "lmcacheServerImage",
+          "class": "A"
+        },
+        {
+          "name": "lmcacheServerGeneration",
+          "class": "A"
+        }
+      ]
+    },
+    {
+      "command": "services/vllm/{id}/update",
+      "newInManifest": false,
+      "newInputFields": [
+        {
+          "name": "routerImage",
+          "type": "string",
+          "class": "A",
+          "required": false,
+          "allowEmpty": true
+        },
+        {
+          "name": "lmcacheServerImage",
+          "type": "string",
+          "class": "A",
+          "required": false,
+          "allowEmpty": true
+        },
+        {
+          "name": "lmcacheServerGeneration",
+          "type": "string",
+          "class": "A",
+          "required": false,
+          "enum": [
+            "current",
+            "legacy"
+          ],
+          "allowEmpty": true
+        }
+      ],
+      "newOutputFields": []
+    }
+  ],
+  "writeOnlyFields": [
+    "configSetId",
+    "configType",
+    "modelSourceBucket",
+    "modelSourceIntegrationId",
+    "modelSourceMinioServiceId",
+    "modelSourcePath",
+    "replicas",
+    "storageGroupId"
+  ]
+}

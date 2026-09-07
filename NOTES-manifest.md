@@ -118,3 +118,36 @@ type switch already has `integer`, `object`, `array` and `boolean` arms beside `
 (`internal/dynacmd/builder.go`), and the object flag already reads `ValueType` to decide whether
 to refuse `key=value` (`internal/dynacmd/object_flag.go`). Each of those arms starts working the
 moment the manifest declares the type.
+
+## 6. Eight vLLM fields are write-only, so IaC cannot round-trip them (objective 92 / story 212)
+
+Files: `src/util/cliManifest/` entry for `services/vllm/{id}/show`.
+Change due: return these on the show response, the way story 206 just did for `image`.
+
+A field that `services/vllm/add` or `services/vllm/{id}/update` accepts but
+`services/vllm/{id}/show` does not return cannot be pulled: `internal/services/pull.go` uses the
+add/update input fields as its ALLOW-LIST but the show response as its SOURCE, so a field show
+omits never reaches the yaml. `runos services diff` then reports drift the operator cannot clear.
+
+Measured on conductor `9f626657` by `scripts/vllm_field_diff.py`, eight remain:
+
+> `configSetId`, `configType`, `modelSourceBucket`, `modelSourceIntegrationId`,
+> `modelSourceMinioServiceId`, `modelSourcePath`, `replicas`, `storageGroupId`
+
+`image` was a ninth until story 206 added it to the show output, which is the precedent and the
+exact shape of the fix.
+
+ONE OF THE EIGHT IS ON OBJECTIVE 92'S OWN SUBJECT. The objective's Settled 6 makes the EFFECTIVE
+REPLICA COUNT the thing that brings a router into existence, and `replicas` is the write-only one.
+So the single input that decides whether a router exists is the one an operator cannot read back.
+Show returns `directReplicas` and `routerActive`, which are runtime state, not the desired-state
+value an operator wrote. `internal/services/pull.go` even carries a comment (lines 18-26) keeping
+`replicas` OFF the class-coupled strip list because dropping it broke diff projection and
+surprised users following the services topic, "which DOES show `replicas: 1`" — reasoning that
+assumes show returns it. On vLLM it does not.
+
+The CLI deliberately synthesizes NO read path and NO local cache for any of these. Inventing a
+value the server never returned would make "pinned" and "running" indistinguishable, which is the
+same reason story 206 gives for an absent pin reading as absent rather than as the published
+image. Regression target: `TestVLLMWriteOnlyFieldsAreRecordedNotSynthesized`, which fails if this
+list drifts from the manifest in EITHER direction, so the record cannot outlive the gap.

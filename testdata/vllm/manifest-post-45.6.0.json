@@ -1,10 +1,10 @@
 {
-  "manifestVersion": "45.5.0",
-  "conductorCommit": "0fd5d0f2",
-  "environment": "dev",
-  "apiUrl": "https://api.dev.runos.com",
-  "fetchedAt": "2026-09-07T14:50:00Z",
-  "commandCountInFullManifest": 690,
+  "manifestVersion": "45.6.0",
+  "conductorCommit": "9f626657",
+  "environment": "local build, not deployed",
+  "apiUrl": "none (local getManifest run at 9f626657)",
+  "fetchedAt": "2026-09-07T15:35:00Z",
+  "commandCountInFullManifest": 20,
   "commands": [
     {
       "command": "service-info/{type}/advanced-config-schema",
@@ -108,6 +108,28 @@
             "type": "string",
             "description": "Custom container image, replacing the published image for --version (e.g. a source-patched or locally-built engine). Must pin a tag or digest. An image on a Harbor belonging to this account is authenticated automatically; any other private registry is not supported yet, so the image must be public. Cannot be combined with --omni.",
             "required": false
+          },
+          {
+            "name": "routerImage",
+            "type": "string",
+            "description": "Custom container image for the KV-aware router, which fronts the service at replicas > 1 (e.g. a patched router). Must pin a tag or digest. An image on a Harbor belonging to this account is authenticated automatically; any other private registry must be public.",
+            "required": false
+          },
+          {
+            "name": "lmcacheServerImage",
+            "type": "string",
+            "description": "Custom container image for the LMCache standalone server, which runs in remote cache mode. Must pin a tag or digest. Set --lmcacheServerGeneration beside it when the tag carries no readable version, because the server flag spelling differs between generations.",
+            "required": false
+          },
+          {
+            "name": "lmcacheServerGeneration",
+            "type": "string",
+            "description": "Which argparse generation RunOS renders the LMCache standalone server flags for. Applies only beside --lmcacheServerImage: with no pinned image the generation comes from the engine version, and with a pinned stock tag it is derived from the tag.",
+            "required": false,
+            "enum": [
+              "current",
+              "legacy"
+            ]
           },
           {
             "name": "omni",
@@ -2507,6 +2529,114 @@
             "type": "string",
             "description": "Comma-separated headers to read a request id from.",
             "required": false
+          },
+          {
+            "name": "cpu_request_mc",
+            "type": "string",
+            "description": "CPU the router pod reserves, in millicores.",
+            "required": false
+          },
+          {
+            "name": "memory_request_mb",
+            "type": "string",
+            "description": "Memory the router pod reserves, in mebibytes.",
+            "required": false
+          },
+          {
+            "name": "extra_env",
+            "type": "string",
+            "description": "Guarded JSON object of environment variables for the router container.",
+            "required": false
+          },
+          {
+            "name": "startup_probe_initial_delay_seconds",
+            "type": "string",
+            "description": "Seconds after the router container starts before its first startup probe.",
+            "required": false
+          },
+          {
+            "name": "startup_probe_period_seconds",
+            "type": "string",
+            "description": "Seconds between startup probe checks on the router.",
+            "required": false
+          },
+          {
+            "name": "startup_probe_timeout_seconds",
+            "type": "string",
+            "description": "Seconds one startup probe check may take before it counts as a failure.",
+            "required": false
+          },
+          {
+            "name": "startup_probe_failure_threshold",
+            "type": "string",
+            "description": "Consecutive startup failures before the router pod is failed.",
+            "required": false
+          },
+          {
+            "name": "startup_probe_success_threshold",
+            "type": "string",
+            "description": "Consecutive startup successes before the router pod counts as healthy.",
+            "required": false
+          },
+          {
+            "name": "liveness_probe_initial_delay_seconds",
+            "type": "string",
+            "description": "Seconds after the router container starts before its first liveness probe.",
+            "required": false
+          },
+          {
+            "name": "liveness_probe_period_seconds",
+            "type": "string",
+            "description": "Seconds between liveness probe checks on the router.",
+            "required": false
+          },
+          {
+            "name": "liveness_probe_timeout_seconds",
+            "type": "string",
+            "description": "Seconds one liveness probe check may take before it counts as a failure.",
+            "required": false
+          },
+          {
+            "name": "liveness_probe_failure_threshold",
+            "type": "string",
+            "description": "Consecutive liveness failures before the router pod is restarted.",
+            "required": false
+          },
+          {
+            "name": "liveness_probe_success_threshold",
+            "type": "string",
+            "description": "Consecutive liveness successes before the router pod counts as healthy.",
+            "required": false
+          },
+          {
+            "name": "readiness_probe_initial_delay_seconds",
+            "type": "string",
+            "description": "Seconds after the router container starts before its first readiness probe.",
+            "required": false
+          },
+          {
+            "name": "readiness_probe_period_seconds",
+            "type": "string",
+            "description": "Seconds between readiness probe checks on the router.",
+            "required": false
+          },
+          {
+            "name": "readiness_probe_timeout_seconds",
+            "type": "string",
+            "description": "Seconds one readiness probe check may take before it counts as a failure.",
+            "required": false
+          },
+          {
+            "name": "readiness_probe_failure_threshold",
+            "type": "string",
+            "description": "Consecutive readiness failures before the router pod is left out of the Service.",
+            "required": false
+          },
+          {
+            "name": "readiness_probe_success_threshold",
+            "type": "string",
+            "description": "Consecutive readiness successes before the router pod counts as healthy.",
+            "required": false
           }
         ]
       },
@@ -2545,6 +2675,10 @@
           "model",
           "servedModelName",
           "version",
+          "image",
+          "routerImage",
+          "lmcacheServerImage",
+          "lmcacheServerGeneration",
           "omni",
           "gdsEnabled",
           "publicHttps",
@@ -2686,6 +2820,31 @@
             "description": "Custom container image, replacing the published image for --version. Send an empty string to drop back to the published image. Must pin a tag or digest. Cannot be combined with --omni.",
             "required": false,
             "allowEmpty": true
+          },
+          {
+            "name": "routerImage",
+            "type": "string",
+            "description": "Custom container image for the KV-aware router. Send an empty string to drop back to the published image. Must pin a tag or digest. Changing it rolls the router pod only.",
+            "required": false,
+            "allowEmpty": true
+          },
+          {
+            "name": "lmcacheServerImage",
+            "type": "string",
+            "description": "Custom container image for the LMCache standalone server. Send an empty string to drop back to the published image. Must pin a tag or digest. Set --lmcacheServerGeneration beside it when the tag carries no readable version.",
+            "required": false,
+            "allowEmpty": true
+          },
+          {
+            "name": "lmcacheServerGeneration",
+            "type": "string",
+            "description": "Which argparse generation RunOS renders the LMCache standalone server flags for. Applies only beside --lmcacheServerImage. Send an empty string to clear it.",
+            "required": false,
+            "allowEmpty": true,
+            "enum": [
+              "current",
+              "legacy"
+            ]
           },
           {
             "name": "omni",
@@ -2832,6 +2991,8 @@
             "disaggregated_prefill",
             "disaggregated_prefill_orchestrated"
           ],
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2845,6 +3006,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2858,6 +3021,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2871,6 +3036,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2883,6 +3050,8 @@
           "isAdvanced": false,
           "requiresRestart": true,
           "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2898,6 +3067,8 @@
           "min": 0,
           "max": 1,
           "step": 0.01,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2911,6 +3082,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2925,6 +3098,8 @@
           "inputType": "number",
           "min": 1,
           "step": 0.01,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2938,6 +3113,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2951,6 +3128,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2964,6 +3143,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2977,6 +3158,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -2989,6 +3172,8 @@
           "isAdvanced": true,
           "requiresRestart": true,
           "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3002,6 +3187,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3015,6 +3202,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3028,6 +3217,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 0,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3042,6 +3233,8 @@
           "inputType": "number",
           "min": 1,
           "step": 0.01,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3057,6 +3250,8 @@
           "min": 0,
           "max": 1,
           "step": 0.01,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3069,6 +3264,8 @@
           "isAdvanced": true,
           "requiresRestart": true,
           "inputType": "toggle",
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3082,6 +3279,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3095,6 +3294,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3108,6 +3309,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3121,6 +3324,8 @@
           "requiresRestart": true,
           "inputType": "number",
           "min": 1,
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3140,6 +3345,8 @@
             "debug",
             "trace"
           ],
+          "valueShape": "scalar",
+          "delivery": "flag",
           "unsetBy": "empty-string"
         },
         {
@@ -3152,6 +3359,294 @@
           "isAdvanced": true,
           "requiresRestart": true,
           "inputType": "text",
+          "valueShape": "scalar",
+          "delivery": "flag",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "cpu_request_mc",
+          "title": "Router CPU Request",
+          "shortDescription": "CPU the router pod reserves, in millicores.",
+          "longDescription": "CPU the router container reserves, in millicores. Without a request the router pod is BestEffort, which makes it the first pod the kubelet evicts under node pressure, and the router is the front door of a multi-replica service. RunOS requests 200m, which makes the pod Burstable. No limit is rendered: a limit on the front door turns a traffic spike into throttling.",
+          "suggestedDefault": "200",
+          "category": "Resources",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 10,
+          "max": 64000,
+          "valueShape": "scalar",
+          "delivery": "resource",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "memory_request_mb",
+          "title": "Router Memory Request",
+          "shortDescription": "Memory the router pod reserves, in mebibytes.",
+          "longDescription": "Memory the router container reserves, in mebibytes. RunOS requests 512Mi. Raise it for a large fleet, where the router holds more per-worker routing state. No limit is rendered, for the same reason as the CPU request.",
+          "suggestedDefault": "512",
+          "category": "Resources",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 64,
+          "max": 262144,
+          "valueShape": "scalar",
+          "delivery": "resource",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "extra_env",
+          "title": "Router Environment Variables",
+          "shortDescription": "Guarded JSON object of environment variables for the router container.",
+          "longDescription": "Environment variables set on the router container, as a JSON object such as {\"HF_HUB_OFFLINE\":\"1\"}. Values are passed to the container verbatim, so spell them exactly as the variable expects (\"1\" and \"true\" are not interchangeable). RunOS renders its own entries BEFORE this map, and Kubernetes takes the last variable of a repeated name, so a value set here overrides a RunOS default of the same name. Secret-bearing names are refused, because this map is stored in plain text: use a dedicated secret surface for a token.",
+          "suggestedDefault": null,
+          "category": "Environment",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "json",
+          "valueShape": "json",
+          "delivery": "env-map",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "startup_probe_initial_delay_seconds",
+          "title": "Startup Probe: Initial Delay (s)",
+          "shortDescription": "Seconds after the router container starts before its first startup probe.",
+          "longDescription": "Seconds the kubelet waits after the router container starts before it runs the first startup probe. The startup probe gates the liveness and the readiness probe: the kubelet runs neither until the startup probe first succeeds.",
+          "suggestedDefault": "0",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "max": 3600,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "startup_probe_period_seconds",
+          "title": "Startup Probe: Period (s)",
+          "shortDescription": "Seconds between startup probe checks on the router.",
+          "longDescription": "Seconds between startup probe checks on the router. The RunOS default for this probe is 24 failures at 5 second intervals, which is 120 seconds.",
+          "suggestedDefault": "5",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 300,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "startup_probe_timeout_seconds",
+          "title": "Startup Probe: Timeout (s)",
+          "shortDescription": "Seconds one startup probe check may take before it counts as a failure.",
+          "longDescription": "Seconds the kubelet waits for one startup HTTP check against the router before it counts the check as a failure. The Kubernetes default is 1 second, which counts a single slow answer as a failure; RunOS sets 3.",
+          "suggestedDefault": "3",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 120,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "startup_probe_failure_threshold",
+          "title": "Startup Probe: Failure Threshold",
+          "shortDescription": "Consecutive startup failures before the router pod is failed.",
+          "longDescription": "Consecutive startup failures the kubelet tolerates before it fails the router pod. The startup grace is about failureThreshold multiplied by periodSeconds. The RunOS default for this probe is 24 failures at 5 second intervals, which is 120 seconds. The startup probe gates the liveness and the readiness probe: the kubelet runs neither until the startup probe first succeeds.",
+          "suggestedDefault": "24",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 1000,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "startup_probe_success_threshold",
+          "title": "Startup Probe: Success Threshold",
+          "shortDescription": "Consecutive startup successes before the router pod counts as healthy.",
+          "longDescription": "Consecutive successful startup checks before the router counts as healthy. Kubernetes requires 1 for the startup probe, so 1 is the only accepted value.",
+          "suggestedDefault": "1",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 1,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "liveness_probe_initial_delay_seconds",
+          "title": "Liveness Probe: Initial Delay (s)",
+          "shortDescription": "Seconds after the router container starts before its first liveness probe.",
+          "longDescription": "Seconds the kubelet waits after the router container starts before it runs the first liveness probe. The startup probe gates the liveness and the readiness probe: the kubelet runs neither until the startup probe first succeeds.",
+          "suggestedDefault": "0",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "max": 3600,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "liveness_probe_period_seconds",
+          "title": "Liveness Probe: Period (s)",
+          "shortDescription": "Seconds between liveness probe checks on the router.",
+          "longDescription": "Seconds between liveness probe checks on the router. The RunOS default for this probe is 6 failures at 10 second intervals, which is 60 seconds.",
+          "suggestedDefault": "10",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 300,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "liveness_probe_timeout_seconds",
+          "title": "Liveness Probe: Timeout (s)",
+          "shortDescription": "Seconds one liveness probe check may take before it counts as a failure.",
+          "longDescription": "Seconds the kubelet waits for one liveness HTTP check against the router before it counts the check as a failure. The Kubernetes default is 1 second, which counts a single slow answer as a failure; RunOS sets 5.",
+          "suggestedDefault": "5",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 120,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "liveness_probe_failure_threshold",
+          "title": "Liveness Probe: Failure Threshold",
+          "shortDescription": "Consecutive liveness failures before the router pod is restarted.",
+          "longDescription": "Consecutive liveness failures before the router pod is restarted. The RunOS default for this probe is 6 failures at 10 second intervals, which is 60 seconds.",
+          "suggestedDefault": "6",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 1000,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "liveness_probe_success_threshold",
+          "title": "Liveness Probe: Success Threshold",
+          "shortDescription": "Consecutive liveness successes before the router pod counts as healthy.",
+          "longDescription": "Consecutive successful liveness checks before the router counts as healthy. Kubernetes requires 1 for the liveness probe, so 1 is the only accepted value.",
+          "suggestedDefault": "1",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 1,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "readiness_probe_initial_delay_seconds",
+          "title": "Readiness Probe: Initial Delay (s)",
+          "shortDescription": "Seconds after the router container starts before its first readiness probe.",
+          "longDescription": "Seconds the kubelet waits after the router container starts before it runs the first readiness probe. The startup probe gates the liveness and the readiness probe: the kubelet runs neither until the startup probe first succeeds.",
+          "suggestedDefault": "0",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 0,
+          "max": 3600,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "readiness_probe_period_seconds",
+          "title": "Readiness Probe: Period (s)",
+          "shortDescription": "Seconds between readiness probe checks on the router.",
+          "longDescription": "Seconds between readiness probe checks on the router. The RunOS default for this probe is 3 failures at 5 second intervals, which is 15 seconds.",
+          "suggestedDefault": "5",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 300,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "readiness_probe_timeout_seconds",
+          "title": "Readiness Probe: Timeout (s)",
+          "shortDescription": "Seconds one readiness probe check may take before it counts as a failure.",
+          "longDescription": "Seconds the kubelet waits for one readiness HTTP check against the router before it counts the check as a failure. The Kubernetes default is 1 second, which counts a single slow answer as a failure; RunOS sets 3.",
+          "suggestedDefault": "3",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 120,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "readiness_probe_failure_threshold",
+          "title": "Readiness Probe: Failure Threshold",
+          "shortDescription": "Consecutive readiness failures before the router pod is left out of the Service.",
+          "longDescription": "Consecutive readiness failures before the router pod is taken out of the Service. The RunOS default for this probe is 3 failures at 5 second intervals, which is 15 seconds.",
+          "suggestedDefault": "3",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 1000,
+          "valueShape": "scalar",
+          "delivery": "probe",
+          "unsetBy": "empty-string"
+        },
+        {
+          "key": "readiness_probe_success_threshold",
+          "title": "Readiness Probe: Success Threshold",
+          "shortDescription": "Consecutive readiness successes before the router pod counts as healthy.",
+          "longDescription": "Consecutive successful readiness checks before the router pod returns to the Service. Default 1.",
+          "suggestedDefault": "1",
+          "category": "Health probes",
+          "isAdvanced": true,
+          "requiresRestart": true,
+          "inputType": "number",
+          "min": 1,
+          "max": 10,
+          "valueShape": "scalar",
+          "delivery": "probe",
           "unsetBy": "empty-string"
         }
       ]

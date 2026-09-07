@@ -85,6 +85,11 @@ def cmd_snapshot(args):
 
     write(args.out, {
         "manifestVersion": raw.get("version"),
+        # The version string is NOT a safe identifier. Two different manifests
+        # both call themselves 45.5.0: objective 91 bumped dev to it, and
+        # objective 92's story 205 bumped its own branch to it independently.
+        # The conductor commit is the identifier that discriminates.
+        "conductorCommit": args.commit,
         "environment": args.environment,
         "apiUrl": args.api_url,
         "fetchedAt": args.fetched_at,
@@ -121,7 +126,8 @@ def describe(field, command):
         "type": field.get("type"),
         "class": field_class(command),
     }
-    for optional in ("valueType", "valueFields", "required", "positional", "enum"):
+    for optional in ("valueType", "valueFields", "required", "positional", "enum",
+                     "allowEmpty", "format", "default"):
         if field.get(optional) is not None:
             described[optional] = field[optional]
     return described
@@ -169,10 +175,12 @@ def cmd_diff(args):
         "generatedBy": "scripts/vllm_field_diff.py",
         "pre": {
             "manifestVersion": pre.get("manifestVersion"),
+            "conductorCommit": pre.get("conductorCommit"),
             "environment": pre.get("environment"),
         },
         "post": {
             "manifestVersion": post.get("manifestVersion"),
+            "conductorCommit": post.get("conductorCommit"),
             "environment": post.get("environment"),
         },
         "counts": {
@@ -196,6 +204,8 @@ def main():
     snap.add_argument("--out", required=True)
     snap.add_argument("--environment", required=True)
     snap.add_argument("--api-url", required=True)
+    snap.add_argument("--commit", required=True,
+                      help="conductor commit the manifest was built from")
     snap.add_argument("--fetched-at", required=True)
     snap.add_argument("--schema", action="append", metavar="TYPE=FILE",
                       help="fold in a /service-info/TYPE/advanced-config-schema response")
