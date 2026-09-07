@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/jobs"
 	"github.com/runos-official/cli/internal/services"
 
@@ -210,6 +211,15 @@ func runServicesSync(cmd *cobra.Command, args []string) (rerr error) {
 	if err != nil {
 		return err
 	}
+
+	// Objective 92 / story 211: conductor's advisory `warnings` array,
+	// surfaced at the moment of the change. The apply path goes through
+	// ExecuteWithInput rather than the executor's Execute, so it does not
+	// inherit that command's renderer and has to call the same one here.
+	// Printed BEFORE the provisioned / "Sync complete." lines for the
+	// same reason Execute prints before its render: an advisory that
+	// arrives under the success message is an advisory nobody reads.
+	dynacmd.PrintAdvisoryWarnings(os.Stderr, res.Warnings)
 
 	// On create, persist the new id back to the yaml so subsequent
 	// runs use the PATCH path. Strip nothing else — server-applied
