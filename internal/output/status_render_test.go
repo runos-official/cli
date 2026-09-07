@@ -374,6 +374,22 @@ func TestNestedObjectDefaultBranch_Ordering(t *testing.T) {
 			want: "desired=3, ready=2, available=2, updated=3",
 		},
 		{
+			// Review finding, rework cycle 2. The pre-fix replicas branch
+			// returned only when `ready` AND `available` were both present,
+			// so a partial replicas object always reached the default branch
+			// and always rendered alphabetically. The lead must not widen
+			// that set, or the story's "no existing rendering moves" claim
+			// stops being literally true.
+			name: "partial replicas object keeps the plain alphabetical order",
+			obj:  map[string]any{"desired": 3.0, "available": 2.0},
+			want: "available=2, desired=3",
+		},
+		{
+			name: "partial replicas object with an unrelated key stays alphabetical",
+			obj:  map[string]any{"desired": 3.0, "appName": "x"},
+			want: "appName=x, desired=3",
+		},
+		{
 			name: "no trigger key keeps the plain alphabetical order",
 			obj:  map[string]any{"zeta": "z", "alpha": "a", "name": "n"},
 			want: "alpha=a, name=n, zeta=z",
