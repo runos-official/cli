@@ -100,8 +100,43 @@ Three costs, in the order they bite an operator:
    `runtime_plugin_config` on `lmcache-server`. The vLLM ENGINE's kebab-case `extra-env` on
    `set-advanced-configs` is the same case and shipped that way before objective 92.
 
-THE CHANGE. Make the mapper type-aware, deriving the manifest type from what the catalog
-already declares:
+THIS IS A CHANGE DUE, NOT A CHANGE TO APPLY ON ITS OWN. Retyping these fields is only correct
+if the REQUEST BODY CONTRACT and the UNSET MECHANISM move in the same change. Neither of those
+is in scope for this story, and neither is designed here. Both blockers are measured below,
+against the checked-in snapshot and the CLI as it stands. Do the whole thing or do not start:
+a mapper-only change breaks every field it retypes.
+
+BLOCKER 1, THE REQUEST BODY. The `set-*-config` family takes a string-to-string record. The
+CLI serialises each field by its MANIFEST type (the `collectInput` type switch in
+`internal/dynacmd/executor.go`), so retyping changes the value ON THE WIRE, not just the flag.
+Measured against a recording stub, one field declared each way:
+
+    type: 'string'    --max-concurrent-requests 128   ->  {"max_concurrent_requests":"128"}
+    type: 'integer'   --max-concurrent-requests 128   ->  {"max_concurrent_requests":128}
+    type: 'boolean'   --disable-retries true          ->  {"disable_retries":true}
+
+So the endpoint has to start accepting the typed value in the same change, or every retyped
+field sends a JSON number or boolean where the handler expects a string.
+
+BLOCKER 2, THE UNSET PATH. Every one of the 77 catalog fields on this build declares
+`unsetBy: 'empty-string'`, and that is how an operator clears a value. The CLI has no concept
+of `unsetBy` — nothing in this repo reads it — so the empty string simply travels as the
+value, and a typed flag refuses it before it ever reaches the wire. Measured on the flag the
+real builder registers:
+
+    type: 'string'    --cache-threshold ""   ->  accepted, sends {"cache_threshold":""}
+    type: 'integer'   --cache-threshold ""   ->  refused: strconv.ParseInt: parsing "": invalid syntax
+    type: 'boolean'   --disable-retries ""   ->  refused: strconv.ParseBool: parsing "": invalid syntax
+
+So retyping removes the ONLY way to unset a field, for 53 of the 77 (the 46 integral numbers
+and the 7 toggles that the mapping below retypes `integer` and `boolean`); the 21 that stay
+`string` and the 3 that become `object` keep it. A replacement unset path has to land in the
+same change, and it is a two-repository design: conductor names the mechanism, and the CLI
+most likely needs a flag for it. Nothing here designs it, and it must not be improvised by
+whoever picks up the mapper.
+
+THE TYPE MAPPING A COMPLETE CHANGE WOULD USE, recorded so it does not have to be re-derived.
+It is not a licence to apply it alone; read the two blockers above first:
 
 > `valueShape: 'json'`                       ->  `type: 'object'`
 > `inputType: 'toggle'`                      ->  `type: 'boolean'`
@@ -163,14 +198,26 @@ works), so this is typing and ergonomics, not unreachability. When it is done it
 the engine's kebab-case `extra-env` and the router's snake_case `extra_env` in one change,
 or the two surfaces disagree about the same concept.
 
-No CLI carve-out was added for any of this, and the CLI needs no change: its flag-registration
-type switch already has `integer`, `object`, `array` and `boolean` arms beside `string`
-(`internal/dynacmd/builder.go`), and the object flag already reads `ValueType` to decide whether
-to refuse `key=value` (`internal/dynacmd/object_flag.go`). Each of those arms starts working the
-moment the manifest declares the type.
+WHAT IS STILL UNFIXED WHEN STORY 212 LANDS, said plainly so it is not lost. The command line
+still accepts a nonsense value for every field the catalog calls numeric or boolean:
+`--max-concurrent-requests abc` and `--disable-retries maybe` are taken, sent, and refused
+later at the service, so the operator learns at the far end of a round trip instead of at the
+flag. The seven fractional keys stay unvalidated even after the change above, because there is
+no float type on either side. This story deliberately fixes none of that: it bounds and proves
+REACHABILITY, and better validation is the larger cross-repository change recorded here.
 
-THIS RECORD IS CHECKED, not just written. Four tests in
-`internal/dynacmd/vllm_fields_test.go` hold it to the checked-in snapshot:
+NO CLI CARVE-OUT WAS ADDED, and the CLI's FLAG side needs no change for the mapping above: the
+flag-registration type switch already has `integer`, `object`, `array` and `boolean` arms
+beside `string` (`internal/dynacmd/builder.go`), and the object flag already reads `ValueType`
+to decide whether to refuse `key=value` (`internal/dynacmd/object_flag.go`). Each of those arms
+starts working the moment the manifest declares the type. That is the whole of the earlier
+claim that "the CLI needs no change", and it was too broad: the flag needs none, the BODY the
+CLI sends changes shape (blocker 1), and a replacement for the empty-string unset (blocker 2)
+would need CLI work that does not exist yet.
+
+THIS RECORD IS CHECKED, not just written. Six tests in
+`internal/dynacmd/vllm_fields_test.go` hold it to the checked-in snapshot and to the CLI's
+real behaviour:
 
 - `TestNotesSection5MatchesTheSnapshot` derives the census and the toggle and json-shaped key
   names from the snapshot and compares them here, so regenerating the artefact against a later
@@ -185,10 +232,15 @@ THIS RECORD IS CHECKED, not just written. Four tests in
   fields unreachable in the first draft of this section.
 - `TestNotesSection5NamesEveryFractionalKey` keeps the seven names above in step with the
   snapshot.
+- `TestRetypingWouldSendANonStringBody` executes a field declared each way against a recording
+  stub, so blocker 1's table is measured rather than asserted.
+- `TestRetypingWouldRemoveTheEmptyStringUnsetPath` reads `unsetBy` from every catalog field and
+  proves the typed flag refuses the empty value that field's own catalog entry depends on, so
+  blocker 2 cannot quietly stop being true.
 
 The mapping is duplicated as `prescribedManifestType` in that file, deliberately: prose cannot
-be executed, and the point of the last two tests is to run this prescription rather than read
-it. Change both together.
+be executed, and the point of running it is to check what the mapping PRODUCES rather than how
+it is spelled. Change both together.
 
 ## 6. Eight vLLM fields are write-only, so IaC cannot round-trip them (objective 92 / story 212)
 

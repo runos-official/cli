@@ -67,13 +67,18 @@ type vllmSnapshot struct {
 	AdvancedConfigSchemas map[string]struct {
 		Type   string `json:"type"`
 		Fields []struct {
-			Key        string   `json:"key"`
-			InputType  string   `json:"inputType"`
-			ValueShape string   `json:"valueShape"`
-			Delivery   string   `json:"delivery"`
-			Step       *float64 `json:"step"`
-			Min        *float64 `json:"min"`
-			Max        *float64 `json:"max"`
+			Key        string `json:"key"`
+			InputType  string `json:"inputType"`
+			ValueShape string `json:"valueShape"`
+			Delivery   string `json:"delivery"`
+			// unsetBy names how an operator CLEARS the value. Every field on
+			// this build says "empty-string", which is why a typed flag would
+			// remove the unset path (NOTES-manifest.md section 5, blocker 2).
+			UnsetBy string `json:"unsetBy"`
+
+			Step *float64 `json:"step"`
+			Min  *float64 `json:"min"`
+			Max  *float64 `json:"max"`
 			// suggestedDefault is a STRING in the catalog ("0.3", "24") and is
 			// null when the field has no default.
 			SuggestedDefault *string `json:"suggestedDefault"`
@@ -700,10 +705,12 @@ func TestNotesSection5PrescribesPropertiesTheCatalogCarries(t *testing.T) {
 
 // catalogField is one advanced-config field as the snapshot publishes it.
 type catalogField = struct {
-	Key              string   `json:"key"`
-	InputType        string   `json:"inputType"`
-	ValueShape       string   `json:"valueShape"`
-	Delivery         string   `json:"delivery"`
+	Key        string `json:"key"`
+	InputType  string `json:"inputType"`
+	ValueShape string `json:"valueShape"`
+	Delivery   string `json:"delivery"`
+	UnsetBy    string `json:"unsetBy"`
+
 	Step             *float64 `json:"step"`
 	Min              *float64 `json:"min"`
 	Max              *float64 `json:"max"`
@@ -858,4 +865,150 @@ func TestNotesSection5NamesEveryFractionalKey(t *testing.T) {
 		t.Fatal("no fractional number field found in the snapshot; the carve-out is vacuous")
 	}
 	t.Logf("section 5 names all %d fractional number key(s)", fractional)
+}
+
+// buildRecordingCommand registers ONE manifest field of the given type through
+// the real builder and points it at a body-recording stub, so what the test
+// reads is the body an operator's invocation would actually send.
+func buildRecordingCommand(t *testing.T, fieldName, manifestType string, sent *[]byte) (*cobra.Command, manifest.Command, *Executor) {
+	t.Helper()
+	srv := bodyRecordingStub(t, sent)
+	warnEnv(t, localhostURL(srv.URL))
+	cmdDef := manifest.Command{
+		Command:  "services/vllm/{id}/set-router-config",
+		Endpoint: "/:aid/:cid/services/vllm/:id/set-router-config",
+		Method:   http.MethodPost,
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "id", Type: "string", Positional: true, Required: true},
+			{Name: fieldName, Type: manifestType},
+		}},
+	}
+	m := &manifest.Manifest{Commands: []manifest.Command{cmdDef}}
+	exec := NewExecutor(localhostURL(srv.URL))
+	leaf := findLeafCommand(t, NewBuilder(m, exec).BuildCommands(), cmdDef.Command)
+	return leaf, cmdDef, exec
+}
+
+// TestRetypingWouldSendANonStringBody measures NOTES-manifest.md section 5's
+// FIRST blocker.
+//
+// The operator decision on this story narrowed the section from "retype these
+// fields" to "here is what a complete change has to move together", because a
+// typed flag does not only change what the CLI accepts — it changes the JSON
+// the CLI SENDS, and the set-*-config family takes a string-to-string record.
+// The earlier draft said the CLI needed no change, which was true of the flag
+// and false of the body.
+//
+// This is the measurement behind that claim, so the record cannot quietly stop
+// being true: the same value, declared three ways, reaches the wire as three
+// different JSON types.
+func TestRetypingWouldSendANonStringBody(t *testing.T) {
+	cases := []struct {
+		manifestType string
+		field        string
+		value        string
+		wantGoType   string
+	}{
+		{"string", "max_concurrent_requests", "128", "string"},
+		{"integer", "max_concurrent_requests", "128", "float64"}, // JSON number
+		{"boolean", "disable_retries", "true", "bool"},
+	}
+
+	for _, tc := range cases {
+		var sent []byte
+		leaf, cmdDef, exec := buildRecordingCommand(t, tc.field, tc.manifestType, &sent)
+		if err := leaf.Flags().Set(flagNameFor(tc.field), tc.value); err != nil {
+			t.Fatalf("%s: set --%s: %v", tc.manifestType, flagNameFor(tc.field), err)
+		}
+		if err := exec.Execute(leaf, []string{"svc1"}, cmdDef); err != nil {
+			t.Fatalf("%s: Execute: %v", tc.manifestType, err)
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(sent, &body); err != nil {
+			t.Fatalf("%s: request body is not JSON: %v (%q)", tc.manifestType, err, sent)
+		}
+		got := body[tc.field]
+		if gotType := fmt.Sprintf("%T", got); gotType != tc.wantGoType {
+			t.Errorf("declared %q, --%s %s sent %v (%s), want a %s on the wire.\n"+
+				"  NOTES section 5 blocker 1 says retyping changes the BODY, not just the "+
+				"flag; if this changed, re-measure that table.",
+				tc.manifestType, flagNameFor(tc.field), tc.value, got, gotType, tc.wantGoType)
+		}
+	}
+
+	// The measurement and the record have to move together, which is the whole
+	// point of writing the blocker down.
+	section := notesSection5(t)
+	for _, want := range []string{"BLOCKER 1", "string-to-string record"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("section 5 no longer states %q, so a reader could apply the mapping "+
+				"without knowing the endpoint contract has to move with it", want)
+		}
+	}
+}
+
+// TestRetypingWouldRemoveTheEmptyStringUnsetPath measures section 5's SECOND
+// blocker, the one the operator decision named as decisive.
+//
+// Every advanced-config field declares `unsetBy: 'empty-string'`: an operator
+// clears a value by sending "". The CLI has no concept of `unsetBy` — nothing
+// in this repo reads it — so that empty string is just the value, and only a
+// `string` flag will carry it. Retyping a field `integer` or `boolean` makes
+// the flag refuse "" before it can reach the wire, which removes the only
+// unset path the catalog has.
+//
+// The test quantifies over the snapshot rather than over an example, so the
+// count in section 5 stays honest as the catalog grows.
+func TestRetypingWouldRemoveTheEmptyStringUnsetPath(t *testing.T) {
+	snap := loadVLLMPostSnapshot(t)
+	section := notesSection5(t)
+
+	total, wouldLose := 0, 0
+	for catalogType, schema := range snap.AdvancedConfigSchemas {
+		for _, f := range schema.Fields {
+			total++
+			if f.UnsetBy != "empty-string" {
+				t.Errorf("%s/%s declares unsetBy %q, not \"empty-string\"; section 5's "+
+					"blocker 2 is derived from that value and must be re-measured",
+					catalogType, f.Key, f.UnsetBy)
+				continue
+			}
+
+			// As declared today the field is `string`, and the unset value goes.
+			asIs := buildOneFieldCommand(t, f.Key, "string")
+			if err := asIs.Flags().Set(flagNameFor(f.Key), ""); err != nil {
+				t.Errorf("%s/%s: the field as DECLARED today refuses the empty string that "+
+					"unsetBy depends on: %v", catalogType, f.Key, err)
+			}
+
+			retyped := prescribedManifestType(f)
+			if retyped != "integer" && retyped != "boolean" {
+				continue // string and object both carry "".
+			}
+			wouldLose++
+			leaf := buildOneFieldCommand(t, f.Key, retyped)
+			if err := leaf.Flags().Set(flagNameFor(f.Key), ""); err == nil {
+				t.Errorf("%s/%s: retyped %q the flag ACCEPTS the empty string, so section 5's "+
+					"blocker 2 overstates the cost; re-measure it", catalogType, f.Key, retyped)
+			}
+		}
+	}
+
+	if wouldLose == 0 {
+		t.Fatal("no field would lose its unset path; blocker 2 would be vacuous")
+	}
+	// Section 5 states the count. A record whose numbers drift is the failure
+	// mode review cycle 2 found, so derive it here rather than trusting prose.
+	wantCount := fmt.Sprintf("%d of the %d", wouldLose, total)
+	if !strings.Contains(section, wantCount) {
+		t.Errorf("section 5's blocker 2 does not say %q; measured %d of %d fields lose the "+
+			"empty-string unset path when retyped", wantCount, wouldLose, total)
+	}
+	if !strings.Contains(section, "unsetBy") {
+		t.Error("section 5 does not name `unsetBy`, so a reader cannot check blocker 2 " +
+			"against the catalog themselves")
+	}
+	t.Logf("%d of %d catalog fields would lose the empty-string unset path if retyped",
+		wouldLose, total)
 }
