@@ -10,6 +10,8 @@ including fields that this CLI version does not yet know.
 Job details and lists retain their status and errors beside teardown outcomes. Unrelated job
 follow output keeps its existing completion wording. History pagination keeps the operator's
 filters and scope, and confirmed server destruction removes local cleanup advice.
+When follow finishes, current teardown outcomes and their read commands appear after the final
+work-item logs, including outcomes that stayed pending throughout the job.
 
 **Virtual machines are an account MODULE now, so the CLI serves each account only the commands it
 may call.** A module governs one whole capability across the Console, the CLI, the MCP tool list and

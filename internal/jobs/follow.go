@@ -44,8 +44,8 @@ func FollowJobToWriter(jobID string, w io.Writer) error {
 //
 // Returns nil on terminal "completed", a non-nil error on terminal
 // "failed" (containing the job's error message). The terminal state
-// line itself is emitted before this function returns, so CI logs end
-// with the final job line whichever way it goes.
+// line itself is emitted before this function returns. Teardown jobs
+// end with their current outcomes and later-read commands.
 func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error {
 	return FollowJobWithServiceToWriter(ctx, svc, jobID, os.Stdout)
 }

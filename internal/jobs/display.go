@@ -78,11 +78,12 @@ func NewFollowState() *FollowState {
 // "all statuses, then all logs" interleaving where step 6 / step 7
 // completion lines print before step 6's own progress logs.
 func EmitFollowDeltas(w io.Writer, job *JobStatus, items []WorkItem, state *FollowState) {
+	terminalTransition := job.IsTerminal() && job.Status != state.JobStatus
 	emitJobLevel(w, job, state)
-	emitTeardownOutcome(w, job, state)
 	for _, item := range sortedByStep(items) {
 		emitItemStatus(w, item, state)
 	}
+	emitTeardownOutcome(w, job, state, terminalTransition)
 }
 
 // EmitFollowLogs prints any new work-item log lines since the previous
@@ -114,17 +115,19 @@ func EmitFollowLogs(w io.Writer, svc *Service, jobID string, items []WorkItem, s
 // header in the live transcript. With this combined emitter, every
 // step's logs appear directly under its own status line.
 func EmitFollowDeltasWithLogs(w io.Writer, svc *Service, jobID string, job *JobStatus, items []WorkItem, state *FollowState) {
+	terminalTransition := job.IsTerminal() && job.Status != state.JobStatus
 	emitJobLevel(w, job, state)
-	emitTeardownOutcome(w, job, state)
 	for _, item := range sortedByStep(items) {
 		emitItemStatus(w, item, state)
 		emitItemLogs(w, svc, jobID, item, state)
 	}
+	emitTeardownOutcome(w, job, state, terminalTransition)
 }
 
-func emitTeardownOutcome(writer io.Writer, job *JobStatus, state *FollowState) {
+func emitTeardownOutcome(writer io.Writer, job *JobStatus, state *FollowState, terminalTransition bool) {
 	fingerprint := output.TeardownFingerprint(job.RawBody)
-	if fingerprint == "" || fingerprint == state.Teardown {
+	// Final outcomes must remain visible after the last work-item status and logs.
+	if fingerprint == "" || (fingerprint == state.Teardown && !terminalTransition) {
 		return
 	}
 	if output.RenderTeardowns(writer, job.RawBody) {
