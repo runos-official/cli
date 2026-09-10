@@ -7,6 +7,9 @@ the teardown reference, while history and job output show each node's full id, a
 state, reason, remedy, and independent provider result. Pending or unknown acknowledgement no
 longer reads as completed machine teardown. JSON and MCP output keep the complete API response,
 including fields that this CLI version does not yet know.
+Job details and lists retain their status and errors beside teardown outcomes. Unrelated job
+follow output keeps its existing completion wording. History pagination keeps the operator's
+filters and scope, and confirmed server destruction removes local cleanup advice.
 
 **Virtual machines are an account MODULE now, so the CLI serves each account only the commands it
 may call.** A module governs one whole capability across the Console, the CLI, the MCP tool list and

@@ -59,7 +59,7 @@ func TestFormatterRendersCompleteTeardownHistory(t *testing.T) {
 		"The agent did not answer the uninstall request. This reason is deliberately longer than eighty characters and stays fully readable.",
 		"Run runos uninstall locally when cleanup remains necessary.",
 		"Provider destruction: Failed.",
-		"runos node-teardowns list --job-id 55555555-5555-4555-8555-555555555555 --cursor \"opaque cursor/value\" --cid 33333333-3333-4333-8333-333333333333",
+		"Continue the same history command with --cursor 'opaque cursor/value'; keep all existing filters and scope.",
 	} {
 		if !strings.Contains(rendered, expected) {
 			t.Errorf("teardown output missing %q:\n%s", expected, rendered)

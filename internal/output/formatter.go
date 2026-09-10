@@ -157,8 +157,8 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 	}
 
 	// Plain text output
-	if RenderTeardowns(os.Stdout, data) {
-		return nil
+	if handled, err := f.formatTeardownEnvelope(data, outputDef); handled {
+		return err
 	}
 
 	if outputDef == nil {

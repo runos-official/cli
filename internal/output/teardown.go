@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"unicode"
 )
@@ -44,6 +43,9 @@ func RenderTeardowns(writer io.Writer, data []byte) bool {
 		renderTeardownRecord(writer, record)
 		return true
 	}
+	if !validTeardownMetadata(envelope) {
+		return false
+	}
 
 	rawRecords, recordsPresent := envelope["teardowns"]
 	read, readPresent := envelope["teardownRead"].(map[string]any)
@@ -57,9 +59,15 @@ func RenderTeardowns(writer io.Writer, data []byte) bool {
 		return false
 	}
 	readErrorMessage := stringValue(readError)
+	_, historyPage := envelope["nextCursor"]
+	if len(records) == 0 && readErrorMessage == "" && !(historyPage && recordsPresent) && !(readPresent && isTeardownJob(envelope)) {
+		return false
+	}
 	if len(records) == 0 {
 		if readErrorMessage != "" {
 			fmt.Fprintf(writer, "Teardown outcomes are unavailable: %s\n", readErrorMessage)
+		} else if !recordsPresent {
+			fmt.Fprintln(writer, "Teardown outcome metadata is unavailable.")
 		} else {
 			fmt.Fprintln(writer, "No teardown records are available yet.")
 		}
@@ -75,7 +83,7 @@ func RenderTeardowns(writer io.Writer, data []byte) bool {
 		}
 	}
 
-	renderTeardownContinuation(writer, envelope, read, records)
+	renderTeardownContinuation(writer, envelope, read)
 	return true
 }
 
@@ -99,29 +107,23 @@ func RenderJobReference(writer io.Writer, data []byte) bool {
 	return true
 }
 
-// TeardownFingerprint returns stable teardown metadata for follow deduplication.
+// TeardownFingerprint returns visible teardown output for follow deduplication.
 func TeardownFingerprint(data []byte) string {
-	envelope, ok := decodeJSONObject(data)
-	if !ok {
+	var rendered strings.Builder
+	if !RenderTeardowns(&rendered, data) {
 		return ""
 	}
-	fields := map[string]any{}
-	for _, key := range []string{"teardown", "teardowns", "teardownNextCursor", "teardownRead", "teardownReadError"} {
-		if value, present := envelope[key]; present {
-			fields[key] = value
-		}
+	return rendered.String()
+}
+
+func isTeardownJob(envelope map[string]any) bool {
+	switch stringValue(envelope["type"]) {
+	case "cluster.reset", "nodes.deleteAndReset", "cloudProviders.removeServer":
+		return true
+	default:
+		// Provisioning only becomes teardown-related when rollback creates a record.
+		return false
 	}
-	if isTeardownRecord(envelope) {
-		fields["teardown"] = envelope
-	}
-	if len(fields) == 0 {
-		return ""
-	}
-	encoded, err := json.Marshal(fields)
-	if err != nil {
-		return ""
-	}
-	return string(encoded)
 }
 
 func decodeJSONObject(data []byte) (map[string]any, bool) {
@@ -187,7 +189,7 @@ func renderTeardownRecord(writer io.Writer, record map[string]any) {
 	}
 	writeTeardownField(writer, "Reason code", stringValue(record["reasonCode"]))
 	writeTeardownField(writer, "Reason", stringValue(record["reason"]))
-	writeTeardownField(writer, "Remedy", stringValue(record["remedy"]))
+	writeTeardownField(writer, "Remedy", teardownRemedy(record))
 
 	providerState := stringValue(record["providerState"])
 	if providerState != "" {
@@ -281,41 +283,6 @@ func writeTeardownField(writer io.Writer, label, value string) {
 	for _, line := range lines[1:] {
 		fmt.Fprintf(writer, "  %s\n", line)
 	}
-}
-
-func renderTeardownContinuation(writer io.Writer, envelope, read map[string]any, records []map[string]any) {
-	cursor := stringValue(envelope["teardownNextCursor"])
-	if cursor == "" {
-		cursor = stringValue(envelope["nextCursor"])
-	}
-
-	jobID := stringValue(read["jobId"])
-	cid := stringValue(read["cid"])
-	if jobID == "" && len(records) > 0 {
-		jobID = stringValue(records[0]["jobId"])
-	}
-	if cid == "" && len(records) > 0 {
-		cid = stringValue(records[0]["cid"])
-	}
-	if jobID == "" {
-		if cursor != "" {
-			fmt.Fprintf(writer, "Continue history: runos node-teardowns list --cursor %s%s\n", strconv.Quote(cursor), clusterArgument(cid))
-		}
-		return
-	}
-
-	fmt.Fprintf(writer, "Read job outcomes: runos node-teardowns list --job-id %s", jobID)
-	if cursor != "" {
-		fmt.Fprintf(writer, " --cursor %s", strconv.Quote(cursor))
-	}
-	fmt.Fprintf(writer, "%s\n", clusterArgument(cid))
-}
-
-func clusterArgument(cid string) string {
-	if cid == "" {
-		return ""
-	}
-	return " --cid " + cid
 }
 
 func stringValue(value any) string {
