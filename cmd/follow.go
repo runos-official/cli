@@ -64,18 +64,12 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	followErr := jobs.FollowJobWithServiceToWriter(ctx, svc, jobID, os.Stderr)
+	final, followErr := jobs.FollowJobWithServiceToWriterResult(ctx, svc, jobID, os.Stderr)
 
-	// Always fetch and emit the terminal status so callers get the
-	// machine-readable envelope even when the job ended in `failed`.
-	// FollowJob* returns non-nil on terminal failure; we propagate that
-	// error after emitting the JSON so the exit code stays non-zero.
-	final, getErr := svc.GetStatus(jobID)
-	if getErr != nil {
-		if followErr != nil {
-			return followErr
-		}
-		return getErr
+	// Emit the terminal response captured by the poll that ended follow.
+	// Unknown fields remain available without an extra status read.
+	if final == nil {
+		return followErr
 	}
 	out, mErr := json.MarshalIndent(final, "", "  ")
 	if mErr != nil {

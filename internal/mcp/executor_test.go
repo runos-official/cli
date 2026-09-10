@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -10,6 +11,22 @@ import (
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
 )
+
+func TestDecodeJSONPreservingNumbers(t *testing.T) {
+	value, err := decodeJSONPreservingNumbers([]byte(`{"count":9007199254740993,"fraction":12.5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"count":9007199254740993`, `"fraction":12.5`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Errorf("decoded value lost %s: %s", expected, encoded)
+		}
+	}
+}
 
 // Bug 86 regression: the MCP executor's getAuthToken must accept a
 // stored PAT (cfg.APIKey) and RUNOS_API_KEY, not hard-require Firebase.

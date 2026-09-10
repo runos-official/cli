@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/runos-official/cli/internal/output"
 )
 
 const (
@@ -40,6 +42,7 @@ type FollowState struct {
 	JobProgress   string
 	ItemStatus    map[string]string
 	ItemLogCursor map[string]string
+	Teardown      string
 }
 
 // NewFollowState returns a fresh state ready for the first poll. All
@@ -76,6 +79,7 @@ func NewFollowState() *FollowState {
 // completion lines print before step 6's own progress logs.
 func EmitFollowDeltas(w io.Writer, job *JobStatus, items []WorkItem, state *FollowState) {
 	emitJobLevel(w, job, state)
+	emitTeardownOutcome(w, job, state)
 	for _, item := range sortedByStep(items) {
 		emitItemStatus(w, item, state)
 	}
@@ -111,9 +115,20 @@ func EmitFollowLogs(w io.Writer, svc *Service, jobID string, items []WorkItem, s
 // step's logs appear directly under its own status line.
 func EmitFollowDeltasWithLogs(w io.Writer, svc *Service, jobID string, job *JobStatus, items []WorkItem, state *FollowState) {
 	emitJobLevel(w, job, state)
+	emitTeardownOutcome(w, job, state)
 	for _, item := range sortedByStep(items) {
 		emitItemStatus(w, item, state)
 		emitItemLogs(w, svc, jobID, item, state)
+	}
+}
+
+func emitTeardownOutcome(writer io.Writer, job *JobStatus, state *FollowState) {
+	fingerprint := output.TeardownFingerprint(job.RawBody)
+	if fingerprint == "" || fingerprint == state.Teardown {
+		return
+	}
+	if output.RenderTeardowns(writer, job.RawBody) {
+		state.Teardown = fingerprint
 	}
 }
 
@@ -121,7 +136,11 @@ func emitJobLevel(w io.Writer, job *JobStatus, state *FollowState) {
 	if job.Status == state.JobStatus && job.Progress == state.JobProgress {
 		return
 	}
-	line := fmt.Sprintf("job %s: %s", job.ID, job.Status)
+	status := job.Status
+	if status == "completed" && output.TeardownFingerprint(job.RawBody) != "" {
+		status = "bookkeeping completed"
+	}
+	line := fmt.Sprintf("job %s: %s", job.ID, status)
 	if job.Progress != "" {
 		line += " (" + job.Progress + ")"
 	}

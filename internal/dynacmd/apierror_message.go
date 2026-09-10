@@ -1,9 +1,12 @@
 package dynacmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/runos-official/cli/internal/output"
 )
 
 // describeAPIError renders a failed Conductor call as one line a person can act on.
@@ -29,10 +32,15 @@ func describeAPIError(statusCode int, body []byte) string {
 		Code  string `json:"code"`
 	}
 	if json.Unmarshal(body, &envelope) == nil && envelope.Error != "" {
+		message := fmt.Sprintf("%s (HTTP %d)", envelope.Error, statusCode)
 		if envelope.Code != "" {
-			return fmt.Sprintf("%s (HTTP %d, %s)", envelope.Error, statusCode, envelope.Code)
+			message = fmt.Sprintf("%s (HTTP %d, %s)", envelope.Error, statusCode, envelope.Code)
 		}
-		return fmt.Sprintf("%s (HTTP %d)", envelope.Error, statusCode)
+		var teardown bytes.Buffer
+		if output.RenderTeardowns(&teardown, body) {
+			return message + "\n" + strings.TrimSpace(teardown.String())
+		}
+		return message
 	}
 
 	if raw == "" {

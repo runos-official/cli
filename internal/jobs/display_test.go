@@ -89,6 +89,116 @@ func TestEmitFollowDeltas_TerminalFailureCarriesError(t *testing.T) {
 	}
 }
 
+func TestEmitFollowDeltasRendersCurrentTeardownOutcome(t *testing.T) {
+	t.Parallel()
+	state := NewFollowState()
+	job := &JobStatus{
+		ID:       "55555555-5555-4555-8555-555555555555",
+		Status:   "completed",
+		Progress: "4/4",
+		RawBody: json.RawMessage(`{
+			"id":"55555555-5555-4555-8555-555555555555",
+			"status":"completed",
+			"teardowns":[{
+				"id":"11111111-1111-4111-8111-111111111111",
+				"aid":"22222222-2222-4222-8222-222222222222",
+				"cid":"33333333-3333-4333-8333-333333333333",
+				"nid":"44444444-4444-4444-8444-444444444444",
+				"name":"",
+				"jobId":"55555555-5555-4555-8555-555555555555",
+				"operationKind":"cluster_reset",
+				"acknowledgementApplicable":true,
+				"state":"pending",
+				"acceptanceState":"accepted",
+				"reasonCode":"",
+				"reason":"",
+				"remedy":"",
+				"requestedAt":"2026-09-09T12:00:00Z",
+				"dispatchedAt":null,
+				"resolvedAt":null,
+				"updatedAt":"2026-09-09T12:00:00Z",
+				"trackingDeadlineAt":"2026-09-09T12:01:00Z",
+				"providerState":"not_requested",
+				"providerReason":"",
+				"providerRemedy":""
+			}],
+			"teardownRead":{"aid":"22222222-2222-4222-8222-222222222222","cid":"33333333-3333-4333-8333-333333333333","jobId":"55555555-5555-4555-8555-555555555555"},
+			"teardownNextCursor":null,
+			"teardownReadError":null
+		}`),
+	}
+
+	var buffer bytes.Buffer
+	EmitFollowDeltas(&buffer, job, nil, state)
+	rendered := buffer.String()
+	for _, expected := range []string{
+		"job 55555555-5555-4555-8555-555555555555: bookkeeping completed",
+		"Agent acknowledgement: Scheduling acknowledgement remains pending.",
+		"runos node-teardowns show 11111111-1111-4111-8111-111111111111",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Errorf("follow output missing %q:\n%s", expected, rendered)
+		}
+	}
+}
+
+func TestEmitFollowDeltasRendersLaterRecoveryGuidance(t *testing.T) {
+	t.Parallel()
+	state := NewFollowState()
+	job := &JobStatus{
+		ID:       "55555555-5555-4555-8555-555555555555",
+		Status:   "running",
+		Progress: "3/4",
+		RawBody:  acknowledgedTeardownJob(""),
+	}
+
+	var first bytes.Buffer
+	EmitFollowDeltas(&first, job, nil, state)
+	if !strings.Contains(first.String(), "acknowledged scheduling uninstall") {
+		t.Fatalf("first outcome missing acknowledgement:\n%s", first.String())
+	}
+
+	job.RawBody = acknowledgedTeardownJob("Check the surviving machine before another operation.")
+	var second bytes.Buffer
+	EmitFollowDeltas(&second, job, nil, state)
+	if !strings.Contains(second.String(), "Check the surviving machine before another operation.") {
+		t.Fatalf("later recovery guidance was suppressed:\n%s", second.String())
+	}
+	if strings.Contains(second.String(), "job 55555555") {
+		t.Fatalf("unchanged job status was repeated:\n%s", second.String())
+	}
+}
+
+func acknowledgedTeardownJob(remedy string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{
+		"id":"55555555-5555-4555-8555-555555555555",
+		"status":"running",
+		"teardowns":[{
+			"id":"11111111-1111-4111-8111-111111111111",
+			"aid":"22222222-2222-4222-8222-222222222222",
+			"cid":"33333333-3333-4333-8333-333333333333",
+			"nid":"44444444-4444-4444-8444-444444444444",
+			"name":"target",
+			"jobId":"55555555-5555-4555-8555-555555555555",
+			"operationKind":"cluster_reset",
+			"acknowledgementApplicable":true,
+			"state":"acknowledged",
+			"acceptanceState":"accepted",
+			"reasonCode":"",
+			"reason":"",
+			"remedy":%q,
+			"requestedAt":"2026-09-09T12:00:00Z",
+			"dispatchedAt":"2026-09-09T12:00:01Z",
+			"resolvedAt":"2026-09-09T12:00:02Z",
+			"updatedAt":"2026-09-09T12:00:03Z",
+			"trackingDeadlineAt":"2026-09-09T12:01:00Z",
+			"providerState":"not_requested",
+			"providerReason":"",
+			"providerRemedy":""
+		}]
+	}`, remedy))
+}
+
 func TestEmitFollowDeltas_NoEscapeCodes(t *testing.T) {
 	t.Parallel()
 	state := NewFollowState()

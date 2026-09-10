@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -140,7 +141,9 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 	if f.jsonOutput {
 		// Pretty print JSON
 		var v any
-		if err := json.Unmarshal(data, &v); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&v); err != nil {
 			// Not valid JSON, print as-is
 			fmt.Println(string(data))
 			return nil
@@ -154,6 +157,10 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 	}
 
 	// Plain text output
+	if RenderTeardowns(os.Stdout, data) {
+		return nil
+	}
+
 	if outputDef == nil {
 		fmt.Println(string(data))
 		return nil
@@ -166,159 +173,16 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 	case "array":
 		return f.formatArray(data, outputDef.FieldNames())
 	case "object":
-		return f.formatObject(data, outputDef.FieldNames())
+		if err := f.formatObject(data, outputDef.FieldNames()); err != nil {
+			return err
+		}
+		RenderJobReference(os.Stdout, data)
+		return nil
 	default:
 		fmt.Println(string(data))
 	}
 
 	return nil
-}
-
-func (f *Formatter) formatArray(data []byte, fields []string) error {
-	// I26-U follow-up: conductor 16.0.0 wrapped list-style endpoints in
-	// envelope objects (`{apps: [...]}`, `{jobs: [...]}`, etc.). The
-	// manifest's `output.type: "array"` declaration didn't change in
-	// the same release, so the bytes the formatter sees are an object
-	// even though the schema says array. When the response is a
-	// single-key object whose value is itself an array, unwrap it
-	// before decoding. Pure shape detection so it stays correct for
-	// any envelope key the conductor introduces without a CLI release.
-	data = unwrapArrayEnvelope(data)
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		// Sibling path to unwrapArrayEnvelope: some list endpoints
-		// (services/postgresql/{id}/users, for example) return a
-		// multi-key envelope where the primary array sits beside an
-		// auxiliary diagnostic field. The shape-keyed single-key
-		// unwrap can't disambiguate, so the manifest's declared field
-		// list is used to pick the array whose elements match.
-		data = pickArrayFromMultiKeyEnvelope(data, fields)
-		if err2 := json.Unmarshal(data, &items); err2 != nil {
-			fmt.Println(string(data))
-			return nil
-		}
-	}
-
-	if len(items) == 0 {
-		fmt.Println("No items found")
-		return nil
-	}
-
-	// Log-shape stream: pod logs come back as []PodLogEntry with the
-	// shape {timestamp, podName, containerName, message}. A wide table
-	// renders the message column at thousands of chars and breaks the
-	// terminal. Recognise the shape and stream one entry per line as
-	// `<timestamp> [<pod>] <message>` (mirroring kubectl's --timestamps
-	// --prefix output). Drops to the table renderer for everything
-	// else, and `--json` opt-in still gives the full structured form.
-	if isLogShape(items) {
-		streamLogEntries(items)
-		return nil
-	}
-
-	// Determine which fields to show
-	if len(fields) == 0 {
-		// Use all keys from first item
-		for k := range items[0] {
-			fields = append(fields, k)
-		}
-		sort.Strings(fields)
-	}
-
-	// Calculate column widths (use display name without dots for header)
-	widths := make([]int, len(fields))
-	displayNames := make([]string, len(fields))
-	headers := make([]string, len(fields))
-	for i, field := range fields {
-		// Use the last part of dot notation as display name (e.g., "flags.systemInstance" -> "systemInstance")
-		parts := strings.Split(field, ".")
-		displayNames[i] = parts[len(parts)-1]
-		// I5-B: legacy field names like `__docId` map to a friendlier
-		// header (`ID`) so the table doesn't render the raw Firestore
-		// subdoc convention name.
-		headers[i] = headerLabel(displayNames[i])
-		widths[i] = len(headers[i])
-	}
-	// Pre-truncate every cell so a single outsized value (e.g. a
-	// ~250-char api-key NAME) cannot push every other column hundreds
-	// of chars right. The cap applies in text mode only; --json still
-	// emits the full untruncated value so machine consumers keep the
-	// raw data. Truncated cells render as `<first N-3 chars>...` and
-	// the width calculation honours the truncated string.
-	cells := make([][]string, len(items))
-	for r, item := range items {
-		row := make([]string, len(fields))
-		for i, field := range fields {
-			val := truncateCell(formatCellValue(getNestedValue(item, field)), maxTextCellWidth)
-			row[i] = val
-			if len(val) > widths[i] {
-				widths[i] = len(val)
-			}
-		}
-		cells[r] = row
-	}
-
-	// Print header
-	header := ""
-	for i := range fields {
-		header += fmt.Sprintf("%-*s  ", widths[i], headers[i])
-	}
-	fmt.Println(header)
-	fmt.Println(strings.Repeat("-", len(header)))
-
-	// Print rows
-	for _, row := range cells {
-		line := ""
-		for i, val := range row {
-			line += fmt.Sprintf("%-*s  ", widths[i], val)
-		}
-		fmt.Println(line)
-	}
-
-	return nil
-}
-
-// maxTextCellWidth caps any single cell in a top-level array table at
-// 40 runes. Names, descriptions, and uid strings have surfaced in the
-// wild at 250+ chars and a single such cell pushes every subsequent
-// column hundreds of chars right, making the whole table unreadable
-// without scrolling. 40 is wide enough for typical resource names
-// (`prod-billing-worker-staging`) but narrow enough that a pathological
-// outlier can't dominate. Full values stay available via --json.
-const maxTextCellWidth = 40
-
-// truncateCell returns val unchanged when it fits within max display
-// runes, otherwise returns the first max-3 runes followed by `...`.
-// Counts runes (not bytes) so a string with multi-byte characters
-// truncates at a visible-character boundary instead of mid-rune. Pure
-// helper so the regression test can exercise short / exact / over /
-// multi-byte inputs without a Formatter dance.
-//
-// URL-shaped values (http:// or https:// prefix) bypass the cap: those
-// are typically the primary value the user came for (apps
-// network-access prints endpoints, services dependencies prints
-// targetIngressUrl), and copy-paste from the terminal needs the full
-// string. The table renderer's width calc picks up the longer cell so
-// alignment still works for downstream columns. Issue 106.
-func truncateCell(val string, max int) string {
-	if max <= 3 {
-		return val
-	}
-	if isURLValue(val) {
-		return val
-	}
-	runes := []rune(val)
-	if len(runes) <= max {
-		return val
-	}
-	return string(runes[:max-3]) + "..."
-}
-
-// isURLValue reports whether val is an http(s) URL the user is likely
-// to copy-paste. Cheap prefix check; no full URL parsing because we
-// just need to recognise the "primary value" cells in the table.
-func isURLValue(val string) bool {
-	return strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://")
 }
 
 func (f *Formatter) formatObject(data []byte, fields []string) error {
