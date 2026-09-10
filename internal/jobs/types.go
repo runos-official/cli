@@ -17,6 +17,29 @@ type JobStatus struct {
 	// job types can carry their own result shapes without touching this
 	// struct.
 	RawResult json.RawMessage `json:"result,omitempty"`
+	// RawBody retains fields that this CLI version does not yet know.
+	RawBody json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes known job fields and retains the complete response.
+func (j *JobStatus) UnmarshalJSON(data []byte) error {
+	type jobStatusAlias JobStatus
+	var decoded jobStatusAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*j = JobStatus(decoded)
+	j.RawBody = append(j.RawBody[:0], data...)
+	return nil
+}
+
+// MarshalJSON emits the complete API response when one is available.
+func (j JobStatus) MarshalJSON() ([]byte, error) {
+	if len(j.RawBody) > 0 && json.Valid(j.RawBody) {
+		return j.RawBody, nil
+	}
+	type jobStatusAlias JobStatus
+	return json.Marshal(jobStatusAlias(j))
 }
 
 // RunResult is the shape of jobs.result for type=app.run jobs.

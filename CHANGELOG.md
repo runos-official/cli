@@ -2,6 +2,17 @@
 
 ## v1.20.0
 
+**Node deletion now separates acceptance from machine teardown.** Immediate deletion output keeps
+the teardown reference, while history and job output show each node's full id, acknowledgement
+state, reason, remedy, and independent provider result. Pending or unknown acknowledgement no
+longer reads as completed machine teardown. JSON and MCP output keep the complete API response,
+including fields that this CLI version does not yet know.
+Job details and lists retain their status and errors beside teardown outcomes. Unrelated job
+follow output keeps its existing completion wording. History pagination keeps the operator's
+filters and scope, and confirmed server destruction removes local cleanup advice.
+When follow finishes, current teardown outcomes and their read commands appear after the final
+work-item logs, including outcomes that stayed pending throughout the job.
+
 **Virtual machines are an account MODULE now, so the CLI serves each account only the commands it
 may call.** A module governs one whole capability across the Console, the CLI, the MCP tool list and
 the API at once. `virt` is the first, and it is premium: off until someone switches it on. Conductor

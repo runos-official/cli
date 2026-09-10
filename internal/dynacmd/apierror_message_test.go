@@ -76,4 +76,48 @@ func TestDescribeAPIError(t *testing.T) {
 			t.Fatalf("got %q, want no trace id", got)
 		}
 	})
+
+	t.Run("keeps a refused teardown reference", func(t *testing.T) {
+		body := []byte(`{
+			"error":"Node deletion was refused.",
+			"code":"node.delete_refused",
+			"teardown":{
+				"id":"11111111-1111-4111-8111-111111111111",
+				"aid":"22222222-2222-4222-8222-222222222222",
+				"cid":"33333333-3333-4333-8333-333333333333",
+				"nid":"44444444-4444-4444-8444-444444444444",
+				"name":"target",
+				"jobId":null,
+				"operationKind":"node_delete",
+				"acknowledgementApplicable":true,
+				"state":"unknown",
+				"acceptanceState":"refused",
+				"reasonCode":"DISPATCH_REFUSED",
+				"reason":"The deletion guard refused dispatch.",
+				"remedy":"",
+				"requestedAt":"2026-09-09T12:00:00Z",
+				"dispatchedAt":null,
+				"resolvedAt":"2026-09-09T12:00:01Z",
+				"updatedAt":"2026-09-09T12:00:01Z",
+				"trackingDeadlineAt":null,
+				"providerState":"not_requested",
+				"providerReason":"",
+				"providerRemedy":""
+			}
+		}`)
+		got := describeAPIError(409, body)
+		for _, expected := range []string{
+			"Node deletion was refused. (HTTP 409, node.delete_refused)",
+			"Deletion refused.",
+			"11111111-1111-4111-8111-111111111111",
+			"runos node-teardowns show",
+		} {
+			if !strings.Contains(got, expected) {
+				t.Errorf("teardown refusal missing %q:\n%s", expected, got)
+			}
+		}
+		if strings.Contains(got, "Deletion accepted.") {
+			t.Fatalf("refusal claimed acceptance:\n%s", got)
+		}
+	})
 }

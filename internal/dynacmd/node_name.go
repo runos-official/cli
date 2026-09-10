@@ -2,14 +2,13 @@ package dynacmd
 
 import (
 	"fmt"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
+	"github.com/runos-official/cli/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -196,14 +195,5 @@ func nodeNameClusterID(c *cobra.Command, cmdDef manifest.Command, args []string,
 // control character in this one line could move the cursor and imitate a
 // prompt, and the operator reads this line before an irreversible command.
 func nodeLabel(name string) string {
-	trimmed := strings.TrimSpace(name)
-	if trimmed == "" {
-		return ""
-	}
-	for _, r := range trimmed {
-		if unicode.IsControl(r) {
-			return ""
-		}
-	}
-	return trimmed
+	return output.SafeNodeName(name)
 }

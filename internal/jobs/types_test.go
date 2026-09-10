@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,23 @@ func TestJobStatus_IsTerminal(t *testing.T) {
 				t.Errorf("IsTerminal() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestJobStatusPreservesUnknownResponseFields(t *testing.T) {
+	body := []byte(`{"id":"job","status":"completed","teardowns":[],"future":{"count":9007199254740993}}`)
+	var status JobStatus
+	if err := json.Unmarshal(body, &status); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := json.Marshal(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"teardowns":[]`, `"count":9007199254740993`} {
+		if !strings.Contains(string(rendered), expected) {
+			t.Errorf("marshaled status lost %s: %s", expected, rendered)
+		}
 	}
 }
 
