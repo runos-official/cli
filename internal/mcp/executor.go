@@ -83,8 +83,8 @@ func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]an
 	}
 
 	// Try to parse response as JSON
-	var jsonResp any
-	if err := json.Unmarshal(respBody, &jsonResp); err != nil {
+	jsonResp, decodeErr := decodeJSONPreservingNumbers(respBody)
+	if decodeErr != nil {
 		result["body"] = string(respBody)
 	} else {
 		result["body"] = jsonResp
@@ -221,8 +221,8 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	}
 
 	// Pretty print JSON response
-	var jsonResp any
-	if err := json.Unmarshal(respBody, &jsonResp); err != nil {
+	jsonResp, decodeErr := decodeJSONPreservingNumbers(respBody)
+	if decodeErr != nil {
 		return string(respBody), nil
 	}
 

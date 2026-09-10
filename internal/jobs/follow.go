@@ -44,8 +44,8 @@ func FollowJobToWriter(jobID string, w io.Writer) error {
 //
 // Returns nil on terminal "completed", a non-nil error on terminal
 // "failed" (containing the job's error message). The terminal state
-// line itself is emitted before this function returns, so CI logs end
-// with the final job line whichever way it goes.
+// line itself is emitted before this function returns. Teardown jobs
+// end with their current outcomes and later-read commands.
 func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error {
 	return FollowJobWithServiceToWriter(ctx, svc, jobID, os.Stdout)
 }
@@ -53,32 +53,40 @@ func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error
 // FollowJobWithServiceToWriter is the writer-parameterised variant of
 // FollowJobWithService. All other behaviour matches.
 func FollowJobWithServiceToWriter(ctx context.Context, svc *Service, jobID string, w io.Writer) error {
+	_, err := FollowJobWithServiceToWriterResult(ctx, svc, jobID, w)
+	return err
+}
+
+// FollowJobWithServiceToWriterResult returns the final API response.
+func FollowJobWithServiceToWriterResult(ctx context.Context, svc *Service, jobID string, w io.Writer) (*JobStatus, error) {
 	state := NewFollowState()
+	var last *JobStatus
 
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("job follow cancelled: %w", ctx.Err())
+			return last, fmt.Errorf("job follow cancelled: %w", ctx.Err())
 		default:
 		}
 
 		job, err := svc.GetStatus(jobID)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		last = job
 
 		items, err := svc.GetWorkItems(jobID)
 		if err != nil {
-			return err
+			return last, err
 		}
 
 		EmitFollowDeltasWithLogs(w, svc, jobID, job, items.WorkItems, state)
 
 		if job.IsTerminal() {
 			if job.Status == "failed" {
-				return fmt.Errorf("job failed: %s", job.Error)
+				return job, fmt.Errorf("job failed: %s", job.Error)
 			}
-			return nil
+			return job, nil
 		}
 
 		time.Sleep(pollInterval)
