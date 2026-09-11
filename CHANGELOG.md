@@ -2,6 +2,12 @@
 
 ## v1.20.0
 
+Storage eviction confirmations now resolve hostname targets before asking for approval.
+The prompt and non-interactive refusal show the full current node ID and usable name.
+Device cleanup IDs remain visible when current node records are missing or unavailable.
+The confirmation distinguishes remaining device records, complete absence, ambiguous hostnames,
+and failed lookups. Cleanup wording applies only to device records matching the selected hostname.
+
 **Node deletion now separates acceptance from machine teardown.** Immediate deletion output keeps
 the teardown reference, while history and job output show each node's full id, acknowledgement
 state, reason, remedy, and independent provider result. Pending or unknown acknowledgement no
