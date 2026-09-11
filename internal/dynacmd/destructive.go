@@ -224,8 +224,9 @@ func destructiveVerb(cmdPath string) string {
 // (node_name.go). The changed-flag rule needs it most: `storage-groups
 // wipe-device` and every `maintenance-scripts <script> run` declare no
 // positional field and take the node id as a flag, so a disk wipe named
-// no machine at all. Every other field, and every failure of that lookup,
-// keeps the `<field>=<value>` entry this function has always printed.
+// no machine at all. The eviction hostname instead gains the server's
+// target resolution, including explicit absence and lookup failure text.
+// Other fields and failed node-id lookups keep their existing entries.
 //
 // One prompt performs at most ONE name lookup. The positional rule
 // returns on the first field it resolves, and the changed-flag rule asks
@@ -283,7 +284,7 @@ func destructiveSummary(c *cobra.Command, cmdDef manifest.Command, args []string
 			// the secret off the wire if that pattern ever widens.
 			if redactedFlagName(flagName) {
 				value = "<redacted>"
-			} else if !lookedUp && isNodeIDField(field.Name) {
+			} else if !lookedUp && (isNodeIDField(field.Name) || isEvictionHostname(cmdDef, field.Name)) {
 				lookedUp = true
 				suffix = nodeNameSuffix(c, cmdDef, args, field.Name, value)
 			}
