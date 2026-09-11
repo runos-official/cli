@@ -95,8 +95,12 @@ func decorateNodeTarget(c *cobra.Command, cmdDef manifest.Command, args []string
 //
 // Returns ` name=<node-name>` when the field is the node id field and the
 // lookup resolves a usable name. Returns the empty string for every other
-// field, and for every failure, blank name or timeout.
+// field, except the eviction hostname, which reports its resolution outcome.
+// A node-id failure, blank name or timeout still returns the empty string.
 func nodeNameSuffix(c *cobra.Command, cmdDef manifest.Command, args []string, fieldName, value string) string {
+	if isEvictionHostname(cmdDef, fieldName) {
+		return evictionHostnameSuffix(c, cmdDef, args, value)
+	}
 	if !isNodeIDField(fieldName) {
 		return ""
 	}

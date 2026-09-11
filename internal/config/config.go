@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -336,22 +335,6 @@ func (c *Config) GetConsoleURL() string {
 		return envURL
 	}
 	return c.ConsoleURL
-}
-
-// GetAPIURL returns the RunOS API base URL, preferring the
-// RUNOS_API_URL environment variable. The internal ConductorURL
-// struct field name and conductor_url JSON key are kept as-is to
-// preserve the on-disk config schema; user-facing surfaces use
-// "API" / "RUNOS_API_URL" exclusively.
-func (c *Config) GetAPIURL() string {
-	u := c.ConductorURL
-	if envURL := os.Getenv("RUNOS_API_URL"); envURL != "" {
-		u = envURL
-	}
-	if u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://localhost") {
-		fmt.Fprintf(os.Stderr, "Warning: API URL uses non-HTTPS scheme: %s\n", u)
-	}
-	return u
 }
 
 // GetDefaultClusterID returns the default cluster ID, preferring the RUNOS_CLUSTER_ID environment variable.

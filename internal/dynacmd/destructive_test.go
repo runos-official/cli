@@ -664,14 +664,6 @@ func TestDestructiveSummary_FlagOnlyTargetNamesTheNode(t *testing.T) {
 			flags: map[string]string{"nid": testNodeID},
 			want:  "nid=node-1 name=node-alpha",
 		},
-		// The hostname is never a fallback and never a node id: an
-		// evict-node run addressed by hostname names no node.
-		{
-			name:  "the hostname entry is not a node id and gains nothing",
-			cmd:   evictNode,
-			flags: map[string]string{"hostname": "host-alpha"},
-			want:  "hostname=host-alpha",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
