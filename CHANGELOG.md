@@ -15,9 +15,15 @@ before. A stored credential is USED rather than merely inspected, because a refr
 revoked or expire and spending it is the only way to find out; when it turns out to be dead the CLI
 says so, leaves the active account exactly as it was, and signs in.
 
-Re-authenticating the SAME account still goes to the browser, because that is what people run it
-for. `logout` clears every stored credential, not just the active one: signed out means signed out,
-and a leftover credential would let the next switch sign you back in without asking.
+Switching to the account you are already on is a no-op that says so, instead of opening a browser.
+It used to sign in again, on the theory that people run it to refresh a session; reported straight
+away as reading like the CLI had lost the session it had just used. Refreshing a sign-in is what
+`runos login` is for. The credential is still exercised, so an account whose token has actually
+died still signs in rather than being told "already on it" by a CLI whose next command will fail.
+
+`runos login` stores its credential against the account it signed into, so a later switch to that
+account uses it. `logout` clears every stored credential, not just the active one: signed out means
+signed out, and a leftover credential would let the next switch sign you back in without asking.
 `account forget` takes that account's credential with it.
 
 ## v1.20.0

@@ -29,18 +29,35 @@ func TestStoredSwitchDefersToTheBrowserWhenItHasNothing(t *testing.T) {
 }
 
 /*
-Re-authenticating the SAME account still goes to the browser.
+Switching to the account you are already on must NOT open a browser.
 
-People run `account switch <current>` to refresh a sign-in that is playing up.
-Answering that from the credential already on disk would do nothing at all and
-report success, which is the opposite of what was asked for.
+Reported by an operator the first time they hit it: it reads as the CLI having
+lost the session it had just used. Refreshing a sign-in is what `runos login`
+is for.
 */
-func TestStoredSwitchDoesNotShortCircuitARefresh(t *testing.T) {
+func TestSwitchingToTheCurrentAccountDoesNotSignInAgain(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-01T00:00:00Z")
+	// A resolvable credential: a stored PAT needs no network to resolve.
+	cfg.ApplyAPIKeyLogin("aaaaa", "pat-a", "2026-01-01T00:00:00Z")
+
+	switched, err := switchWithStoredCredential(switchTestCommand(), cfg, "aaaaa", "aaaaa")
+	if !switched || err != nil {
+		t.Fatalf("expected a no-op switch, got switched=%v err=%v", switched, err)
+	}
+}
+
+/*
+Unless the credential it is already using is dead.
+
+"Already on it" is unhelpful when the token behind it no longer works: the next
+command would be the one to find out.
+*/
+func TestSwitchingToTheCurrentAccountSignsInWhenItsCredentialIsDead(t *testing.T) {
+	cfg := &config.Config{AccountID: "aaaaa"}
 	switched, err := switchWithStoredCredential(switchTestCommand(), cfg, "aaaaa", "aaaaa")
 	if switched || err != nil {
-		t.Fatalf("a same-account switch must reach the browser, got switched=%v err=%v", switched, err)
+		t.Fatalf("expected a deferral to the browser, got switched=%v err=%v", switched, err)
 	}
 }
 

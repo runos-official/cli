@@ -210,9 +210,39 @@ active would mean the switch both failed and changed the account, and the next
 command would talk to the wrong one.
 */
 func switchWithStoredCredential(cmd *cobra.Command, cfg *config.Config, requestedAccountID, previousAccountID string) (bool, error) {
-	if requestedAccountID == "" || requestedAccountID == previousAccountID {
+	if requestedAccountID == "" {
 		return false, nil
 	}
+
+	/*
+	   ALREADY ON IT IS NOT A REASON TO SIGN IN AGAIN.
+
+	   This used to fall through to the browser, on the theory that people run
+	   it to refresh a sign-in. Reported by an operator immediately: switching
+	   to the account you are already on opened a browser, which reads as the
+	   CLI having lost the session it had just used. Refreshing a sign-in is
+	   what `runos login` is for.
+
+	   The credential is still exercised, because "already on it" is unhelpful
+	   when the token behind it is dead: the next command would be the one to
+	   find out. A dead credential here falls through and signs in.
+	*/
+	if requestedAccountID == previousAccountID {
+		if _, tokenErr := auth.ResolveToken(cfg); tokenErr != nil {
+			return false, nil
+		}
+		socketPath, _ := cmd.Flags().GetString("socket")
+		result := accountSwitchResult{
+			SchemaVersion:  accountSwitchSchemaVersion,
+			AccountID:      requestedAccountID,
+			AccountChanged: false,
+			VPN:            disconnectVPNForAccountChange(socketPath, previousAccountID, requestedAccountID),
+		}
+		return true, emitAccountResult(cmd, result, func() {
+			fmt.Fprintf(cmd.OutOrStdout(), "Already on %s. Run 'runos login' to sign in again.\n", requestedAccountID)
+		})
+	}
+
 	before := *cfg
 	if !cfg.ActivateStoredAccount(requestedAccountID, time.Now().UTC().Format(time.RFC3339)) {
 		return false, nil
