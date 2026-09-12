@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/spf13/cobra"
@@ -19,7 +20,7 @@ var accountCmd = &cobra.Command{
 
 var accountListCmd = &cobra.Command{Use: "list", Short: "List locally known accounts", RunE: runAccountList}
 var accountAddCmd = &cobra.Command{Use: "add", Short: "Authenticate and add an account", RunE: runAccountAdd}
-var accountSwitchCmd = &cobra.Command{Use: "switch <account-id>", Args: cobra.ExactArgs(1), Short: "Authenticate and switch accounts", RunE: runAccountSwitch}
+var accountSwitchCmd = &cobra.Command{Use: "switch <account-id>", Args: cobra.ExactArgs(1), Short: "Switch accounts, signing in only when the CLI has to", RunE: runAccountSwitch}
 
 func init() {
 	// The same hidden escape hatch every other daemon-talking command has. Both of these change the
@@ -152,6 +153,27 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 	if jsonOutput, _ := cmd.Flags().GetBool("json"); jsonOutput {
 		progress = cmd.ErrOrStderr()
 	}
+
+	/*
+	   TRY THE CREDENTIAL THIS MACHINE ALREADY HAS.
+
+	   Switching used to sign in through the browser every single time, and
+	   because the config held one refresh token it also signed you out of the
+	   account you left. So moving between two accounts, which this product asks
+	   people to do, cost a browser round-trip each way and lost the session
+	   behind you. Reported by an operator moving between a provider account and
+	   the offtaker account it allocates to.
+
+	   The stored credential is USED, not merely checked: a refresh token can be
+	   revoked or expire and the only way to know is to spend it. So it becomes
+	   active, gets exercised, and the browser is the fallback when it fails.
+	   That keeps the old path intact for every case where there is nothing
+	   stored, which includes the first switch after an upgrade.
+	*/
+	if switched, switchErr := switchWithStoredCredential(cmd, cfg, requestedAccountID, previousAccountID); switched {
+		return switchErr
+	}
+
 	session, err := authenticateInBrowser(cfg, progress)
 	if err != nil {
 		return err
@@ -169,6 +191,52 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 	result := accountSwitchResult{SchemaVersion: accountSwitchSchemaVersion, AccountID: session.AccountID, AccountChanged: previousAccountID != session.AccountID, VPN: vpnResult}
 	return emitAccountResult(cmd, result, func() {
 		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s\n", session.AccountID)
+		if vpnResult.Message != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), vpnResult.Message)
+		}
+	})
+}
+
+/*
+Switch using the credential already on disk, or report that it could not.
+
+Returns (false, nil) when there is nothing to try, which is the caller's signal
+to open a browser. Returns (true, nil) on success and (true, err) only for a
+failure that a sign-in would not fix, because falling back to the browser on
+every error would hide a real problem behind a login prompt.
+
+The credential is REVERTED when it turns out to be dead. Leaving a stale account
+active would mean the switch both failed and changed the account, and the next
+command would talk to the wrong one.
+*/
+func switchWithStoredCredential(cmd *cobra.Command, cfg *config.Config, requestedAccountID, previousAccountID string) (bool, error) {
+	if requestedAccountID == "" || requestedAccountID == previousAccountID {
+		return false, nil
+	}
+	before := *cfg
+	if !cfg.ActivateStoredAccount(requestedAccountID, time.Now().UTC().Format(time.RFC3339)) {
+		return false, nil
+	}
+	if _, tokenErr := auth.ResolveToken(cfg); tokenErr != nil {
+		*cfg = before
+		fmt.Fprintf(cmd.ErrOrStderr(), "The saved sign-in for %s is no longer valid, so signing in again.\n", requestedAccountID)
+		return false, nil
+	}
+	if err := cfg.Save(); err != nil {
+		*cfg = before
+		return true, fmt.Errorf("failed to save account context: %w", err)
+	}
+
+	socketPath, _ := cmd.Flags().GetString("socket")
+	vpnResult := disconnectVPNForAccountChange(socketPath, previousAccountID, cfg.GetAccountID())
+	result := accountSwitchResult{
+		SchemaVersion:  accountSwitchSchemaVersion,
+		AccountID:      requestedAccountID,
+		AccountChanged: previousAccountID != requestedAccountID,
+		VPN:            vpnResult,
+	}
+	return true, emitAccountResult(cmd, result, func() {
+		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s (used the saved sign-in)\n", requestedAccountID)
 		if vpnResult.Message != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), vpnResult.Message)
 		}

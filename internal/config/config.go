@@ -34,6 +34,28 @@ type KnownAccount struct {
 	AddedAt    string `json:"added_at"`
 	LastUsedAt string `json:"last_used_at"`
 	Active     bool   `json:"active"`
+	/*
+	   The credential for THIS account, kept so switching back does not mean
+	   signing in again.
+
+	   Before this, the config held one refresh token. Switching account
+	   overwrote it, so moving to a second account signed you out of the first
+	   and every switch back meant another browser round-trip, even seconds
+	   later with a token that had an hour left on it. Reported by an operator
+	   moving between a provider account and an offtaker account, which is a
+	   thing this product asks people to do.
+
+	   Exactly one of these is ever set, matching the active pair: a refresh
+	   token is a session and an API key is not, and holding both for one
+	   account is the state ApplySessionLogin and ApplyAPIKeyLogin exist to
+	   prevent.
+
+	   Stored in the same 0600 file as the active credential, because that is
+	   what it is: the same secret, for an account that is not current.
+	*/
+	RefreshToken string `json:"refresh_token,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	SignedInAt   string `json:"signed_in_at,omitempty"`
 }
 
 // RemoteDomains holds the domain URLs for a RunOS environment.
@@ -106,6 +128,7 @@ func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, r
 	c.SignedInAt = signedInAt
 	c.APIKey = ""
 	c.RememberAccount(accountID, signedInAt)
+	c.rememberCredential(accountID, refreshToken, "", signedInAt)
 }
 
 /*
@@ -123,6 +146,7 @@ func (c *Config) ApplyAPIKeyLogin(accountID, apiKey, signedInAt string) {
 	c.RefreshToken = ""
 	c.Firebase = nil
 	c.RememberAccount(accountID, signedInAt)
+	c.rememberCredential(accountID, "", apiKey, signedInAt)
 }
 
 /*
@@ -140,6 +164,14 @@ func (c *Config) ClearSession() {
 	c.APIKey = ""
 	c.DefaultClusterID = ""
 	c.ClearActiveAccount()
+	// EVERY account, not just the active one. `logout` means signed out, and
+	// leaving a usable credential behind for an account the person switched
+	// away from would make `account switch` silently sign them back in.
+	for i := range c.KnownAccounts {
+		c.KnownAccounts[i].RefreshToken = ""
+		c.KnownAccounts[i].APIKey = ""
+		c.KnownAccounts[i].SignedInAt = ""
+	}
 }
 
 /*
@@ -185,6 +217,73 @@ func (c *Config) RememberAccount(accountID, usedAt string) {
 	sort.SliceStable(c.KnownAccounts, func(i, j int) bool {
 		return c.KnownAccounts[i].AddedAt < c.KnownAccounts[j].AddedAt
 	})
+}
+
+// rememberCredential stores one account's credential beside its metadata.
+func (c *Config) rememberCredential(accountID, refreshToken, apiKey, signedInAt string) {
+	if c == nil || accountID == "" {
+		return
+	}
+	for i := range c.KnownAccounts {
+		if c.KnownAccounts[i].AccountID != accountID {
+			continue
+		}
+		c.KnownAccounts[i].RefreshToken = refreshToken
+		c.KnownAccounts[i].APIKey = apiKey
+		c.KnownAccounts[i].SignedInAt = signedInAt
+	}
+}
+
+/*
+ActivateStoredAccount makes a remembered account current WITHOUT signing in again.
+
+Reports false when there is nothing stored for that account, which is the
+caller's signal to fall back to the browser. It does NOT report whether the
+credential still works: a refresh token can be revoked or expire, and finding
+that out costs a network call the caller makes anyway. So the caller activates,
+tries, and falls back on failure.
+
+The default cluster is dropped on a real account change for the same reason it
+is on a sign-in: cluster ids are scoped to an account, so one carried across is
+not stale, it is guaranteed wrong.
+*/
+func (c *Config) ActivateStoredAccount(accountID, usedAt string) bool {
+	if c == nil || accountID == "" {
+		return false
+	}
+	for i := range c.KnownAccounts {
+		account := c.KnownAccounts[i]
+		if account.AccountID != accountID {
+			continue
+		}
+		if account.RefreshToken == "" && account.APIKey == "" {
+			return false
+		}
+		c.forgetDefaultClusterOnAccountChange(accountID)
+		c.AccountID = accountID
+		c.RefreshToken = account.RefreshToken
+		c.APIKey = account.APIKey
+		if account.SignedInAt != "" {
+			c.SignedInAt = account.SignedInAt
+		}
+		c.RememberAccount(accountID, usedAt)
+		return true
+	}
+	return false
+}
+
+// HasStoredCredential reports whether switching to an account could skip the
+// browser. Present so a caller can say so before trying, rather than after.
+func (c *Config) HasStoredCredential(accountID string) bool {
+	if c == nil {
+		return false
+	}
+	for _, account := range c.KnownAccounts {
+		if account.AccountID == accountID {
+			return account.RefreshToken != "" || account.APIKey != ""
+		}
+	}
+	return false
 }
 
 // ClearActiveAccount preserves known accounts and clears their active state.

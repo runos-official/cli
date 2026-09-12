@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+**Switching account no longer signs you out of the one you left.** The CLI kept one refresh token,
+so switching overwrote it: moving to a second account ended the first account's session, and every
+switch back meant another browser round-trip even seconds later with a token that had an hour left
+on it. Each account now keeps its own credential, so `account switch` uses the one already on disk
+and says so ("used the saved sign-in"). Moving between a provider account and the offtaker account
+it allocates to costs no sign-in at all.
+
+The browser is still the fallback and nothing about it changed. Switching to an account with
+nothing stored, which is every switch on the first run after this upgrade, opens the browser as
+before. A stored credential is USED rather than merely inspected, because a refresh token can be
+revoked or expire and spending it is the only way to find out; when it turns out to be dead the CLI
+says so, leaves the active account exactly as it was, and signs in.
+
+Re-authenticating the SAME account still goes to the browser, because that is what people run it
+for. `logout` clears every stored credential, not just the active one: signed out means signed out,
+and a leftover credential would let the next switch sign you back in without asking.
+`account forget` takes that account's credential with it.
+
 ## v1.20.0
 
 Storage eviction confirmations now resolve hostname targets before asking for approval.
