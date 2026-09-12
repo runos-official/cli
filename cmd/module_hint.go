@@ -137,6 +137,29 @@ func explainModuleGate(unknownPath string) bool {
 		return false
 	}
 
+	// THE COMMAND THIS ACCOUNT IS ALREADY SERVED IS NOT GATED.
+	//
+	// The bare manifest proves conductor defines the path. It does NOT
+	// prove this account lacks it, and the two are different questions.
+	// A manifest command is spelled with SLASHES and a cobra command with
+	// SPACES, so `runos provider/servers` is one unknown command whose
+	// path the bare list defines, while the account's own list defines it
+	// too. Blaming a module there told an account to switch on a module it
+	// does not need, to reach a command it already has. Read the CACHED
+	// account manifest: it costs no request, and the failure path already
+	// established the cache matches the server.
+	if local, lerr := loader.LoadLocal(); lerr == nil && manifestHasPath(local, unknownPath) {
+		if !strings.Contains(unknownPath, "/") {
+			return false
+		}
+		fmt.Fprintf(os.Stderr,
+			"\n`%s` is a real RunOS command, and this account has it.\n"+
+				"Commands are written with SPACES on the command line, and with slashes only in the manifest.\n"+
+				"Run `runos %s` instead.\n",
+			unknownPath, strings.ReplaceAll(unknownPath, "/", " "))
+		return true
+	}
+
 	// Read the module list BEFORE printing anything. An account with
 	// every module ON has no module explanation to give, and printing
 	// the preamble first would commit to one before knowing that.
@@ -155,9 +178,18 @@ func explainModuleGate(unknownPath string) bool {
 		fmt.Fprintf(os.Stderr, "Run `runos account modules` to see which, then `runos account modules enable <key>`.\n")
 		return true
 	}
-	for _, key := range disabled {
-		fmt.Fprintf(os.Stderr, "Run `runos account modules enable %s` to switch it on, then run your command again.\n", key)
+	// ONE DISABLED MODULE IS THE ONLY CASE THAT CAN BE NAMED.
+	//
+	// The manifest carries no module key per command, so nothing here says
+	// WHICH module owns the path. With one module off it is that one by
+	// elimination. With two, naming both prints a wrong instruction beside
+	// the right one, and the account cannot tell them apart. The same rule
+	// the unreadable-list branch follows applies: point at the listing.
+	if len(disabled) != 1 {
+		fmt.Fprintf(os.Stderr, "Run `runos account modules` to see which, then `runos account modules enable <key>`.\n")
+		return true
 	}
+	fmt.Fprintf(os.Stderr, "Run `runos account modules enable %s` to switch it on, then run your command again.\n", disabled[0])
 	return true
 }
 

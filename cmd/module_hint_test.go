@@ -159,6 +159,13 @@ type moduleConductorOpts struct {
 	bareHasVirtShape bool
 	virtEnabled      bool
 	modulesStatus    int
+	// localHasVMs puts the path in THIS ACCOUNT'S OWN cached manifest,
+	// which is the shape of a slash-typed command line: the account is
+	// served the command, so a module gate cannot be why cobra missed it.
+	localHasVMs bool
+	// secondModuleOff switches a second module off, so the hint cannot
+	// tell which of them owns the path.
+	secondModuleOff bool
 }
 
 // newModuleConductor serves the scoped manifest (never carrying the VM
@@ -195,9 +202,13 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *moduleConductor
 			fmt.Fprint(w, `{"error":"boom"}`)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"modules": []map[string]any{
+		mods := []map[string]any{
 			{"key": "virt", "name": "Virtual Machines", "tier": "premium", "enabled": opts.virtEnabled},
-		}})
+		}
+		if opts.secondModuleOff {
+			mods = append(mods, map[string]any{"key": "provider", "name": "Bare Metal Provider", "tier": "premium", "enabled": false})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"modules": mods})
 	})
 	fake.Server = httptest.NewServer(fake.record(mux))
 
@@ -216,7 +227,11 @@ func newModuleConductor(t *testing.T, opts moduleConductorOpts) *moduleConductor
 	}
 	// The cached list matches the server, which is what sends
 	// explainPossiblyStaleManifest down the verdictCommandUnknown branch.
-	local := fmt.Sprintf(`{"version":%q,"commands":[{"command":"clusters/list"}]}`, version)
+	localCmds := `{"command":"clusters/list"}`
+	if opts.localHasVMs {
+		localCmds += `,{"command":"vms/list"}`
+	}
+	local := fmt.Sprintf(`{"version":%q,"commands":[%s]}`, version, localCmds)
 	if err := os.WriteFile(filepath.Join(runosDir, "manifest.json"), []byte(local), 0600); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -551,5 +566,61 @@ func TestAGatedLeafWithTheModuleOnExplainsNothing(t *testing.T) {
 	}
 	if strings.Contains(out, "enable virt") {
 		t.Errorf("an enabled module was offered for enabling:\n%s", out)
+	}
+}
+
+// THE THIRD SHAPE, found on 2026-09-12 driving a freshly built module
+// surface from the CLI. The manifest spells a command with SLASHES
+// (`provider/servers`) and cobra spells it with SPACES, so typing the
+// manifest spelling is a plausible mistake. Cobra reports the whole
+// slash string as one unknown command, the BARE manifest defines that
+// exact path, and the hint concluded a module gate and named a module
+// the user does not need. The account's OWN manifest defines the path
+// too, which proves the command IS served here and settles it.
+func TestASlashTypedPathTheAccountIsServedIsNotAModuleGate(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, localHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	out := captureStderr(t, func() {
+		explainPossiblyStaleManifest(errors.New(`unknown command "vms/list" for "runos"`))
+	})
+
+	if strings.Contains(out, "account modules enable") {
+		t.Errorf("a command this account IS served must not be blamed on a module:\n%s", out)
+	}
+}
+
+// The same case must still help: the user typed a real command with the
+// wrong separator, so name the spelling that works.
+func TestASlashTypedPathNamesTheSpacedSpelling(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, localHasVMs: true, virtEnabled: false})
+	defer fake.Close()
+
+	out := captureStderr(t, func() {
+		explainPossiblyStaleManifest(errors.New(`unknown command "vms/list" for "runos"`))
+	})
+
+	if !strings.Contains(out, "runos vms list") {
+		t.Errorf("stderr does not name the spaced spelling:\n%s", out)
+	}
+}
+
+// "Naming the wrong module key is worse than naming none" is the rule the
+// unreadable-list branch already follows. It must hold when the list reads
+// fine but says nothing about WHICH module owns the path: with two modules
+// off, one of the two names printed is guaranteed wrong.
+func TestTwoDisabledModulesNameNoKey(t *testing.T) {
+	fake := newModuleConductor(t, moduleConductorOpts{bareHasVMs: true, virtEnabled: false, secondModuleOff: true})
+	defer fake.Close()
+
+	out := captureStderr(t, func() {
+		explainPossiblyStaleManifest(errors.New(`unknown command "vms" for "runos"`))
+	})
+
+	if strings.Contains(out, "enable virt") || strings.Contains(out, "enable provider") {
+		t.Errorf("a specific key was named although the owner is unknown:\n%s", out)
+	}
+	if !strings.Contains(out, "runos account modules") {
+		t.Errorf("stderr does not point at the listing command:\n%s", out)
 	}
 }
