@@ -577,6 +577,24 @@ def tracked_files() -> list:
     return [p for p in out.split("\0") if p]
 
 
+def working_tree_files() -> list:
+    """Everything in the tree that git would take: tracked, plus untracked and
+    not ignored.
+
+    UNTRACKED FILES COUNT. A full-tree scan is what a person runs to check their
+    own work before committing, and at that moment the new file usually is not
+    added yet. Measured 2026-09-13: this reported clean while an untracked file
+    in the tree carried a real account id. The pre-commit hook caught the same
+    content seconds later, because git stages before the hook runs, so nothing
+    leaked; what was wrong was telling the reader they were clean.
+
+    --exclude-standard so .gitignore is honoured and a build directory is not
+    scanned.
+    """
+    out = git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    return sorted({p for p in out.split("\0") if p})
+
+
 def fail(message: str):
     sys.stderr.write("leakcheck: %s\n" % message)
     sys.exit(2)
@@ -635,7 +653,11 @@ def main(argv) -> int:
         elif args.rng:
             findings = scan_diff(git("diff", *(DIFF_ARGS + (args.rng,))), patterns, skip_globs)
         else:
-            findings = scan_files(tracked_files(), patterns, skip_globs)
+            # --update writes the baseline, which records what has SHIPPED, so it
+            # stays on tracked files: a transient file in someone's tree must
+            # never be written in as an accepted leak.
+            files = tracked_files() if args.update else working_tree_files()
+            findings = scan_files(files, patterns, skip_globs)
 
     credentials = [f for f in findings if f.kind == "credential"]
     internal = [f for f in findings if f.kind != "credential"]

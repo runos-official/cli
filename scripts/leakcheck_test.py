@@ -154,8 +154,52 @@ def expect_clean(label: str, text: str) -> None:
     print("  FAIL  no-catch %s (exit %d)\n%s" % (label, code, out))
 
 
+def check_untracked_files_are_scanned() -> None:
+    """A full-tree scan must see a file that is in the tree but not yet git-added.
+
+    MEASURED 2026-09-13. `make leakcheck` reported clean while an untracked file
+    in the working tree carried a real account id. The pre-commit hook caught the
+    same content moments later, because git stages the file before the hook runs,
+    so nothing leaked. The damage was a false clean: the manual command is what a
+    person runs to check their own work, and it told them they were fine.
+
+    --update deliberately stays on TRACKED files, so a transient file in someone's
+    tree can never be written into the baseline.
+    """
+    global CHECKS
+    CHECKS += 1
+    token = dotted(10, 11, 12, 13)
+    with tempfile.TemporaryDirectory() as tmp:
+        run = lambda *a: subprocess.run(a, cwd=tmp, check=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run("git", "init", "-q")
+        run("git", "config", "user.email", "t@example.invalid")
+        run("git", "config", "user.name", "t")
+        with open(os.path.join(tmp, "tracked.txt"), "w", encoding="utf-8") as fh:
+            fh.write("nothing to see\n")
+        run("git", "add", "tracked.txt")
+        run("git", "commit", "-qm", "seed")
+        # In the tree, never added. Exactly the shape that slipped through.
+        with open(os.path.join(tmp, "untracked.txt"), "w", encoding="utf-8") as fh:
+            fh.write("host at %s\n" % token)
+        proc = subprocess.run(
+            [sys.executable, CHECKER, "--no-baseline"],
+            cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        caught = proc.returncode != 0 and token in proc.stdout
+    if caught:
+        print("  PASS  untracked file in the working tree is scanned")
+        return
+    FAILURES.append("untracked file in the working tree is scanned")
+    print("  FAIL  untracked file in the working tree is scanned")
+
+
 def main() -> int:
     print("leakcheck tests")
+    print()
+    print("SCAN COVERAGE")
+    check_untracked_files_are_scanned()
+
     print()
     print("MUST CATCH")
 
