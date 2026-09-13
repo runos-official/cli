@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,8 @@ const (
 	verdictCacheStale
 	// The server could not be asked, so neither can be ruled out.
 	verdictCannotTell
+	// The server refused the session, so the answer is a login, not a network.
+	verdictNotSignedIn
 )
 
 // judgeStaleManifest decides why a command was not found.
@@ -52,6 +55,12 @@ const (
 // the version endpoint could not be reached, which is deliberately NOT treated as "stale":
 // telling an offline user their cache is out of date would be a guess.
 func judgeStaleManifest(cachedVersion, serverVersion string, serverErr error) staleManifestVerdict {
+	// A REFUSED TOKEN IS NOT AN UNREACHABLE API, and the two need opposite
+	// advice. Checked first, because a 401 also leaves serverVersion empty and
+	// would otherwise be swallowed by the offline branch below.
+	if errors.Is(serverErr, manifest.ErrNotAuthenticated) {
+		return verdictNotSignedIn
+	}
 	if serverErr != nil || serverVersion == "" {
 		return verdictCannotTell
 	}
@@ -182,5 +191,9 @@ func explainPossiblyStaleManifest(err error) {
 		fmt.Fprintf(os.Stderr,
 			"\nRunOS could not reach the API to check whether your cached command list is current.\n"+
 				"If you expected this %s to exist, run `runos manifest update` once you are online.\n", subject)
+	case verdictNotSignedIn:
+		fmt.Fprintf(os.Stderr,
+			"\nYour session has expired, so RunOS could not check whether your cached command list\n"+
+				"is current. Run `runos login` to sign in again, then try this %s once more.\n", subject)
 	}
 }

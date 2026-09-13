@@ -3,6 +3,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -169,6 +170,16 @@ func (l *Loader) LoadLocal() (*Manifest, error) {
 // Exists so an "unknown command" can be told apart from "your cached command list is
 // stale" (goal 21, O10). That distinction had been guessed wrong eight separate times,
 // because the two failures look identical from the outside.
+// ErrNotAuthenticated is returned when the API refuses the CLI's token.
+//
+// A SEPARATE ERROR because the two failures need opposite advice. An
+// unreachable API means "try again when you are online"; a refused token means
+// "run `runos login`". Reporting the second as the first sends the reader to
+// check their network, which is what happened: measured 2026-09-13, an expired
+// session printed "RunOS could not reach the API" while the API answered 200 to
+// an unauthenticated health check the whole time.
+var ErrNotAuthenticated = errors.New("the API refused this session")
+
 func (l *Loader) ServerVersion() (string, error) {
 	return l.fetchVersion()
 }
@@ -336,6 +347,9 @@ func (l *Loader) fetchVersion() (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", ErrNotAuthenticated
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
