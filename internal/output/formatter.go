@@ -385,7 +385,7 @@ func printIndentedSubTable(rows []map[string]any, indent string) {
 	}
 	for _, r := range rows {
 		for i, h := range headers {
-			val := formatCellValue(r[h])
+			val := subTableCell(r[h])
 			if len(val) > widths[i] {
 				widths[i] = len(val)
 			}
@@ -402,7 +402,7 @@ func printIndentedSubTable(rows []map[string]any, indent string) {
 	for _, r := range rows {
 		row := indent
 		for i, h := range headers {
-			row += fmt.Sprintf("%-*s  ", widths[i], formatCellValue(r[h]))
+			row += fmt.Sprintf("%-*s  ", widths[i], subTableCell(r[h]))
 		}
 		fmt.Println(strings.TrimRight(row, " "))
 	}
@@ -454,6 +454,21 @@ func streamLogEntries(items []map[string]any) {
 // `key=value, key=value; key=value, ...` runs that broke the table
 // layout and dwarfed the columns the user actually wanted to read.
 // Full structured detail is still available via `--json`.
+// subTableCell is formatCellValue with the same width cap the top-level array
+// table applies.
+//
+// A column is sized to its widest cell, so ONE long value stretches every row.
+// Measured on a machine's lifecycle history, where a stored BMC error of about
+// 900 characters padded all 33 rows to 955 and wrapped each of them twelve times
+// in an 80-column terminal. That history is read when something has gone wrong,
+// which is exactly when the long value is there.
+//
+// The full text is still available through the JSON output, which is where
+// anything wanting to be parsed should be read from anyway.
+func subTableCell(v any) string {
+	return truncateCell(formatCellValue(v), maxTextCellWidth)
+}
+
 func formatCellValue(v any) string {
 	if items, ok := v.([]any); ok && len(items) > 0 {
 		allObjects := true
