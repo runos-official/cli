@@ -114,7 +114,10 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 	}
 	reportVPNAccountChange(cmd, previousAccountID, cfg.AccountID)
 	if chatty {
-		fmt.Printf("\nAuthenticated successfully!\n")
+		// Naming the account, because `runos login` always opens the window and
+		// signing into a DIFFERENT account is a legitimate reason to run it, so
+		// which one you ended up on is the thing most worth saying.
+		fmt.Printf("\n%s\n", loginOutcomeMessage(previousAccountID, cfg.AccountID))
 		warmManifestCache(cfg)
 	}
 	return nil
