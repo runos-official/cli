@@ -108,7 +108,7 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 	if err != nil {
 		return err
 	}
-	commitBrowserSession(cfg, session)
+	commitBrowserSession(cfg, session, sessionMemberships(cfg, session))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}
@@ -136,13 +136,41 @@ type browserSession struct {
 	AccountID    string
 	Firebase     *config.FirebaseConfig
 	RefreshToken string
-	SignedInAt   string
+	// IDToken is the token the sign-in returned. It reads the login's memberships without spending
+	// the refresh token on a second exchange. It is never stored.
+	IDToken    string
+	SignedInAt string
 }
 
 var authenticateInBrowser = browserAuthenticate
 
-func commitBrowserSession(cfg *config.Config, session browserSession) {
+/*
+commitBrowserSession makes the session active on session.AccountID and stores it for every account
+in memberships.
+
+The same refresh token opens every account the login is a member of, so storing it for each one is
+what lets `account switch` reach them without a browser. Nil memberships stores it for the active
+account only, which is what a sign-in did before memberships existed.
+*/
+func commitBrowserSession(cfg *config.Config, session browserSession, memberships []api.UserAccount) {
 	cfg.ApplySessionLogin(session.AccountID, session.Firebase, session.RefreshToken, session.SignedInAt)
+	cfg.ShareSessionWithAccounts(memberAccountIDs(memberships), session.Firebase, session.RefreshToken, session.SignedInAt)
+}
+
+// deviceAuthSession is the session a completed device authorization produced. The browser flow and
+// `login preauth` both build it here, so the two cannot store different things.
+func deviceAuthSession(resp *api.PollDeviceAuthResponse, signIn *auth.SignInResponse) browserSession {
+	return browserSession{
+		AccountID: resp.AccountID,
+		Firebase: &config.FirebaseConfig{
+			APIKey:     resp.Firebase.APIKey,
+			AuthDomain: resp.Firebase.AuthDomain,
+			ProjectID:  resp.Firebase.ProjectID,
+		},
+		RefreshToken: signIn.RefreshToken,
+		IDToken:      signIn.IDToken,
+		SignedInAt:   time.Now().UTC().Format(time.RFC3339),
+	}
 }
 
 // browserAuthenticate completes browser authentication without changing local context.
@@ -218,16 +246,7 @@ func browserAuthenticateReporting(
 			if err != nil {
 				return browserSession{}, fmt.Errorf("failed to exchange token: %w", err)
 			}
-			return browserSession{
-				AccountID: resp.AccountID,
-				Firebase: &config.FirebaseConfig{
-					APIKey:     resp.Firebase.APIKey,
-					AuthDomain: resp.Firebase.AuthDomain,
-					ProjectID:  resp.Firebase.ProjectID,
-				},
-				RefreshToken: signIn.RefreshToken,
-				SignedInAt:   time.Now().UTC().Format(time.RFC3339),
-			}, nil
+			return deviceAuthSession(resp, signIn), nil
 		}
 
 		switch resp.Error {

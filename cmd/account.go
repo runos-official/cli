@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/runos-official/cli/internal/auth"
@@ -38,21 +37,6 @@ func init() {
 	accountCmd.AddCommand(accountListCmd, accountAddCmd, accountSwitchCmd, accountForgetCmd)
 }
 
-type accountListEntry struct {
-	AccountID           string     `json:"accountId"`
-	Active              bool       `json:"active"`
-	AddedAt             string     `json:"addedAt"`
-	LastUsedAt          string     `json:"lastUsedAt"`
-	VPNIdentityPresent  bool       `json:"vpnIdentityPresent"`
-	VPNSessionPresent   bool       `json:"vpnSessionPresent"`
-	VPNSessionExpiresAt *time.Time `json:"vpnSessionExpiresAt,omitempty"`
-}
-
-type accountListResult struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	Accounts      []accountListEntry `json:"accounts"`
-}
-
 /*
 What an account change did to the VPN.
 
@@ -82,56 +66,6 @@ type accountSwitchResult struct {
 	AccountID      string             `json:"accountId"`
 	AccountChanged bool               `json:"accountChanged"`
 	VPN            vpnSynchronization `json:"vpn"`
-}
-
-func runAccountList(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-	known := append([]config.KnownAccount(nil), cfg.KnownAccounts...)
-	if cfg.AccountID != "" && !containsKnownAccount(known, cfg.AccountID) {
-		known = append(known, config.KnownAccount{AccountID: cfg.AccountID, AddedAt: cfg.SignedInAt, LastUsedAt: cfg.SignedInAt, Active: true})
-	}
-	identities := map[string]vpn.Identity{}
-	if response, callErr := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpIdentities}); callErr == nil {
-		for _, identity := range response.Identities {
-			identities[identity.AccountID] = identity
-		}
-	}
-	result := accountListResult{SchemaVersion: 1}
-	for _, account := range known {
-		identity, present := identities[account.AccountID]
-		entry := accountListEntry{
-			AccountID: account.AccountID, Active: account.Active && cfg.AccountID == account.AccountID,
-			AddedAt: account.AddedAt, LastUsedAt: account.LastUsedAt, VPNIdentityPresent: present,
-			VPNSessionPresent: identity.SessionPresent,
-		}
-		if !identity.SessionExpiresAt.IsZero() {
-			expires := identity.SessionExpiresAt
-			entry.VPNSessionExpiresAt = &expires
-		}
-		result.Accounts = append(result.Accounts, entry)
-	}
-	sort.SliceStable(result.Accounts, func(i, j int) bool { return result.Accounts[i].AddedAt < result.Accounts[j].AddedAt })
-	return emitAccountResult(cmd, result, func() {
-		for _, account := range result.Accounts {
-			marker := " "
-			if account.Active {
-				marker = "*"
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", marker, account.AccountID)
-		}
-	})
-}
-
-func containsKnownAccount(accounts []config.KnownAccount, accountID string) bool {
-	for _, account := range accounts {
-		if account.AccountID == accountID {
-			return true
-		}
-	}
-	return false
 }
 
 func runAccountAdd(cmd *cobra.Command, _ []string) error {
@@ -178,10 +112,16 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 	if err != nil {
 		return err
 	}
-	if err := verifyRequestedAccount(requestedAccountID, session.AccountID); err != nil {
+	// The sign-in lands on the login's DEFAULT account, which is often not the one asked for. A
+	// requested account the login is a member of is opened by the same session, so it becomes the
+	// active account instead of failing the switch.
+	memberships := sessionMemberships(cfg, session)
+	activeAccountID, err := verifyRequestedAccount(requestedAccountID, session.AccountID, memberships)
+	if err != nil {
 		return err
 	}
-	commitBrowserSession(cfg, session)
+	session.AccountID = activeAccountID
+	commitBrowserSession(cfg, session, memberships)
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save account context: %w", err)
 	}
@@ -202,12 +142,13 @@ Switch using the credential already on disk, or report that it could not.
 
 Returns (false, nil) when there is nothing to try, which is the caller's signal
 to open a browser. Returns (true, nil) on success and (true, err) only for a
-failure that a sign-in would not fix, because falling back to the browser on
+failure the person has to act on: a failed save, or a stored credential whose
+login is no longer a member of the account. Falling back to the browser on
 every error would hide a real problem behind a login prompt.
 
-The credential is REVERTED when it turns out to be dead. Leaving a stale account
-active would mean the switch both failed and changed the account, and the next
-command would talk to the wrong one.
+The config is REVERTED when the credential is dead or its login is not a
+member. Leaving a stale account active would mean the switch both failed and
+changed the account, and the next command would talk to the wrong one.
 */
 func switchWithStoredCredential(cmd *cobra.Command, cfg *config.Config, requestedAccountID, previousAccountID string) (bool, error) {
 	if requestedAccountID == "" {
@@ -243,14 +184,25 @@ func switchWithStoredCredential(cmd *cobra.Command, cfg *config.Config, requeste
 		})
 	}
 
-	before := *cfg
+	before := cfg.Clone()
+	sharedActiveSession := shareActiveSessionWith(cfg, requestedAccountID)
 	if !cfg.ActivateStoredAccount(requestedAccountID, time.Now().UTC().Format(time.RFC3339)) {
+		*cfg = before
 		return false, nil
 	}
-	if _, tokenErr := auth.ResolveToken(cfg); tokenErr != nil {
+	token, tokenErr := auth.ResolveToken(cfg)
+	if tokenErr != nil {
 		*cfg = before
 		fmt.Fprintf(cmd.ErrOrStderr(), "The saved sign-in for %s is no longer valid, so signing in again.\n", requestedAccountID)
 		return false, nil
+	}
+	// shareActiveSessionWith only stores a session after conductor listed the account, so asking
+	// again would spend a second round trip on an answer already in hand.
+	if !sharedActiveSession {
+		if err := confirmMembership(cfg, token, requestedAccountID, cmd.ErrOrStderr()); err != nil {
+			*cfg = before
+			return true, err
+		}
 	}
 	if err := cfg.Save(); err != nil {
 		*cfg = before
@@ -265,19 +217,16 @@ func switchWithStoredCredential(cmd *cobra.Command, cfg *config.Config, requeste
 		AccountChanged: previousAccountID != requestedAccountID,
 		VPN:            vpnResult,
 	}
+	source := "used the saved sign-in"
+	if sharedActiveSession {
+		source = "used your current sign-in, which is a member"
+	}
 	return true, emitAccountResult(cmd, result, func() {
-		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s (used the saved sign-in)\n", requestedAccountID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Active account: %s (%s)\n", requestedAccountID, source)
 		if vpnResult.Message != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), vpnResult.Message)
 		}
 	})
-}
-
-func verifyRequestedAccount(requested, authenticated string) error {
-	if requested != "" && requested != authenticated {
-		return fmt.Errorf("authenticated account %q does not match requested account %q", authenticated, requested)
-	}
-	return nil
 }
 
 /*

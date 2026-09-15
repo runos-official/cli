@@ -65,15 +65,17 @@ func TestSwitchingToTheCurrentAccountSignsInWhenItsCredentialIsDead(t *testing.T
 A dead credential must leave the account UNCHANGED before falling back.
 
 Activating and then failing would mean the switch both failed and changed the
-account, so the next command would talk to the wrong one. The Firebase exchange
-cannot succeed here (there is no server), which is exactly the dead-credential
-path.
+account, so the next command would talk to the wrong one. The fake Google
+refuses every refresh, which is exactly the dead-credential path. The switch
+restores the stored Firebase project, so the refusal has to come from Google
+and not from a missing project.
 */
 func TestADeadStoredCredentialDoesNotLeaveTheAccountChanged(t *testing.T) {
+	refusingFirebase(t)
+	t.Setenv("RUNOS_API_KEY", "")
 	cfg := &config.Config{}
 	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-01T00:00:00Z")
 	cfg.ApplySessionLogin("bbbbb", &config.FirebaseConfig{APIKey: "fb"}, "token-b", "2026-01-02T00:00:00Z")
-	cfg.Firebase = nil // no credential path resolves, so ResolveToken fails
 
 	switched, err := switchWithStoredCredential(switchTestCommand(), cfg, "aaaaa", "bbbbb")
 	if switched || err != nil {

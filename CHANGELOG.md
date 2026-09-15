@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+**One sign-in reaches every account your login is a member of.** An account can now be shared with
+several logins, and one login can belong to several accounts. `runos login` (and `login preauth`)
+asks conductor which accounts the login belongs to (`GET /user/accounts`) and saves the sign-in for
+each of them, so `account switch` to any of them needs no browser. The account the sign-in names is
+only your default landing account.
+
+`account switch <id>` that goes through the browser no longer fails with "does not match" when the
+sign-in lands on your default account and the login is a member of `<id>`: it opens `<id>`. An
+account you joined after signing in is opened with your current sign-in, again with no browser.
+
+A saved sign-in whose login is no longer a member of the account does not switch. The CLI leaves the
+active account as it was and says how to sign in with a login that is a member. When conductor's
+membership list cannot be read, the switch goes ahead and says it could not confirm the membership.
+Conductor still refuses a non-member on every request.
+
+Each saved sign-in now keeps its Firebase project, and a switch restores it with the token. A saved
+personal access token is never replaced by a browser sign-in. `account list` joins the local list
+with the membership list when signed in, and shows each account's name, your role in it, and your
+default account (JSON: `label`, `accountRole`, `isDefault`). Leaving an account is
+`runos account leave`, which the command manifest provides.
+
+After a successful `account leave`, the CLI forgets the saved sign-in for that account. When it was
+the active account, your sign-in moves to the default account conductor names, and the CLI says so.
+When conductor names no default account, the CLI signs you out of that login and says so. Before,
+the left account stayed active and the next command was refused. `account list` no longer shows an
+account your signed-in login has left, unless an API key or another login's sign-in is saved for it.
+
 **Switching account no longer signs you out of the one you left.** The CLI kept one refresh token,
 so switching overwrote it: moving to a second account ended the first account's session, and every
 switch back meant another browser round-trip even seconds later with a token that had an hour left

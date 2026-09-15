@@ -27,37 +27,6 @@ type FirebaseConfig struct {
 	ProjectID  string `json:"project_id,omitempty"`
 }
 
-// KnownAccount stores non-secret metadata for an account that used this CLI.
-// Credentials remain only in the active fields on Config.
-type KnownAccount struct {
-	AccountID  string `json:"account_id"`
-	AddedAt    string `json:"added_at"`
-	LastUsedAt string `json:"last_used_at"`
-	Active     bool   `json:"active"`
-	/*
-	   The credential for THIS account, kept so switching back does not mean
-	   signing in again.
-
-	   Before this, the config held one refresh token. Switching account
-	   overwrote it, so moving to a second account signed you out of the first
-	   and every switch back meant another browser round-trip, even seconds
-	   later with a token that had an hour left on it. Reported by an operator
-	   moving between a provider account and a tenant account, which is a
-	   thing this product asks people to do.
-
-	   Exactly one of these is ever set, matching the active pair: a refresh
-	   token is a session and an API key is not, and holding both for one
-	   account is the state ApplySessionLogin and ApplyAPIKeyLogin exist to
-	   prevent.
-
-	   Stored in the same 0600 file as the active credential, because that is
-	   what it is: the same secret, for an account that is not current.
-	*/
-	RefreshToken string `json:"refresh_token,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	SignedInAt   string `json:"signed_in_at,omitempty"`
-}
-
 // RemoteDomains holds the domain URLs for a RunOS environment.
 //
 // The CDN config publishes both `api` (current) and `conductor` (legacy)
@@ -128,7 +97,7 @@ func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, r
 	c.SignedInAt = signedInAt
 	c.APIKey = ""
 	c.RememberAccount(accountID, signedInAt)
-	c.rememberCredential(accountID, refreshToken, "", signedInAt)
+	c.rememberCredential(accountID, refreshToken, "", firebase, signedInAt)
 }
 
 /*
@@ -146,7 +115,7 @@ func (c *Config) ApplyAPIKeyLogin(accountID, apiKey, signedInAt string) {
 	c.RefreshToken = ""
 	c.Firebase = nil
 	c.RememberAccount(accountID, signedInAt)
-	c.rememberCredential(accountID, "", apiKey, signedInAt)
+	c.rememberCredential(accountID, "", apiKey, nil, signedInAt)
 }
 
 /*
@@ -170,8 +139,31 @@ func (c *Config) ClearSession() {
 	for i := range c.KnownAccounts {
 		c.KnownAccounts[i].RefreshToken = ""
 		c.KnownAccounts[i].APIKey = ""
+		c.KnownAccounts[i].Firebase = nil
 		c.KnownAccounts[i].SignedInAt = ""
 	}
+}
+
+/*
+Clone returns a copy that shares no mutable state with c, for a caller that changes the config and
+may have to put it back.
+
+A plain struct copy is NOT enough. It shares the KnownAccounts backing array, and activating an
+account rewrites that array in place (the active flags, the last-used time, the sort order). So
+restoring from a plain copy restored the credential fields and left the account list changed.
+*/
+func (c *Config) Clone() Config {
+	clone := *c
+	clone.Firebase = copyFirebase(c.Firebase)
+	if c.KnownAccounts == nil {
+		return clone
+	}
+	clone.KnownAccounts = make([]KnownAccount, len(c.KnownAccounts))
+	for i, account := range c.KnownAccounts {
+		account.Firebase = copyFirebase(account.Firebase)
+		clone.KnownAccounts[i] = account
+	}
+	return clone
 }
 
 /*
@@ -188,124 +180,6 @@ func (c *Config) forgetDefaultClusterOnAccountChange(accountID string) {
 	if c.AccountID != "" && c.AccountID != accountID {
 		c.DefaultClusterID = ""
 	}
-}
-
-// RememberAccount adds an account or marks an existing account as active.
-func (c *Config) RememberAccount(accountID, usedAt string) {
-	if c == nil || accountID == "" {
-		return
-	}
-	if usedAt == "" {
-		usedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	found := false
-	for i := range c.KnownAccounts {
-		c.KnownAccounts[i].Active = c.KnownAccounts[i].AccountID == accountID
-		if c.KnownAccounts[i].AccountID == accountID {
-			found = true
-			c.KnownAccounts[i].LastUsedAt = usedAt
-			if c.KnownAccounts[i].AddedAt == "" {
-				c.KnownAccounts[i].AddedAt = usedAt
-			}
-		}
-	}
-	if !found {
-		c.KnownAccounts = append(c.KnownAccounts, KnownAccount{
-			AccountID: accountID, AddedAt: usedAt, LastUsedAt: usedAt, Active: true,
-		})
-	}
-	sort.SliceStable(c.KnownAccounts, func(i, j int) bool {
-		return c.KnownAccounts[i].AddedAt < c.KnownAccounts[j].AddedAt
-	})
-}
-
-// rememberCredential stores one account's credential beside its metadata.
-func (c *Config) rememberCredential(accountID, refreshToken, apiKey, signedInAt string) {
-	if c == nil || accountID == "" {
-		return
-	}
-	for i := range c.KnownAccounts {
-		if c.KnownAccounts[i].AccountID != accountID {
-			continue
-		}
-		c.KnownAccounts[i].RefreshToken = refreshToken
-		c.KnownAccounts[i].APIKey = apiKey
-		c.KnownAccounts[i].SignedInAt = signedInAt
-	}
-}
-
-/*
-ActivateStoredAccount makes a remembered account current WITHOUT signing in again.
-
-Reports false when there is nothing stored for that account, which is the
-caller's signal to fall back to the browser. It does NOT report whether the
-credential still works: a refresh token can be revoked or expire, and finding
-that out costs a network call the caller makes anyway. So the caller activates,
-tries, and falls back on failure.
-
-The default cluster is dropped on a real account change for the same reason it
-is on a sign-in: cluster ids are scoped to an account, so one carried across is
-not stale, it is guaranteed wrong.
-*/
-func (c *Config) ActivateStoredAccount(accountID, usedAt string) bool {
-	if c == nil || accountID == "" {
-		return false
-	}
-	for i := range c.KnownAccounts {
-		account := c.KnownAccounts[i]
-		if account.AccountID != accountID {
-			continue
-		}
-		if account.RefreshToken == "" && account.APIKey == "" {
-			return false
-		}
-		c.forgetDefaultClusterOnAccountChange(accountID)
-		c.AccountID = accountID
-		c.RefreshToken = account.RefreshToken
-		c.APIKey = account.APIKey
-		if account.SignedInAt != "" {
-			c.SignedInAt = account.SignedInAt
-		}
-		c.RememberAccount(accountID, usedAt)
-		return true
-	}
-	return false
-}
-
-// HasStoredCredential reports whether switching to an account could skip the
-// browser. Present so a caller can say so before trying, rather than after.
-func (c *Config) HasStoredCredential(accountID string) bool {
-	if c == nil {
-		return false
-	}
-	for _, account := range c.KnownAccounts {
-		if account.AccountID == accountID {
-			return account.RefreshToken != "" || account.APIKey != ""
-		}
-	}
-	return false
-}
-
-// ClearActiveAccount preserves known accounts and clears their active state.
-func (c *Config) ClearActiveAccount() {
-	for i := range c.KnownAccounts {
-		c.KnownAccounts[i].Active = false
-	}
-}
-
-// ForgetAccount removes one account from local metadata.
-func (c *Config) ForgetAccount(accountID string) bool {
-	found := false
-	kept := c.KnownAccounts[:0]
-	for _, account := range c.KnownAccounts {
-		if account.AccountID == accountID {
-			found = true
-			continue
-		}
-		kept = append(kept, account)
-	}
-	c.KnownAccounts = kept
-	return found
 }
 
 // Dir is the CLI's config directory (~/.runos). Exported because the MCP

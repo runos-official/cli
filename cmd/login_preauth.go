@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
@@ -56,16 +55,8 @@ func runPreauth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to exchange token: %w", err)
 	}
 
-	cfg.ApplySessionLogin(
-		resp.AccountID,
-		&config.FirebaseConfig{
-			APIKey:     resp.Firebase.APIKey,
-			AuthDomain: resp.Firebase.AuthDomain,
-			ProjectID:  resp.Firebase.ProjectID,
-		},
-		signIn.RefreshToken,
-		time.Now().UTC().Format(time.RFC3339),
-	)
+	session := deviceAuthSession(resp, signIn)
+	commitBrowserSession(cfg, session, sessionMemberships(cfg, session))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
 	}

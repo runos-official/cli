@@ -70,6 +70,12 @@ type fakeConductor struct {
 	// confirmation come back on a different account, which is the FCR155 shape.
 	signInAccount string
 
+	// memberships is what GET /user/accounts answers: the accounts the signed-in login is a member
+	// of. Nil answers with signInAccount alone, which is a login with one account.
+	memberships []string
+	// membershipStatus, when non-zero, replaces the 200 so a test can make the list unreadable.
+	membershipStatus int
+
 	// calls records every request as "verb aid[/detail]", in the order they arrived.
 	calls []string
 
@@ -97,6 +103,27 @@ func newFakeConductor(t *testing.T) *fakeConductor {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no such route"}`))
 		}
+	})
+
+	mux.HandleFunc("/user/accounts", func(w http.ResponseWriter, r *http.Request) {
+		c.record("user-accounts")
+		c.mu.Lock()
+		status, members := c.membershipStatus, c.memberships
+		if members == nil {
+			members = []string{c.signInAccount}
+		}
+		c.mu.Unlock()
+		if status != 0 {
+			respondJSON(w, status, `{"error":"membership list unavailable"}`)
+			return
+		}
+		rows := make([]string, 0, len(members))
+		for i, aid := range members {
+			rows = append(rows, fmt.Sprintf(
+				`{"aid":%q,"name":"Account %s","companyName":"","accountRole":"admin","isDefault":%t}`, aid, aid, i == 0,
+			))
+		}
+		respondJSON(w, http.StatusOK, `{"accounts":[`+strings.Join(rows, ",")+`]}`)
 	})
 
 	mux.HandleFunc("/auth/device/initiate", func(w http.ResponseWriter, r *http.Request) {

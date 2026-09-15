@@ -385,6 +385,14 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return err
 	}
 
+	// `account leave` ended this login's membership. The local config follows before anything is
+	// rendered, so no early return below can skip it.
+	if cmdDef.Command == accountLeaveCommand {
+		if err := applyAccountLeave(cfg, respBody, cmd.ErrOrStderr()); err != nil {
+			return wrapPreNetwork(err)
+		}
+	}
+
 	// I27-AE residual: raw `exec-sql --read-write` with destructive DDL
 	// (DROP ROLE / DROP USER / CREATE ROLE / ALTER ROLE / etc.) bypasses
 	// the per-verb cache-invalidation hooks conductor 17.13.0 added to

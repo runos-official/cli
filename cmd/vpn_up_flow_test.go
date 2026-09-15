@@ -109,6 +109,7 @@ func TestAConfirmationReRunsTheWholeSequenceNotJustTheMint(t *testing.T) {
 		"mint aaaaa/device-for-aaaaa",
 		"device-auth initiate",
 		"device-auth poll -> aaaaa",
+		"user-accounts",
 		"enrol aaaaa/key-for-aaaaa", // the re-enrol the old code skipped
 		"mint aaaaa/device-for-aaaaa",
 	})
@@ -256,6 +257,7 @@ func TestAnExpiredSessionAtEnrolmentIsAlsoFixedByOneConfirmation(t *testing.T) {
 		"enrol aaaaa/key-for-aaaaa",
 		"device-auth initiate",
 		"device-auth poll -> aaaaa",
+		"user-accounts",
 		"enrol aaaaa/key-for-aaaaa",
 		"mint aaaaa/device-for-aaaaa",
 	})

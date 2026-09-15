@@ -108,3 +108,143 @@ func TestActivatingADifferentAccountDropsTheDefaultCluster(t *testing.T) {
 		t.Fatalf("carried a default cluster across accounts: %q", cfg.DefaultClusterID)
 	}
 }
+
+/*
+One login can be a member of several accounts, and the same refresh token opens all of them. A
+sign-in used to store the token against only the account it named, so every other member account
+cost a browser round trip.
+*/
+func TestASignInOpensEveryAccountTheLoginIsAMemberOf(t *testing.T) {
+	cfg := &Config{}
+	project := &FirebaseConfig{APIKey: "fb", ProjectID: "proj"}
+	cfg.ApplySessionLogin("aaaaa", project, "token-a", "2026-01-01T00:00:00Z")
+
+	cfg.ShareSessionWithAccounts([]string{"aaaaa", "bbbbb", "ccccc"}, project, "token-a", "2026-01-01T00:00:00Z")
+
+	if cfg.AccountID != "aaaaa" {
+		t.Fatalf("sharing a session changed the active account to %q", cfg.AccountID)
+	}
+	for _, account := range cfg.KnownAccounts {
+		if account.AccountID != "aaaaa" && account.Active {
+			t.Errorf("%s was marked active by sharing a session", account.AccountID)
+		}
+		if account.AccountID != "aaaaa" && account.LastUsedAt != "" {
+			t.Errorf("%s claims a last use it never had: %q", account.AccountID, account.LastUsedAt)
+		}
+	}
+	for _, accountID := range []string{"bbbbb", "ccccc"} {
+		if !cfg.HasStoredCredential(accountID) {
+			t.Fatalf("%s has no stored credential after the sign-in", accountID)
+		}
+	}
+	if !cfg.ActivateStoredAccount("ccccc", "2026-01-02T00:00:00Z") {
+		t.Fatal("switching to a member account should not need a sign-in")
+	}
+	if cfg.RefreshToken != "token-a" || cfg.Firebase == nil || cfg.Firebase.ProjectID != "proj" {
+		t.Fatalf("wrong credential became active: token %q firebase %+v", cfg.RefreshToken, cfg.Firebase)
+	}
+}
+
+// A personal access token is a deliberate per-account choice. A later browser sign-in must not
+// replace it with a session, which would change which identity acts on that account.
+func TestSharingASessionKeepsAStoredAPIKey(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyAPIKeyLogin("bbbbb", "pat-b", "2026-01-01T00:00:00Z")
+	cfg.ApplySessionLogin("aaaaa", &FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-02T00:00:00Z")
+
+	cfg.ShareSessionWithAccounts([]string{"aaaaa", "bbbbb"}, &FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-02T00:00:00Z")
+
+	for _, account := range cfg.KnownAccounts {
+		if account.AccountID != "bbbbb" {
+			continue
+		}
+		if account.APIKey != "pat-b" || account.RefreshToken != "" {
+			t.Fatalf("the stored API key was replaced: key %q token %q", account.APIKey, account.RefreshToken)
+		}
+	}
+}
+
+func TestSharingNoSessionStoresNothing(t *testing.T) {
+	cfg := &Config{}
+	cfg.ShareSessionWithAccounts([]string{"aaaaa", ""}, &FirebaseConfig{APIKey: "fb"}, "", "2026-01-01T00:00:00Z")
+	if len(cfg.KnownAccounts) != 0 {
+		t.Fatalf("an empty refresh token added accounts: %+v", cfg.KnownAccounts)
+	}
+}
+
+/*
+A refresh token is only spendable against the Firebase project that issued it. A switch used to
+restore the token and keep the previous account's project, so a token from one project was sent to
+another.
+*/
+func TestSwitchingRestoresTheFirebaseProjectOfTheSession(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplySessionLogin("aaaaa", &FirebaseConfig{APIKey: "key-a", ProjectID: "project-a"}, "token-a", "2026-01-01T00:00:00Z")
+	cfg.ApplySessionLogin("bbbbb", &FirebaseConfig{APIKey: "key-b", ProjectID: "project-b"}, "token-b", "2026-01-02T00:00:00Z")
+
+	if !cfg.ActivateStoredAccount("aaaaa", "2026-01-03T00:00:00Z") {
+		t.Fatal("switch back failed")
+	}
+	if cfg.Firebase == nil || cfg.Firebase.APIKey != "key-a" || cfg.Firebase.ProjectID != "project-a" {
+		t.Fatalf("switched to aaaaa with the wrong Firebase project: %+v", cfg.Firebase)
+	}
+}
+
+// A record written before the project was stored has none. Keeping the active project is what every
+// switch did before, and clearing it would turn a working switch into a browser sign-in.
+func TestSwitchingToARecordWithNoStoredProjectKeepsTheActiveOne(t *testing.T) {
+	cfg := &Config{
+		AccountID:    "bbbbb",
+		RefreshToken: "token-b",
+		Firebase:     &FirebaseConfig{APIKey: "fb"},
+		KnownAccounts: []KnownAccount{
+			{AccountID: "aaaaa", AddedAt: "2026-01-01T00:00:00Z", RefreshToken: "token-a"},
+			{AccountID: "bbbbb", AddedAt: "2026-01-02T00:00:00Z", RefreshToken: "token-b", Active: true},
+		},
+	}
+	if !cfg.ActivateStoredAccount("aaaaa", "2026-01-03T00:00:00Z") {
+		t.Fatal("switch failed")
+	}
+	if cfg.Firebase == nil || cfg.Firebase.APIKey != "fb" {
+		t.Fatalf("the active project was dropped: %+v", cfg.Firebase)
+	}
+}
+
+func TestLogoutClearsEveryStoredProject(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplySessionLogin("aaaaa", &FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-01T00:00:00Z")
+	cfg.ShareSessionWithAccounts([]string{"bbbbb"}, &FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-01T00:00:00Z")
+
+	cfg.ClearSession()
+
+	for _, account := range cfg.KnownAccounts {
+		if account.Firebase != nil {
+			t.Errorf("%s kept a Firebase project after logout", account.AccountID)
+		}
+	}
+}
+
+// Restoring from a plain struct copy left the account list changed, because the copy shared the
+// backing array that activation rewrites in place.
+func TestCloneSharesNoAccountState(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplySessionLogin("aaaaa", &FirebaseConfig{APIKey: "fb"}, "token-a", "2026-01-01T00:00:00Z")
+	cfg.ApplySessionLogin("bbbbb", &FirebaseConfig{APIKey: "fb"}, "token-b", "2026-01-02T00:00:00Z")
+
+	before := cfg.Clone()
+	cfg.ActivateStoredAccount("aaaaa", "2026-01-03T00:00:00Z")
+	cfg.KnownAccounts[0].Firebase.APIKey = "changed"
+	*cfg = before
+
+	for _, account := range cfg.KnownAccounts {
+		if account.AccountID == "bbbbb" && !account.Active {
+			t.Error("restoring the clone left bbbbb inactive")
+		}
+		if account.AccountID == "aaaaa" && (account.Active || account.LastUsedAt != "2026-01-01T00:00:00Z") {
+			t.Errorf("restoring the clone kept the activation of aaaaa: %+v", account)
+		}
+		if account.Firebase != nil && account.Firebase.APIKey != "fb" {
+			t.Errorf("the clone shares a Firebase pointer with the original: %+v", account.Firebase)
+		}
+	}
+}
