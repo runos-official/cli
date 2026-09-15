@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.20.0
 
 **One sign-in reaches every account your login is a member of.** An account can now be shared with
 several logins, and one login can belong to several accounts. `runos login` (and `login preauth`)
@@ -52,8 +52,6 @@ died still signs in rather than being told "already on it" by a CLI whose next c
 account uses it. `logout` clears every stored credential, not just the active one: signed out means
 signed out, and a leftover credential would let the next switch sign you back in without asking.
 `account forget` takes that account's credential with it.
-
-## v1.20.0
 
 Storage eviction confirmations now resolve hostname targets before asking for approval.
 The prompt and non-interactive refusal show the full current node ID and usable name.
