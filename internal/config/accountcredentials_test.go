@@ -8,7 +8,7 @@ Switching account must not sign you out of the one you left.
 The config held ONE refresh token, so switching overwrote it: moving to a second
 account signed you out of the first, and every switch back meant another browser
 round-trip even seconds later with a token that had an hour left on it. Reported
-by an operator moving between a provider account and an offtaker account, which
+by an operator moving between a provider account and a tenant account, which
 is a thing this product asks people to do.
 */
 

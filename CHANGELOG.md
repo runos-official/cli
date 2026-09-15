@@ -6,7 +6,7 @@
 so switching overwrote it: moving to a second account ended the first account's session, and every
 switch back meant another browser round-trip even seconds later with a token that had an hour left
 on it. Each account now keeps its own credential, so `account switch` uses the one already on disk
-and says so ("used the saved sign-in"). Moving between a provider account and the offtaker account
+and says so ("used the saved sign-in"). Moving between a provider account and the tenant account
 it allocates to costs no sign-in at all.
 
 The browser is still the fallback and nothing about it changed. Switching to an account with

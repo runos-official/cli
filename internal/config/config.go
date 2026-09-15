@@ -42,7 +42,7 @@ type KnownAccount struct {
 	   overwrote it, so moving to a second account signed you out of the first
 	   and every switch back meant another browser round-trip, even seconds
 	   later with a token that had an hour left on it. Reported by an operator
-	   moving between a provider account and an offtaker account, which is a
+	   moving between a provider account and a tenant account, which is a
 	   thing this product asks people to do.
 
 	   Exactly one of these is ever set, matching the active pair: a refresh

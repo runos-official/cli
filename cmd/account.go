@@ -162,7 +162,7 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 	   account you left. So moving between two accounts, which this product asks
 	   people to do, cost a browser round-trip each way and lost the session
 	   behind you. Reported by an operator moving between a provider account and
-	   the offtaker account it allocates to.
+	   the tenant account it allocates to.
 
 	   The stored credential is USED, not merely checked: a refresh token can be
 	   revoked or expire and the only way to know is to spend it. So it becomes

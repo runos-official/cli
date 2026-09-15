@@ -22,8 +22,8 @@ import (
 // it is pinned here rather than assumed from the general array tests.
 func reinstallCommandDef() manifest.Command {
 	return manifest.Command{
-		Command:  "offtaker/servers/reinstall",
-		Endpoint: "/:aid/offtaker/servers/{sid}/reinstall",
+		Command:  "tenant/servers/reinstall",
+		Endpoint: "/:aid/tenant/servers/{sid}/reinstall",
 		Method:   "POST",
 		Input: &manifest.Input{
 			Fields: []manifest.Field{
