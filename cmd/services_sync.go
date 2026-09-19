@@ -27,9 +27,12 @@ Two modes, picked from the yaml's id field:
 
   - id present: PATCH /services/<type>/<id>. Sends every field the local
                 yaml has that the manifest's update endpoint accepts.
-                Conductor's per-type omit-equals-preserve / omit-equals-clear
-                rules apply on the server side; immutable-after-create
-                fields surface as "refused" in the plan output.
+                A field you DELETE from the yaml is cleared on the cluster
+                when the manifest marks it clearable (the node-affinity
+                pin, today): sync sends its empty value and names it in a
+                "removed" section before you confirm. Every other omitted
+                field keeps whatever the cluster already holds, and
+                immutable-after-create fields surface as "refused".
   - id absent:  POST /services/<type>. Provisions a new service. The new
                 id is written back to the yaml on success.
 
@@ -303,6 +306,21 @@ func printServicesSyncPlan(plan *services.SyncPlan, redact bool) {
 		if hint := services.CustomSynthesisHint(plan.PatchBody, plan.ServerRRC); hint != "" {
 			fmt.Println()
 			fmt.Printf("  %s\n", hint)
+		}
+	}
+
+	// Removals get their own section, above refused and before the
+	// confirmation prompt. They are the one part of the body a reader
+	// cannot infer from the yaml, because the evidence for a removal is
+	// a line that is no longer in the file: in the unified diff it is a
+	// deletion among other edits, and in the body it is an empty value
+	// that looks like any other value. Saying "removed" in words is
+	// what stops an operator confirming a clear they did not intend.
+	if len(plan.Removals) > 0 {
+		fmt.Println()
+		fmt.Println(sectionRule("removed", "cleared on the cluster"))
+		for _, name := range plan.Removals {
+			fmt.Printf("  %s: removed (deleted from the yaml; sync sends its empty value to clear the stored one)\n", name)
 		}
 	}
 

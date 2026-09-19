@@ -230,6 +230,28 @@ The tests iterate that file rather than a hand-written list, feeding each comman
 payload shapes and asserting every key and every value reaches the plain-text output, including the
 failing backend's name and type.
 
+**A field you delete from a service yaml is removed on the cluster again.** `runos services sync`
+built its patch body from the keys your file still carried, so a line you deleted never reached the
+wire at all. That still removed the value, but only because the API read a missing key as "clear
+it", and that reading is what made an unrelated edit destructive: changing only `replicas:` sent a
+body with no node-affinity pin in it, the pin is part of the pod template, and the controller
+replaced every pod of a pinned lane. Omitting a key now preserves whatever the cluster holds, so
+sync spells a removal out instead: it sends the field's empty value for a key you deleted. Your
+file is desired state again, and a replica change is just a replica change.
+
+Sync sends an empty value only for the fields the manifest marks clearable (the node-affinity pin,
+today), and it reads that marker from your cluster's own manifest on every run, so nothing is
+cleared unless conductor says it may be. A field that is not marked is never cleared by omission:
+delete the `replicas:` line and the replica count is left alone rather than taken to zero. Each
+removal is named on its own line under a `removed` heading in the plan, before you confirm, and
+`--json` carries the same names in `removals`. `runos apps sync` is unchanged and keeps its own
+rule, where omitting a key still clears it.
+
+**Running an older command line against the updated API? A pin you delete from a file now stays on
+the cluster.** Nothing fails and nothing warns: the sync just leaves the pin where it used to
+remove it. Upgrade the CLI; until you do, write `nodeAffinityTags: []` in the file rather than
+deleting the key.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
