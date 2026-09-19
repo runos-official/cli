@@ -27,10 +27,19 @@ type SyncPlan struct {
 
 	// PatchBody is non-nil when local has an id; sync will PATCH
 	// services/<type>/{id}/update. Contains every key the local yaml
-	// declares that the manifest's update endpoint accepts. Conductor's
-	// per-type omit-equals-preserve / omit-equals-clear rules apply on
-	// the server side; the CLI does not need to encode them.
+	// declares that the manifest's update endpoint accepts, plus the
+	// explicit empty value of every clearable key the local yaml
+	// DELETED (see Removals and internal/services/clearable.go).
+	// Omitting a key means "preserve" on the conductor side, so a
+	// removal has to be spelled out or it never reaches the wire.
 	PatchBody map[string]any `json:"patchBody,omitempty"`
+
+	// Removals names every field this plan clears because the operator
+	// deleted its key from the yaml and the server still holds a value
+	// for it. Each name also appears in PatchBody, carrying the field's
+	// declared empty value. Rendered as its own section in the text
+	// plan so a removal cannot be mistaken for a change.
+	Removals []string `json:"removals,omitempty"`
 
 	// Refused enumerates keys present in the local yaml that the
 	// relevant write endpoint doesn't accept. Typical cases: a yaml
@@ -145,8 +154,32 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd,
 		if server != nil {
 			serverFields = server.Fields
 		}
-		plan.PatchBody = computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
+		patch := computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
 		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd), false, knownFields)
+
+		// A deleted clearable key is drift that computeDriftPatch cannot
+		// see: it walks the LOCAL keys, and the whole point of a removal
+		// is that the key is no longer there. Merging afterwards is also
+		// what makes a PURE removal produce a PATCH at all. Without it
+		// a file whose only edit is a deleted pin yields a nil body
+		// while the rendered diff still shows the pin as a difference,
+		// so the plan reports a difference the apply cannot resolve.
+		removals, removalRefusals := computeClearRemovals(local.Fields, serverFields, updateCmd)
+		if len(removals) > 0 {
+			if patch == nil {
+				patch = make(map[string]any, len(removals))
+			}
+			for k, v := range removals {
+				patch[k] = v
+			}
+			plan.Removals = removalNames(removals)
+		}
+		if len(removalRefusals) > 0 {
+			plan.Refused = append(plan.Refused, removalRefusals...)
+			sort.Strings(plan.Refused)
+		}
+
+		plan.PatchBody = patch
 		plan.Diff = renderFieldDiff(local, server)
 		if server != nil {
 			if rrc, ok := server.Fields["resourceRequirementClassId"].(string); ok {
