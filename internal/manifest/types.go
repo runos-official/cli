@@ -50,6 +50,24 @@ type Field struct {
 	// the rest of the required-input plumbing (positional/flag/-f file
 	// missing-arg gate) intact. Regression target: I13-K.
 	AllowEmpty bool `yaml:"allowEmpty,omitempty" json:"allowEmpty,omitempty"`
+	// Clearable marks a field whose stored value is REMOVED by sending
+	// the field's declared empty value (`[]` for an array field, `""`
+	// for a string field) and PRESERVED by omitting the field. It is
+	// what a declarative client reads to learn which keys a deleted
+	// yaml line has to clear explicitly.
+	//
+	// It is NOT AllowEmpty, and the two must never be read as synonyms.
+	// AllowEmpty is a CLI-side submit gate that says an empty string is
+	// a legal thing to type; it says nothing about what the server does
+	// with it, and conductor already sets it on four vLLM pod-template
+	// image fields. A client that treated it as "clearable" would send
+	// `image: ""` for a yaml that omits the image and unpin every
+	// engine pod.
+	//
+	// Conductor sets it on the UPDATE command only, because removal is
+	// an update-time act; an add command is never marked. Added by
+	// conductor manifest 48.26.0 (objective 102, Contract F).
+	Clearable bool `yaml:"clearable,omitempty" json:"clearable,omitempty"`
 	// ItemType + ItemFields describe array element shape. When Type=="array"
 	// and ItemType is set, the MCP tool-schema projection emits a richer
 	// `items` definition than the default `{type: "string"}`. ItemFields
