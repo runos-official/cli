@@ -1,0 +1,161 @@
+{
+  "version": "49.4.0+provider.spot.virt",
+  "commands": [
+    {
+      "command": "services/mysql/{id}/update",
+      "method": "PATCH",
+      "endpoint": "/:aid/:cid/services/mysql/:id",
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "required": false,
+            "clearable": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/postgresql/{id}/update",
+      "method": "PATCH",
+      "endpoint": "/:aid/:cid/services/postgresql/:id",
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "required": false,
+            "clearable": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/umami/{id}/update",
+      "method": "PATCH",
+      "endpoint": "/:aid/:cid/services/umami/:id",
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "required": false,
+            "clearable": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/valkey/{id}/update",
+      "method": "PATCH",
+      "endpoint": "/:aid/:cid/services/valkey/:id",
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "required": false,
+            "clearable": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/vllm/{id}/update",
+      "method": "PATCH",
+      "endpoint": "/:aid/:cid/services/vllm/:id",
+      "input": {
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "required": true,
+            "positional": true
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array",
+            "required": false,
+            "clearable": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "image",
+            "type": "string",
+            "required": false,
+            "allowEmpty": true
+          }
+        ]
+      }
+    }
+  ]
+}
