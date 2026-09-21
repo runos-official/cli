@@ -284,3 +284,71 @@ func TestCreateAffinityKeepsOtherNullAndSupportedEmptyString(t *testing.T) {
 		t.Fatalf("create body = %#v; refused = %#v", plan.CreateBody, plan.Refused)
 	}
 }
+
+func TestCreateAffinityOnlyFieldStillPostsAndSavesID(t *testing.T) {
+	m := createAffinityManifest(t)
+	add, err := AddCommand(m, "valkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, affinity string
+		want           map[string]any
+	}{
+		{"bare", "nodeAffinityTags:\n", map[string]any{}},
+		{"null", "nodeAffinityTags: null\n", map[string]any{}},
+		{"empty array", "nodeAffinityTags: []\n", map[string]any{"nodeAffinityTags": []any{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "service.yaml")
+			yaml := "type: valkey\ncid: " + syncTestClusterID + "\naid: " + syncTestAccountID + "\n" + tc.affinity
+			if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			local, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := ComputeSyncPlan(local, nil, add, nil, nil)
+			if plan.CreateBody == nil || !plan.HasChanges() || !reflect.DeepEqual(plan.CreateBody, tc.want) {
+				t.Fatalf("create intent lost: body = %#v, has changes = %t", plan.CreateBody, plan.HasChanges())
+			}
+			var calls int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method != http.MethodPost || r.URL.Path != "/"+syncTestAccountID+"/"+syncTestClusterID+"/services/valkey" {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+				}
+				if len(tc.want) == 0 {
+					if len(raw) != 0 {
+						t.Errorf("empty create body = %q", raw)
+					}
+				} else {
+					var body map[string]any
+					if err := json.Unmarshal(raw, &body); err != nil || !jsonEqual(body, tc.want) {
+						t.Errorf("request body = %q, error = %v", raw, err)
+					}
+				}
+				fmt.Fprint(w, `{"osid":"valkey-abc12","jobId":"job-1"}`)
+			}))
+			t.Cleanup(srv.Close)
+			syncEnv(t, srv.URL)
+			result, err := ApplySyncPlan(dynacmd.NewExecutor(srv.URL), plan, add, nil)
+			if err != nil || calls != 1 || result == nil || result.NewID != "abc12" || result.JobID != "job-1" {
+				t.Fatalf("apply: result = %#v, calls = %d, error = %v", result, calls, err)
+			}
+			local.ID = result.NewID
+			if err := Save(path, local); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := Load(path)
+			if err != nil || saved.ID != "abc12" {
+				t.Fatalf("saved service = %#v, error = %v", saved, err)
+			}
+		})
+	}
+}

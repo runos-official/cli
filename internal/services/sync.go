@@ -23,7 +23,7 @@ type SyncPlan struct {
 	CID  string `json:"cid"`
 
 	// CreateBody is non-nil when local has no id; sync will POST to
-	// services/<type>/add.
+	// services/<type>/add. An empty map still requests creation.
 	CreateBody map[string]any `json:"createBody,omitempty"`
 
 	// PatchBody is non-nil when local has an id; sync will PATCH
@@ -63,7 +63,7 @@ type SyncPlan struct {
 
 // HasChanges reports whether applying the plan would touch the cluster.
 func (p *SyncPlan) HasChanges() bool {
-	return len(p.CreateBody) > 0 || len(p.PatchBody) > 0
+	return p.CreateBody != nil || len(p.PatchBody) > 0
 }
 
 // RedactSecrets replaces every value in CreateBody / PatchBody whose
@@ -144,6 +144,9 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd,
 		liftedLocal := liftServiceFlags(local.Fields, addCmd)
 		createFields := normalizeCreateAffinity(liftedLocal, addCmd)
 		plan.CreateBody = filterToInputFields(createFields, AddInputFieldNames(addCmd))
+		if plan.CreateBody == nil {
+			plan.CreateBody = map[string]any{}
+		}
 		plan.Refused = refusedDrift(createFields, nil, AddInputFieldNames(addCmd), true, knownFields)
 		return plan
 	}
@@ -349,8 +352,8 @@ func servicesEqual(a, b *ServiceYAML) bool {
 }
 
 // filterToInputFields returns the subset of fields whose key is in
-// allowed. The output map is never nil so callers can range over it
-// safely; an empty result still means "no PATCH body to send".
+// allowed. The output is nil for an empty input map and an empty map
+// when no keys match.
 func filterToInputFields(fields map[string]any, allowed map[string]bool) map[string]any {
 	if len(fields) == 0 {
 		return nil
@@ -464,7 +467,7 @@ type ApplyResult struct {
 }
 
 // ApplySyncPlan executes the plan via the dynacmd Executor. POST for
-// create (CreateBody non-empty), PATCH for update (PatchBody non-empty),
+// create (CreateBody non-nil), PATCH for update (PatchBody non-empty),
 // no-op when neither is populated.
 //
 // On the create path, ApplySyncPlan does NOT save the new id back to
