@@ -43,6 +43,13 @@ func CompareServiceState(local, server *ServiceYAML, updateCmd, showCmd *manifes
 			delete(comparisonServerFields, name)
 		}
 	}
+	// Use the server representation for equal values in the preview. YAML can
+	// render the same JSON number differently for int and float64 values.
+	for name, localValue := range localFields {
+		if serverValue, present := comparisonServerFields[name]; present && jsonEqual(localValue, serverValue) {
+			localFields[name] = serverValue
+		}
+	}
 
 	effectiveLocal := *local
 	effectiveLocal.Fields = localFields
