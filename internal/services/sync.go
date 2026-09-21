@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 	"gopkg.in/yaml.v3"
@@ -22,14 +23,13 @@ type SyncPlan struct {
 	CID  string `json:"cid"`
 
 	// CreateBody is non-nil when local has no id; sync will POST to
-	// services/<type>/add.
+	// services/<type>/add. An empty map still requests creation.
 	CreateBody map[string]any `json:"createBody,omitempty"`
 
 	// PatchBody is non-nil when local has an id; sync will PATCH
-	// services/<type>/{id}/update. Contains every key the local yaml
-	// declares that the manifest's update endpoint accepts, plus the
-	// explicit empty value of every clearable key the local yaml
-	// DELETED (see Removals and internal/services/clearable.go).
+	// services/<type>/{id}/update. Contains changed accepted values and
+	// the explicit empty value of each deleted clearable key.
+	// A present null on a supported clearable key contributes no value.
 	// Omitting a key means "preserve" on the conductor side, so a
 	// removal has to be spelled out or it never reaches the wire.
 	PatchBody map[string]any `json:"patchBody,omitempty"`
@@ -63,7 +63,7 @@ type SyncPlan struct {
 
 // HasChanges reports whether applying the plan would touch the cluster.
 func (p *SyncPlan) HasChanges() bool {
-	return len(p.CreateBody) > 0 || len(p.PatchBody) > 0
+	return p.CreateBody != nil || len(p.PatchBody) > 0
 }
 
 // RedactSecrets replaces every value in CreateBody / PatchBody whose
@@ -116,8 +116,7 @@ func looksSensitive(k string) bool {
 //
 // When local.ID is non-empty, the plan is a PATCH: PatchBody is populated
 // from local.Fields filtered through updateCmd's input field set, but
-// only when the marshalled local and server forms actually differ (no
-// drift means no PATCH).
+// only when the service comparison finds actionable drift.
 //
 // Either way, any local field that the relevant write endpoint doesn't
 // accept AND that drifts from the server lands in Refused. showCmd is
@@ -143,48 +142,23 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd,
 		// `refusedDrift` would surface it as refused. Regression target:
 		// I9-I (flags half).
 		liftedLocal := liftServiceFlags(local.Fields, addCmd)
-		plan.CreateBody = filterToInputFields(liftedLocal, AddInputFieldNames(addCmd))
-		plan.Refused = refusedDrift(liftedLocal, nil, AddInputFieldNames(addCmd), true, knownFields)
+		createFields := normalizeCreateAffinity(liftedLocal, addCmd)
+		plan.CreateBody = filterToInputFields(createFields, AddInputFieldNames(addCmd))
+		if plan.CreateBody == nil {
+			plan.CreateBody = map[string]any{}
+		}
+		plan.Refused = refusedDrift(createFields, nil, AddInputFieldNames(addCmd), true, knownFields)
 		return plan
 	}
 
-	// Update path: drift first, only PATCH when something actually changed.
-	if !servicesEqual(local, server) {
-		var serverFields map[string]any
-		if server != nil {
-			serverFields = server.Fields
-		}
-		patch := computeDriftPatch(local.Fields, serverFields, UpdateInputFieldNames(updateCmd))
-		plan.Refused = refusedDrift(local.Fields, serverFields, UpdateInputFieldNames(updateCmd), false, knownFields)
-
-		// A deleted clearable key is drift that computeDriftPatch cannot
-		// see: it walks the LOCAL keys, and the whole point of a removal
-		// is that the key is no longer there. Merging afterwards is also
-		// what makes a PURE removal produce a PATCH at all. Without it
-		// a file whose only edit is a deleted pin yields a nil body
-		// while the rendered diff still shows the pin as a difference,
-		// so the plan reports a difference the apply cannot resolve.
-		removals, removalRefusals := computeClearRemovals(local.Fields, serverFields, updateCmd)
-		if len(removals) > 0 {
-			if patch == nil {
-				patch = make(map[string]any, len(removals))
-			}
-			for k, v := range removals {
-				patch[k] = v
-			}
-			plan.Removals = removalNames(removals)
-		}
-		if len(removalRefusals) > 0 {
-			plan.Refused = append(plan.Refused, removalRefusals...)
-			sort.Strings(plan.Refused)
-		}
-
-		plan.PatchBody = patch
-		plan.Diff = renderFieldDiff(local, server)
-		if server != nil {
-			if rrc, ok := server.Fields["resourceRequirementClassId"].(string); ok {
-				plan.ServerRRC = rrc
-			}
+	comparison := CompareServiceState(local, server, updateCmd, showCmd)
+	plan.PatchBody = comparison.PatchBody
+	plan.Removals = comparison.Removals
+	plan.Refused = comparison.Refused
+	plan.Diff = comparison.Diff
+	if server != nil {
+		if rrc, ok := server.Fields["resourceRequirementClassId"].(string); ok {
+			plan.ServerRRC = rrc
 		}
 	}
 	return plan
@@ -378,8 +352,8 @@ func servicesEqual(a, b *ServiceYAML) bool {
 }
 
 // filterToInputFields returns the subset of fields whose key is in
-// allowed. The output map is never nil so callers can range over it
-// safely; an empty result still means "no PATCH body to send".
+// allowed. The output is nil for an empty input map and an empty map
+// when no keys match.
 func filterToInputFields(fields map[string]any, allowed map[string]bool) map[string]any {
 	if len(fields) == 0 {
 		return nil
@@ -484,7 +458,7 @@ type ApplyResult struct {
 	// executor uses, so there is one text and one stream.
 	//
 	// The apply path needs its own hook because it goes through
-	// ExecuteWithInput, not Execute, and ExecuteWithInput returns the
+	// ExecuteWithInput or ExecuteWithJSONInput, not Execute. Both return the
 	// raw body without rendering anything. Both callers below then
 	// unmarshal three id fields and discard the rest, so before this the
 	// advisory was dropped on the declarative path while the imperative
@@ -493,7 +467,7 @@ type ApplyResult struct {
 }
 
 // ApplySyncPlan executes the plan via the dynacmd Executor. POST for
-// create (CreateBody non-empty), PATCH for update (PatchBody non-empty),
+// create (CreateBody non-nil), PATCH for update (PatchBody non-empty),
 // no-op when neither is populated.
 //
 // On the create path, ApplySyncPlan does NOT save the new id back to
@@ -507,7 +481,7 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 		if addCmd == nil {
 			return nil, fmt.Errorf("internal error: create plan but no add command")
 		}
-		respBody, err := exec.ExecuteWithInput(*addCmd, nil, plan.CreateBody, plan.CID)
+		respBody, err := exec.ExecuteWithJSONInput(*addCmd, nil, plan.CreateBody, plan.CID)
 		if err != nil {
 			return nil, fmt.Errorf("create %s: %w", plan.Type, err)
 		}
@@ -566,8 +540,8 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 	return &ApplyResult{}, nil
 }
 
-// renderFieldDiff produces a unified diff between marshalled local and
-// server yamls so the plan output matches the visual style of apps_diff.
+// renderFieldDiff produces a zero-context unified diff between the
+// comparison's local and server projections.
 // Marshal errors fall back to a placeholder string rather than abort
 // because diff is informational; the actual PATCH/POST has its own
 // error handling.
@@ -580,7 +554,18 @@ func renderFieldDiff(local, server *ServiceYAML) string {
 	if err != nil {
 		return fmt.Sprintf("<unable to render server: %v>", err)
 	}
-	return renderUnifiedDiff(localBytes, serverBytes, "local", "server")
+	diff := difflib.UnifiedDiff{
+		A:        difflib.SplitLines(string(localBytes)),
+		B:        difflib.SplitLines(string(serverBytes)),
+		FromFile: "local",
+		ToFile:   "server",
+		Context:  0,
+	}
+	out, err := difflib.GetUnifiedDiffString(diff)
+	if err != nil {
+		return fmt.Sprintf("<unable to compute diff: %v>", err)
+	}
+	return out
 }
 
 // yamlMarshal is a small wrapper that returns empty bytes for a nil

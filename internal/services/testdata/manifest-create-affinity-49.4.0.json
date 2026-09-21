@@ -1,0 +1,1182 @@
+{
+  "version": "49.4.0+provider.spot.virt",
+  "commands": [
+    {
+      "command": "services/valkey/add",
+      "endpoint": "/:aid/:cid/services/valkey",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "secured",
+            "default": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/postgresql/add",
+      "endpoint": "/:aid/:cid/services/postgresql",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "configType",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "configSetId",
+            "type": "string",
+            "required": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "documentDBExtension",
+            "default": false
+          },
+          {
+            "name": "apacheAge",
+            "default": false
+          },
+          {
+            "name": "vector",
+            "default": false
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/mysql/add",
+      "endpoint": "/:aid/:cid/services/mysql",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string"
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/minio/add",
+      "endpoint": "/:aid/:cid/services/minio",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "storageMb",
+            "type": "integer"
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer"
+          },
+          {
+            "name": "storageReplicas",
+            "type": "integer"
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "systemInstance",
+            "default": false
+          },
+          {
+            "name": "exposeS3On443",
+            "default": false
+          },
+          {
+            "name": "bucketDnsEnabled",
+            "default": false
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/harbor/add",
+      "endpoint": "/:aid/:cid/services/harbor",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "valkeyOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "minioOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": [
+          {
+            "name": "systemInstance",
+            "default": false
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/prometheus/add",
+      "endpoint": "/:aid/:cid/services/prometheus",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": [
+          {
+            "name": "systemInstance",
+            "default": false
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/litellm/add",
+      "endpoint": "/:aid/:cid/services/litellm",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "valkeyOsid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "sourceCid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "sourceLitellmOsid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/clickhouse/add",
+      "endpoint": "/:aid/:cid/services/clickhouse",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "shards",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/vector/add",
+      "endpoint": "/:aid/:cid/services/vector",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "retentionDays",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "clickhouseId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/cert-manager/add",
+      "endpoint": "/:aid/:cid/services/cert-manager",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/traefik/add",
+      "endpoint": "/:aid/:cid/services/traefik",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/rabbitmq/add",
+      "endpoint": "/:aid/:cid/services/rabbitmq",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/kafka/add",
+      "endpoint": "/:aid/:cid/services/kafka",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": [
+          {
+            "name": "enableUI",
+            "default": true
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/grafana/add",
+      "endpoint": "/:aid/:cid/services/grafana",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "prometheusOsid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/ollama/add",
+      "endpoint": "/:aid/:cid/services/ollama",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "gpuCount",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/vllm/add",
+      "endpoint": "/:aid/:cid/services/vllm",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "model",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "servedModelName",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "replicas",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "image",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "routerImage",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "routerVocabularyId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lmcacheServerImage",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lmcacheServerGeneration",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "omni",
+            "type": "boolean",
+            "required": false
+          },
+          {
+            "name": "gdsEnabled",
+            "type": "boolean",
+            "required": false
+          },
+          {
+            "name": "publicHttps",
+            "type": "boolean",
+            "required": false
+          },
+          {
+            "name": "storageMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "storageGroupId",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "gpuCount",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "modelSourceIntegrationId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "modelSourceMinioServiceId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "modelSourceBucket",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "modelSourcePath",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "configType",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "configSetId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lmcacheMode",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lmcacheValkeyOsid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lmcacheMinioOsid",
+            "type": "string",
+            "required": false
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/netbird-server/add",
+      "endpoint": "/:aid/:cid/services/netbird-server",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "dashboardVersion",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/netbird-client/add",
+      "endpoint": "/:aid/:cid/services/netbird-client",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "setupKey",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "managementUrl",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "netbirdServerCid",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "netbirdServerId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "wgPort",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/langfuse/add",
+      "endpoint": "/:aid/:cid/services/langfuse",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "clickhouseOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "minioOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "valkeyOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": [
+          {
+            "name": "signupEnabled",
+            "default": false
+          },
+          {
+            "name": "createCredentials",
+            "default": false
+          }
+        ]
+      }
+    },
+    {
+      "command": "services/metal3/add",
+      "endpoint": "/:aid/:cid/services/metal3",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "mysqlOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "bmcInterface",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/umami/add",
+      "endpoint": "/:aid/:cid/services/umami",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "postgresOsid",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          },
+          {
+            "name": "cpuRequestMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "cpuLimitMc",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryRequestMb",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "memoryLimitMb",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "flags": []
+      }
+    },
+    {
+      "command": "services/linstor/add",
+      "endpoint": "/:aid/:cid/services/linstor",
+      "method": "POST",
+      "input": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "version",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "resourceRequirementClassId",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "nodeAffinityTags",
+            "type": "array"
+          }
+        ],
+        "flags": []
+      }
+    }
+  ]
+}
