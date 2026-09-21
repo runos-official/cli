@@ -2,6 +2,8 @@
 
 ## v1.20.0
 
+`runos services sync` now sends an empty JSON object when a new service uses only server defaults. A bare node affinity key no longer blocks that creation.
+
 `runos services diff` now compares service settings rather than YAML text. A bare node affinity key, a comment, a different key order, or an equivalent numeric spelling reports in sync. Previews omit equivalent numeric values beside actual edits. Actual edits and pin removals still report drift. `runos services pull` still requires `--force` before overwriting any changed local text.
 `runos services sync` now omits a bare node affinity key when creating a service from YAML. Explicit empty and nonempty affinity lists keep their meaning.
 

@@ -217,7 +217,7 @@ func runServicesSync(cmd *cobra.Command, args []string) (rerr error) {
 
 	// Objective 92 / story 211: conductor's advisory `warnings` array,
 	// surfaced at the moment of the change. The apply path goes through
-	// ExecuteWithInput rather than the executor's Execute, so it does not
+	// the typed-input executor rather than Execute, so it does not
 	// inherit that command's renderer and has to call the same one here.
 	// Printed BEFORE the provisioned / "Sync complete." lines for the
 	// same reason Execute prints before its render: an advisory that

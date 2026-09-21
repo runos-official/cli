@@ -24,7 +24,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/runos-official/cli/internal/api"
-	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -765,36 +764,6 @@ func domainCheckExitGate(respBody []byte) error {
 	return nil
 }
 
-// ExecuteWithInput drives a manifest command without going through cobra
-// flag parsing. Used by static commands (e.g. services_pull / services_diff
-// / services_sync) that already have their input as a typed map. Returns
-// the raw response body on 2xx; on non-2xx, returns an *APIError that
-// carries the status code and the raw body so callers can format it (e.g.
-// 409 dependents list out of services delete).
-//
-// positionalArgs feeds the same buildEndpoint path that Execute uses, so
-// fields marked positional in the manifest are substituted into the URL.
-// input contains every non-positional value the command needs (PATCH/POST
-// body fields, GET/DELETE query parameters); the dispatch path filters out
-// keys that double as path parameters.
-//
-// cid empty falls back to the default cluster id from config, matching
-// Execute's "no --cid means use default" behaviour.
-func (e *Executor) ExecuteWithInput(cmdDef manifest.Command, positionalArgs []string, input map[string]any, cid string) ([]byte, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-	token, err := e.getAuthToken(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("authentication required: run 'runos login' first (%w)", err)
-	}
-	if cid == "" {
-		cid = cfg.GetDefaultClusterID()
-	}
-	return e.dispatch(cmdDef, positionalArgs, input, cid, cfg, token)
-}
-
 // coerceArrayFlagValue interprets the raw `[]string` collected from a
 // repeatable --flag (pflag's StringArray) and returns either:
 //
@@ -912,95 +881,6 @@ func coerceArrayFlagValue(raw []string, itemType string) any {
 // user verbatim. Regression target: foreman #145.
 func is401UpstreamProxyCommand(cmdDef manifest.Command) bool {
 	return strings.HasPrefix(cmdDef.Command, "integrations/add/")
-}
-
-// appendMergeQuery returns endpoint with `merge=true` appended as a
-// query string parameter, preserving any existing query (e.g.
-// `?foo=bar` becomes `?foo=bar&merge=true`). Idempotent: a second
-// call doesn't double-add. Pure string operation; no URL parsing.
-func appendMergeQuery(endpoint string) string {
-	if strings.Contains(endpoint, "merge=true") {
-		return endpoint
-	}
-	if strings.Contains(endpoint, "?") {
-		return endpoint + "&merge=true"
-	}
-	return endpoint + "?merge=true"
-}
-
-// dispatch is the shared HTTP path used by both Execute and
-// ExecuteWithInput. It builds the endpoint, filters out path-param fields
-// from the body, sends the request, and reads the response. Non-2xx
-// responses are returned as *APIError so callers can branch on status.
-func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string) ([]byte, error) {
-	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
-	if err != nil {
-		return nil, err
-	}
-	// I4-K CLI follow-up: `apps update` is a partial-PATCH command (the
-	// user supplies a few fields, e.g. `--replicas 3`). Without
-	// `?merge=true` the conductor's pre-fix desired-state semantics
-	// silently zero cpu/memory and clear the 5 healthCheck/metrics
-	// fields whenever they're omitted. The conductor shipped the merge
-	// param specifically for partial-PATCH callers; the dynacmd
-	// dispatch path opts in here so every CLI surface (and the MCP
-	// wrapper that shells via dynacmd) gets the safe semantics.
-	if cmdDef.Command == "apps/update" {
-		endpoint = appendMergeQuery(endpoint)
-	}
-	requestBody := filterPathParamsFromBody(body, cmdDef)
-	// The deadline covers the response read as well, so the cancel stays
-	// live until this function has drained the body (A4).
-	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, body))
-	defer cancel()
-	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, requestBody, token)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: respBody}
-	}
-	// Defensive: some conductor handlers wrap their own error in the 200
-	// response body instead of letting the framework's error middleware
-	// emit a real 4xx status (observed on `apps builds` returning
-	// `{"error":"App 'X' not found","statusCode":404}` with HTTP 200,
-	// I11-Q). The CLI used to dump the envelope through the JSON
-	// formatter and exit 0, silently passing a "not found" as success in
-	// CI pipelines. Synthesise an *APIError from the embedded statusCode
-	// so the standard error path runs and the exit code is non-zero.
-	if apiErr := apiErrorFromBody(resp.StatusCode, respBody); apiErr != nil {
-		return nil, apiErr
-	}
-	return respBody, nil
-}
-
-// apiErrorFromBody recognises the conductor's error-envelope shape
-// (`{"error": string, "statusCode": int >= 400}`) inside an otherwise
-// successful 2xx response. Returns nil for any other shape (so happy-path
-// 2xx bodies pass through unchanged) and for any envelope whose embedded
-// statusCode is not a client/server error code. The check requires both
-// keys to avoid false positives on legitimate payloads that happen to
-// include just one of them.
-func apiErrorFromBody(httpStatus int, body []byte) *APIError {
-	if httpStatus >= 400 {
-		return nil
-	}
-	var envelope struct {
-		Error      string `json:"error"`
-		StatusCode int    `json:"statusCode"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil
-	}
-	if envelope.Error == "" || envelope.StatusCode < 400 {
-		return nil
-	}
-	return &APIError{StatusCode: envelope.StatusCode, Body: body}
 }
 
 // followPodLogs implements `--follow` as a poll-and-stream loop on top
@@ -1527,107 +1407,6 @@ func (e *Executor) buildEndpoint(endpoint string, args []string, cmdDef manifest
 	}
 
 	return e.baseURL + result, nil
-}
-
-// filterPathParamsFromBody removes fields that are used in the URL path from the request body,
-// and nests flag values inside a "flags" object.
-// Fields like "id" that appear as :id in the endpoint should not be sent in the body.
-func filterPathParamsFromBody(body map[string]any, cmdDef manifest.Command) map[string]any {
-	if cmdDef.Input == nil {
-		return body
-	}
-
-	result := make(map[string]any)
-	flagsObj := make(map[string]any)
-
-	// Build a set of flag names for quick lookup
-	flagNames := make(map[string]bool)
-	for _, flag := range cmdDef.Input.Flags {
-		flagNames[flag.Name] = true
-	}
-
-	for key, value := range body {
-		// Skip if this field appears in the endpoint path as :fieldName or {fieldName}
-		if strings.Contains(cmdDef.Endpoint, ":"+key) || strings.Contains(cmdDef.Endpoint, "{"+key+"}") {
-			continue
-		}
-		// If it's a flag, add to flags object
-		if flagNames[key] {
-			flagsObj[key] = value
-		} else {
-			result[key] = value
-		}
-	}
-
-	// Add flags object if there are any flags
-	if len(flagsObj) > 0 {
-		result["flags"] = flagsObj
-	}
-
-	return result
-}
-
-// unflattenBody converts dot-notation keys into nested objects.
-// e.g., {"providerConfig.location": "hel1"} becomes {"providerConfig": {"location": "hel1"}}
-func unflattenBody(body map[string]any) map[string]any {
-	result := make(map[string]any)
-
-	for key, value := range body {
-		parts := strings.Split(key, ".")
-		if len(parts) == 1 {
-			// No dot notation, keep as-is
-			result[key] = value
-		} else {
-			// Navigate/create nested structure
-			current := result
-			for _, part := range parts[:len(parts)-1] {
-				if _, exists := current[part]; !exists {
-					current[part] = make(map[string]any)
-				}
-				// Check if existing value is a map
-				if nested, ok := current[part].(map[string]any); ok {
-					current = nested
-				} else {
-					// Conflict: existing value is not a map, create new map
-					newMap := make(map[string]any)
-					current[part] = newMap
-					current = newMap
-				}
-			}
-			// Set the final value
-			current[parts[len(parts)-1]] = value
-		}
-	}
-
-	return result
-}
-
-// doRequest issues one authenticated request under ctx's deadline. ctx
-// must stay live until the caller has read the response body.
-func (e *Executor) doRequest(ctx context.Context, method, url string, body map[string]any, token string) (*http.Response, error) {
-	var bodyReader io.Reader
-
-	if len(body) > 0 && (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) {
-		// Convert dot-notation keys to nested objects
-		nestedBody := unflattenBody(body)
-		jsonBody, err := json.Marshal(nestedBody)
-		if err != nil {
-			return nil, err
-		}
-		bodyReader = bytes.NewReader(jsonBody)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	if bodyReader != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	return e.httpClient.Do(req)
 }
 
 // stdinYAMLBodyCap caps the bytes we'll slurp from stdin so a runaway

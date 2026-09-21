@@ -324,8 +324,8 @@ func TestCreateAffinityOnlyFieldStillPostsAndSavesID(t *testing.T) {
 					t.Errorf("read body: %v", err)
 				}
 				if len(tc.want) == 0 {
-					if len(raw) != 0 {
-						t.Errorf("empty create body = %q", raw)
+					if string(raw) != "{}" || r.Header.Get("Content-Type") != "application/json" {
+						t.Errorf("empty create body = %q, content type = %q", raw, r.Header.Get("Content-Type"))
 					}
 				} else {
 					var body map[string]any

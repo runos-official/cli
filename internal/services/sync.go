@@ -458,7 +458,7 @@ type ApplyResult struct {
 	// executor uses, so there is one text and one stream.
 	//
 	// The apply path needs its own hook because it goes through
-	// ExecuteWithInput, not Execute, and ExecuteWithInput returns the
+	// ExecuteWithInput or ExecuteWithJSONInput, not Execute. Both return the
 	// raw body without rendering anything. Both callers below then
 	// unmarshal three id fields and discard the rest, so before this the
 	// advisory was dropped on the declarative path while the imperative
@@ -481,7 +481,7 @@ func ApplySyncPlan(exec *dynacmd.Executor, plan *SyncPlan, addCmd, updateCmd *ma
 		if addCmd == nil {
 			return nil, fmt.Errorf("internal error: create plan but no add command")
 		}
-		respBody, err := exec.ExecuteWithInput(*addCmd, nil, plan.CreateBody, plan.CID)
+		respBody, err := exec.ExecuteWithJSONInput(*addCmd, nil, plan.CreateBody, plan.CID)
 		if err != nil {
 			return nil, fmt.Errorf("create %s: %w", plan.Type, err)
 		}
