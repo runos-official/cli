@@ -142,8 +142,9 @@ func ComputeSyncPlan(local *ServiceYAML, server *ServiceYAML, addCmd, updateCmd,
 		// `refusedDrift` would surface it as refused. Regression target:
 		// I9-I (flags half).
 		liftedLocal := liftServiceFlags(local.Fields, addCmd)
-		plan.CreateBody = filterToInputFields(liftedLocal, AddInputFieldNames(addCmd))
-		plan.Refused = refusedDrift(liftedLocal, nil, AddInputFieldNames(addCmd), true, knownFields)
+		createFields := normalizeCreateAffinity(liftedLocal, addCmd)
+		plan.CreateBody = filterToInputFields(createFields, AddInputFieldNames(addCmd))
+		plan.Refused = refusedDrift(createFields, nil, AddInputFieldNames(addCmd), true, knownFields)
 		return plan
 	}
 

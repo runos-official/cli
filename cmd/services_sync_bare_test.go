@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -33,5 +34,27 @@ func TestServicesSyncTextPreviewHidesBareAffinity(t *testing.T) {
 				t.Fatalf("affinity visible=%t, want %t: %s", got, tc.wantPin, out)
 			}
 		})
+	}
+}
+
+func TestServicesSyncCreatePreviewOmitsBareAffinity(t *testing.T) {
+	add := &manifest.Command{Input: &manifest.Input{Fields: []manifest.Field{
+		{Name: "name", Type: "string"},
+		{Name: "nodeAffinityTags", Type: "array"},
+	}}}
+	local := &services.ServiceYAML{Type: "valkey", CID: "cluster1", AID: "acct1", Fields: map[string]any{
+		"name": "test-service", "nodeAffinityTags": nil,
+	}}
+	plan := services.ComputeSyncPlan(local, nil, add, nil, nil)
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "nodeAffinityTags") || !strings.Contains(string(raw), `"createBody":{"name":"test-service"}`) {
+		t.Fatalf("JSON preview = %s", raw)
+	}
+	out := captureStdout(t, func() { printServicesSyncPlan(plan, false) })
+	if strings.Contains(out, "nodeAffinityTags") || !strings.Contains(out, "test-service") || !strings.Contains(out, "POST") {
+		t.Fatalf("text preview = %s", out)
 	}
 }

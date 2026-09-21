@@ -2,6 +2,8 @@
 
 ## v1.20.0
 
+`runos services sync` now omits a bare node affinity key when creating a service from YAML. Explicit empty and nonempty affinity lists keep their meaning.
+
 `runos services sync` now leaves a stored node affinity pin unchanged when its YAML key has no value. An unrelated service edit can apply without sending a null pin. Deleting the key or setting an empty list still clears the pin.
 
 **One sign-in reaches every account your login is a member of.** An account can now be shared with
