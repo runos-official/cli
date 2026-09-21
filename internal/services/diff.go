@@ -27,10 +27,8 @@ type Diff struct {
 	UnifiedDiff string     `json:"unifiedDiff,omitempty"`
 }
 
-// ComputeDiff marshals serverState into yaml bytes and compares them
-// against the bytes at localPath. Same byte-comparison style apps_diff
-// uses, so the output of services_diff and apps_diff are visually
-// consistent for the user.
+// ComputeDiff compares local bytes with rendered server YAML. Pull uses this
+// raw comparison to protect comments and local text from unforced overwrite.
 func ComputeDiff(localPath string, serverState *ServiceYAML) (*Diff, error) {
 	serverBytes, err := yaml.Marshal(serverState)
 	if err != nil {

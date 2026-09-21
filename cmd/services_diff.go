@@ -85,10 +85,15 @@ func runServicesDiff(cmd *cobra.Command, args []string) (rerr error) {
 	if err != nil {
 		return err
 	}
-	diff, err := services.ComputeDiff(yamlPath, server)
+	updateCmd, err := services.UpdateCommand(ctx.manifest, local.Type)
 	if err != nil {
 		return err
 	}
+	showCmd, err := services.ShowCommand(ctx.manifest, local.Type)
+	if err != nil {
+		return err
+	}
+	diff := services.ComputeSemanticDiff(yamlPath, local, server, updateCmd, showCmd)
 
 	if jsonOut {
 		if err := emitJSON(diff); err != nil {
