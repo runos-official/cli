@@ -45,6 +45,21 @@ make local
 
 Requires Go 1.25+. The binary is installed to `~/.local/bin/runos`.
 
+### Check a checkout
+
+```bash
+go build ./...
+go vet ./...
+gofmt -l .
+make test
+make leakcheck
+```
+
+The sequence builds and tests inside the checkout.
+It writes nothing to the installed binary location.
+It needs no login, no account and no live RunOS service.
+See Development below for leak gate detail.
+
 ## Quick Start
 
 ```bash
@@ -296,7 +311,7 @@ make hooks
 # Build and install locally
 make local
 
-# Build all platforms
+# Build one binary for the current platform
 make build
 
 # Run tests

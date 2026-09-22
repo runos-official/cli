@@ -113,6 +113,9 @@ func TestFindAttestationBundleDownloadsAnonymousCompressedBundle(t *testing.T) {
 }
 
 func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
+	if _, err := os.Stat("/usr/libexec/PlistBuddy"); err != nil {
+		t.Skip("skip: /usr/libexec/PlistBuddy is absent, bundle version reads need macOS")
+	}
 	home := t.TempDir()
 	archiveData := validApplicationZIP(t)
 	digest := sha256.Sum256(archiveData)
@@ -154,6 +157,9 @@ func TestInstallRestoresOldBundleWhenQuarantineClearFails(t *testing.T) {
 }
 
 func TestValidateApplicationBundleRejectsWrongVersion(t *testing.T) {
+	if _, err := os.Stat("/usr/libexec/PlistBuddy"); err != nil {
+		t.Skip("skip: /usr/libexec/PlistBuddy is absent, bundle version reads need macOS")
+	}
 	archive := filepath.Join(t.TempDir(), "desktop.zip")
 	if err := os.WriteFile(archive, validApplicationZIP(t), 0o600); err != nil {
 		t.Fatal(err)
