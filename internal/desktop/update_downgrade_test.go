@@ -27,6 +27,9 @@ latest)` instead of `!IsNewerVersion(latest, installed)` would make every up-to-
 reinstall on every run, and the equal-versions case below is what catches it.
 */
 func TestUpdateNeverInstallsAnOlderReleaseOverANewerBundle(t *testing.T) {
+	if _, err := os.Stat("/usr/libexec/PlistBuddy"); err != nil {
+		t.Skip("skip: /usr/libexec/PlistBuddy is absent, bundle version reads need macOS")
+	}
 	for _, tc := range []struct {
 		name      string
 		installed string
