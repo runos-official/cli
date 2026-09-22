@@ -220,6 +220,22 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// shouldPrintSuppressedError reports whether Execute must print err
+// itself because cobra suppressed its own "Error:" line (root OR leaf
+// SilenceErrors). Print only when the root silenced and the leaf did
+// not already surface its own output: every leaf that sets
+// SilenceErrors prints first, so skipping those never leaves silence.
+// Pure so the single-print rule is unit testable without os.Exit.
+func shouldPrintSuppressedError(rootSilenced bool, executed, root *cobra.Command) bool {
+	if !rootSilenced {
+		return false
+	}
+	if executed != nil && executed != root && executed.SilenceErrors {
+		return false
+	}
+	return true
+}
+
 // Execute runs the root command and exits with the appropriate code:
 // 0 on success, the wrapped ExitCode() on errors that carry one
 // (e.g. `runos run` propagating a container's real exit code), or 1
@@ -229,7 +245,14 @@ func Execute() {
 	// Captured before cobra runs, because the raw line is what names the
 	// command the operator meant.
 	typed := os.Args[1:]
-	if err := rootCmd.Execute(); err != nil {
+	executed, err := rootCmd.ExecuteC()
+	if err != nil {
+		// The init-time manifest failure silences the root, so cobra
+		// swallows every error line. Print the suppressed line once,
+		// before the explainer helpers so today ordering survives.
+		if shouldPrintSuppressedError(rootCmd.SilenceErrors, executed, rootCmd) {
+			fmt.Fprintln(os.Stderr, "Error:", err.Error())
+		}
 		// An unknown command is very often a stale cached command list rather than a command
 		// that does not exist, and the two are indistinguishable from the error alone. This
 		// says which, and refreshes the cache when it is the cause (goal 21, O10). It never

@@ -259,6 +259,11 @@ the cluster.** Nothing fails and nothing warns: the sync just leaves the pin whe
 remove it. Upgrade the CLI; until you do, write `nodeAffinityTags: []` in the file rather than
 deleting the key.
 
+**`runos config set` works on a fresh machine and never fails silently.** With no config file,
+every failing command exited 1 with empty output, including the `config set` that moves the CLI
+off production, so a setup runbook could believe it moved while the CLI stayed put. A failing
+command now prints its error, and `config set` creates the file with only the key you set.
+
 ## v1.19.1
 
 **Every MCP tool now carries a `readOnlyHint`, so a client can tell a read from a write.** The
