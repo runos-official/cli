@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"os/user"
 	"runtime"
 	"testing"
@@ -167,6 +168,9 @@ func TestTheInstallerNeverDerivesAGroupFromRoot(t *testing.T) {
 	})
 
 	t.Run("SUDO_USER names the person whose CLI must reach the socket", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skip: test runs as uid 0, the current user is root with no personal group")
+		}
 		current, err := user.Current()
 		if err != nil {
 			t.Skip("no current user")
