@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -218,41 +219,64 @@ func configSetUnknownKeyError(rawKey, normalizedKey string) error {
 	return fmt.Errorf("unknown config key: %s\nValid keys: %s", rawKey, strings.Join(configSettableKeys, ", "))
 }
 
+// baseConfigForSet picks the config that `config set` persists to. A
+// fresh empty config starts the write when no file exists: either Load
+// refused with ErrConfigNotFound, or Load succeeded only through the
+// RUNOS_API_KEY in-memory fallback (fileExists false), which may carry
+// CDN-fetched URLs the operator did not set. Persisting those would
+// dirty a CI filesystem that carries no file today, so the set path
+// writes only the requested key. Pure over its inputs so both
+// missing-file shapes are unit testable without the CDN fetch that
+// Load performs.
+func baseConfigForSet(loaded *config.Config, loadErr error, fileExists bool) *config.Config {
+	if loadErr != nil || !fileExists {
+		return &config.Config{}
+	}
+	return loaded
+}
+
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	key := normalizeConfigKey(args[0])
 	value := args[1]
 
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+	// Validate before any write so a typo cannot create a file or poison
+	// one. Validation rules stay byte-identical to today: unknown and
+	// read-only keys keep their existing errors.
+	switch key {
+	case "cid", "console-url", "api-url":
+		if err := validateConfigSet(key, value); err != nil {
+			return err
+		}
+	default:
+		return configSetUnknownKeyError(args[0], key)
 	}
 
+	cfg, err := config.Load()
+	if err != nil && !errors.Is(err, config.ErrConfigNotFound) {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	// An explicit set creates the file. The loader keeps its read-side
+	// no-write behavior exactly: only this write path starts from a
+	// fresh config, never Load itself.
+	cfg = baseConfigForSet(cfg, err, config.Exists())
+
+	// Apply only. Validation ran before the load above, so each case
+	// assigns without re-checking.
 	switch key {
 	case "cid":
-		if err := validateConfigSet(key, value); err != nil {
-			return err
-		}
 		cfg.DefaultClusterID = value
 	case "console-url":
-		if err := validateConfigSet(key, value); err != nil {
-			return err
-		}
 		cfg.ConsoleURL = value
 	case "api-url":
-		if err := validateConfigSet(key, value); err != nil {
-			return err
-		}
 		// SetAPIURL, not a bare assignment: a URL that diverges from the
 		// one `config env <name>` wrote makes the stored env label a lie,
 		// so setting one clears the other (B3).
 		cfg.SetAPIURL(value)
 	default:
-		// Read-only keys appear in `config get` (configGettableKeys) but
-		// can't be mutated directly via `config set`. Pre-fix the catch-
-		// all path said "unknown config key: env" which actively misled
-		// users since `config get env` returns a real value. Distinguish
-		// the two cases and surface the canonical setter.
+		// Unreachable: unknown and read-only keys returned before the
+		// load. Kept so a key added here without a pre-check still
+		// refuses instead of persisting nothing and reporting success.
 		return configSetUnknownKeyError(args[0], key)
 	}
 
