@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -219,20 +218,27 @@ func configSetUnknownKeyError(rawKey, normalizedKey string) error {
 	return fmt.Errorf("unknown config key: %s\nValid keys: %s", rawKey, strings.Join(configSettableKeys, ", "))
 }
 
-// baseConfigForSet picks the config that `config set` persists to. A
-// fresh empty config starts the write when no file exists: either Load
-// refused with ErrConfigNotFound, or Load succeeded only through the
-// RUNOS_API_KEY in-memory fallback (fileExists false), which may carry
-// CDN-fetched URLs the operator did not set. Persisting those would
-// dirty a CI filesystem that carries no file today, so the set path
-// writes only the requested key. Pure over its inputs so both
-// missing-file shapes are unit testable without the CDN fetch that
-// Load performs.
-func baseConfigForSet(loaded *config.Config, loadErr error, fileExists bool) *config.Config {
-	if loadErr != nil || !fileExists {
-		return &config.Config{}
+// initDefaultConfig writes the default environment's config file. A var so
+// tests stub the CDN fetch.
+var initDefaultConfig = config.InitFromRemote
+
+// baseConfigForSet loads the config that `config set` writes to. With no
+// file it first writes the default environment, the same thing first-run
+// setup does, so a set of one key never leaves a file without the URLs
+// every other command and login need.
+func baseConfigForSet() (*config.Config, error) {
+	if config.Exists() {
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config: %w", err)
+		}
+		return cfg, nil
 	}
-	return loaded
+	cfg, err := initDefaultConfig()
+	if err != nil {
+		return nil, fmt.Errorf("no config file exists and the default environment could not be fetched: %w\nCheck network access and retry", err)
+	}
+	return cfg, nil
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {
@@ -252,17 +258,11 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return configSetUnknownKeyError(args[0], key)
 	}
 
-	cfg, err := config.Load()
-	if err != nil && !errors.Is(err, config.ErrConfigNotFound) {
-		return fmt.Errorf("failed to load config: %w", err)
+	cfg, err := baseConfigForSet()
+	if err != nil {
+		return err
 	}
-	// An explicit set creates the file. The loader keeps its read-side
-	// no-write behavior exactly: only this write path starts from a
-	// fresh config, never Load itself.
-	cfg = baseConfigForSet(cfg, err, config.Exists())
 
-	// Apply only. Validation ran before the load above, so each case
-	// assigns without re-checking.
 	switch key {
 	case "cid":
 		cfg.DefaultClusterID = value
@@ -271,13 +271,8 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	case "api-url":
 		// SetAPIURL, not a bare assignment: a URL that diverges from the
 		// one `config env <name>` wrote makes the stored env label a lie,
-		// so setting one clears the other (B3).
+		// so setting one clears the other.
 		cfg.SetAPIURL(value)
-	default:
-		// Unreachable: unknown and read-only keys returned before the
-		// load. Kept so a key added here without a pre-check still
-		// refuses instead of persisting nothing and reporting success.
-		return configSetUnknownKeyError(args[0], key)
 	}
 
 	if err := cfg.Save(); err != nil {

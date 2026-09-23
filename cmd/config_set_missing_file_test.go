@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,113 +11,80 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Story 279 red step: with HOME set to an empty directory (no config
-// file), `runos config set <key> <value>` must persist the setting so a
-// later read returns it. Pre-fix runConfigSet returns
-// "failed to load config" and creates no file.
-func TestRunConfigSet_MissingFilePersistsOnlySetKey(t *testing.T) {
+// stubDefaultConfig replaces the CDN fetch with a default environment
+// written to the test HOME, so these tests run network-free.
+func stubDefaultConfig(t *testing.T, fail bool) {
+	t.Helper()
+	orig := initDefaultConfig
+	t.Cleanup(func() { initDefaultConfig = orig })
+	initDefaultConfig = func() (*config.Config, error) {
+		if fail {
+			return nil, errors.New("fetch failed")
+		}
+		cfg := &config.Config{}
+		cfg.ApplyEnvironment("prod", "https://console.example.com", "https://api.example.com")
+		return cfg, cfg.Save()
+	}
+}
+
+func isolateConfigEnv(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, k := range []string{"RUNOS_API_KEY", "RUNOS_API_URL", "RUNOS_ACCOUNT_ID", "RUNOS_CLUSTER_ID", "CONSOLE_URL"} {
+		t.Setenv(k, "")
+	}
+	return home
+}
+
+// With no config file, `config set` persists the key on top of the default
+// environment, so the API and console URLs that login and every other
+// command need are still there afterwards.
+func TestRunConfigSet_MissingFileKeepsDefaults(t *testing.T) {
 	cases := []struct {
-		name  string
-		key   string
-		value string
-		check func(t *testing.T, cfg *config.Config)
+		key, value           string
+		wantAPI, wantConsole string
+		wantCluster          string
 	}{
-		{
-			name:  "api-url persists",
-			key:   "api-url",
-			value: "https://api.example.com",
-			check: func(t *testing.T, cfg *config.Config) {
-				t.Helper()
-				if got := cfg.GetAPIURL(); got != "https://api.example.com" {
-					t.Errorf("GetAPIURL = %q, want %q", got, "https://api.example.com")
-				}
-			},
-		},
-		{
-			name:  "console-url persists",
-			key:   "console-url",
-			value: "https://console.example.com",
-			check: func(t *testing.T, cfg *config.Config) {
-				t.Helper()
-				if cfg.ConsoleURL != "https://console.example.com" {
-					t.Errorf("ConsoleURL = %q, want %q", cfg.ConsoleURL, "https://console.example.com")
-				}
-			},
-		},
-		{
-			name:  "cid persists",
-			key:   "cid",
-			value: "abc123",
-			check: func(t *testing.T, cfg *config.Config) {
-				t.Helper()
-				if cfg.DefaultClusterID != "abc123" {
-					t.Errorf("DefaultClusterID = %q, want %q", cfg.DefaultClusterID, "abc123")
-				}
-			},
-		},
+		{"api-url", "https://api.other.example.com", "https://api.other.example.com", "https://console.example.com", ""},
+		{"console-url", "https://console.other.example.com", "https://api.example.com", "https://console.other.example.com", ""},
+		{"cid", "abc123", "https://api.example.com", "https://console.example.com", "abc123"},
 	}
 	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("RUNOS_API_KEY", "")
-			t.Setenv("RUNOS_API_URL", "")
-			t.Setenv("RUNOS_ACCOUNT_ID", "")
-			t.Setenv("RUNOS_CLUSTER_ID", "")
-			t.Setenv("CONSOLE_URL", "")
-
+		t.Run(tt.key, func(t *testing.T) {
+			isolateConfigEnv(t)
+			stubDefaultConfig(t, false)
 			if err := runConfigSet(&cobra.Command{}, []string{tt.key, tt.value}); err != nil {
-				t.Fatalf("runConfigSet with no config file: unexpected error %v", err)
+				t.Fatalf("runConfigSet with no config file: %v", err)
 			}
 			cfg, err := config.Load()
 			if err != nil {
-				t.Fatalf("config.Load after set: unexpected error %v", err)
+				t.Fatalf("config.Load after set: %v", err)
 			}
-			tt.check(t, cfg)
+			if got := cfg.GetAPIURL(); got != tt.wantAPI {
+				t.Errorf("api url = %q, want %q", got, tt.wantAPI)
+			}
+			if cfg.ConsoleURL != tt.wantConsole {
+				t.Errorf("console url = %q, want %q", cfg.ConsoleURL, tt.wantConsole)
+			}
+			if cfg.DefaultClusterID != tt.wantCluster {
+				t.Errorf("cluster id = %q, want %q", cfg.DefaultClusterID, tt.wantCluster)
+			}
 		})
 	}
 }
 
-// The shape-2 decision as a pure helper: no CDN fetch runs here, so
-// the RUNOS_API_KEY in-memory fallback is testable network-free. A
-// loaded config carrying CDN URLs but no file must not reach the disk.
-func TestBaseConfigForSet(t *testing.T) {
-	loaded := &config.Config{
-		ConsoleURL:   "https://console.example.com",
-		ConductorURL: "https://api.example.com",
-		Env:          "prod",
-		EnvAPIURL:    "https://api.example.com",
+// When the default environment cannot be fetched, the set refuses with a
+// message instead of writing a file with no URLs.
+func TestRunConfigSet_MissingFileFetchFailureRefuses(t *testing.T) {
+	home := isolateConfigEnv(t)
+	stubDefaultConfig(t, true)
+	err := runConfigSet(&cobra.Command{}, []string{"cid", "abc123"})
+	if err == nil || !strings.Contains(err.Error(), "could not be fetched") {
+		t.Fatalf("want fetch refusal, got %v", err)
 	}
-	cases := []struct {
-		name       string
-		loaded     *config.Config
-		loadErr    error
-		exists     bool
-		wantLoaded bool
-	}{
-		{"file present returns loaded config", loaded, nil, true, true},
-		{"missing file refusal starts fresh", nil, config.ErrConfigNotFound, false, false},
-		{"api-key fallback without file starts fresh", loaded, nil, false, false},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			got := baseConfigForSet(tt.loaded, tt.loadErr, tt.exists)
-			if tt.wantLoaded {
-				if got != tt.loaded {
-					t.Errorf("baseConfigForSet must return the loaded config")
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("baseConfigForSet must return a fresh config, got nil")
-			}
-			if got == tt.loaded {
-				t.Errorf("baseConfigForSet must not return the loaded config")
-			}
-			if got.ConsoleURL != "" || got.ConductorURL != "" || got.Env != "" || got.EnvAPIURL != "" {
-				t.Errorf("fresh config must carry no CDN URL, got %+v", got)
-			}
-		})
+	if _, statErr := os.Stat(filepath.Join(home, ".runos", "config.json")); !os.IsNotExist(statErr) {
+		t.Errorf("config file must not exist after refusal, stat err = %v", statErr)
 	}
 }
 
@@ -139,9 +107,8 @@ func TestRunConfigSet_MissingFileInvalidCreatesNothing(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("RUNOS_API_KEY", "")
+			home := isolateConfigEnv(t)
+			stubDefaultConfig(t, false)
 
 			err := runConfigSet(&cobra.Command{}, []string{tt.key, tt.value})
 			if err == nil {
