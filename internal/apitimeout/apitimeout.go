@@ -65,7 +65,13 @@ var longRunningCommands = map[string]bool{
 	// then the LINSTOR pin. On a slow or degraded cluster that ran past
 	// 30 s, and the caller was told the migration failed while conductor
 	// went on to accept it.
-	"vms/migrate":              true,
+	"vms/migrate": true,
+	// FCR 711. On a DRA cluster vms/restart makes a GPU holder pod and waits
+	// up to 60 s for it to hold the cards before it restarts the machine, so
+	// the 30 s Default reported a failure for a restart that went on.
+	// vms/start and vms/stop do not wait on the holder: stop deletes it
+	// without waiting, and start re-reads held cards only after a reclaim.
+	"vms/restart":              true,
 	"virt/reapply":             true,
 	"vm-groups/reapply-policy": true,
 	// storage-groups/delete removes each replica of the pool from LINSTOR

@@ -59,6 +59,14 @@ func TestFor(t *testing.T) {
 		// caller off while conductor finished the run and tore its fixtures
 		// down, so the operator was told a completed measurement had failed.
 		{"vms/isolation-check is long-running", manifest.Command{Command: "vms/isolation-check"}, nil, LongRunning},
+		// FCR 711. On a DRA cluster vms/restart waits up to 60 s for the GPU
+		// holder pod before it restarts the machine, so the 30 s default cut
+		// the caller off while the restart went on.
+		{"vms/restart is long-running", manifest.Command{Command: "vms/restart"}, nil, LongRunning},
+		// vms/stop deletes the holder without waiting, and vms/reapply returns
+		// a jobId, so both keep the default.
+		{"vms/stop keeps the default", manifest.Command{Command: "vms/stop"}, nil, Default},
+		{"vms/reapply returns a job and keeps the default", manifest.Command{Command: "vms/reapply"}, nil, Default},
 		// nodes/drain returns a jobId, so the CALL is short. Only the job is
 		// long, and jobs are followed, not waited on.
 		{"nodes/drain returns a job and keeps the default", manifest.Command{Command: "nodes/drain"}, nil, Default},
