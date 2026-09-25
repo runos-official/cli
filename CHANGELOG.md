@@ -2,6 +2,8 @@
 
 ## v1.20.0
 
+`runos deploy` now judges the nginx hint on the final build stage. A non-root nginx image that ships its own nginx config gets no warning. A non-root image with the stock config gets a softer check-the-port warning. Root still gets the crash warning.
+
 `runos services sync` now sends an empty JSON object when a new service uses only server defaults. A bare node affinity key no longer blocks that creation.
 
 `runos services diff` now compares service settings rather than YAML text. A bare node affinity key, a comment, a different key order, or an equivalent numeric spelling reports in sync. Previews omit equivalent numeric values beside actual edits. Actual edits and pin removals still report drift. `runos services pull` still requires `--force` before overwriting any changed local text.

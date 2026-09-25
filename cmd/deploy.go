@@ -501,12 +501,8 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	if err != nil {
 		return fmt.Errorf("invalid dockerfile: %w", err)
 	}
-	// I27-G: peek at the Dockerfile's base image. RunOS clusters reject
-	// containers running as root, so the bare `nginx:alpine` image (binds
-	// port 80, requires root) lands in CrashLoopBackOff after every deploy.
-	// Emit a stderr advisory naming the unprivileged variant as the drop-in
-	// fix; non-blocking so the deploy still proceeds (some users have
-	// patched the base image themselves to drop root, no need to refuse).
+	// I27-G: warn when the final stage runs upstream nginx as root, or as
+	// non-root with the stock port-80 config. Non-blocking.
 	if hint := deploy.NginxDockerfileHint(dockerfileAbs); hint != "" {
 		fmt.Fprintln(os.Stderr, hint)
 	}
