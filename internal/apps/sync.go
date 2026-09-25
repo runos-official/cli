@@ -62,6 +62,9 @@ func IsOmitClearField(name string) bool {
 // The function is intentionally pattern-matched rather than regex-
 // driven so future additions stay surveyable.
 func IsOmitClearPath(path string) bool {
+	if isStandardHttpsPath(path) {
+		return true
+	}
 	// servicePortMappings[N].domains{,.<sub>} — any path that walks
 	// through a mapping's `domains` array.
 	if strings.HasPrefix(path, "servicePortMappings[") {

@@ -2,7 +2,7 @@
 
 ## v1.20.0
 
-`runos deploy` and `runos apps diff` no longer report drift when the yaml omits `standardHttps` and the server holds the default (true). A deploy after a failed first deploy now proceeds. A server value of false still reports drift.
+`runos deploy` and `runos apps diff` no longer report drift when the yaml omits `standardHttps` and the server holds the default (true). A deploy after a failed first deploy now proceeds. A server value of false still reports drift, and `runos deploy` now refuses it: omitting `standardHttps` would turn standard HTTPS back on. Set `standardHttps: false` on the port to keep it off.
 
 `runos deploy` now judges the nginx hint on the final build stage. A non-root nginx image that ships its own nginx config gets no warning. A non-root image with the stock config gets a softer check-the-port warning. Root still gets the crash warning.
 

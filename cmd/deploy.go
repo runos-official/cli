@@ -1458,6 +1458,10 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 				fmt.Fprintf(os.Stderr, "    - %s\n", f)
 			}
 		}
+		if hint := apps.StandardHttpsResetHint(clearOnOmit); hint != "" {
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, hint)
+		}
 		if len(clearOnOmit) > 0 {
 			fmt.Fprintln(os.Stderr)
 			fmt.Fprintln(os.Stderr, "  To keep the cleared fields, cancel and run:")
