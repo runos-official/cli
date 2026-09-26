@@ -1,6 +1,11 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/runos-official/cli/internal/apps"
+)
 
 // I4-H regression: pre-fix, `runos apps diff` defaulted to plain
 // secret values regardless of where stdout pointed, so CI pipelines
@@ -37,6 +42,38 @@ func TestShouldAutoRedact(t *testing.T) {
 			if got != c.want {
 				t.Errorf("shouldAutoRedact(redact=%v, show=%v, tty=%v) = %v, want %v",
 					c.explicitRedact, c.explicitShow, c.stdoutIsTTY, got, c.want)
+			}
+		})
+	}
+}
+
+// FCR 168: a bare "No drift." promised a local-source comparison that was
+// never made. It is printed only when local source was compared unchanged.
+func TestDriftSummaryLine(t *testing.T) {
+	inSync := func(code *apps.CodeVersionStatus) *apps.DiffReport {
+		return &apps.DiffReport{
+			YAML: apps.SectionDiff{Status: apps.StatusInSync}, SecretEnv: apps.SectionDiff{Status: apps.StatusInSync},
+			Env: apps.SectionDiff{Status: apps.StatusInSync}, SecretFiles: apps.SecretFilesDiff{Status: apps.StatusInSync},
+			Overrides: apps.OverridesDiff{Status: apps.StatusInSync}, Code: code,
+		}
+	}
+	anchored := func(local string) *apps.CodeVersionStatus {
+		return &apps.CodeVersionStatus{Recorded: "up-1", RecordedFound: true, LocalSource: local}
+	}
+	cases := []struct {
+		name string
+		r    *apps.DiffReport
+		want string
+	}{
+		{"no code baseline", inSync(nil), "No drift."},
+		{"local unchanged", inSync(anchored(apps.LocalSourceUnchanged)), "No drift."},
+		{"local changed", inSync(anchored(apps.LocalSourceChanged)), "Drift detected."},
+		{"local not compared", inSync(anchored(apps.LocalSourceNotCompared)), "No drift in compared sections."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := driftSummaryLine(c.r); !strings.HasPrefix(got, c.want) {
+				t.Errorf("driftSummaryLine = %q, want prefix %q", got, c.want)
 			}
 		})
 	}

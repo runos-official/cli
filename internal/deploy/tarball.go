@@ -254,7 +254,7 @@ var alwaysIncludeFiles = []string{
 // source archive would leak cross-cluster config when one project
 // directory holds multiple runos.<cid>.<id>.yaml files. The hidden-file
 // rule (isHidden) already covers .runos.<cid>.<id>.env,
-// .runos*.source-version, and .secret-files/.
+// .runos*.source-version, .runos*.source-fingerprint and .secret-files/.
 var alwaysExcludePatterns = []string{
 	"runos.yaml",
 	"runos.*.yaml",

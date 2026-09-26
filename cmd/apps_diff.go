@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -29,7 +30,13 @@ Exit codes (CI-gate friendly):
   2 = drift the user should reconcile or push: yaml field values
       disagree, server has user-set fields local doesn't have, env
       keys the user authored differ in either direction, secret-file
-      or override delta.
+      or override delta, or local source that differs from the archive
+      the last runos deploy from this directory uploaded.
+
+Local source is compared through a content fingerprint that runos deploy
+records beside the source-version sidecar. With no fingerprint for the
+recorded upload (an older CLI deployed, or apps pull --code moved the
+anchor), the code section compares only the upload anchor and says so.
 
 If no yaml file is passed, diff scans the current directory for a unique
 runos*.yaml that parses as a pulled-app manifest (so "cd into the per-app
@@ -105,6 +112,9 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return errReturn(err)
 	}
+	// FCR 168: compare the local tree, not only the upload anchor. Only
+	// apps diff pays for this; the deploy gate is about to upload anyway.
+	apps.CompareLocalSource(report.Code, filepath.Dir(yamlPath), localApp.SourceDir, localApp.CID, localApp.ID)
 
 	showSecrets, _ := cmd.Flags().GetBool("show-secrets")
 	if showSecrets && report.SecretFiles.Status != apps.StatusInSync {
@@ -150,11 +160,7 @@ func runAppsDiff(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Comparing %s (%s) against cluster %s\n", report.AppName, report.AppID, report.CID)
 		printDiffReport(report)
 		fmt.Println()
-		if report.HasDrift() {
-			fmt.Println("Drift detected.")
-		} else {
-			fmt.Println("No drift.")
-		}
+		fmt.Println(driftSummaryLine(report))
 	}
 
 	if report.HasDrift() {
@@ -254,12 +260,14 @@ func printDiffReport(r *apps.DiffReport) {
 	switch {
 	case r.Code == nil:
 		// No baseline; don't add to either bucket, we have no opinion.
-	case r.Code.IsStale():
+	case r.Code.IsStale(), !r.Code.RecordedFound, r.Code.LocalChanged():
 		printCodeSection(r.Code)
-	case !r.Code.RecordedFound:
-		printCodeSection(r.Code)
-	default:
+	case r.Code.LocalSource == apps.LocalSourceUnchanged:
 		inSync = append(inSync, "code")
+	default:
+		// FCR 168: only the upload anchor was compared. Say so, so the
+		// label is not read as a local-versus-deployed file comparison.
+		inSync = append(inSync, "code upload anchor (local source not compared)")
 	}
 
 	if len(inSync) > 0 {
@@ -268,8 +276,22 @@ func printDiffReport(r *apps.DiffReport) {
 	}
 }
 
+// driftSummaryLine is the last line of apps diff. A bare "No drift." is
+// printed only when every section, local source included, was compared.
+func driftSummaryLine(r *apps.DiffReport) string {
+	switch {
+	case r.HasDrift():
+		return "Drift detected."
+	case r.Code != nil && r.Code.LocalSource != apps.LocalSourceUnchanged:
+		return "No drift in compared sections. Local source was not compared: the next runos deploy from this directory records a fingerprint."
+	default:
+		return "No drift."
+	}
+}
+
 // printCodeSection renders the source-version status. Only called when
-// there's something noteworthy to report: stale or anchor-missing.
+// there's something noteworthy to report: stale, anchor-missing, or local
+// source changed since the last deploy from this directory.
 func printCodeSection(c *apps.CodeVersionStatus) {
 	fmt.Println()
 	switch {
@@ -289,6 +311,10 @@ func printCodeSection(c *apps.CodeVersionStatus) {
 		}
 		fmt.Println()
 		fmt.Println("  (run 'runos apps pull <yaml> --code --force' to refresh local source)")
+	case c.LocalChanged():
+		fmt.Println(sectionRule("code", "local changes"))
+		fmt.Printf("  local source differs from the archive uploaded as %s\n", c.Recorded)
+		fmt.Println("  (run 'runos deploy' to ship it)")
 	}
 }
 

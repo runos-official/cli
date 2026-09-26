@@ -129,6 +129,18 @@ type CodeVersionStatus struct {
 	// sorted oldest-first. Helpful when callers want to render a
 	// listing.
 	NewerArchives []CliArchive `json:"newerArchives,omitempty"`
+
+	// LocalSource compares the local tree with the archive the recorded
+	// upload shipped: one of the LocalSource* constants, or "" when the
+	// caller did not evaluate it. Only apps diff evaluates it
+	// (CompareLocalSource).
+	LocalSource string `json:"localSource,omitempty"`
+}
+
+// LocalChanged reports whether the local source differs from the archive
+// the recorded upload shipped.
+func (s *CodeVersionStatus) LocalChanged() bool {
+	return s != nil && s.LocalSource == LocalSourceChanged
 }
 
 // IsStale reports whether the recorded source version is behind the

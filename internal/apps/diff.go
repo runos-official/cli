@@ -138,7 +138,8 @@ type DiffReport struct {
 
 // HasDrift returns true when any section of the report is out of sync,
 // including sections whose only issue is a missing local file, and the
-// optional Code section when the local source is behind the server.
+// optional Code section when the local source is behind the server or
+// differs from the last archive deployed from this directory.
 // Use this for the diff command's exit code.
 func (r *DiffReport) HasDrift() bool {
 	if r.YAML.Status != StatusInSync ||
@@ -148,7 +149,7 @@ func (r *DiffReport) HasDrift() bool {
 		r.Overrides.Status != StatusInSync {
 		return true
 	}
-	return r.Code.IsStale()
+	return r.Code.IsStale() || r.Code.LocalChanged()
 }
 
 // NeedsForceToOverwrite is true when pulling would clobber locally-edited

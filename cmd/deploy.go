@@ -604,6 +604,11 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	}
 
 	progress("Archive size: %d bytes\n", tarball.Len())
+	// Fingerprint before the upload drains the buffer (FCR 168).
+	sourceFingerprint, fpErr := deploy.FingerprintTarball(tarball.Bytes())
+	if fpErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to fingerprint archive: %v\n", fpErr)
+	}
 
 	// Upload tarball
 	progress("Uploading archive...\n")
@@ -613,25 +618,13 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 
 	progress("Upload complete.\n")
 
-	// Record the new source version so the next deploy / pull can
-	// detect upstream drift relative to this deploy. Sidecar is per-app
-	// (.runos.<cid>.<id>.source-version) so two apps in one directory
-	// don't share an anchor.
-	//
-	// Capture the prior recorded version first: when --follow is passed
-	// and the deploy job fails (e.g. build failure), we restore the
-	// prior value so the recorded source-version still reflects the
-	// last successfully-deployed code rather than a UUID whose image
-	// was never produced. Fire-and-forget deploys can't observe
-	// success/failure here, so they keep the new value (still useful:
-	// `apps pull --code <uuid>` works because the archive uploaded).
-	priorSourceVersion, _ := apps.ReadSourceVersion(configDir, cid, deployConfig.ID)
-	newSourceVersion := sourceVersionFromPrepare(prepResp)
-	if newSourceVersion != "" {
-		if err := apps.WriteSourceVersion(configDir, cid, deployConfig.ID, newSourceVersion); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to record source version: %v\n", err)
-		}
-	}
+	// Record the upload anchor and the archive fingerprint so the next
+	// deploy, pull and apps diff can compare against this deploy. The
+	// sidecars are per-app, so two apps in one directory keep their own.
+	// Fire-and-forget deploys keep the new values (apps pull --code <uuid>
+	// works because the archive uploaded); --follow rolls them back when
+	// the build fails.
+	sourceRecord := recordDeploySource(configDir, cid, deployConfig.ID, sourceVersionFromPrepare(prepResp), sourceFingerprint)
 
 	// Output response (jsonOutput is captured at the top of runDeploy)
 	if jsonOutput {
@@ -689,25 +682,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			followWriter = os.Stderr
 		}
 		if err := jobs.FollowJobToWriter(prepResp.JobID, followWriter); err != nil {
-			// Roll back the source-version sidecar so the recorded id
-			// keeps pointing at the last successfully-deployed code.
-			// Without this, a failed build leaves the sidecar pointing
-			// at a UUID whose image was never produced, and the next
-			// `runos deploy` (or drift gate) would treat the failure
-			// as the new baseline. Restore the prior value (or remove
-			// the file when there was no prior baseline). Best-effort:
-			// any I/O failure is logged as a warning, not propagated.
-			if newSourceVersion != "" && newSourceVersion != priorSourceVersion {
-				if priorSourceVersion != "" {
-					if rerr := apps.WriteSourceVersion(configDir, cid, deployConfig.ID, priorSourceVersion); rerr != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to restore source version after build failure: %v\n", rerr)
-					}
-				} else {
-					if rerr := os.Remove(apps.SourceVersionPath(configDir, cid, deployConfig.ID)); rerr != nil && !os.IsNotExist(rerr) {
-						fmt.Fprintf(os.Stderr, "Warning: failed to clear source version after build failure: %v\n", rerr)
-					}
-				}
-			}
+			sourceRecord.rollback()
 			return fmt.Errorf("deployment failed: %w", err)
 		}
 		fmt.Fprintln(humanOut, "\nDeployment completed successfully!")
