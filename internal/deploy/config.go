@@ -683,7 +683,8 @@ type ResolvedEnvFiles struct {
 //
 // Returns the resolved absolute paths and whether the config was modified
 // (needs saving). The config is mutated to record the auto-derived
-// filenames so subsequent deploys round-trip cleanly.
+// filenames so subsequent deploys round-trip cleanly. The secret default
+// is recorded only when its file exists (FCR 170).
 //
 // The cluster-scoped legacy form (.runos.{cid}.env, no app id) used to be
 // a third fallback for the secret side, but it's app-agnostic: two apps
@@ -709,9 +710,15 @@ func ResolveEnvFiles(configDir string, config *DeployConfig, cid string) (Resolv
 		paths.SecretExplicit = config.ID == "" || config.SecretEnv != DefaultSecretEnvFilename(cid, config.ID)
 	} else if config.ID != "" {
 		filename := DefaultSecretEnvFilename(cid, config.ID)
-		config.SecretEnv = filename
 		paths.Secret = filepath.Join(configDir, filename)
-		modified = true
+		// Record the reference only once the file exists (FCR 170). The
+		// default secret file is absent when the app has no secret vars,
+		// and a yaml that names an absent file misleads every reader.
+		// Deploy never writes a placeholder here, unlike the plain side.
+		if _, err := os.Stat(paths.Secret); err == nil {
+			config.SecretEnv = filename
+			modified = true
+		}
 	}
 
 	// Plain side (committed, no leading dot). Same canonical-default-is-not-

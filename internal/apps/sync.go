@@ -1295,54 +1295,6 @@ func rejectAppsBodyEnvFields(data []byte) error {
 	return nil
 }
 
-// LoadLocalEnv reads the env file referenced by the app yaml's `env:` (or
-// `secretEnv:`) field. The path is resolved relative to yamlDir when not
-// absolute.
-//
-// When envRef is empty, falls back to defaultRef (the documented per-app
-// default like `runos.<cid>.<id>.config.env`). The caller computes that
-// default via EnvFilename / SecretEnvFilename and passes it in. The fallback
-// fixes V3 (apps_sync silently skipping a file at the default path because
-// the yaml didn't carry an explicit ref), and matches what apps_pull writes
-// when it materialises env values from server.
-//
-// Returns (empty map, false, nil) when neither envRef nor defaultRef is set,
-// or when an auto-derived defaultRef file doesn't exist on disk. The caller
-// treats exists==false as "no local content for this side" — sync skips the
-// push.
-//
-// When envRef is set explicitly (the yaml named the file) but it's missing,
-// returns deploy.ErrMissingExplicitEnvFile rather than empty: apps sync is
-// replace-all per source, so silently treating a typo'd `env:` path as empty
-// would DELETE every server-side env var for that source. An explicit
-// reference must point at a real file — same fail-loud contract as
-// LoadLocalSecretFiles / LoadLocalOverrides.
-func LoadLocalEnv(yamlDir, envRef, defaultRef string) (map[string]string, bool, error) {
-	ref := envRef
-	explicit := envRef != ""
-	if ref == "" {
-		ref = defaultRef
-	}
-	if ref == "" {
-		return map[string]string{}, false, nil
-	}
-	path := ref
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(yamlDir, path)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if explicit {
-				return nil, false, fmt.Errorf("env file %q (referenced in runos.yaml): %w", path, deploy.ErrMissingExplicitEnvFile)
-			}
-			return map[string]string{}, false, nil
-		}
-		return nil, false, err
-	}
-	return parseEnvBytes(data), true, nil
-}
-
 // LoadLocalSecretFiles follows each entry in the yaml's secretFiles list
 // and reads its referenced bytes. The yaml is the manifest, anything not
 // listed there is not part of the local state. Paths are resolved relative

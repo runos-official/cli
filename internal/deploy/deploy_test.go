@@ -754,8 +754,9 @@ func TestResolveEnvFiles(t *testing.T) {
 		if paths.SecretExplicit || paths.PlainExplicit {
 			t.Errorf("explicit flags: got Secret=%v Plain=%v, want both false for auto-derived defaults", paths.SecretExplicit, paths.PlainExplicit)
 		}
-		if config.SecretEnv != ".runos.cid1.app123.env" {
-			t.Errorf("config.SecretEnv = %q, want %q", config.SecretEnv, ".runos.cid1.app123.env")
+		// FCR 170: the secret default is recorded only when its file exists.
+		if config.SecretEnv != "" {
+			t.Errorf("config.SecretEnv = %q, want empty (no secret file on disk)", config.SecretEnv)
 		}
 		if config.Env != "runos.cid1.app123.config.env" {
 			t.Errorf("config.Env = %q, want %q", config.Env, "runos.cid1.app123.config.env")
@@ -832,17 +833,13 @@ func TestDeployTwiceRoundTrip_DefaultSecretEnvExempt(t *testing.T) {
 	}
 	config := &DeployConfig{App: "myapp", Port: 8080, ID: "app123", Env: "app.env"}
 
-	// Deploy #1: resolve auto-derives + persists the default secretEnv.
-	paths1, changed1 := ResolveEnvFiles(dir, config, "cid1")
-	if !changed1 {
-		t.Fatal("deploy #1: expected config mutation for the auto-derived secretEnv")
-	}
-	if config.SecretEnv != DefaultSecretEnvFilename("cid1", "app123") {
-		t.Fatalf("deploy #1: SecretEnv = %q, want persisted default", config.SecretEnv)
-	}
+	// Deploy #1: resolve. A CLI before FCR 170 also persisted the default
+	// secretEnv here; set it the way that CLI left the yaml.
+	paths1, _ := ResolveEnvFiles(dir, config, "cid1")
 	if err := VerifyExplicitEnvFiles(paths1); err != nil {
 		t.Fatalf("deploy #1: VerifyExplicitEnvFiles = %v, want nil", err)
 	}
+	config.SecretEnv = DefaultSecretEnvFilename("cid1", "app123")
 
 	// Deploy #2: same (now-persisted) config, fresh resolve. The persisted
 	// default must stay exempt; the never-created secret file must not block.
