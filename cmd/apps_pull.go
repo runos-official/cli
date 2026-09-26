@@ -818,7 +818,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 			Name: target.Name,
 		}
 		var skips []pullSkipEntry
-		codeEntry, codeSkip := pullCode(svc, target.ID, cid, appDir, codeVersion)
+		codeEntry, codeSkip := pullCode(svc, target.ID, cid, appDir, localSourceDir(appDir, cid, target.ID), codeVersion)
 		if codeSkip != nil {
 			codeSkip.ID = target.ID
 			codeSkip.Name = target.Name
@@ -1008,7 +1008,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	// local yaml win (re-pulls don't clobber user edits) and fall back
 	// to the caller-specified default (".." for subdir modes, "" for
 	// flat modes) only when both local and server are empty.
-	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, defaultSourceDir, serverState.DeployType)
+	serverState.SourceDir = pickSourceDir(yamlPath, serverState.SourceDir, pulledSourceDirDefault(defaultSourceDir, codeFlag), serverState.DeployType)
 	serverState.Dockerfile = pickDockerfile(yamlPath, serverState.Dockerfile)
 
 	// V1: id-flat mode goes through SaveYAMLSuffixed so concurrent pulls
@@ -1169,7 +1169,7 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	skips = append(skips, overrideSkips...)
 
 	if codeFlag {
-		codeEntry, codeSkip := pullCode(svc, target.ID, cid, appDir, codeVersion)
+		codeEntry, codeSkip := pullCode(svc, target.ID, cid, appDir, serverState.SourceDir, codeVersion)
 		if codeSkip != nil {
 			codeSkip.ID = serverState.ID
 			codeSkip.Name = serverState.App
@@ -1198,52 +1198,6 @@ func pullOne(svc *apps.Service, appDir, cid, aid string, target apps.AppSummary,
 	}
 
 	return entry, skips, false, nil
-}
-
-// pullCode resolves the target archive (latest if codeVersion is empty),
-// streams it down, and extracts into appDir. Returns nil entry + a
-// non-nil skip on any failure short of "no archives recorded" (which is
-// a non-error skip in its own right).
-func pullCode(svc *apps.Service, appID, cid, appDir, codeVersion string) (*pulledCodeEntry, *pullSkipEntry) {
-	target, err := resolveCodeArchive(svc, appID, codeVersion)
-	if err != nil {
-		return nil, &pullSkipEntry{Reason: fmt.Sprintf("code: %v", err)}
-	}
-	if target == nil {
-		return nil, &pullSkipEntry{Reason: "code: no CLI uploads recorded for this app"}
-	}
-
-	body, err := mintAndDownload(context.Background(), svc, appID, target.CliUploadID)
-	if err != nil {
-		return nil, &pullSkipEntry{Reason: fmt.Sprintf("code: %v", err)}
-	}
-	defer body.Close()
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return nil, &pullSkipEntry{Reason: fmt.Sprintf("code: mkdir %s: %v", appDir, err)}
-	}
-	written, err := apps.ExtractTarGz(body, appDir, apps.PulledCodeSkipPaths(cid, appID))
-	if err != nil {
-		return nil, &pullSkipEntry{Reason: fmt.Sprintf("code: extract: %v", err)}
-	}
-	// Record which archive this directory's source comes from so the
-	// pre-deploy gate can detect upstream deploys that landed after
-	// this pull. Failure here is non-fatal, the user still has the
-	// extracted code; only drift detection is degraded.
-	if err := apps.WriteSourceVersion(appDir, cid, appID, target.CliUploadID); err != nil {
-		return &pulledCodeEntry{
-			CliUploadID:  target.CliUploadID,
-			PushTime:     target.PushTime,
-			Size:         target.Size,
-			FilesWritten: written,
-		}, &pullSkipEntry{Reason: fmt.Sprintf("code: record source version: %v", err)}
-	}
-	return &pulledCodeEntry{
-		CliUploadID:  target.CliUploadID,
-		PushTime:     target.PushTime,
-		Size:         target.Size,
-		FilesWritten: written,
-	}, nil
 }
 
 // resolveCodeArchive returns the chosen archive. Empty codeVersion picks
