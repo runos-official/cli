@@ -794,6 +794,7 @@ func syncConfigFromPrepareResponse(deployConfig *deploy.DeployConfig, configPath
 	// pre-deploy diffs see the field on both sides and stop reporting
 	// it as benign drift on every run.
 	deployConfig.DeployType = "cli"
+	deploy.FoldPortShorthand(deployConfig)
 
 	// Update service IDs from the pre-generated services array.
 	if prepResp.Services != nil && deployConfig.Requires != nil {
@@ -1129,66 +1130,6 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	}
 
 	return result, nil
-}
-
-// stampSynthesizedResources fills in the resource class + cpu/memory
-// fields on deployConfig when the user has nothing set locally and the
-// server has populated values (the resolveRRC synthesis path), then
-// rewrites the local yaml so the manifest is self-describing.
-//
-// Never overwrites user-set values: the local yaml stays the source of
-// truth for anything the user explicitly typed. Best-effort: any I/O
-// failure just leaves the local yaml absent of these fields, which is
-// the pre-fix status quo. Errors warn rather than propagate.
-//
-// Called only after the deploy is observed successful (--follow mode)
-// or right after prepare/upload in fire-and-forget mode. The pre-deploy
-// syncAppState path deliberately does NOT call this so a user who
-// omits RRC on purpose has the prepare endpoint reapply that omission
-// rather than silently round-tripping a synthesized value.
-func stampSynthesizedResources(svc *deploy.Service, c *deploy.DeployConfig, configPath string, humanOut io.Writer) {
-	if c == nil || c.ID == "" {
-		return
-	}
-	hasAny := c.ResourceRequirementClassID != "" ||
-		c.CPURequestMc > 0 || c.CPULimitMc > 0 ||
-		c.MemoryRequestMb > 0 || c.MemoryLimitMb > 0
-	if hasAny {
-		return
-	}
-	app, err := svc.GetApp(c.ID)
-	if err != nil {
-		// First-deploy fire-and-forget: the AppDocument hasn't
-		// settled yet and a 404 here just means the synthesis hasn't
-		// run. The user will see the synthesized class on their next
-		// `apps_pull` once the orchestration finishes (I3-D).
-		if !isAPINotFound(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch synthesized resource class: %v\n", err)
-		}
-		return
-	}
-	if app == nil || app.ResourceRequirementClassID == "" {
-		return
-	}
-	c.ResourceRequirementClassID = app.ResourceRequirementClassID
-	if app.CPURequestMc > 0 {
-		c.CPURequestMc = app.CPURequestMc
-	}
-	if app.CPULimitMc > 0 {
-		c.CPULimitMc = app.CPULimitMc
-	}
-	if app.MemoryRequestMb > 0 {
-		c.MemoryRequestMb = app.MemoryRequestMb
-	}
-	if app.MemoryLimitMb > 0 {
-		c.MemoryLimitMb = app.MemoryLimitMb
-	}
-	if err := deploy.SaveConfig(configPath, c); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to record synthesized resource class to local yaml: %v\n", err)
-		return
-	}
-	fmt.Fprintf(humanOut, "Recorded synthesized resourceRequirementClassId=%q in %s\n",
-		app.ResourceRequirementClassID, configPath)
 }
 
 // sourceVersionFromPrepare picks the identifier to record in the

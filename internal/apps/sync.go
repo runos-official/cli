@@ -784,7 +784,10 @@ func computeYAMLPatch(localApp *PulledApp, server map[string]any, serverRequires
 	intDrift("memoryRequestMb", effective.MemoryRequestMb)
 	intDrift("memoryLimitMb", effective.MemoryLimitMb)
 
-	if portsDiffer(effective.ServicePortMappings, server["servicePortMappings"]) {
+	// An empty local list means "preserve", as on the wire body (which omits
+	// it) and the deploy path (which keeps the existing mappings). Planning
+	// [] would show a removal that never happens (FCR 753).
+	if len(effective.ServicePortMappings) > 0 && portsDiffer(effective.ServicePortMappings, server["servicePortMappings"]) {
 		driftFields["servicePortMappings"] = portsToWire(effective.ServicePortMappings)
 	}
 
@@ -1270,6 +1273,7 @@ func LoadLocalApp(yamlPath string) (*PulledApp, error) {
 	if err := yaml.Unmarshal(data, &app); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filepath.Base(yamlPath), err)
 	}
+	applyPortShorthand(&app, data)
 	return &app, nil
 }
 
