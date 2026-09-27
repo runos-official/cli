@@ -17,7 +17,8 @@ func TestJobStatus_IsTerminal(t *testing.T) {
 		{name: "pending is not terminal", status: "pending", want: false},
 		{name: "in_progress is not terminal", status: "in_progress", want: false},
 		{name: "running is not terminal", status: "running", want: false},
-		{name: "cancelled is not terminal", status: "cancelled", want: false},
+		// A cancel is final on the server since FCR 788, so following one must end, not poll 30 minutes.
+		{name: "cancelled is terminal", status: "cancelled", want: true},
 		{name: "empty string is not terminal", status: "", want: false},
 	}
 

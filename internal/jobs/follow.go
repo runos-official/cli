@@ -43,7 +43,7 @@ func FollowJobToWriter(jobID string, w io.Writer) error {
 // the destination (e.g. --json mode → stderr).
 //
 // Returns nil on terminal "completed", a non-nil error on terminal
-// "failed" (containing the job's error message). The terminal state
+// "failed" or "cancelled" (containing the job's error message). The terminal state
 // line itself is emitted before this function returns. Teardown jobs
 // end with their current outcomes and later-read commands.
 func FollowJobWithService(ctx context.Context, svc *Service, jobID string) error {
@@ -85,6 +85,9 @@ func FollowJobWithServiceToWriterResult(ctx context.Context, svc *Service, jobID
 		if job.IsTerminal() {
 			if job.Status == "failed" {
 				return job, fmt.Errorf("job failed: %s", job.Error)
+			}
+			if job.Status == "cancelled" {
+				return job, fmt.Errorf("job cancelled: %s", job.Error)
 			}
 			return job, nil
 		}

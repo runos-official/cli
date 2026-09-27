@@ -130,7 +130,9 @@ type WorkItemsResponse struct {
 
 // IsTerminal reports whether the job has reached a final state (completed or failed).
 func (j *JobStatus) IsTerminal() bool {
-	return j.Status == "completed" || j.Status == "failed"
+	// A cancel is final on the server (conductor FCR 788): a step that finishes later keeps it
+	// cancelled, so a follow that kept polling would wait out its whole timeout.
+	return j.Status == "completed" || j.Status == "failed" || j.Status == "cancelled"
 }
 
 // WorkItemLog is one log line emitted by an in-flight work item. Used by
