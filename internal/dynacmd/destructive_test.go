@@ -67,6 +67,11 @@ func TestIsDestructiveCommand(t *testing.T) {
 		{"POST evict-node is destructive (evict- prefix)", manifest.Command{Command: "storage-groups/evict-node", Method: "POST"}, true},
 		{"POST flush-cache is destructive (flush- prefix)", manifest.Command{Command: "services/valkey/{id}/flush-cache", Method: "POST"}, true},
 		{"POST purge-queue is destructive (purge- prefix)", manifest.Command{Command: "services/kafka/{id}/purge-queue", Method: "POST"}, true},
+		// FCR 805. unconfigure-backups removes every backup job of an instance and ran with no
+		// confirmation, while delete-backup (one job) asked. uninstall-alertmanager removes the
+		// Alertmanager and its routing the same way.
+		{"POST unconfigure-backups is destructive", manifest.Command{Command: "services/mysql/{id}/unconfigure-backups", Method: "POST"}, true},
+		{"POST uninstall-alertmanager is destructive", manifest.Command{Command: "services/prometheus/{id}/uninstall-alertmanager", Method: "POST"}, true},
 		// Non-destructive POST/PATCH should NOT trip the guard. The
 		// safety net cuts the wrong way only on these few verbs.
 		{"POST add is not destructive", manifest.Command{Command: "services/postgresql/add", Method: "POST"}, false},
