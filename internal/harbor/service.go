@@ -72,6 +72,9 @@ type PrepareResponse struct {
 	ExpiresAt string   `json:"expiresAt"`
 	UploadID  string   `json:"uploadId"`
 	Images    []string `json:"images"`
+	// Warnings are conductor advisories to print before the upload, such as an upload host
+	// with no public DNS record (FCR 787). They never block the build.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Service issues the Harbor build-image prepare + upload calls.

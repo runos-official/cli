@@ -180,6 +180,8 @@ func runServicesHarborBuildImage(cmd *cobra.Command, args []string) (rerr error)
 	if err != nil {
 		return fmt.Errorf("failed to prepare build: %w", err)
 	}
+	// Conductor advisories (FCR 787: an upload host with no public DNS record), before the upload.
+	printPrepareWarnings(os.Stderr, prep.Warnings)
 
 	fmt.Fprintf(humanOut, "Uploading context (%d bytes) ...\n", tarball.Len())
 	if err := svc.UploadContext(prep.UploadURL, prep.Token, tarball); err != nil {
