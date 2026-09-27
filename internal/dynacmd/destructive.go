@@ -71,6 +71,10 @@ var destructiveVerbTokens = map[string]bool{
 	// Goal 23 review. `storage-groups/evict-node` runs `linstor node lost`, which drops every
 	// replica the node held. It must demand --yes exactly like wipe-device.
 	"evict": true,
+	// FCR 805. unconfigure-backups removes every backup job and ran on first ask while
+	// delete-backup asked; uninstall-alertmanager removes Alertmanager and its routing.
+	"unconfigure": true,
+	"uninstall":   true,
 }
 
 // IsDestructiveCommand reports whether cmdDef needs a confirmation
