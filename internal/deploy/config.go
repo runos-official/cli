@@ -210,14 +210,12 @@ type DeployConfig struct {
 	// field. The wire shape is `{filename, mountPath, content}`; the
 	// `local` / `md5` fields stay on the yaml side only (json:"-").
 	//
-	// Conductor R2 wires the receive + process side end-to-end via a
-	// new "Apply user secret files" orchestration step (update-only;
-	// first-deploy users still need apps_secret-files_update because
-	// the K8s namespace doesn't exist yet at orchestration slot 2.5).
-	// Pre-fix (I10-K CLI half) this field was both absent from the
-	// struct AND suppressed on the wire (`json:"-"`); the post-deploy
-	// SaveConfig stripped user-authored entries silently.
-	SecretFiles []SecretFile `yaml:"secretFiles,omitempty" json:"secretFiles,omitempty"`
+	// A pointer, so the three states stay apart (FCR 792): nil means the
+	// key is absent (keep the app's secret files), a pointer to an empty
+	// slice means an explicit `secretFiles: []` (remove them all), and a
+	// non-empty slice is the declared set. omitempty drops only nil, so
+	// the explicit empty list reaches the wire and survives SaveConfig.
+	SecretFiles *[]SecretFile `yaml:"secretFiles,omitempty" json:"secretFiles,omitempty"`
 	// CustomSecretEnvVars holds the parsed contents of SecretEnv (sensitive,
 	// Secret-backed). Sent in the prepare-cli-deployment body and lands in
 	// the {osid}-user-secret-env-vars Secret on the cluster.
@@ -555,11 +553,12 @@ const maxSecretFileBytes = 100 * 1024
 //
 // Regression target: I10-K CLI half (the wire-side flip).
 func (c *DeployConfig) LoadSecretFileContents(configDir string) error {
-	if c == nil || len(c.SecretFiles) == 0 {
+	if c == nil || c.SecretFiles == nil || len(*c.SecretFiles) == 0 {
 		return nil
 	}
-	for i := range c.SecretFiles {
-		entry := &c.SecretFiles[i]
+	files := *c.SecretFiles
+	for i := range files {
+		entry := &files[i]
 		if entry.Local == "" {
 			// No file path to read; leave Content empty so the server
 			// sees the entry as malformed (per validateSecretFilesShape)

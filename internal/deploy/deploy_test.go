@@ -2376,68 +2376,68 @@ func TestLoadSecretFileContents(t *testing.T) {
 	}
 
 	t.Run("relative local path resolved against configDir", func(t *testing.T) {
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "secret.txt", MountPath: "/etc/s", Local: relPath},
 		}}
 		if err := cfg.LoadSecretFileContents(dir); err != nil {
 			t.Fatalf("load: %v", err)
 		}
 		want := "aGVsbG8gd29ybGQK" // base64("hello world\n")
-		if cfg.SecretFiles[0].Content != want {
-			t.Errorf("Content = %q, want %q", cfg.SecretFiles[0].Content, want)
+		if (*cfg.SecretFiles)[0].Content != want {
+			t.Errorf("Content = %q, want %q", (*cfg.SecretFiles)[0].Content, want)
 		}
-		if cfg.SecretFiles[0].Local != relPath {
-			t.Errorf("Local should stay untouched: %q", cfg.SecretFiles[0].Local)
+		if (*cfg.SecretFiles)[0].Local != relPath {
+			t.Errorf("Local should stay untouched: %q", (*cfg.SecretFiles)[0].Local)
 		}
 		// I10-Q: md5 sidecar is refreshed from the just-loaded bytes
 		// so the yaml round-trip carries a current digest.
 		wantMD5 := "6f5902ac237024bdd0c176cb93063dc4" // md5("hello world\n")
-		if cfg.SecretFiles[0].MD5 != wantMD5 {
-			t.Errorf("MD5 = %q, want %q (I10-Q refresh)", cfg.SecretFiles[0].MD5, wantMD5)
+		if (*cfg.SecretFiles)[0].MD5 != wantMD5 {
+			t.Errorf("MD5 = %q, want %q (I10-Q refresh)", (*cfg.SecretFiles)[0].MD5, wantMD5)
 		}
 	})
 
 	t.Run("I10-Q: stale md5 in yaml gets overwritten with fresh digest", func(t *testing.T) {
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "secret.txt", MountPath: "/etc/s", Local: relPath, MD5: "deadbeefstale"},
 		}}
 		if err := cfg.LoadSecretFileContents(dir); err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if cfg.SecretFiles[0].MD5 == "deadbeefstale" {
+		if (*cfg.SecretFiles)[0].MD5 == "deadbeefstale" {
 			t.Errorf("MD5 should be overwritten, still has stale value")
 		}
-		if cfg.SecretFiles[0].MD5 != "6f5902ac237024bdd0c176cb93063dc4" {
-			t.Errorf("MD5 = %q, want fresh digest", cfg.SecretFiles[0].MD5)
+		if (*cfg.SecretFiles)[0].MD5 != "6f5902ac237024bdd0c176cb93063dc4" {
+			t.Errorf("MD5 = %q, want fresh digest", (*cfg.SecretFiles)[0].MD5)
 		}
 	})
 
 	t.Run("absolute local path used as-is", func(t *testing.T) {
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "secret.txt", MountPath: "/etc/s", Local: absPath},
 		}}
 		if err := cfg.LoadSecretFileContents("/non/existent/dir"); err != nil {
 			t.Fatalf("load with abs path should ignore configDir: %v", err)
 		}
-		if cfg.SecretFiles[0].Content == "" {
+		if (*cfg.SecretFiles)[0].Content == "" {
 			t.Error("Content empty after abs-path load")
 		}
 	})
 
 	t.Run("empty local entry left alone for server to refuse", func(t *testing.T) {
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "no-local.txt", MountPath: "/etc/s", Local: ""},
 		}}
 		if err := cfg.LoadSecretFileContents(dir); err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if cfg.SecretFiles[0].Content != "" {
-			t.Errorf("Content should stay empty for missing-local entry, got %q", cfg.SecretFiles[0].Content)
+		if (*cfg.SecretFiles)[0].Content != "" {
+			t.Errorf("Content should stay empty for missing-local entry, got %q", (*cfg.SecretFiles)[0].Content)
 		}
 	})
 
 	t.Run("missing file returns descriptive error", func(t *testing.T) {
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "nope.txt", MountPath: "/etc/s", Local: "nope.txt"},
 		}}
 		err := cfg.LoadSecretFileContents(dir)
@@ -2454,7 +2454,7 @@ func TestLoadSecretFileContents(t *testing.T) {
 		if err := os.WriteFile(bigPath, make([]byte, maxSecretFileBytes+1), 0o600); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		cfg := &DeployConfig{SecretFiles: []SecretFile{
+		cfg := &DeployConfig{SecretFiles: &[]SecretFile{
 			{Filename: "big.bin", MountPath: "/etc/s", Local: "big.bin"},
 		}}
 		err := cfg.LoadSecretFileContents(dir)
@@ -2485,7 +2485,7 @@ func TestLoadSecretFileContents(t *testing.T) {
 		// so the on-disk yaml doesn't accidentally carry base64 bytes.
 		cfg := &DeployConfig{
 			App: "demo",
-			SecretFiles: []SecretFile{
+			SecretFiles: &[]SecretFile{
 				{Filename: "s.txt", MountPath: "/etc/s", Local: relPath},
 			},
 			ServicePortMappings: []ServicePortMapping{{Port: 3000}},
@@ -2508,14 +2508,14 @@ func TestLoadSecretFileContents(t *testing.T) {
 	t.Run("json wire body carries Content not Local", func(t *testing.T) {
 		cfg := &DeployConfig{
 			App: "demo",
-			SecretFiles: []SecretFile{
+			SecretFiles: &[]SecretFile{
 				{Filename: "s.txt", MountPath: "/etc/s", Local: relPath, MD5: "abc"},
 			},
 		}
 		if err := cfg.LoadSecretFileContents(dir); err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		out, err := json.Marshal(cfg.SecretFiles[0])
+		out, err := json.Marshal((*cfg.SecretFiles)[0])
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
