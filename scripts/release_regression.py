@@ -135,6 +135,54 @@ def main():
     check("VM group inventory", lambda: need(cli("vm-groups", "list", "--cid", a.vm_cluster, "-j")["groups"], "no VM groups"))
     check("service inventory", lambda: need(cli("services", "list", "--cid", a.vm_cluster, "-j")["services"], "no services"))
 
+    # These reads follow the release journeys even when the disposable fixtures
+    # for a mutating round have already been removed. They check the user-facing
+    # shapes and safety metadata, not merely that an endpoint answered 200.
+    for label, command, field in (
+        ("VM cluster node inventory", ("nodes", "list", "--cid", a.vm_cluster, "-j"), "nodes"),
+        ("GPU cluster node inventory", ("nodes", "list", "--cid", a.gpu_cluster, "-j"), "nodes"),
+        ("app inventory", ("apps", "list", "--cid", a.vm_cluster, "-j"), "apps"),
+        ("VM inventory", ("vms", "list", "--cid", a.vm_cluster, "-j"), "vms"),
+        ("VM networks", ("vm-networks", "list", "--cid", a.vm_cluster, "-j"), "networks"),
+        ("VM address blocks", ("vm-address-blocks", "list", "--cid", a.vm_cluster, "-j"), "blocks"),
+        ("VM images", ("vm-images", "list", "--cid", a.vm_cluster, "-j"), "images"),
+        ("bare-metal provider inventory", ("provider", "servers", "-j"), "servers"),
+    ):
+        check(label, lambda command=command, field=field: need(isinstance(cli(*command).get(field), list), f"{field} is not a list"))
+
+    def desired_versions():
+        value = cli("clusters", "desired-versions", "show", "--cid", a.patch_cluster, "-j")
+        need(value.get("desiredK8sVersion") in versions, "desired minor absent from matrix")
+        need(all(value.get(x) for x in ("ciliumVersion", "containerdVersion", "helmVersion")), "component pin missing")
+        return value["desiredK8sVersion"]
+    check("cluster component pins", desired_versions)
+
+    def backup_candidates():
+        value = cli("backups", "candidates", "--cid", a.vm_cluster, "-j")
+        need(isinstance(value, list), "backup candidates is not a list")
+        return f"{len(value)} candidates"
+    check("backup candidates", backup_candidates)
+    check("backup destinations", lambda: need(isinstance(cli("backups", "destinations", "--cid", a.vm_cluster, "-j"), list), "destinations is not a list"))
+
+    version_types = (
+        "cert-manager", "clickhouse", "grafana", "harbor", "kafka", "langfuse",
+        "litellm", "minio", "mysql", "netbird-client", "netbird-server", "ollama",
+        "postgresql", "prometheus", "rabbitmq", "traefik", "umami", "valkey",
+        "vector", "vllm",
+    )
+    for service_type in version_types:
+        def picker(service_type=service_type):
+            value = cli("service-info", "versions", service_type, "-j")
+            options = value.get("options")
+            need(isinstance(options, list) and options, "empty version picker")
+            current = [x for x in options if not x.get("retired")]
+            need(current, "no current version")
+            need(sum(bool(x.get("isDefault")) for x in options) == 1, "picker must have one default")
+            need(not any(x.get("isDefault") and x.get("retired") for x in options), "retired default")
+            need(all(x.get("value") and x.get("label") for x in options), "version option lacks value/label")
+            return f"{len(current)} current, {len(options)-len(current)} retired"
+        check(f"{service_type} version policy", picker)
+
     if key:
         def api_clusters():
             status, body = api(f"/{a.account}/clusters", key)
