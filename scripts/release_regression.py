@@ -25,6 +25,9 @@ def main():
     p.add_argument("--vm-cluster", required=True)
     p.add_argument("--gpu-cluster", required=True)
     p.add_argument("--patch-cluster", required=True)
+    p.add_argument("--other-patch-cluster", help="Second disposable patch cluster")
+    p.add_argument("--rig-cluster", help="Fake-GPU lab cluster")
+    p.add_argument("--baremetal-server", help="Rebuilt physical lab server ID")
     p.add_argument("--cli-version", required=True)
     p.add_argument("--manifest", required=True)
     p.add_argument("--dev-kubeconfig", required=True, help="Foreman dev deployment kubeconfig")
@@ -133,6 +136,71 @@ def main():
         return "capacity enabled with service tiers present"
     check("GPU Capacity cluster setup", capacity_check)
     check("GPU engine choices", lambda: need(cli("gpu", "operator-config", "--cid", a.gpu_cluster, "-j")["engineVersions"], "no vLLM engines"))
+
+    def ready_nodes(cid):
+        nodes = cli("nodes", "list", "--cid", cid, "-j")["nodes"]
+        need(nodes and all(x.get("status") == "ready" for x in nodes), f"{cid} has a node not Ready")
+        return f"{len(nodes)} Ready"
+    check("VM lab node Ready", lambda: ready_nodes(a.vm_cluster))
+    check("GPU lab node Ready", lambda: ready_nodes(a.gpu_cluster))
+    check("patch lab nodes Ready", lambda: ready_nodes(a.patch_cluster))
+    if a.other_patch_cluster:
+        check("second patch lab nodes Ready", lambda: ready_nodes(a.other_patch_cluster))
+
+    def deployment_prerequisites():
+        value = cli("clusters", "is-app-deployment-ready", "--cid", a.gpu_cluster, "-j")
+        need(value.get("ready") and all(value.get(x, {}).get("healthy") for x in ("buildkit", "harbor", "minio")),
+             "app build prerequisites not healthy")
+        return "BuildKit, Harbor and MinIO ready"
+    check("app build prerequisites", deployment_prerequisites)
+
+    def patch_visibility():
+        value = cli("clusters", "k8s-patch-status", "--cid", a.gpu_cluster, "-j")
+        need(value.get("nodes") and value.get("targetPatch") and value.get("cilium"), "patch status incomplete")
+        need(value.get("upgradeState") == "normal", "patch roll in progress")
+        return f"{len(value['nodes'])} node(s), target {value['targetPatch']}"
+    check("GPU cluster patch status", patch_visibility)
+
+    if a.baremetal_server:
+        def baremetal_rebuilt():
+            server = cli("provider", "servers", "show", a.baremetal_server, "-j")
+            need(server.get("poweredOn") is True, "bare-metal lab server is off")
+            need(server.get("allocatedAid") and server.get("provisioningPhase") == "provisioned",
+                 "bare-metal lab server not reinstalled and allocated")
+            return f"{a.baremetal_server} allocated and powered on"
+        check("bare-metal lab rebuilt", baremetal_rebuilt)
+
+    if a.rig_cluster:
+        check("fake-GPU rig node Ready", lambda: ready_nodes(a.rig_cluster))
+        def rig_capacity():
+            value = cli("capacity", "status", "--cid", a.rig_cluster, "-j")
+            need(value.get("enabled") and not value.get("unreadable"), "rig Capacity not readable")
+            need(value.get("priorityClasses", {}).get("installed"), "rig priority classes absent")
+            return "Capacity enabled"
+        check("fake-GPU rig Capacity ready", rig_capacity)
+
+        def rig_set():
+            sets = cli("capacity", "set-list", "--cid", a.rig_cluster, "-j")["sets"]
+            need(sets, "rig has no capacity set")
+            return f"{len(sets)} set(s)"
+        check("fake-GPU rig capacity set", rig_set)
+
+        def rig_cards():
+            value = cli("capacity", "availability", "--cid", a.rig_cluster, "-j")
+            need(not value.get("unreadable"), "rig availability unreadable")
+            total = value["totals"]["cards"]["total"]
+            need(total >= 8, f"only {total} fake cards visible")
+            return f"{total} cards, {value['totals']['nodesCounted']} node(s)"
+        check("fake-GPU rig card inventory", rig_cards)
+
+        def rig_plan():
+            sets = cli("capacity", "set-list", "--cid", a.rig_cluster, "-j")["sets"]
+            value = cli("capacity", "set-plan", sets[0]["id"], "--cid", a.rig_cluster, "-j")
+            need(value.get("complete") and not value.get("blockedPoolIds"), "rig arbiter plan incomplete")
+            addresses = sum(len(cards) for cards in value.get("cardAddresses", {}).values())
+            need(addresses >= 8, "rig plan lost card addresses")
+            return f"complete plan, {addresses} card addresses"
+        check("fake-GPU rig arbiter plan", rig_plan)
     check("VM group inventory", lambda: need(cli("vm-groups", "list", "--cid", a.vm_cluster, "-j")["groups"], "no VM groups"))
     check("service inventory", lambda: need(cli("services", "list", "--cid", a.vm_cluster, "-j")["services"], "no services"))
 
@@ -246,7 +314,8 @@ def main():
     report = {"createdAt": datetime.now(timezone.utc).isoformat(), "api": a.api,
               "candidate": {"cli": a.cli_version, "manifest": a.manifest,
                             "conductor": a.conductor, "console": a.console, "nodeward": a.nodeward},
-              "clusters": {"vm": a.vm_cluster, "gpu": a.gpu_cluster, "patch": a.patch_cluster},
+              "clusters": {"vm": a.vm_cluster, "gpu": a.gpu_cluster, "patch": a.patch_cluster,
+                           "otherPatch": a.other_patch_cluster, "rig": a.rig_cluster},
               "checks": checks, "passed": sum(x["result"] == "PASS" for x in checks),
               "failed": sum(x["result"] == "FAIL" for x in checks)}
     Path(a.report).write_text(json.dumps(report, indent=2) + "\n")
