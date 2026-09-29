@@ -354,7 +354,6 @@ func survivorTree() *cobra.Command {
 
 func TestUnresolvedTypedPath(t *testing.T) {
 	t.Parallel()
-	root := survivorTree()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -372,6 +371,7 @@ func TestUnresolvedTypedPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			root := survivorTree()
 			if got := unresolvedTypedPath(root, tc.args); got != tc.want {
 				t.Errorf("unresolvedTypedPath(%v) = %q, want %q", tc.args, got, tc.want)
 			}
