@@ -233,6 +233,104 @@ def main():
     check("backup candidates", backup_candidates)
     check("backup destinations", lambda: need(isinstance(cli("backups", "destinations", "--cid", a.vm_cluster, "-j"), list), "destinations is not a list"))
 
+    # Read each lab host through the product before comparing the platform images.
+    # These checks catch a rebuilt rig or node agent that looks Ready but reports
+    # the wrong hardware, software, or allocatable resources.
+    lab_clusters = [("VM", a.vm_cluster), ("GPU", a.gpu_cluster)]
+    if a.rig_cluster:
+        lab_clusters.append(("fake-GPU rig", a.rig_cluster))
+    for label, cid in lab_clusters:
+        def lab_node(cid=cid):
+            nodes = cli("nodes", "list", "--cid", cid, "-j")["nodes"]
+            return need(nodes, "lab node absent")[0]["nid"]
+
+        def software(cid=cid):
+            value = cli("nodes", "software-info", lab_node(cid), "--cid", cid, "-j")
+            need(value.get("runos", "").startswith("1."), "node agent is not major 1")
+            need(value.get("kubelet", "").startswith("v1."), "Kubernetes version absent")
+            need(value.get("containerd") and value.get("helm"), "node software incomplete")
+            return f"agent {value['runos']}; Kubernetes {value['kubelet']}"
+        check(f"{label} node software", software)
+
+        def hardware(cid=cid, label=label):
+            value = cli("nodes", "hardware-info", lab_node(cid), "--cid", cid, "-j")
+            need(value["cpu"]["cores"] > 0 and value["memory"]["totalKB"] > 0,
+                 "node hardware inventory incomplete")
+            if label == "GPU":
+                need(value["gpu"]["count"] >= 1, "GPU lab card absent")
+            if label == "fake-GPU rig":
+                need(value["gpu"]["count"] >= 8, "fake cards absent")
+            return f"{value['cpu']['cores']} cores; {value['gpu']['count']} GPU(s)"
+        check(f"{label} node hardware", hardware)
+
+        def allocation(cid=cid):
+            value = cli("nodes", "resource-allocation", lab_node(cid), "--cid", cid, "-j")
+            need(value["allocatable"]["pods"] > 0 and value["allocatable"]["cpuMc"] > 0,
+                 "node allocation unreadable")
+            need(value["requested"]["pods"] >= 0, "requested pod count absent")
+            return f"{value['requested']['pods']}/{value['allocatable']['pods']} pod slots requested"
+        check(f"{label} node allocation", allocation)
+
+    def first_vm():
+        value = cli("vms", "list", "--cid", a.vm_cluster, "-j")
+        return need(value["vms"], "VM lab has no existing guest")[0]["vmid"]
+
+    def vm_show():
+        vmid = first_vm()
+        value = cli("vms", "show", vmid, "--cid", a.vm_cluster, "-j")
+        need(value["vmid"] == vmid and value.get("status") is not None,
+             "VM live status or identity missing")
+        return "VM desired and live state readable"
+    check("VM desired and live state", vm_show)
+    check("VM history", lambda: need(cli("vms", "history", first_vm(), "--cid", a.vm_cluster, "-j")["revisions"],
+                                     "VM has no create revision"))
+    check("VM snapshots read", lambda: need(isinstance(cli("vms", "snapshots", first_vm(), "--cid", a.vm_cluster, "-j")["snapshots"], list),
+                                           "VM snapshots unreadable"))
+
+    def vm_exposures():
+        value = cli("vms", "exposures", first_vm(), "--cid", a.vm_cluster, "-j")
+        need(not value["clusterUnreadable"] and isinstance(value["exposures"], list),
+             "VM exposure state unreadable")
+        return f"{len(value['exposures'])} exposure(s)"
+    check("VM network exposures", vm_exposures)
+
+    def vm_firewall():
+        value = cli("vms", "firewall", first_vm(), "--cid", a.vm_cluster, "-j")
+        need(value["defaultIn"] in ("allow", "deny") and value["defaultOut"] in ("allow", "deny"),
+             "VM firewall defaults missing")
+        need(isinstance(value["applied"], bool), "VM firewall apply state missing")
+        return f"in {value['defaultIn']}; out {value['defaultOut']}; applied {value['applied']}"
+    check("VM firewall readback", vm_firewall)
+
+    check("GPU backup candidates", lambda: need(isinstance(cli("backups", "candidates", "--cid", a.gpu_cluster, "-j"), list),
+                                                "GPU backup candidates unreadable"))
+    check("GPU backup destinations", lambda: need(isinstance(cli("backups", "destinations", "--cid", a.gpu_cluster, "-j"), list),
+                                                  "GPU backup destinations unreadable"))
+    def backup_destination_types():
+        value = cli("backups", "destination-types", "-j")
+        need(isinstance(value.get("minioInstances"), list) and
+             isinstance(value.get("objectStoreIntegrations"), list),
+             "backup destination choices unreadable")
+        return "MinIO and object-store choices readable"
+    check("backup destination choices", backup_destination_types)
+
+    check("bare-metal image catalogue", lambda: need(isinstance(cli("provider", "golden-images", "-j")["images"], list),
+                                                     "golden-image catalogue unreadable"))
+    check("bare-metal image store", lambda: need(cli("provider", "image-store", "-j").get("health") is not None,
+                                                 "golden-image store health missing"))
+    check("bare-metal Metal3 sites", lambda: need(isinstance(cli("provider", "metal3-sites", "-j")["sites"], list),
+                                                  "Metal3 site catalogue unreadable"))
+    check("bare-metal tenant targets", lambda: need(isinstance(cli("provider", "allocation-targets", "-j")["targets"], list),
+                                                    "allocation targets unreadable"))
+
+    check("GPU app inventory", lambda: need(isinstance(cli("apps", "list", "--cid", a.gpu_cluster, "-j")["apps"], list),
+                                           "GPU app inventory unreadable"))
+    check("GPU service inventory", lambda: need(isinstance(cli("services", "list", "--cid", a.gpu_cluster, "-j")["services"], list),
+                                               "GPU services unreadable"))
+    if a.rig_cluster:
+        check("fake-GPU rig service inventory", lambda: need(isinstance(cli("services", "list", "--cid", a.rig_cluster, "-j")["services"], list),
+                                                             "rig services unreadable"))
+
     version_types = (
         "cert-manager", "clickhouse", "grafana", "harbor", "kafka", "langfuse",
         "litellm", "minio", "mysql", "netbird-client", "netbird-server", "ollama",
@@ -265,6 +363,21 @@ def main():
             need({x["key"] for x in body["modules"] if x["enabled"]} == {x["key"] for x in modules if x["enabled"]}, "API/CLI modules differ")
             return "API and CLI modules agree"
         check("API/CLI module parity", api_modules)
+        for label, cid, resource, identity in (
+            ("VM nodes", a.vm_cluster, "nodes", "nid"),
+            ("VM services", a.vm_cluster, "services", "osid"),
+            ("VM apps", a.vm_cluster, "apps", "id"),
+        ):
+            def api_parity(cid=cid, resource=resource, identity=identity):
+                status, body = api(f"/{a.account}/{cid}/{resource}", key)
+                need(status == 200, f"{resource} API returned HTTP {status}")
+                command = "nodes" if resource == "nodes" else resource
+                observed = cli(command, "list", "--cid", cid, "-j")
+                need({x[identity] for x in body[resource]} ==
+                     {x[identity] for x in observed[resource]},
+                     f"API/CLI {resource} identities differ")
+                return f"{len(body[resource])} {resource} agree"
+            check(f"API/CLI {label} parity", api_parity)
         check("anonymous account refused", lambda: need(api(f"/{a.account}/clusters")[0] == 401, "anonymous access allowed"))
         if a.other_account:
             check("primary token refused on other account", lambda: need(
@@ -292,6 +405,14 @@ def main():
         check("MCP/CLI clusters parity", lambda: need({x["cid"] for x in mcp_call(3, "clusters_list", {})["clusters"]} == {x["cid"] for x in clusters}, "MCP clusters differ"))
         check("MCP/CLI modules parity", lambda: need({x["key"] for x in mcp_call(4, "account_modules", {})["modules"] if x["enabled"]} == {x["key"] for x in modules if x["enabled"]}, "MCP modules differ"))
         check("MCP/CLI capacity parity", lambda: need(mcp_call(5, "capacity_status", {"cid": a.gpu_cluster})["priorityClasses"] == capacity["priorityClasses"], "MCP capacity differs"))
+        check("MCP/CLI VM nodes parity", lambda: need(
+            {x["nid"] for x in mcp_call(6, "nodes_list", {"cid": a.vm_cluster})["nodes"]} ==
+            {x["nid"] for x in cli("nodes", "list", "--cid", a.vm_cluster, "-j")["nodes"]},
+            "MCP node inventory differs"))
+        check("MCP/CLI VM services parity", lambda: need(
+            {x["osid"] for x in mcp_call(7, "services_list", {"cid": a.vm_cluster})["services"]} ==
+            {x["osid"] for x in cli("services", "list", "--cid", a.vm_cluster, "-j")["services"]},
+            "MCP service inventory differs"))
     finally:
         mcp.terminate()
         mcp.wait(timeout=5)
