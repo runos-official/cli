@@ -21,6 +21,7 @@ def main():
     p.add_argument("--cli", default="runos", help="Path to the exact candidate CLI binary")
     p.add_argument("--api", default="https://api.dev.runos.com")
     p.add_argument("--account", required=True)
+    p.add_argument("--other-account", help="Second dev account for a primary-token isolation check")
     p.add_argument("--vm-cluster", required=True)
     p.add_argument("--gpu-cluster", required=True)
     p.add_argument("--patch-cluster", required=True)
@@ -197,6 +198,10 @@ def main():
             return "API and CLI modules agree"
         check("API/CLI module parity", api_modules)
         check("anonymous account refused", lambda: need(api(f"/{a.account}/clusters")[0] == 401, "anonymous access allowed"))
+        if a.other_account:
+            check("primary token refused on other account", lambda: need(
+                api(f"/{a.other_account}/clusters", key)[0] == 403,
+                "primary account token crossed the account boundary"))
         if other_key:
             check("cross-account read refused", lambda: need(api(f"/{a.account}/clusters", other_key)[0] == 403, "other account can read"))
     else:

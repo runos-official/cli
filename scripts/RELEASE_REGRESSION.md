@@ -4,7 +4,7 @@ This is the durable replacement for the old temporary 97-check runner. It follow
 
 ## Automated live checks
 
-Materialize both dev PATs and the **dev** Kubernetes kubeconfig through Foreman. Download the candidate CLI release asset. Run `scripts/release_regression.py --help` and supply the current versions, three dev cluster IDs, credential file paths and a report path outside the repo. The runner refuses a non-dev API URL. It checks CLI, API, MCP and direct read-only Kubernetes state, including node and bare-metal inventories, apps, backup choices, VM networks, component pins, and service version policy. It never writes cluster state or logs credentials. Store the secret-free JSON result with FPL301 and FPL283.
+Materialize the primary dev PAT and the **dev** Kubernetes kubeconfig through Foreman. Download the candidate CLI release asset. Run `scripts/release_regression.py --help` and supply the current versions, three dev cluster IDs, credential file paths, both dev account IDs and a report path outside the repo. A working second-account PAT adds the reverse boundary check. The runner refuses a non-dev API URL. It checks CLI, API, MCP and direct read-only Kubernetes state, including node and bare-metal inventories, apps, backup choices, VM networks, component pins, and service version policy. It never writes cluster state or logs credentials. Store the secret-free JSON result with FPL301 and FPL283.
 
 ## Live user journeys
 
