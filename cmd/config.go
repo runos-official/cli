@@ -236,7 +236,7 @@ func baseConfigForSet() (*config.Config, error) {
 	}
 	cfg, err := initDefaultConfig()
 	if err != nil {
-		return nil, fmt.Errorf("no config file exists and the default environment could not be fetched: %w\nCheck network access and retry", err)
+		return nil, fmt.Errorf("no config file exists and the default environment could not be fetched or saved: %w\nCheck network access and that ~/.runos is writable, then retry", err)
 	}
 	return cfg, nil
 }
