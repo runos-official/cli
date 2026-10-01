@@ -81,3 +81,19 @@ func TestADroppedPeerIsForgotten(t *testing.T) {
 		t.Fatalf("a re-added peer got an instant failure: %v", got)
 	}
 }
+
+func TestAPeerWhoseHandshakeWasResetStartsItsGraceAgain(t *testing.T) {
+	// Found live on a Linux daemon: the engine re-created a working peer, the poll saw no handshake,
+	// and the watch wrote "no handshake for 2562047h47m16s" (the zero time subtracted from now).
+	w := newHandshakeWatch()
+	t0 := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	w.observe(t0, []peerObs{{CID: "c1", LastHandshake: t0}})
+
+	if got := w.observe(t0.Add(30*time.Second), []peerObs{{CID: "c1"}}); len(got) != 0 {
+		t.Fatalf("a reset peer is inside its grace period, not a failure: %v", got)
+	}
+	late := w.observe(t0.Add(30*time.Second+handshakeGrace), []peerObs{{CID: "c1"}})
+	if len(late) != 1 || !strings.Contains(late[0], "status=failed") || strings.Contains(late[0], "2562047") {
+		t.Fatalf("want one failed line with a sane duration once the grace ends, got %v", late)
+	}
+}

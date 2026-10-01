@@ -56,6 +56,13 @@ func (w *handshakeWatch) observe(now time.Time, peers []peerObs) []string {
 			s = &peerWatch{since: now}
 			w.peers[p.CID] = s
 		}
+		// A peer that had handshaken and now reports NONE was re-created by the engine (the plan was
+		// applied again, or the key was reset), which clears the handshake. It is not a handshake
+		// that is 2562047 hours old, which is what subtracting the zero time reports. Start its
+		// grace period again: it either handshakes at once or earns the failure line.
+		if s.established && p.LastHandshake.IsZero() {
+			*s = peerWatch{since: now}
+		}
 		fresh := !p.LastHandshake.IsZero() && now.Sub(p.LastHandshake) < peerStaleAfter
 		switch {
 		case fresh && !s.established:
