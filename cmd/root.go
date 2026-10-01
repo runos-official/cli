@@ -100,6 +100,18 @@ func isRootOnlyVPNCommand(name string) bool {
 	}
 }
 
+/*
+isBootstrapFreeVPNCommand reports whether a `vpn` subcommand must skip the config and manifest
+bootstrap: the root-only ones above, plus the two a stuck user runs to find out what is wrong.
+
+`logs` and `diagnose` run as the person, but they read local files and the daemon socket and nothing
+else. The bootstrap fetches a config over the network when none exists, so a person with no config,
+or no network, would get a bootstrap failure instead of the report that explains their situation.
+*/
+func isBootstrapFreeVPNCommand(name string) bool {
+	return isRootOnlyVPNCommand(name) || name == "logs" || name == "diagnose"
+}
+
 var rootCmd = &cobra.Command{
 	Use:     "runos",
 	Short:   "CLI for interacting with RunOS clusters",
@@ -136,7 +148,7 @@ var rootCmd = &cobra.Command{
 		 config there, and when the config fetch could not complete the bootstrap failed BEFORE the
 		 restart ran, taking somebody's password and then doing nothing.
 		*/
-		if cmd.Parent() != nil && cmd.Parent().Name() == "vpn" && isRootOnlyVPNCommand(cmdName) {
+		if cmd.Parent() != nil && cmd.Parent().Name() == "vpn" && isBootstrapFreeVPNCommand(cmdName) {
 			return nil
 		}
 		// Also skip for parent commands that have their own subcommands

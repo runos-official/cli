@@ -57,6 +57,7 @@ func init() {
 	vpnInstallCmd.Flags().String("socket-group", "", "group that may reach the control socket (default: the installing user's group)")
 	vpnDaemonCmd.Flags().String("state-dir", "", "override the daemon state directory (advanced/testing)")
 	vpnDaemonCmd.Flags().Bool("verbose", false, "verbose WireGuard logging")
+	vpnDaemonCmd.Flags().String("log-file", "", "override the daemon log file (advanced/testing)")
 	// A hidden --socket override on the parent, for tests and non-default installs.
 	vpnCmd.PersistentFlags().String("socket", "", "path to the daemon control socket (advanced)")
 	_ = vpnCmd.PersistentFlags().MarkHidden("socket")
@@ -132,14 +133,24 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 	if stateDir == "" {
 		stateDir = vpn.StateDir
 	}
+	logFile, _ := cmd.Flags().GetString("log-file")
+	if logFile == "" {
+		logFile = vpn.DaemonLogPath
+	}
+	// The daemon's own bounded log, readable without root (FCR349). Opened before anything can fail,
+	// so a failure to start is recorded where `runos vpn logs` and `diagnose` look.
+	closeLog := vpn.SetupDaemonLog(logFile)
+	defer closeLog()
 	return vpn.RunDaemonHost(func() (func(), error) {
 		d, err := vpn.NewDaemon(stateDir, version.Version, verbose)
 		if err != nil {
+			vpn.LogDaemonFailure("daemon-start", err)
 			return nil, err
 		}
 		d.Resume()
 		listener, err := vpn.Serve(d, orDefaultSocket(socket), socketGroup, groupSource == "explicit")
 		if err != nil {
+			vpn.LogDaemonFailure("socket", err)
 			d.Close()
 			return nil, err
 		}

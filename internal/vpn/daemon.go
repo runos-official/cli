@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"sync"
@@ -33,6 +34,8 @@ type Daemon struct {
 	lastPollErr  string
 	lastApplyErr string
 	dns          DNSStatus
+	// handshakes remembers which peers have handshaken, so only a change is logged.
+	handshakes *handshakeWatch
 
 	pollInterval time.Duration
 	cancelPoll   context.CancelFunc
@@ -51,6 +54,7 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	logDaemonStart(version, verbose)
 	return &Daemon{
 		stateDir:     stateDir,
 		version:      version,
@@ -69,9 +73,16 @@ func (d *Daemon) Resume() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	active := d.state.Active()
-	if active == nil || active.SessionToken == "" || active.SessionExpiresAt.Before(time.Now()) {
+	if active == nil || active.SessionToken == "" {
 		return
 	}
+	if active.SessionExpiresAt.Before(time.Now()) {
+		logEvent("not resuming: the stored session for account %s lapsed at %s; run 'runos vpn up'",
+			active.AccountID, active.SessionExpiresAt.UTC().Format(time.RFC3339))
+		return
+	}
+	logEvent("resuming the stored session for account %s device %s (valid until %s)",
+		active.AccountID, active.DeviceID, active.SessionExpiresAt.UTC().Format(time.RFC3339))
 	if err := d.startTunnelLocked(); err != nil {
 		d.lastApplyErr = err.Error()
 		// The daemon starts at boot and races the network stack, so this is the ordinary failure,
@@ -163,13 +174,18 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	 Refusing is recoverable in one command. Silently minting was not recoverable at all, because
 	 nothing about it looked wrong.
 	*/
+	resetPollLog()
+	logEvent("up requested for account %s device %s", req.AccountID, req.DeviceID)
 	identity := d.state.ExistingIdentityForAccount(req.AccountID)
 	if identity == nil {
-		return Response{Error: fmt.Sprintf(
+		msg := fmt.Sprintf(
 			"this machine has no VPN key enrolled for account %s; run 'runos vpn up' again",
 			req.AccountID,
-		)}
+		)
+		stepOutcome("up-request", errors.New(msg), "")
+		return Response{Error: msg}
 	}
+	stepOutcome("up-request", nil, "key "+KeyFingerprint(identity.PublicKey)+" is held for account "+req.AccountID)
 	// Keep the old tunnel until the target session arrives fully prepared.
 	if old := d.state.Active(); old != nil && old.AccountID != req.AccountID && d.client != nil {
 		if err := d.client.endSession(); err != nil {
@@ -184,6 +200,7 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	identity.Enrolled = true
 	d.state.ActiveAccountID = req.AccountID
 	if err := SaveState(d.stateDir, d.state); err != nil {
+		stepOutcome("up-request", fmt.Errorf("save state: %w", err), "")
 		return Response{Error: err.Error()}
 	}
 	if err := d.startTunnelLocked(); err != nil {
@@ -308,18 +325,23 @@ func (d *Daemon) startTunnelLocked() error {
 		return fmt.Errorf("no active VPN account")
 	}
 	d.stopTunnelLocked()
+	resetPollLog()
 	eng, err := newEngine(defaultTunName, d.verbose)
 	if err != nil {
+		err = interfaceError(err)
+		stepOutcome("interface", err, "")
 		return err
 	}
+	stepOutcome("interface", nil, fmt.Sprintf("created %s mtu=%d", eng.InterfaceName(), defaultMTU))
 	if err := eng.Up(); err != nil {
 		eng.Close()
+		stepOutcome("wireguard", err, "")
 		return err
 	}
+	stepOutcome("wireguard", nil, "engine up on "+eng.InterfaceName())
 	d.engine = eng
 	d.client = newConductorClient(active.ConductorURL, active.AccountID, active.DeviceID, active.SessionToken)
 	d.revision = ""
-	resetPollLog()
 	logEvent("tunnel up on %s for account %s device %s, conductor %s",
 		eng.InterfaceName(), active.AccountID, active.DeviceID, redactURL(active.ConductorURL))
 	return d.beginPollingLocked()
@@ -372,6 +394,7 @@ func (d *Daemon) stopTunnelLocked() {
 	d.plan = Plan{}
 	d.revision = ""
 	d.lastApplyErr = ""
+	d.handshakes = nil
 	d.dns = DNSStatus{Mode: "unavailable", Error: "the VPN is down"}
 }
 
@@ -383,6 +406,9 @@ func (d *Daemon) pollAndApplyLocked() error {
 		return fmt.Errorf("no tunnel is up")
 	}
 	d.lastPoll = time.Now()
+	// Every exit, including a failed poll: a handshake can still be observed through a control-plane
+	// outage, and the watch writes only when something changes.
+	defer d.watchHandshakesLocked()
 	res, err := d.client.pollState(d.revision)
 	// One place every poll passes through, so the log cannot drift from the status the daemon
 	// reports. logPollOutcome writes only on a CHANGE: the first failure, and the recovery.
@@ -442,22 +468,30 @@ func (d *Daemon) applyLoginRequiredLocked() {
 func (d *Daemon) applyDocumentLocked(doc *Document) error {
 	plan, err := BuildPlan(doc)
 	if err != nil {
+		stepOutcome("document", err, "")
 		return err
 	}
+	stepOutcome("document", nil, fmt.Sprintf("revision %s: %d peer(s), %d route(s), %d DNS zone(s)",
+		doc.Revision, len(plan.Peers), len(plan.Routes), len(plan.Resolvers)))
 	privHex, err := d.state.Active().PrivateKeyHex()
 	if err != nil {
+		stepOutcome("wireguard-config", err, "")
 		return err
 	}
 
 	iface := d.engine.InterfaceName()
 	if plan.Address.IsValid() {
 		if err := d.platform.SetInterfaceAddress(iface, plan.Address); err != nil {
+			stepOutcome("address", err, "")
 			return err
 		}
+		stepOutcome("address", nil, plan.Address.String()+" on "+iface)
 	}
 	if err := d.engine.ApplyPlan(privHex, plan); err != nil {
+		stepOutcome("wireguard-config", err, "")
 		return err
 	}
+	stepOutcome("wireguard-config", nil, fmt.Sprintf("%d peer(s) loaded", len(plan.Peers)))
 	if err := d.convergeRoutesAndDNSLocked(d.plan.Routes, plan); err != nil {
 		return err
 	}
@@ -476,6 +510,27 @@ func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan
 		return nil
 	}
 	iface := d.engine.InterfaceName()
+	if err := d.convergeRoutesLocked(iface, haveRoutes, plan); err != nil {
+		stepOutcome("routes", err, "")
+		return err
+	}
+	stepOutcome("routes", nil, fmt.Sprintf("%d route(s) via %s", len(plan.Routes), iface))
+
+	clientAddr := netip.Addr{}
+	if plan.Address.IsValid() {
+		clientAddr = plan.Address.Addr()
+	}
+	dns, err := d.platform.ReconcileDNS(iface, clientAddr, plan.Resolvers)
+	d.dns = dns
+	stepOutcome("dns", err, "mode="+dns.Mode)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// convergeRoutesLocked adds the routes the plan has and the machine lacks, and removes the reverse.
+func (d *Daemon) convergeRoutesLocked(iface string, haveRoutes []netip.Prefix, plan Plan) error {
 	routeDiff := DiffPrefixes(haveRoutes, plan.Routes)
 	for _, prefix := range routeDiff.Add {
 		if err := d.platform.AddRoute(iface, prefix); err != nil {
@@ -486,16 +541,6 @@ func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan
 		if err := d.platform.RemoveRoute(iface, prefix); err != nil {
 			return err
 		}
-	}
-
-	clientAddr := netip.Addr{}
-	if plan.Address.IsValid() {
-		clientAddr = plan.Address.Addr()
-	}
-	dns, err := d.platform.ReconcileDNS(iface, clientAddr, plan.Resolvers)
-	d.dns = dns
-	if err != nil {
-		return err
 	}
 	return nil
 }

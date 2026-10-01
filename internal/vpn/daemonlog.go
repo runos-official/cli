@@ -1,9 +1,14 @@
 package vpn
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +30,17 @@ line are the ones that change what the tunnel is doing, plus every failure, plus
 a failure, because "it started working again at 12:31" is exactly what a support conversation needs
 and is invisible if only errors are recorded.
 
+FCR349 ADDED THE CONNECT PATH. A new user never reached "tunnel up", so the log was empty exactly when
+it was needed. Every step a connect takes now writes one `step=<name> status=ok|failed|warn` line
+(steps.go), still on change only: stepOutcome writes a step's first success, each NEW failure reason,
+and the recovery, and the handshake watch writes the first handshake and any change after it. The
+CLI half (sign-in, enrolment, the session mint) cannot be seen from here, so `runos vpn up` keeps its
+own trace (trace.go). `runos vpn diagnose` reads both.
+
+THE FILE IS BOUNDED BY THE DAEMON NOW. It writes its own log (logfile.go) and rotates it, which is
+what launchd's file never allowed. wireguard-go's own error lines go through the same file, rate
+limited, because one dead endpoint produces a line every five seconds.
+
 WHAT IS NEVER LOGGED. Session tokens, private keys, pre-shared keys, and the WireGuard
 configuration. Account, device and cluster ids ARE logged: they appear in `vpn status` already, they
 are what identifies a report, and they are not credentials. `redactURL` strips any query string
@@ -38,6 +54,10 @@ type logState struct {
 	lastPollFail string
 	failedPolls  int
 	firstFailAt  time.Time
+	// Per-step outcome memory for stepOutcome: the last failure message, and whether a success
+	// was already written since the tunnel came up.
+	stepFailed map[string]string
+	stepSeen   map[string]bool
 }
 
 var daemonLog logState
@@ -75,27 +95,63 @@ func logPollOutcome(err error) {
 		daemonLog.lastPollFail = msg
 		daemonLog.failedPolls = 1
 		daemonLog.firstFailAt = time.Now()
-		log.Printf("vpn: poll FAILED, will keep retrying every %s: %s", PollInterval, msg)
+		log.Print("vpn: " + stepBody("poll", statusFailed,
+			fmt.Sprintf("poll FAILED, will keep retrying every %s: %s", PollInterval, msg)))
 		return
 	}
 
 	if daemonLog.lastPollFail != "" {
-		log.Printf(
-			"vpn: poll recovered after %d failed attempt(s) over %s (last error: %s)",
+		log.Print("vpn: " + stepBody("poll", statusOK, fmt.Sprintf(
+			"poll recovered after %d failed attempt(s) over %s (last error: %s)",
 			daemonLog.failedPolls,
 			time.Since(daemonLog.firstFailAt).Round(time.Second),
 			daemonLog.lastPollFail,
-		)
+		)))
 		daemonLog.lastPollFail = ""
 		daemonLog.failedPolls = 0
 	}
 }
 
 // resetPollLog forgets the failure history, so a fresh tunnel does not report a recovery from a
-// failure that belonged to the previous one.
+// failure that belonged to the previous one, and so every step of a new connect is written once.
 func resetPollLog() {
 	daemonLog.mu.Lock()
 	defer daemonLog.mu.Unlock()
 	daemonLog.lastPollFail = ""
 	daemonLog.failedPolls = 0
+	daemonLog.stepFailed = nil
+	daemonLog.stepSeen = nil
+}
+
+// logDaemonStart writes the one line that says which build is running and where, so a log read
+// later can be matched to a version and a platform. One line per daemon start.
+func logDaemonStart(version string, verbose bool) {
+	logEvent("step=daemon-start status=ok runos %s on %s/%s (verbose=%t)", version, runtime.GOOS, runtime.GOARCH, verbose)
+}
+
+// LogDaemonFailure records why the daemon process could not start. The Windows service manager
+// discards stderr, and a root process that exits at once leaves no other trace of the reason.
+func LogDaemonFailure(step string, err error) {
+	if err == nil {
+		return
+	}
+	log.Print("vpn: " + stepBody(step, statusFailed, err.Error()))
+}
+
+// KeyFingerprint is the first characters of a public key: enough to tell two keys apart in a log
+// and to compare with `vpn devices`, and nowhere near the key itself.
+func KeyFingerprint(publicKey string) string {
+	if len(publicKey) > 8 {
+		return publicKey[:8]
+	}
+	return publicKey
+}
+
+// interfaceError names the usual cause when the tun device cannot be created by a process that is
+// not root, because the raw errno ("operation not permitted") names nothing a person can act on.
+func interfaceError(err error) error {
+	if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		return fmt.Errorf("%w (creating a network interface needs root: the daemon must run under the service manager, not as a normal user)", err)
+	}
+	return err
 }

@@ -53,6 +53,7 @@ func Serve(d *Daemon, socketPath, socketGroup string, groupExplicit bool) (net.L
 		_ = listener.Close()
 		return nil, err
 	}
+	logEvent("%s", stepBody("socket", statusOK, "listening on "+socketPath))
 	go func() {
 		for {
 			conn, err := listener.Accept()

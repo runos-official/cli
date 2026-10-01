@@ -28,6 +28,8 @@ var vpnCmd = &cobra.Command{
   runos vpn install      Install the VPN service (needs admin once)
   runos vpn up           Connect to your default cluster (sign in first with 'runos login')
   runos vpn status       Show the tunnel and each cluster
+  runos vpn diagnose     Report what failed and why, safe to paste (no root needed)
+  runos vpn logs         Print the VPN service log (no root needed)
   runos vpn connect <cid> / disconnect <cid>
   runos vpn down         Disconnect and end the session
   runos vpn forget-key   Down, and throw away this machine's VPN key
@@ -173,9 +175,11 @@ func prepareVPNSession(
 	// This machine's device key for this account (the daemon generates one on first use).
 	identity, err := daemon.Call(vpn.Request{Op: vpn.OpIdentity, AccountID: cfg.GetAccountID()})
 	if err != nil {
+		upTrace.Fail("key", err)
 		return nil, nil, err
 	}
 	publicKey := identity.Identity.PublicKey
+	upTrace.OK("key", "device key "+vpn.KeyFingerprint(publicKey)+" for account "+cfg.GetAccountID())
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -184,15 +188,18 @@ func prepareVPNSession(
 
 	device, needSignIn, err := enrolDevice(cfg, token, publicKey, hostname, runtime.GOOS)
 	if needSignIn {
+		upTrace.Warn("enrol", "RunOS asked for a fresh sign-in")
 		return nil, nil, nil
 	}
 	if errors.Is(err, errKeyRevoked) {
+		upTrace.Warn("enrol", "the previous key was revoked; rotating it")
 		// The key was revoked (console, or an admin) and can never enrol again: rotate it in the
 		// daemon and enrol the new one, so a revoked machine is one `up` from working again
 		// rather than stuck forever. The old device row stays revoked in the account.
 		fmt.Fprintln(cmd.ErrOrStderr(), "This machine's previous VPN key was revoked; enrolling a new one.")
 		rotated, rErr := daemon.Call(vpn.Request{Op: vpn.OpRotateKey, AccountID: cfg.GetAccountID()})
 		if rErr != nil {
+			upTrace.Fail("key", rErr)
 			return nil, nil, rErr
 		}
 		// THE FLAG, NOT JUST THE ERROR. Dropping it here left `device` nil beside a nil error, so
@@ -201,30 +208,46 @@ func prepareVPNSession(
 		// stderr and a signal exit. The first call has honoured this flag since it was written.
 		device, needSignIn, err = enrolDevice(cfg, token, rotated.Identity.PublicKey, hostname, runtime.GOOS)
 		if needSignIn {
+			upTrace.Warn("enrol", "RunOS asked for a fresh sign-in")
 			return nil, nil, nil
 		}
 	}
 	if err != nil {
+		upTrace.Fail("enrol", err)
 		return nil, nil, err
 	}
+	upTrace.OK("enrol", "device "+device.ID)
 
 	session, needSignIn, err := mintSession(cfg, token, device.ID)
 	if err != nil {
+		upTrace.Fail("session", err)
 		return nil, nil, err
 	}
 	if needSignIn {
+		upTrace.Warn("session", "RunOS asked for a fresh sign-in")
 		return nil, nil, nil
 	}
+	upTrace.OK("session", "session started for device "+device.ID)
 	return device, session, nil
 }
 
 func runVPNUp(cmd *cobra.Command, args []string) error {
+	startUpTrace()
+	if err := runVPNUpSteps(cmd, args); err != nil {
+		return vpnUpError{err}
+	}
+	return nil
+}
+
+func runVPNUpSteps(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	cfg, err := config.Load()
 	if err != nil {
+		upTrace.Fail("credential", err)
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	if err := refuseVPNWithPAT(cfg); err != nil {
+		upTrace.Fail("credential", err)
 		return err
 	}
 
@@ -243,8 +266,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 	*/
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
+		upTrace.Fail("credential", err)
 		return reportSignedOut(cmd, err)
 	}
+	upTrace.OK("credential", "kind="+string(auth.Kind(cfg))+" account "+cfg.GetAccountID())
 
 	device, session, err := prepareVPNSession(cmd, cfg, token, daemon)
 	if err != nil {
@@ -264,8 +289,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		*/
 		accountBefore := cfg.GetAccountID()
 		if cfg, token, err = signInAndReload(cmd); err != nil {
+			upTrace.Fail("sign-in", err)
 			return err
 		}
+		upTrace.OK("sign-in", "signed in to account "+cfg.GetAccountID())
 		// D3: the tunnel never outlives the identity that opened it. A confirmation that came back
 		// on another account is an account SWITCH, so the old tunnel goes down and the person
 		// connects the new account deliberately rather than by accident.
@@ -294,8 +321,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		ConductorURL:     cfg.GetAPIURL(),
 	})
 	if err != nil {
+		upTrace.Fail("handoff", err)
 		return err
 	}
+	upTrace.OK("handoff", "the VPN service accepted the session")
 
 	// First connection: if the device is connected to nothing, connect it to the CLI's default
 	// cluster (decision 3). A device that already has a connected set keeps it.
@@ -304,6 +333,10 @@ func runVPNUp(cmd *cobra.Command, args []string) error {
 		if def := cfg.GetDefaultClusterID(); def != "" {
 			if connected, cErr := daemon.Call(vpn.Request{Op: vpn.OpConnect, CID: def}); cErr == nil {
 				status = connected.Status
+				upTrace.OK("connect-default", "connected cluster "+def)
+			} else {
+				// Not fatal, and silent before FCR349: the tunnel is up with nothing routed.
+				upTrace.Warn("connect-default", "could not connect default cluster "+def+": "+cErr.Error())
 			}
 		}
 	}

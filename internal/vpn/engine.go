@@ -26,11 +26,14 @@ type engine struct {
 // "utun" (the kernel picks the number) or "utunN"; the caller reads the assigned name back with
 // InterfaceName. Requires root: creating a network interface does on every OS (decision 5).
 func newEngine(requestedName string, verbose bool) (*engine, error) {
-	level := device.LogLevelError
+	// Route the engine's own messages through the daemon log, rate limited: wireguard-go's default
+	// logger writes straight to stdout, outside the bounded file, and repeats a failing handshake
+	// every few seconds.
+	engineLog := rateLimitedLogf(func(format string, args ...any) { logEvent("wireguard: "+format, args...) })
+	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: engineLog}
 	if verbose {
-		level = device.LogLevelVerbose
+		logger.Verbosef = engineLog
 	}
-	logger := device.NewLogger(level, "runos-vpn: ")
 
 	tunDev, err := tun.CreateTUN(requestedName, defaultMTU)
 	if err != nil {

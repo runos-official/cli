@@ -61,17 +61,30 @@ func grantSocketAccess(socketPath, socketGroup string, groupExplicit bool) error
 			"override.", socketGroup, group)
 	}
 	if group == "" {
+		log.Print("vpn: " + stepBody("socket", statusWarn,
+			"no control-socket group is configured, so the socket is reachable by root only; "+
+				"run 'sudo runos vpn install --socket-group <group>'"))
 		return nil
 	}
 	grp, err := user.LookupGroup(group)
 	if err != nil {
+		// Silent before FCR349, and the result is a root-only socket: every `runos vpn` call from a
+		// person then fails with a permission error and nothing on the machine says why.
+		log.Print("vpn: " + stepBody("socket", statusFailed, fmt.Sprintf(
+			"control-socket group %q does not exist on this machine, so the socket stays root-only: %s", group, err)))
 		return nil
 	}
 	gid, err := strconv.Atoi(grp.Gid)
 	if err != nil {
+		log.Print("vpn: " + stepBody("socket", statusFailed, fmt.Sprintf(
+			"control-socket group %q has a non-numeric id on this platform, so the socket stays root-only", group)))
 		return nil
 	}
-	_ = os.Chown(socketPath, -1, gid)
+	if err := os.Chown(socketPath, -1, gid); err != nil {
+		log.Print("vpn: " + stepBody("socket", statusFailed, fmt.Sprintf(
+			"could not give the control socket to group %q: %s", group, err)))
+		return nil
+	}
 	/*
 	 THE SOCKET'S STATE, RECORDED EVERY START.
 
@@ -80,6 +93,7 @@ func grantSocketAccess(socketPath, socketGroup string, groupExplicit bool) error
 	 group it had been given, so the answer had to be worked out from the outside. One line makes
 	 this class of problem self-diagnosing, and it costs one write per daemon start.
 	*/
-	log.Printf("vpn: control socket %s is mode 0660, group %q (gid %d)", socketPath, group, gid)
+	log.Print("vpn: " + stepBody("socket", statusOK, fmt.Sprintf(
+		"control socket %s is mode 0660, group %q (gid %d)", socketPath, group, gid)))
 	return nil
 }
