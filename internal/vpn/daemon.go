@@ -36,6 +36,10 @@ type Daemon struct {
 	dns          DNSStatus
 	// handshakes remembers which peers have handshaken, so only a change is logged.
 	handshakes *handshakeWatch
+	// appliedPeers are the peers the engine holds NOW. d.plan is only replaced once routes and DNS
+	// also converged, so a DNS check that fails because the tunnel is dead would otherwise hide the
+	// very peers whose missing handshake is the cause.
+	appliedPeers []PeerPlan
 
 	pollInterval time.Duration
 	cancelPoll   context.CancelFunc
@@ -395,6 +399,7 @@ func (d *Daemon) stopTunnelLocked() {
 	d.revision = ""
 	d.lastApplyErr = ""
 	d.handshakes = nil
+	d.appliedPeers = nil
 	d.dns = DNSStatus{Mode: "unavailable", Error: "the VPN is down"}
 }
 
@@ -452,6 +457,7 @@ func (d *Daemon) applyLoginRequiredLocked() {
 		}
 		_ = d.platform.Teardown(d.engine.InterfaceName())
 	}
+	d.appliedPeers = nil
 	if d.cancelPoll != nil {
 		d.cancelPoll()
 		d.cancelPoll = nil
@@ -491,6 +497,7 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 		stepOutcome("wireguard-config", err, "")
 		return err
 	}
+	d.appliedPeers = plan.Peers
 	stepOutcome("wireguard-config", nil, fmt.Sprintf("%d peer(s) loaded", len(plan.Peers)))
 	if err := d.convergeRoutesAndDNSLocked(d.plan.Routes, plan); err != nil {
 		return err

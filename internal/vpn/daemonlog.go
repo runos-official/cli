@@ -54,10 +54,10 @@ type logState struct {
 	lastPollFail string
 	failedPolls  int
 	firstFailAt  time.Time
-	// Per-step outcome memory for stepOutcome: the last failure message, and whether a success
-	// was already written since the tunnel came up.
+	// Per-step outcome memory for stepOutcome: the last failure message, and the detail of the last
+	// success written since the tunnel came up.
 	stepFailed map[string]string
-	stepSeen   map[string]bool
+	stepSeen   map[string]string
 }
 
 var daemonLog logState

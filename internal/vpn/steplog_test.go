@@ -156,3 +156,18 @@ func TestAnOlderDaemonsPollLinesAreStillRead(t *testing.T) {
 		t.Error("a recovery line must clear the failure")
 	}
 }
+
+func TestAStepWhoseDetailChangedIsWrittenAgain(t *testing.T) {
+	// A connect adds a peer to a tunnel that was already up. Reporting "0 peer(s) loaded" once and
+	// then nothing hides the one change the person made.
+	resetPollLog()
+	out := captureLog(t, func() {
+		stepOutcome("wireguard-config", nil, "0 peer(s) loaded")
+		stepOutcome("wireguard-config", nil, "0 peer(s) loaded")
+		stepOutcome("wireguard-config", nil, "1 peer(s) loaded")
+		stepOutcome("wireguard-config", nil, "1 peer(s) loaded")
+	})
+	if n := strings.Count(out, "step=wireguard-config status=ok"); n != 2 {
+		t.Fatalf("want a line per distinct outcome (2), got %d:\n%s", n, out)
+	}
+}

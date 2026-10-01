@@ -17,8 +17,8 @@ func (d *Daemon) watchHandshakesLocked() {
 	if err != nil {
 		return
 	}
-	obs := make([]peerObs, 0, len(d.plan.Peers))
-	for _, p := range d.plan.Peers {
+	obs := make([]peerObs, 0, len(d.appliedPeers))
+	for _, p := range d.appliedPeers {
 		o := peerObs{CID: p.CID, Endpoint: p.Endpoint}
 		if st := stats[p.PublicKeyHex]; st != nil {
 			o.LastHandshake = st.LastHandshake
