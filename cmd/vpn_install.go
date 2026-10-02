@@ -139,8 +139,14 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 	}
 	// The daemon's own bounded log, readable without root (FCR349). Opened before anything can fail,
 	// so a failure to start is recorded where `runos vpn logs` and `diagnose` look.
-	closeLog := vpn.SetupDaemonLog(logFile)
+	// The state directory is closed first (Windows ACLs; nothing on unix), because the log may live in
+	// it and the key file will. A failure is recorded below once there is a log to record it in.
+	secureErr := vpn.SecureStateDir(stateDir)
+	closeLog := vpn.SetupDaemonLog(logFile, socketGroup, groupSource == "explicit")
 	defer closeLog()
+	if secureErr != nil {
+		vpn.LogDaemonFailure("daemon-start", fmt.Errorf("could not restrict access to the state directory: %w", secureErr))
+	}
 	return vpn.RunDaemonHost(func() (func(), error) {
 		d, err := vpn.NewDaemon(stateDir, version.Version, verbose)
 		if err != nil {

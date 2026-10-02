@@ -146,7 +146,11 @@ func TestReportSurfacesALogReadError(t *testing.T) {
 	if !strings.Contains(r.DaemonLog.ReadError, "permission denied") {
 		t.Errorf("the read error is not in the JSON facts: %+v", r.DaemonLog)
 	}
-	if text := r.Text(); !strings.Contains(text, "permission denied") {
+	text := r.Text()
+	if !strings.Contains(text, "permission denied") {
 		t.Errorf("the text report hides the read error:\n%s", text)
+	}
+	if strings.Contains(text, "none recorded") {
+		t.Errorf("an unreadable log is not \"no failure recorded\":\n%s", text)
 	}
 }

@@ -1,7 +1,9 @@
 package vpn
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,7 +33,9 @@ func TestTheNoiseFilterKeepsWhatTheDaemonWrote(t *testing.T) {
 		`2026/09/01 12:17:17 vpn: control socket /var/run/runos-vpn.sock is mode 0660, group "staff" (gid 20)`,
 		"2026/09/01 12:17:17 vpn: tunnel up on utun0 for account acct1 device device-1, conductor https://api.example.com",
 		"2026/09/01 12:17:17 vpn: step=poll status=failed poll FAILED, will keep retrying every 30s: lookup api.example.com: no such host",
+		"2026/09/01 12:31:02 vpn: poll recovered after 28 failed attempt(s) over 13m45s (last error: lookup api.example.com: no such host)",
 		"2026/09/01 13:02:11 vpn: session has lapsed: peers removed, sign in again to restore the tunnel",
+		"2026/09/01 13:05:00 vpn: tunnel down on utun0",
 	}
 	for _, line := range daemon {
 		if isLogNoise(line) {
@@ -160,5 +164,28 @@ func TestReadLogReportsAFileItCannotRead(t *testing.T) {
 	got := ReadLog([]string{t.TempDir()}, 10)
 	if got.Err == nil {
 		t.Errorf("an unreadable log must say so, got %+v", got)
+	}
+}
+
+func TestReadLogSaysPlainlyWhenTheLogExistsButCannotBeRead(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a unix user who is not root")
+	}
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("vpn: x\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadLog([]string{path}, 10)
+	if got.Path != path || !errors.Is(got.Err, fs.ErrPermission) {
+		t.Fatalf("got %+v, want the path and a permission error, not an empty result", got)
+	}
+	problem := got.Problem()
+	for _, want := range []string{path, "cannot read", "sudo"} {
+		if !strings.Contains(problem, want) {
+			t.Errorf("the explanation lacks %q: %s", want, problem)
+		}
+	}
+	if (LogResult{}).Problem() != "" {
+		t.Error("no error must give no problem text")
 	}
 }

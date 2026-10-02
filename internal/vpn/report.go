@@ -14,7 +14,7 @@ FCR349. Asking a stuck user to send a raw log file failed (582 KB arrived, one l
 report is built to be pasted, or read by the user's own agent: it names the failed step and what that
 step was trying to do, carries the facts that identify the machine and the account (version,
 platform, ids), and a short tail of recent log lines. It needs no root, because every input is
-either the CLI's own state, a world-readable log, or the daemon's status over its socket.
+either the CLI's own state, a log readable by the control-socket group, or the daemon's status over its socket.
 */
 
 // ReportSchemaVersion changes only when a field an agent reads by name changes meaning.
@@ -117,9 +117,7 @@ func BuildReport(in ReportInput) Report {
 	if r.LastAttempt == nil {
 		r.LastAttempt = []string{}
 	}
-	if in.DaemonLog.Err != nil {
-		r.DaemonLog.ReadError = redactText(in.DaemonLog.Err.Error())
-	}
+	r.DaemonLog.ReadError = redactText(in.DaemonLog.Problem())
 	if len(r.DaemonLog.Lines) == 0 && r.DaemonLog.ReadError == "" {
 		r.DaemonLog.Note = MissingLogNote(in.OS)
 	}
@@ -273,6 +271,9 @@ func (r Report) Text() string {
 		w("LAST FAILED STEP: %s (%s, %s)", f.Step, f.Source, orDash(f.At))
 		w("  trying to: %s", orDash(f.Meaning))
 		w("  error: %s", orDash(f.Detail))
+	} else if r.DaemonLog.ReadError != "" {
+		// Not "none recorded": a log that could not be read says nothing about failures.
+		w("LAST FAILED STEP: unknown (the daemon log could not be read, see below)")
 	} else {
 		w("LAST FAILED STEP: none recorded")
 	}

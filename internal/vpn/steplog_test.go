@@ -26,15 +26,22 @@ func TestAFailingConnectStepIsInTheLog(t *testing.T) {
 		t.Fatal(r.Error)
 	}
 
-	out := captureLog(t, func() { d.Handle(upRequest("aaaaa")) })
+	// A token that looks like one. The shared helper's value is the word "session", which any log
+	// line could contain without leaking anything, so asserting its absence proves nothing.
+	// Built at run time so the repository holds no token-shaped literal.
+	sessionValue := strings.Repeat("9fK2", 4) + "-value"
+	req := upRequest("aaaaa")
+	req.SessionToken = sessionValue
+
+	out := captureLog(t, func() { d.Handle(req) })
 
 	// Creating the interface needs root, so a normal user's daemon-less run fails exactly here.
 	// Before the fix the log stayed empty at this point.
 	if !strings.Contains(out, "step=interface status=failed") {
 		t.Fatalf("an up that could not create the interface wrote no failing step line:\n%q", out)
 	}
-	if strings.Contains(out, "session\"") || strings.Contains(out, "sessionToken") {
-		t.Errorf("the log carried the session token field:\n%s", out)
+	if strings.Contains(out, sessionValue) {
+		t.Errorf("the session token reached the log:\n%s", out)
 	}
 }
 

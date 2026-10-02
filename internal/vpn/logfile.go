@@ -1,12 +1,12 @@
 package vpn
 
 import (
+	"errors"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 /*
@@ -17,9 +17,12 @@ named a log destination. The systemd unit and the Windows service named none: on
 went to the journal, which an ordinary user cannot read, and on Windows it went nowhere. And on
 macOS the file is owned by launchd, so the daemon cannot rotate it.
 
-A file the daemon opens itself is readable by the person who needs it (mode 0644, no root), is the
-same on every platform, and can keep itself small. Output still goes to stderr as well, so the
-journal and the launchd file keep what they had.
+A file the daemon opens itself is readable by the person who needs it without root, is the same on
+every platform, and can keep itself small. WHO that is depends on the machine: on a shared host the
+log (account, device and cluster ids, other systems' error text) is for the control-socket group
+only (0640 root:<group>); a single-user machine with no group configured gets 0644. Output still goes
+to stderr as well, so the journal and the launchd file keep what they had. When stderr IS a file
+(launchd's StandardErrorPath) it carries the same lines, so it gets the same access rule.
 */
 
 // maxDaemonLogBytes caps the live file; the previous generation is kept beside it, so the daemon
@@ -30,15 +33,19 @@ type boundedLog struct {
 	mu   sync.Mutex
 	path string
 	max  int64
-	f    *os.File
-	size int64
+	// group may read the file besides root; empty means a single-user machine (see applyLogAccess).
+	group string
+	f     *os.File
+	size  int64
+	// openFn opens the log file; a field so a test can make the reopen after a rotation fail.
+	openFn func(path string) (*os.File, error)
 }
 
-func openBoundedLog(path string, max int64) (*boundedLog, error) {
+func openBoundedLog(path string, max int64, group string) (*boundedLog, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	b := &boundedLog{path: path, max: max}
+	b := &boundedLog{path: path, max: max, group: group, openFn: openLogFile}
 	if err := b.open(); err != nil {
 		return nil, err
 	}
@@ -46,13 +53,16 @@ func openBoundedLog(path string, max int64) (*boundedLog, error) {
 }
 
 func (b *boundedLog) open() error {
-	f, err := os.OpenFile(b.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := b.openFn(b.path)
 	if err != nil {
 		return err
 	}
-	// The umask can narrow the create mode, and a log nobody but root can read is the failure
-	// this file exists to remove.
-	_ = f.Chmod(0o644)
+	// Who may read it is decided on every open, so a rotation never leaves a new file at the
+	// umask's mercy and a file from an earlier build is brought into line.
+	if err := applyLogAccess(f, b.path, b.group); err != nil {
+		f.Close()
+		return err
+	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -65,13 +75,24 @@ func (b *boundedLog) open() error {
 func (b *boundedLog) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.size > 0 && b.size+int64(len(p)) > b.max {
+	if b.f == nil {
+		// A rotation could not reopen the file. Try again WITHOUT rotating: rotating again would
+		// delete the <path>.1 the failed rotation just made.
+		if err := b.open(); err != nil {
+			return 0, err
+		}
+	} else if b.size > 0 && b.size+int64(len(p)) > b.max {
 		b.rotate()
+		if b.f == nil {
+			return 0, errLogClosed
+		}
 	}
 	n, err := b.f.Write(p)
 	b.size += int64(n)
 	return n, err
 }
+
+var errLogClosed = errors.New("the daemon log could not be reopened after rotating it")
 
 // rotate keeps the old generation as <path>.1 and starts a new file. The handle is closed first
 // because Windows will not rename an open file.
@@ -80,13 +101,14 @@ func (b *boundedLog) rotate() {
 	_ = os.Remove(b.path + ".1")
 	if err := os.Rename(b.path, b.path+".1"); err != nil {
 		// Could not move it (a reader holds it open on Windows): truncate instead, so the cap
-		// still holds.
-		_ = os.Truncate(b.path, 0)
+		// still holds. Only a regular file: Truncate follows a symlink.
+		if checkLogPath(b.path) == nil {
+			_ = os.Truncate(b.path, 0)
+		}
 	}
-	if err := b.open(); err != nil {
-		// Nothing sensible to do with a daemon that cannot log. The next write reports the closed file.
-		b.f = nil
-	}
+	b.f, b.size = nil, 0
+	// On failure b.f stays nil; Write reports it and retries the open without rotating.
+	_ = b.open()
 }
 
 func (b *boundedLog) Close() error {
@@ -112,50 +134,19 @@ func (t teeWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// SetupDaemonLog points the standard logger at the bounded file (and stderr). It returns a func
-// that closes the file. If the file cannot be opened the daemon carries on with stderr alone and
+// SetupDaemonLog points the standard logger at the bounded file (and stderr). The file is readable
+// by the control-socket group (the people who may already control the VPN), or by everybody when no
+// group is configured. It returns a func that closes the file. If the file cannot be opened the daemon carries on with stderr alone and
 // says so there: a daemon that will not start because it cannot log has made things worse.
-func SetupDaemonLog(path string) (closeLog func()) {
-	b, err := openBoundedLog(path, maxDaemonLogBytes)
+func SetupDaemonLog(path, socketGroup string, groupExplicit bool) (closeLog func()) {
+	group := effectiveSocketGroup(socketGroup, groupExplicit)
+	b, err := openBoundedLog(path, maxDaemonLogBytes, group)
 	if err != nil {
 		log.Printf("vpn: step=daemon-start status=warn cannot open the daemon log %s: %s (logging to stderr only)",
 			path, redactText(err.Error()))
 		return func() {}
 	}
+	narrowIfRegular(os.Stderr, group)
 	log.SetOutput(teeWriter{file: b, stderr: os.Stderr})
 	return func() { _ = b.Close() }
-}
-
-// wireguardLogInterval is the least time between two identical engine log lines.
-var wireguardLogInterval = time.Minute
-
-/*
-rateLimitedLogf wraps the engine's error logger so one persistent fault cannot flood the file.
-
-wireguard-go retries a failing handshake every few seconds and logs each failure. A server that
-cannot be reached would write thousands of identical lines a day, burying the step lines that matter
-and filling a file the daemon is trying to keep small. The first occurrence of a message is written;
-repeats inside the interval are counted, and the count is written with the next one.
-*/
-func rateLimitedLogf(next func(format string, args ...any)) func(format string, args ...any) {
-	var mu sync.Mutex
-	last := map[string]time.Time{}
-	dropped := map[string]int{}
-	return func(format string, args ...any) {
-		mu.Lock()
-		now := time.Now()
-		if t, ok := last[format]; ok && now.Sub(t) < wireguardLogInterval {
-			dropped[format]++
-			mu.Unlock()
-			return
-		}
-		last[format] = now
-		n := dropped[format]
-		dropped[format] = 0
-		mu.Unlock()
-		if n > 0 {
-			next("(%d similar line(s) suppressed in the last %s)", n, wireguardLogInterval)
-		}
-		next(format, args...)
-	}
 }

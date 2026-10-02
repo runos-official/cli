@@ -8,6 +8,7 @@ const SocketPath = "/var/run/runos-vpn.sock"
 // StateDir is where the daemon keeps its state on a unix host.
 const StateDir = "/var/lib/runos-vpn"
 
-// DaemonLogPath is the daemon's own log, world readable so a person can read it without root. It is
+// DaemonLogPath is the daemon's own log, readable without root by the control-socket group (0640), or
+// by everybody when none is configured (logfile_open_unix.go). It is
 // distinct from the launchd output file on macOS, which launchd owns and the daemon cannot rotate.
 const DaemonLogPath = "/var/log/runos-vpn-daemon.log"

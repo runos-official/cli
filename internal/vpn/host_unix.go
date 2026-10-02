@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"os/user"
-	"runtime"
 	"strconv"
 	"syscall"
 )
@@ -51,7 +50,7 @@ func grantSocketAccess(socketPath, socketGroup string, groupExplicit bool) error
 	if err := os.Chmod(socketPath, 0o660); err != nil {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
-	group := usableSocketGroup(socketGroup, runtime.GOOS, groupExplicit, groupGID, AdminGroup)
+	group := effectiveSocketGroup(socketGroup, groupExplicit)
 	if group != socketGroup {
 		// LOUD, NOT SILENT. A root process changing who may control the VPN has to leave a record,
 		// and this line is what an operator greps for when the group is not what their service

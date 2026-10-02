@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 
@@ -25,9 +26,9 @@ EVERY PLATFORM, NOW. Only the macOS service definition ever named a log file; th
 Windows service named none, so on those two this command read a file that did not exist. The daemon
 now writes its own bounded log (internal/vpn/logfile.go) on all three, and this reads it.
 
-READING IT DOES NOT NEED ROOT. The file is world-readable by design, so a person can produce their
-own logs without sudo, which is the difference between a support request that includes them and one
-that does not.
+READING IT DOES NOT NEED ROOT, for the people the VPN is installed for. On a machine with a control
+socket group the file is readable by that group (0640); with none configured it is world readable.
+Somebody outside the group gets a plain "cannot read it" with the way round it, never "no log".
 */
 
 // vpnLogPathsForRead is a variable so a test can point it at a temp file.
@@ -46,14 +47,18 @@ var vpnLogsCmd = &cobra.Command{
 		"'runos vpn diagnose'.",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		res := vpn.ReadLog(vpnLogPathsForRead(), vpnLogsTail)
-		if res.Err != nil {
-			return fmt.Errorf("read %s: %w", res.Path, res.Err)
+		if res.Err != nil && len(res.Lines) == 0 {
+			return errors.New(res.Problem())
 		}
 		if res.Path == "" {
 			return fmt.Errorf("no VPN daemon log found. %s", vpn.MissingLogNote(runtime.GOOS))
 		}
 		for _, line := range res.Lines {
 			fmt.Fprintln(cmd.OutOrStdout(), line)
+		}
+		if res.Err != nil {
+			// Part of the log was read; say what was not, so a partial log is not mistaken for all of it.
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nwarning: %s\n", res.Problem())
 		}
 
 		// Say what was hidden and what was trimmed. A reader who cannot tell the difference between
@@ -77,6 +82,6 @@ var vpnLogsCmd = &cobra.Command{
 
 func init() {
 	vpnLogsCmd.Flags().IntVar(&vpnLogsTail, "tail", 200,
-		"show only the last N daemon lines (0 for all)")
+		"show only the last N daemon lines (0 for as many as are kept, up to 10000)")
 	vpnCmd.AddCommand(vpnLogsCmd)
 }

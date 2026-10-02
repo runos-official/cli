@@ -1,6 +1,7 @@
 package vpn
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ the person who needs it, and because the daemon owns it, it can keep it bounded.
 
 func TestTheDaemonLogStaysBounded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.log")
-	w, err := openBoundedLog(path, 1024)
+	w, err := openBoundedLog(path, 1024, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,28 +46,12 @@ func TestTheDaemonLogStaysBounded(t *testing.T) {
 	}
 }
 
-func TestTheDaemonLogIsReadableWithoutRoot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "daemon.log")
-	w, err := openBoundedLog(path, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm()&0o004 == 0 {
-		t.Errorf("mode %v is not world readable, so a stuck user could not produce their own log", info.Mode().Perm())
-	}
-}
-
 func TestAnExistingLogIsAppendedNotReplaced(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.log")
 	if err := os.WriteFile(path, []byte("before restart\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w, err := openBoundedLog(path, 1<<20)
+	w, err := openBoundedLog(path, 1<<20, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,16 +63,43 @@ func TestAnExistingLogIsAppendedNotReplaced(t *testing.T) {
 	}
 }
 
-func TestWireguardErrorLinesAreRateLimited(t *testing.T) {
-	// wireguard-go retries a failing handshake every few seconds; at that rate one dead endpoint
-	// writes thousands of identical lines a day.
-	out := captureLog(t, func() {
-		logf := rateLimitedLogf(func(format string, args ...any) { logEvent("wireguard: "+format, args...) })
-		for i := 0; i < 200; i++ {
-			logf("%v - Failed to send handshake initiation: %v", "peer(abcd)", "network is unreachable")
+/*
+A failed reopen after a rotation must not make the next write rotate again: the second rotation
+deletes the <path>.1 the first one just created, so the log loses its previous generation exactly
+when the daemon is failing to write.
+*/
+func TestAFailedReopenDoesNotRotateAgainAndDeleteThePreviousGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	w, err := openBoundedLog(path, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	first := strings.Repeat("a", 60) + "\n"
+	if _, err := w.Write([]byte(first)); err != nil {
+		t.Fatal(err)
+	}
+
+	realOpen := w.openFn
+	w.openFn = func(string) (*os.File, error) { return nil, errors.New("test: no space left") }
+	for i := 0; i < 3; i++ {
+		if _, err := w.Write([]byte(strings.Repeat("b", 60) + "\n")); err == nil {
+			t.Fatal("a write with no open file must say so")
 		}
-	})
-	if n := strings.Count(out, "Failed to send handshake initiation"); n > 2 {
-		t.Fatalf("wrote %d identical engine lines, want the first only:\n%s", n, out)
+	}
+	kept, err := os.ReadFile(path + ".1")
+	if err != nil || string(kept) != first {
+		t.Fatalf("the previous generation was lost while the reopen kept failing: %q, %v", kept, err)
+	}
+
+	w.openFn = realOpen
+	if _, err := w.Write([]byte("recovered\n")); err != nil {
+		t.Fatalf("the log did not recover once the file could be opened again: %v", err)
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "recovered") {
+		t.Errorf("the recovered line is not in the live file: %q", data)
+	}
+	if kept, _ := os.ReadFile(path + ".1"); string(kept) != first {
+		t.Errorf("recovery rotated again and lost the previous generation: %q", kept)
 	}
 }

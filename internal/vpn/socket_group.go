@@ -162,6 +162,12 @@ func usableSocketGroup(configured, goos string, groupExplicit bool, gidOf func(s
 	return configured
 }
 
+// effectiveSocketGroup is the group the control socket is given, after the self-heal. The daemon log
+// is shared with the same group, so both read it from here and can never disagree.
+func effectiveSocketGroup(configured string, groupExplicit bool) string {
+	return usableSocketGroup(configured, runtime.GOOS, groupExplicit, groupGID, AdminGroup)
+}
+
 func groupGID(name string) (int, bool) {
 	grp, err := user.LookupGroup(name)
 	if err != nil {

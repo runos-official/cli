@@ -19,6 +19,28 @@ type LogResult struct {
 	Err     error    `json:"-"`
 }
 
+/*
+Problem says in plain words what went wrong reading the log, or "" when nothing did.
+
+A permission error gets its own wording because it is the likely one now that the log is readable
+only by the control-socket group, and "no log" or a bare "permission denied" would send the reader
+looking for a file that is there.
+*/
+func (r LogResult) Problem() string {
+	if r.Err == nil {
+		return ""
+	}
+	if errors.Is(r.Err, fs.ErrPermission) {
+		who := "root and the control-socket group"
+		if g := socketGroupName(r.Path); g != "" {
+			who = fmt.Sprintf("root and the group %q", g)
+		}
+		return fmt.Sprintf("the daemon log %s exists but this user cannot read it: only %s may. "+
+			"Run this command with sudo, or add your user to that group and sign in again.", r.Path, who)
+	}
+	return r.Err.Error()
+}
+
 // DefaultLogPaths lists where to look for the daemon log, newest location first. An older daemon,
 // which has not been restarted since an update, still writes to the legacy one.
 func DefaultLogPaths() []string { return append([]string{DaemonLogPath}, legacyLogPaths()...) }
@@ -46,7 +68,7 @@ const (
 /*
 ReadLog reads the log at the first path that has one, drops the noise, and returns the last tail
 lines (the last maxLogLines when tail is 0), redacted. It needs no privilege beyond the file being
-readable, which the daemon makes it. A file that exists but cannot be read is reported in Err.
+readable, which the daemon makes it for the control-socket group. A file that exists but cannot be read is reported in Err.
 
 THE ROTATED GENERATION IS PART OF THE LOG. The daemon writes a step once, on change, and rotates
 its file by size (logfile.go). A failure written just before a rotation is then only in <path>.1,
