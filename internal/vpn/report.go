@@ -73,6 +73,9 @@ type DaemonLogFacts struct {
 	Skipped int      `json:"noiseLinesSkipped"`
 	// Why there are no lines, in words an agent can pass on. Empty when there are some.
 	Note string `json:"note,omitempty"`
+	// What went wrong reading the log (a permission error, a failed read), so "no failure recorded"
+	// is never confused with "the log could not be read".
+	ReadError string `json:"readError,omitempty"`
 }
 
 // Report is the document `runos vpn diagnose` prints.
@@ -96,7 +99,7 @@ func BuildReport(in ReportInput) Report {
 		GeneratedAt:   in.Now.UTC().Format(time.RFC3339),
 		CLI: CLIFacts{
 			Version: in.CLIVersion, OS: in.OS, Arch: in.Arch, SignedIn: in.SignedIn,
-			CredentialKind: in.CredentialKind, AccountID: in.AccountID, APIURL: in.APIURL,
+			CredentialKind: in.CredentialKind, AccountID: in.AccountID, APIURL: redactText(in.APIURL),
 			ConfigError: redactText(in.ConfigErr),
 		},
 		Daemon:      DaemonFacts{Service: in.ServiceState, Socket: in.Socket.State, SocketDetail: redactText(in.Socket.Detail)},
@@ -114,7 +117,10 @@ func BuildReport(in ReportInput) Report {
 	if r.LastAttempt == nil {
 		r.LastAttempt = []string{}
 	}
-	if len(r.DaemonLog.Lines) == 0 {
+	if in.DaemonLog.Err != nil {
+		r.DaemonLog.ReadError = redactText(in.DaemonLog.Err.Error())
+	}
+	if len(r.DaemonLog.Lines) == 0 && r.DaemonLog.ReadError == "" {
 		r.DaemonLog.Note = MissingLogNote(in.OS)
 	}
 	r.LastFailure = pickFailure(in)
@@ -284,8 +290,13 @@ func (r Report) Text() string {
 		}
 	}
 	w("")
+	if r.DaemonLog.ReadError != "" {
+		w("DAEMON LOG COULD NOT BE READ (%s): %s", orDash(r.DaemonLog.Path), r.DaemonLog.ReadError)
+	}
 	if len(r.DaemonLog.Lines) == 0 {
-		w("DAEMON LOG: %s", r.DaemonLog.Note)
+		if r.DaemonLog.Note != "" {
+			w("DAEMON LOG: %s", r.DaemonLog.Note)
+		}
 	} else {
 		w("DAEMON LOG %s (last %d of %d lines, %d noise lines skipped):",
 			r.DaemonLog.Path, len(r.DaemonLog.Lines), r.DaemonLog.Total, r.DaemonLog.Skipped)

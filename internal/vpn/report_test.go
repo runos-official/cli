@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +120,33 @@ func TestReportExplainsAMissingLogPerPlatform(t *testing.T) {
 		if !strings.Contains(got, tc.want) {
 			t.Errorf("%s: note %q should mention %q", tc.goos, got, tc.want)
 		}
+	}
+}
+
+func TestReportRedactsTheAPIURL(t *testing.T) {
+	// A URL from the environment or a config file can carry userinfo or a signed query.
+	in := baseInput()
+	in.APIURL = "https://svcuser:pw9word@api.example.com/v1?token=Tok3nValue99"
+	r := BuildReport(in)
+	for _, leak := range []string{"pw9word", "Tok3nValue99"} {
+		if strings.Contains(r.CLI.APIURL, leak) || strings.Contains(r.Text(), leak) {
+			t.Errorf("%q survived in the report: %q", leak, r.CLI.APIURL)
+		}
+	}
+	if !strings.Contains(r.CLI.APIURL, "api.example.com") {
+		t.Errorf("the host must stay readable, got %q", r.CLI.APIURL)
+	}
+}
+
+func TestReportSurfacesALogReadError(t *testing.T) {
+	// "none recorded" over a log that could not be read sends a person after the wrong problem.
+	in := baseInput()
+	in.DaemonLog = LogResult{Path: "/var/log/x.log", Err: errors.New("read /var/log/x.log: permission denied")}
+	r := BuildReport(in)
+	if !strings.Contains(r.DaemonLog.ReadError, "permission denied") {
+		t.Errorf("the read error is not in the JSON facts: %+v", r.DaemonLog)
+	}
+	if text := r.Text(); !strings.Contains(text, "permission denied") {
+		t.Errorf("the text report hides the read error:\n%s", text)
 	}
 }
