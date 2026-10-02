@@ -1,8 +1,10 @@
 package vpn
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -74,5 +76,89 @@ func TestReadLogMissingEverywhereReportsNoFile(t *testing.T) {
 	got := ReadLog([]string{filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")}, 10)
 	if got.Path != "" || len(got.Lines) != 0 || got.Err != nil {
 		t.Errorf("got %+v, want an empty result with no error", got)
+	}
+}
+
+func TestReadLogReadsTheRotatedGenerationBeforeTheLiveFile(t *testing.T) {
+	// A one-time failure line is written once. After a rotation it lives in <path>.1, and a machine
+	// that is still broken must not read as "none recorded".
+	dir := t.TempDir()
+	live := filepath.Join(dir, "daemon.log")
+	failure := "2026/10/01 10:00:00 vpn: step=interface status=failed create tun interface: operation not permitted"
+	if err := os.WriteFile(live+".1", []byte(failure+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("2026/10/01 11:00:00 vpn: step=socket status=ok listening\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadLog([]string{live}, 10)
+	if got.Path != live || len(got.Lines) != 2 || got.Lines[0] != failure {
+		t.Fatalf("got %+v, want the rotated line first and the live line second", got)
+	}
+	if f := LastUnresolvedFailure(got.Lines); f == nil || f.Step != "interface" {
+		t.Errorf("the failure that moved to the rotated file was lost: %+v", f)
+	}
+}
+
+func TestReadLogWorksWhenOnlyTheRotatedFileExists(t *testing.T) {
+	live := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(live+".1", []byte("vpn: old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadLog([]string{live}, 10)
+	if got.Path != live || len(got.Lines) != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestReadLogKeepsOnlyTheNewestLinesOfAHugeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.log")
+	var b strings.Builder
+	for i := 0; i < 200000; i++ {
+		fmt.Fprintf(&b, "vpn: line %d\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadLog([]string{path}, 3)
+	if strings.Join(got.Lines, "|") != "vpn: line 199997|vpn: line 199998|vpn: line 199999" {
+		t.Errorf("lines = %v", got.Lines)
+	}
+	if got.Total != 200000 {
+		t.Errorf("total = %d, want every line counted", got.Total)
+	}
+	// "all" is still bounded: a legacy file can be gigabytes.
+	if all := ReadLog([]string{path}, 0); len(all.Lines) != maxLogLines || all.Lines[len(all.Lines)-1] != "vpn: line 199999" {
+		t.Errorf("tail 0 returned %d lines, want the newest %d", len(all.Lines), maxLogLines)
+	}
+}
+
+func TestReadLogDoesNotStopAtAVeryLongLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.log")
+	long := "vpn: " + strings.Repeat("x", 3<<20)
+	body := "vpn: before\n" + long + "\nvpn: after\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ReadLog([]string{path}, 0)
+	if got.Err != nil {
+		t.Errorf("a long line is not a read error: %v", got.Err)
+	}
+	if len(got.Lines) != 3 || got.Lines[2] != "vpn: after" {
+		t.Fatalf("the scan ended at the long line, got %d lines", len(got.Lines))
+	}
+	if len(got.Lines[1]) > maxLogLineBytes+64 {
+		t.Errorf("the long line was kept at %d bytes", len(got.Lines[1]))
+	}
+}
+
+func TestReadLogReportsAFileItCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("opening a directory fails at open on windows")
+	}
+	// A directory opens on unix and fails on read: the same shape as a file that goes bad mid-read.
+	got := ReadLog([]string{t.TempDir()}, 10)
+	if got.Err == nil {
+		t.Errorf("an unreadable log must say so, got %+v", got)
 	}
 }

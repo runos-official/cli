@@ -90,9 +90,24 @@ type Failure struct {
 	Meaning string `json:"meaning,omitempty"`
 }
 
+// handshakeClusterPattern finds the cluster a handshake line is about (handshake_watch.go).
+var handshakeClusterPattern = regexp.MustCompile(`\bcluster (\S+)`)
+
+// failureKey says which failures a success clears. A step is one thing, except the handshake: it is
+// per cluster, and cluster B's first handshake says nothing about cluster A's failure.
+func failureKey(step, detail string) string {
+	if step != "handshake" {
+		return step
+	}
+	if m := handshakeClusterPattern.FindStringSubmatch(detail); m != nil {
+		return step + "/" + m[1]
+	}
+	return step
+}
+
 /*
 LastUnresolvedFailure reads step lines back and returns the most recent failure that no later line
-for the same step has cleared. Nil when there is none.
+for the same step (for the handshake step, the same cluster) has cleared. Nil when there is none.
 
 "Unresolved" is the point. A log that shows `interface failed` at 10:00 and `interface ok` at 10:01
 describes a machine that works; reporting the 10:00 line as the problem would send a person after a
@@ -115,12 +130,13 @@ func LastUnresolvedFailure(lines []string) *Failure {
 			m = []string{"", legacy[1], "poll", status, legacy[3]}
 		}
 		step, status := m[2], m[3]
+		key := failureKey(step, m[4])
 		switch status {
 		case statusFailed:
-			open[step] = i
+			open[key] = i
 			found[i] = &Failure{Step: step, Detail: m[4], At: strings.TrimSpace(m[1])}
 		case statusOK:
-			delete(open, step)
+			delete(open, key)
 		}
 	}
 	latest := -1

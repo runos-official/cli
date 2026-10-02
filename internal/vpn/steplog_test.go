@@ -171,3 +171,19 @@ func TestAStepWhoseDetailChangedIsWrittenAgain(t *testing.T) {
 		t.Fatalf("want a line per distinct outcome (2), got %d:\n%s", n, out)
 	}
 }
+
+func TestAHandshakeSuccessForOneClusterDoesNotClearAnotherClustersFailure(t *testing.T) {
+	// Two clusters share one tunnel. Cluster B coming up says nothing about cluster A.
+	lines := []string{
+		"2026/10/01 10:00:00 vpn: step=handshake status=failed no handshake with cluster clusterA after 1m0s: the server did not answer",
+		"2026/10/01 10:00:30 vpn: step=handshake status=ok first handshake with cluster clusterB after 2s",
+	}
+	got := LastUnresolvedFailure(lines)
+	if got == nil || got.Step != "handshake" || !strings.Contains(got.Detail, "clusterA") {
+		t.Fatalf("got %+v, want the unresolved clusterA handshake failure", got)
+	}
+	lines = append(lines, "2026/10/01 10:05:00 vpn: step=handshake status=ok first handshake with cluster clusterA after 4m0s")
+	if got := LastUnresolvedFailure(lines); got != nil {
+		t.Errorf("got %+v, want none: clusterA handshaked, so its failure is resolved", got)
+	}
+}

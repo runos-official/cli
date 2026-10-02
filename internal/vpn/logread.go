@@ -3,6 +3,8 @@ package vpn
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
@@ -32,41 +34,144 @@ func isLogNoise(line string) bool {
 	return strings.Contains(line, "MallocStackLogging") || strings.TrimSpace(line) == ""
 }
 
-// ReadLog reads the first log file that exists, drops the noise, redacts what is left and returns
-// the last tail lines (all of them when tail is 0). It needs no privilege beyond the file being
-// readable, which the daemon makes it. A file that exists but cannot be read is reported in Err.
+const (
+	// maxLogLines bounds what ReadLog returns, also for tail 0 ("all"): a legacy launchd file is not
+	// bounded by anyone and can be gigabytes.
+	maxLogLines = 10000
+	// maxLogLineBytes is the longest line ReadLog keeps. The daemon writes short lines; a longer one
+	// is replaced by a marker rather than cut, because a cut can leave half a credential in view.
+	maxLogLineBytes = 16 * 1024
+)
+
+/*
+ReadLog reads the log at the first path that has one, drops the noise, and returns the last tail
+lines (the last maxLogLines when tail is 0), redacted. It needs no privilege beyond the file being
+readable, which the daemon makes it. A file that exists but cannot be read is reported in Err.
+
+THE ROTATED GENERATION IS PART OF THE LOG. The daemon writes a step once, on change, and rotates
+its file by size (logfile.go). A failure written just before a rotation is then only in <path>.1,
+and a still broken machine would read as "none recorded". So <path>.1 is read first and the live
+file after it, oldest first.
+
+ONLY THE LAST LINES ARE KEPT, and only those are redacted: the file can be far larger than the
+answer, and the lines that are dropped never need the work.
+*/
 func ReadLog(paths []string, tail int) LogResult {
-	var res LogResult
+	keep := tail
+	if keep <= 0 || keep > maxLogLines {
+		keep = maxLogLines
+	}
+	var failed *LogResult
 	for _, path := range paths {
-		file, err := os.Open(path)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				res.Path, res.Err = path, err
+		res := LogResult{}
+		ring := newLineRing(keep)
+		for _, name := range []string{path + ".1", path} {
+			exists, err := scanLog(name, ring, &res)
+			if exists {
+				res.Path = path
+			}
+			if err != nil && res.Err == nil {
+				res.Err = err
+			}
+		}
+		if res.Path == "" {
+			continue
+		}
+		res.Lines = redactLines(ring.lines())
+		if res.Err != nil && len(res.Lines) == 0 {
+			// Unreadable here; a later location may still have the log.
+			if failed == nil {
+				failed = &res
 			}
 			continue
 		}
-		defer file.Close()
-		res = LogResult{Path: path}
-		scanner := bufio.NewScanner(file)
-		// A daemon line is short; this raises the cap only so one very long error cannot end the
-		// scan early and silently truncate the log.
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		var kept []string
-		for scanner.Scan() {
-			line := scanner.Text()
-			if isLogNoise(line) {
-				res.Skipped++
-				continue
-			}
-			kept = append(kept, redactText(line))
-		}
-		res.Err = scanner.Err()
-		res.Total = len(kept)
-		res.Lines = kept
-		if tail > 0 && len(kept) > tail {
-			res.Lines = kept[len(kept)-tail:]
-		}
 		return res
 	}
-	return res
+	if failed != nil {
+		return *failed
+	}
+	return LogResult{}
+}
+
+// scanLog feeds one file's lines to the ring and the counters in res. exists is false only when the
+// file is absent; an unreadable file exists and carries its error.
+func scanLog(name string, ring *lineRing, res *LogResult) (exists bool, err error) {
+	file, err := os.Open(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return true, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		line, err := readLogLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return true, nil
+			}
+			return true, fmt.Errorf("read %s: %w", name, err)
+		}
+		if isLogNoise(line) {
+			res.Skipped++
+			continue
+		}
+		res.Total++
+		ring.push(line)
+	}
+}
+
+// readLogLine returns one line without its newline, whatever its length. A line over
+// maxLogLineBytes is consumed to its end and replaced by a marker, so one huge line cannot end the
+// scan (the old bufio.Scanner stopped there and silently dropped the rest of the file).
+func readLogLine(r *bufio.Reader) (string, error) {
+	var buf []byte
+	total := 0
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			if err == io.EOF && total > 0 {
+				break
+			}
+			return "", err
+		}
+		total += len(chunk)
+		if total <= maxLogLineBytes {
+			buf = append(buf, chunk...)
+		}
+		if !isPrefix {
+			break
+		}
+	}
+	if total > maxLogLineBytes {
+		return fmt.Sprintf("<line of %d bytes omitted>", total), nil
+	}
+	return string(buf), nil
+}
+
+// lineRing keeps the newest n lines.
+type lineRing struct {
+	buf  []string
+	next int
+	n    int
+}
+
+func newLineRing(n int) *lineRing { return &lineRing{n: n} }
+
+func (r *lineRing) push(line string) {
+	if len(r.buf) < r.n {
+		r.buf = append(r.buf, line)
+		return
+	}
+	r.buf[r.next] = line
+	r.next = (r.next + 1) % r.n
+}
+
+// lines returns the kept lines, oldest first.
+func (r *lineRing) lines() []string {
+	if len(r.buf) < r.n || r.next == 0 {
+		return r.buf
+	}
+	return append(append([]string(nil), r.buf[r.next:]...), r.buf[:r.next]...)
 }
