@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.21.0
+
+**`runos vpn diagnose` shows why a connection is not working.** It prints one report: the CLI version and
+platform, the sign-in state, the VPN service and its control socket, the tunnel status, the last
+failed connect step and what it was trying to do, the last `runos vpn up` attempt, and the recent
+daemon log lines (`--lines`, `--json` for structured output). It needs no root and makes no network
+call. A daemon that does not answer is part of the report. Secrets are never included; account,
+device and cluster ids are.
+
+**The VPN daemon now writes a log you can read.** Each step of a connection writes one line: the first
+success, each new failure reason and the recovery. A repeated condition does not repeat its line.
+The WireGuard engine's own error lines go to the same file, at most one per minute for the same
+message. `runos vpn logs` reads it without root.
+
+**The log cannot fill your disk.** The daemon keeps its own log to 512 KB plus one older copy. On
+macOS the service no longer hands launchd an unbounded log file: launchd's output goes nowhere, and
+the report of a crash goes to a file of its own beside the log, cut to 64 KB when the daemon starts.
+A machine installed with an older version keeps its old log file until you run `runos vpn install`
+again.
+
+**Nothing secret is written to the log or to a report.** Logs and reports are redacted before they are
+written: API keys and tokens, bearer and basic credentials, session cookies, signed URLs and
+tokens in a URL path, WireGuard and PEM private keys, and long opaque tokens. Account, device and
+cluster ids stay, because a report needs them. On a machine with a control-socket group the log is
+readable by that group only, and the daemon refuses to write to a log it does not own or that is a
+link.
+
+**Windows: the folder that holds the device's private key is now locked down.** Before this release any
+local user on a Windows machine could read the VPN state file, which holds the device's private key,
+because the folder inherited read access for all users. The folder is now full control for SYSTEM
+and Administrators only, apart from read access to the folder itself, the control socket and the
+log. The change is applied the next time the daemon starts. If other people use the machine, update
+and restart the VPN service, and re-enrol the device if you want a fresh key.
+
 ## v1.20.0
 
 `runos deploy` and `runos apps diff` no longer report drift when the yaml omits `standardHttps` and the server holds the default (true). A deploy after a failed first deploy now proceeds. A server value of false still reports drift, and `runos deploy` now refuses it: omitting `standardHttps` would turn standard HTTPS back on. Set `standardHttps: false` on the port to keep it off.
