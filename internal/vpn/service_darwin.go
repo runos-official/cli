@@ -122,8 +122,8 @@ func renderLaunchdPlist(execPath, socketGroup string, groupExplicit bool) string
 	</array>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
-	<key>StandardErrorPath</key><string>/var/log/runos-vpn.log</string>
-	<key>StandardOutPath</key><string>/var/log/runos-vpn.log</string>
+	<key>StandardErrorPath</key><string>/dev/null</string>
+	<key>StandardOutPath</key><string>/dev/null</string>
 </dict>
 </plist>
 `, launchdLabel, execPath, socketGroup, source)

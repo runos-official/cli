@@ -35,11 +35,22 @@ var (
 	// A secret word followed by its value with no separator: `session token abcdef123456`. The value
 	// must look like one (long, with a digit), so `token refresh failed` is left alone.
 	bareSecretPattern = regexp.MustCompile(
-		`(?i)((?:token|secret|password|passphrase|api[ _-]?key)s?\s+)([A-Za-z0-9._~+/=-]{12,})`)
+		`(?i)((?:token|secret|password|passphrase|pass|api[ _-]?key|key|pat)s?\s+)([A-Za-z0-9._~+/=-]{12,})`)
 	// A WireGuard key in base64 is 32 bytes: 43 characters and one padding sign.
 	base64KeyPattern = regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
 	// The same key in the hex form the engine's configuration interface uses.
 	hexKeyPattern = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
+	// A cookie header carries its session in the value, whatever the cookie is called.
+	cookiePattern = regexp.MustCompile(`(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n]+`)
+	// A PEM private key, through its end line, or to the end of the text when the end was cut off.
+	pemKeyPattern = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`)
+	// A long path segment of a URL is a token (a download or template link carries its credential
+	// in the path, not the query).
+	urlPathTokenPattern = regexp.MustCompile(`(://[^\s/"']+(?:/[^\s/?#"']*)*?/)([A-Za-z0-9_-]{24,})`)
+	// A long opaque run of letters and digits that follows nothing recognisable: an API key or a
+	// token printed bare. WireGuard keys, UUIDs and hostnames do not match (see looksLikeSecret).
+	opaqueTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{32,}`)
+	uuidPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
 const redacted = "<redacted>"
@@ -51,15 +62,44 @@ func redactText(s string) string {
 	s = jwtPattern.ReplaceAllString(s, redacted)
 	s = namedSecretPattern.ReplaceAllString(s, "${1}${2}"+redacted)
 	s = bareSecretPattern.ReplaceAllStringFunc(s, redactBareSecret)
+	s = cookiePattern.ReplaceAllString(s, "${1}"+redacted)
+	s = pemKeyPattern.ReplaceAllString(s, redacted)
+	s = urlPathTokenPattern.ReplaceAllStringFunc(s, redactPathToken)
 	s = base64KeyPattern.ReplaceAllString(s, redacted)
 	s = hexKeyPattern.ReplaceAllString(s, redacted)
+	s = opaqueTokenPattern.ReplaceAllStringFunc(s, redactOpaque)
 	return s
+}
+
+// looksLikeSecret says whether a long run reads as a credential: letters AND digits, and not a UUID
+// (device and account ids are UUID-shaped, and a report needs them).
+func looksLikeSecret(run string) bool {
+	if uuidPattern.MatchString(run) || strings.Contains(run, redacted) {
+		return false
+	}
+	return strings.ContainsAny(run, "0123456789") && strings.ContainsAny(run, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+func redactOpaque(run string) string {
+	if looksLikeSecret(run) {
+		return redacted
+	}
+	return run
+}
+
+// redactPathToken masks the long last segment a urlPathTokenPattern match ends in.
+func redactPathToken(match string) string {
+	m := urlPathTokenPattern.FindStringSubmatch(match)
+	if m == nil || !looksLikeSecret(m[2]) {
+		return match
+	}
+	return m[1] + redacted
 }
 
 // redactBareSecret masks the value of a bareSecretPattern match when it contains a digit.
 func redactBareSecret(match string) string {
 	m := bareSecretPattern.FindStringSubmatch(match)
-	if m == nil || !strings.ContainsAny(m[2], "0123456789") {
+	if m == nil || !strings.ContainsAny(m[2], "0123456789") || uuidPattern.MatchString(m[2]) {
 		return match
 	}
 	return m[1] + redacted

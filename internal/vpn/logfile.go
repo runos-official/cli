@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 )
 
@@ -28,6 +29,10 @@ to stderr as well, so the journal and the launchd file keep what they had. When 
 // maxDaemonLogBytes caps the live file; the previous generation is kept beside it, so the daemon
 // holds at most twice this.
 const maxDaemonLogBytes = 512 * 1024
+
+// maxCrashLogBytes caps the crash file. It only holds the report of a Go panic or fatal error, which
+// is a few KB, and it is trimmed when the daemon starts, so it cannot grow without bound.
+const maxCrashLogBytes = 64 * 1024
 
 type boundedLog struct {
 	mu   sync.Mutex
@@ -148,5 +153,34 @@ func SetupDaemonLog(path, socketGroup string, groupExplicit bool) (closeLog func
 	}
 	narrowIfRegular(os.Stderr, group)
 	log.SetOutput(teeWriter{file: b, stderr: os.Stderr})
-	return func() { _ = b.Close() }
+	closeCrash := setupCrashLog(path+".crash", group)
+	return func() {
+		closeCrash()
+		_ = b.Close()
+	}
+}
+
+// setupCrashLog sends the report of a Go panic or fatal error to a file of its own. It went to
+// stderr, and on macOS stderr was an unbounded file launchd owned; now launchd's streams go nowhere,
+// so this keeps the one thing only stderr carried. The file is trimmed when it is over its cap (an
+// older crash is not worth a bigger file than a new one), and it follows the same access rule as the
+// log. A failure here is not a reason to stop the daemon.
+func setupCrashLog(path, group string) (closeCrash func()) {
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() > maxCrashLogBytes {
+		_ = os.Truncate(path, 0)
+	}
+	f, err := openLogFile(path)
+	if err != nil {
+		log.Printf("vpn: step=daemon-start status=warn cannot open the crash log %s: %s", path, redactText(err.Error()))
+		return func() {}
+	}
+	if err := applyLogAccess(f, path, group); err != nil {
+		f.Close()
+		return func() {}
+	}
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		f.Close()
+		return func() {}
+	}
+	return func() { _ = f.Close() }
 }

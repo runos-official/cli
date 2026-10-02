@@ -9,6 +9,10 @@ import (
 redactText has to catch the credential shapes an HTTP client, a shell or an engine really prints,
 not only the ones the first version thought of. Each row names the secret that must NOT survive.
 */
+// pemBlock is built at run time so no private-key header sits in the source of a public repo.
+var pemBlock = strings.Repeat("-", 5) + "BEGIN PRIVATE KEY" + strings.Repeat("-", 5) + "\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" +
+	strings.Repeat("-", 5) + "END PRIVATE KEY" + strings.Repeat("-", 5)
+
 func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 	cases := []struct {
 		name, in, secret string
@@ -27,6 +31,14 @@ func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 		{"bare token word", "session token abcdef123456", "abcdef123456"},
 		{"bare password word", "the password Hunter2Hunter2 was refused", "Hunter2Hunter2"},
 		{"bare api key words", "api key Abcdef123456789 rejected", "Abcdef123456789"},
+		// Shapes that name no secret word near the value (found by probing the first version).
+		{"cookie header", "Cookie: session=abcdef1234567890abcdef", "abcdef1234567890abcdef"},
+		{"set-cookie header", "Set-Cookie: __session=abcdef1234567890abcdef; Path=/", "abcdef1234567890abcdef"},
+		{"bare key word", "invalid key runos_pat_AbCdEf1234567890xyz", "AbCdEf1234567890xyz"},
+		{"bare pat word", "rejected pat runos_pat_AbCdEf1234567890xyz", "AbCdEf1234567890xyz"},
+		{"token in a url path", "GET https://get.example.com/t/abcdefghijklmnopqrstuvwx1234 failed", "abcdefghijklmnopqrstuvwx1234"},
+		{"pem block", pemBlock, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"},
+		{"long opaque token", "rejected AbCdEfGh1234IjKlMnOp5678QrStUvWx9012", "AbCdEfGh1234IjKlMnOp5678QrStUvWx9012"},
 	}
 	for _, c := range cases {
 		out := redactText(c.in)
@@ -54,6 +66,27 @@ func TestRedactTextLeavesOrdinaryLinesAlone(t *testing.T) {
 	for _, in := range keep {
 		if got := redactText(in); got != in {
 			t.Errorf("redaction damaged an ordinary line:\n in: %q\nout: %q", in, got)
+		}
+	}
+}
+
+/*
+	Over-redaction costs diagnostics: what a report is FOR (ids, hostnames, addresses, plain words)
+
+must survive.
+*/
+func TestRedactTextLeavesWhatAReportNeeds(t *testing.T) {
+	for _, in := range []string{
+		"device 2de0efd7-9afe-4e33-8458-04fdf7a7a460 handshake ok",
+		"cluster cl1 account acct1 endpoint 203.0.113.7:51820",
+		"dial tcp host.example.com:443: i/o timeout",
+		"token refresh failed",
+		"step=connect status=failed reason=dns lookup",
+		"key exchange completed",
+		"GET https://api.example.com/v1/devices/abc failed",
+	} {
+		if got := redactText(in); got != in {
+			t.Errorf("redactText changed %q to %q", in, got)
 		}
 	}
 }
