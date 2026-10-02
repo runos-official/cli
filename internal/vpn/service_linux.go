@@ -3,6 +3,7 @@
 package vpn
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -56,7 +57,10 @@ func (s systemdService) Restart() error {
 }
 
 func (s systemdService) Running() (bool, error) {
-	out, _ := run("systemctl", "is-active", "runos-vpn.service")
+	out, err := runBounded("systemctl", "is-active", "runos-vpn.service")
+	if errors.Is(err, errQueryTimedOut) {
+		return false, err
+	}
 	return strings.TrimSpace(string(out)) == "active", nil
 }
 

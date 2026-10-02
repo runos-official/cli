@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -104,16 +107,75 @@ func TestDiagnoseAgainstARunningDaemonCarriesItsStatus(t *testing.T) {
 	}
 }
 
-func TestLogsAndDiagnoseNeedNoConfigBootstrap(t *testing.T) {
-	// A stuck user may have no config and no network; the bootstrap would fetch one first.
+// countingTransport stands in for the network: it fails every request and counts them, so a test
+// can say "no network call was made" instead of hoping the machine happens to be offline.
+type countingTransport struct{ calls atomic.Int32 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return nil, errors.New("test: the network is not available")
+}
+
+func noNetwork(t *testing.T) *countingTransport {
+	t.Helper()
+	ct := &countingTransport{}
+	old := http.DefaultTransport
+	http.DefaultTransport = ct
+	t.Cleanup(func() { http.DefaultTransport = old })
+	return ct
+}
+
+func TestDiagnoseMakesNoNetworkCallEvenWithAnAPIKeyAndNoConfig(t *testing.T) {
+	// config.Load() fetches the default environment from a CDN, with a 10 second deadline, when
+	// RUNOS_API_KEY is set and there is no config file. A diagnostic must never wait on that.
+	isolatedHome(t)
+	t.Setenv("RUNOS_API_KEY", "pat-for-test-only")
+	ct := noNetwork(t)
+	out, err := runDiagnose(t, filepath.Join(t.TempDir(), "no.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := ct.calls.Load(); n != 0 {
+		t.Errorf("diagnose made %d network call(s); it promises none", n)
+	}
+	if !strings.Contains(out, "signed in: yes") {
+		t.Errorf("a PAT in the environment still counts as signed in:\n%s", out)
+	}
+	if strings.Contains(out, "config error") {
+		t.Errorf("a missing config file is normal for a PAT caller, not an error:\n%s", out)
+	}
+}
+
+// The bootstrap in the root command's PersistentPreRunE fetches a config over the network when none
+// exists. This drives that real hook for the real commands, not the helper that decides.
+func TestLogsAndDiagnoseSkipTheRootBootstrapAndUpDoesNot(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv("RUNOS_API_KEY", "pat-for-test-only")
+	// isolatedHome blanks the account id, and a set-but-empty auth variable is refused by the hook
+	// before it reaches the bootstrap.
+	t.Setenv("RUNOS_ACCOUNT_ID", "acct-for-test")
+	ct := noNetwork(t)
+
 	for _, name := range []string{"logs", "diagnose"} {
-		if !isBootstrapFreeVPNCommand(name) {
-			t.Errorf("vpn %s must not run the config bootstrap", name)
+		c, _, err := rootCmd.Find([]string{"vpn", name})
+		if err != nil || c.Name() != name {
+			t.Fatalf("vpn %s not found: %v", name, err)
+		}
+		if err := rootCmd.PersistentPreRunE(c, nil); err != nil {
+			t.Errorf("vpn %s ran the config bootstrap and failed: %v", name, err)
 		}
 	}
-	for _, name := range []string{"up", "status", "down", "connect"} {
-		if isBootstrapFreeVPNCommand(name) {
-			t.Errorf("vpn %s needs the config", name)
-		}
+	if n := ct.calls.Load(); n != 0 {
+		t.Fatalf("vpn logs and diagnose made %d network call(s) before running", n)
+	}
+
+	// The control: a command that needs the config does bootstrap, so the counter is meaningful.
+	up, _, err := rootCmd.Find([]string{"vpn", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rootCmd.PersistentPreRunE(up, nil)
+	if ct.calls.Load() == 0 {
+		t.Error("vpn up did not bootstrap: this test cannot tell a skipped bootstrap from a broken hook")
 	}
 }

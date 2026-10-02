@@ -213,6 +213,28 @@ func configPath() (string, error) {
 // got pushed toward a Firebase login they didn't need.
 var ErrConfigNotFound = fmt.Errorf("config not found. Interactive: run 'runos config env <environment>' then 'runos login'. CI / PAT: set RUNOS_API_URL + RUNOS_API_KEY + RUNOS_ACCOUNT_ID and re-run")
 
+// LoadLocal reads and parses the config file from disk and nothing else: no network, whatever the
+// environment holds. A missing file is ErrConfigNotFound. Use it where a network wait is not
+// acceptable (`runos vpn diagnose`); everything else wants Load.
+func LoadLocal() (*Config, error) {
+	path, err := configPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, ErrConfigNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 // Load reads and parses the config file from disk. When the file is
 // missing AND CI-style env vars (RUNOS_API_KEY) are set, returns an
 // empty config the caller can populate from env via the Get* helpers

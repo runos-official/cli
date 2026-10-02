@@ -100,7 +100,13 @@ func NewClient(socketPath string) *Client {
 
 // Call sends one request and returns the daemon's response. A connection failure is reported as a
 // distinct error so the CLI can say "the VPN service is not running; run 'runos vpn install'".
-func (c *Client) Call(req Request) (*Response, error) {
+func (c *Client) Call(req Request) (*Response, error) { return c.call(req, callTimeout) }
+
+// callTimeout is how long an ordinary call may wait for the daemon: an up request creates a tunnel.
+const callTimeout = 120 * time.Second
+
+// call is Call with its own deadline, for the callers that must not wait that long.
+func (c *Client) call(req Request, timeout time.Duration) (*Response, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, 3*time.Second)
 	if err != nil {
 		// PERMISSION DENIED IS THE OPPOSITE OF NOT RUNNING, and saying the wrong one sent two
@@ -113,7 +119,7 @@ func (c *Client) Call(req Request) (*Response, error) {
 		return nil, &NotRunningError{Path: c.socketPath, Err: err}
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(120 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	data, err := json.Marshal(req)
 	if err != nil {

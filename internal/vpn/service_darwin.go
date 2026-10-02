@@ -3,9 +3,9 @@
 package vpn
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -87,7 +87,10 @@ func (s launchdService) Restart() error {
 }
 
 func (s launchdService) Running() (bool, error) {
-	out, err := exec.Command("launchctl", "print", "system/"+launchdLabel).CombinedOutput()
+	out, err := runBounded("launchctl", "print", "system/"+launchdLabel)
+	if errors.Is(err, errQueryTimedOut) {
+		return false, err
+	}
 	if err != nil {
 		// `launchctl print` exits non-zero when the label is not loaded; that is "not running".
 		return false, nil

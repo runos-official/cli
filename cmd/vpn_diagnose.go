@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -70,7 +72,13 @@ func collectReportInput(cmd *cobra.Command, logLines int) vpn.ReportInput {
 		Now: time.Now(), CLIVersion: version.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
 		ServiceState: serviceState(),
 	}
-	cfg, err := config.Load()
+	// LoadLocal, not Load: with RUNOS_API_KEY set and no config file, Load fetches the default
+	// environment from a CDN with a 10 second deadline, and this command promises no network call.
+	cfg, err := config.LoadLocal()
+	if errors.Is(err, config.ErrConfigNotFound) && os.Getenv(auth.APIKeyEnvVar) != "" {
+		// A PAT caller needs no config file; the error would only send them to `runos login`.
+		cfg, err = nil, nil
+	}
 	if err != nil {
 		in.ConfigErr = err.Error()
 	}
