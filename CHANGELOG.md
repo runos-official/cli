@@ -8,6 +8,10 @@ key, the key and the refresh token stay in the OS credential store, and every re
 single-use proof. Every other environment keeps the Firebase sign-in unchanged. See Authentication in
 the README for the switch (`auth-issuer`).
 
+**A host with no OS credential store** now says what works: set `RUNOS_CREDENTIAL_PASSPHRASE` to keep
+the identity-service credentials in an encrypted file, or use a machine key in `RUNOS_API_KEY`. The
+message used to name a `--allow-encrypted-file` flag that no command has.
+
 **`runos whoami`** shows the credential the CLI sends and who it signs in as.
 
 **`runos access`** manages roles, groups and grants through the identity service, with a browser

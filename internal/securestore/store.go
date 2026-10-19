@@ -77,10 +77,10 @@ func Open(o Options) (Store, error) {
 		return s, nil
 	}
 	if !o.AllowEncryptedFile {
-		return nil, &NoSecureStoreError{Reason: "no OS credential store on this host; pass --allow-encrypted-file with a passphrase, or use a machine key in RUNOS_API_KEY"}
+		return nil, &NoSecureStoreError{Reason: "no OS credential store on this host; set RUNOS_CREDENTIAL_PASSPHRASE to keep the credentials in an encrypted file, or use a machine key in RUNOS_API_KEY"}
 	}
 	if len(o.Passphrase) == 0 {
-		return nil, &NoSecureStoreError{Reason: "--allow-encrypted-file needs a passphrase (RUNOS_CREDENTIAL_PASSPHRASE)"}
+		return nil, &NoSecureStoreError{Reason: "an encrypted credential file needs a passphrase in RUNOS_CREDENTIAL_PASSPHRASE"}
 	}
 	if o.FilePath == "" {
 		return nil, &NoSecureStoreError{Reason: "no encrypted file path"}

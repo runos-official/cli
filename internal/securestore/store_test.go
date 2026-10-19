@@ -21,7 +21,7 @@ func TestHeadlessHostRefusesPlainFileFallback(t *testing.T) {
 	if !errors.As(err, &nss) || !strings.Contains(err.Error(), CodeNoSecureStore) {
 		t.Fatalf("headless open gave %v, want %s", err, CodeNoSecureStore)
 	}
-	// The flag alone is not enough: an encrypted file needs a passphrase.
+	// Allowing the file is not enough: an encrypted file needs a passphrase.
 	_, err = Open(Options{Service: "runos-cli-test-test", FilePath: filepath.Join(dir, "creds.enc"), AllowEncryptedFile: true, Warn: &warn, Platform: headless})
 	if !errors.As(err, &nss) {
 		t.Fatalf("flag without passphrase gave %v", err)
@@ -164,5 +164,18 @@ func TestWriteFileAtomicReadersNeverSeeAPartialFile(t *testing.T) {
 	wg.Wait()
 	if bad != nil {
 		t.Fatal(bad)
+	}
+}
+
+// FCR 1320: the refusal named a --allow-encrypted-file flag that no command
+// has. It must name what works: the passphrase variable, or a machine key.
+func TestTheRefusalNamesAWayThatWorks(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Open(Options{Service: "runos-cli-test-test", FilePath: filepath.Join(dir, "creds.enc"), Platform: headless})
+	if err == nil || !strings.Contains(err.Error(), "RUNOS_CREDENTIAL_PASSPHRASE") || !strings.Contains(err.Error(), "RUNOS_API_KEY") {
+		t.Fatalf("refusal %v does not name RUNOS_CREDENTIAL_PASSPHRASE and RUNOS_API_KEY", err)
+	}
+	if strings.Contains(err.Error(), "--allow-encrypted-file") {
+		t.Fatalf("refusal %v names a flag no command has", err)
 	}
 }
