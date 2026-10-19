@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -123,22 +124,57 @@ func (r *Result) ErrorMessage() string {
 // A non-2xx is NOT an error here: it is a Result the caller reads. Only
 // a transport, marshalling or read failure returns err.
 func (c *Client) Do(method, path, token string, body any) (*Result, error) {
+	return c.Send(Request{Method: method, Path: path, Token: token, JSON: body})
+}
+
+// Request is one call for Send. JSON and Form are the two body shapes; a
+// request carries at most one. Header adds headers after the defaults.
+type Request struct {
+	Method string
+	Path   string
+	// Token is sent as "Authorization: Bearer <token>". Empty sends no
+	// Authorization header, for a public endpoint.
+	Token  string
+	JSON   any
+	Form   url.Values
+	Header http.Header
+}
+
+// Send performs one request and returns the completed exchange, with the
+// same contract as Do: a non-2xx is a Result, not an error. It exists for
+// the calls Do cannot express, such as an OAuth endpoint that takes a form
+// body and a proof header.
+func (c *Client) Send(r Request) (*Result, error) {
+	if r.JSON != nil && r.Form != nil {
+		return nil, fmt.Errorf("a request carries one body: JSON or a form, not both")
+	}
 	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
+	contentType := ""
+	switch {
+	case r.JSON != nil:
+		encoded, err := json.Marshal(r.JSON)
 		if err != nil {
 			return nil, fmt.Errorf("could not encode the request body: %w", err)
 		}
-		reader = bytes.NewReader(encoded)
+		reader, contentType = bytes.NewReader(encoded), "application/json"
+	case r.Form != nil:
+		reader, contentType = strings.NewReader(r.Form.Encode()), "application/x-www-form-urlencoded"
 	}
 
-	req, err := http.NewRequest(method, strings.TrimRight(c.baseURL, "/")+path, reader)
+	req, err := http.NewRequest(r.Method, strings.TrimRight(c.baseURL, "/")+r.Path, reader)
 	if err != nil {
 		return nil, fmt.Errorf("could not build the request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if r.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+r.Token)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for k, vs := range r.Header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
 	}
 
 	resp, err := c.httpClient.Do(req)

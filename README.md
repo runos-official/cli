@@ -97,6 +97,25 @@ export RUNOS_API_URL=https://api.your-env.runos.com
 
 When `RUNOS_API_KEY` is set, the CLI bypasses Firebase auth entirely. No `~/.runos/config.json` is required, and no interactive `runos login` is needed.
 
+### Sign-in through the RunOS identity service
+
+An environment can sign in through the RunOS identity service instead of Firebase. Nothing changes for an environment that does not name one: `runos login` uses Firebase as before.
+
+The switch is per environment:
+
+- **Published environments.** The environment's entry in the CDN config carries an auth block: `"auth": {"provider": "roid", "issuer": "https://<issuer>"}`. A fresh install picks the block up on first run. An existing install picks it up on `runos config env <name>`. An environment with no block, or with another provider, keeps Firebase.
+- **By hand, for development.** `runos config set auth-issuer <issuer URL>` names an issuer. The issuer must use https; plain http is allowed only on a loopback host. `runos config set auth-issuer firebase` goes back to Firebase.
+
+With an issuer set:
+
+- `runos login` runs a device sign-in that you approve in the browser. Each token is bound to a new proof key made for this sign-in, and each request carries a single-use proof of that key.
+- The proof key and the refresh token go to the OS credential store: the macOS Keychain, the Linux Secret Service or the Windows Credential Manager. `config.json` holds only the issuer and your person id. A host with no credential store cannot sign in this way unless `RUNOS_CREDENTIAL_PASSPHRASE` is set, which keeps the secrets in an encrypted file.
+- `runos logout`, `runos login --api-key` and a Firebase sign-in revoke the identity service sign-in and delete its secrets.
+- `runos whoami` shows the credential in use and, for an identity service sign-in, who you are and your accounts.
+- `runos access` manages roles, groups and grants. It is listed in help only when the environment names an issuer.
+
+`RUNOS_API_KEY` and a stored personal access token still win over every sign-in.
+
 ## Configuration
 
 Configuration is stored in `~/.runos/config.json`.
@@ -110,6 +129,7 @@ Configuration is stored in `~/.runos/config.json`.
 | `RUNOS_API_URL` | Override the API endpoint |
 | `CONSOLE_URL` | Override the web console URL |
 | `RUNOS_CLUSTER_ID` | Default cluster ID for cluster-scoped commands |
+| `RUNOS_CREDENTIAL_PASSPHRASE` | Keep identity service sign-in secrets in an encrypted file on a host with no OS credential store |
 
 ### Custom URLs
 

@@ -103,6 +103,12 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	if cfg.AuthIssuer != "" {
+		if t, ok := report.(textSignIn); ok {
+			report = roidTextSignIn{t}
+		}
+		return roidLoginReporting(cmd, cfg, report, chatty, autoOpenBrowser)
+	}
 	previousAccountID := cfg.AccountID
 	session, err := browserAuthenticateReporting(cfg, report, autoOpenBrowser)
 	if err != nil {
@@ -292,6 +298,7 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	}
 
 	previousAccountID := cfg.AccountID
+	endRoidSignIn(cmd, cfg)
 	cfg.ApplyAPIKeyLogin(aid, strings.TrimSpace(apiKey), time.Now().UTC().Format(time.RFC3339))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)

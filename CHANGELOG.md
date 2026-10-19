@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**Sign in through the RunOS identity service, per environment.** An environment whose config names an
+auth issuer signs in with a device sign-in through the identity service. Tokens are bound to a proof
+key, the key and the refresh token stay in the OS credential store, and every request carries a
+single-use proof. Every other environment keeps the Firebase sign-in unchanged. See Authentication in
+the README for the switch (`auth-issuer`).
+
+**`runos whoami`** shows the credential the CLI sends and who it signs in as.
+
+**`runos access`** manages roles, groups and grants through the identity service, with a browser
+security-key confirmation for sensitive changes. It is shown only for an environment with an issuer.
+
 ## v1.21.0
 
 **`runos vpn diagnose` shows why a connection is not working.** It prints one report: the CLI version and

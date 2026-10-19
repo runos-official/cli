@@ -313,6 +313,10 @@ func init() {
 	// Static commands - always available
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(logoutCmd)
+	rootCmd.AddCommand(whoamiCmd)
+	// access talks to the identity service directly (internal/roidapi), not conductor.
+	rootCmd.AddCommand(accessCmd)
+	hideAccessUnlessRoid()
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(configCmd)
@@ -401,7 +405,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd, accessCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)

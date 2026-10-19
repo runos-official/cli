@@ -1,0 +1,785 @@
+openapi: 3.1.0
+info:
+  title: roid RBAC API
+  version: 1.0.0
+  description: |
+    Roles, groups, grants, effective access and the audit trail of a grant,
+    for one RunOS account. The CLI and the Console build on this document;
+    roid/internal/server/rbac_openapi_test.go fails when it and the routes
+    differ.
+
+    Rules:
+    - Every call is decided by roid's policy engine. Reading the access
+      configuration needs access.read (the viewer role holds it); changes
+      need access.roles.update, access.groups.update, access.grant or
+      access.grant.revoke at the scope they touch.
+    - Delegated administration: a caller hands out only actions it holds
+      itself, at the scope or an ancestor, under conditions no weaker than
+      its own. A refusal answers 403 with code delegation.escalation.
+    - An escalation-class change (a grant, custom role or group membership
+      that hands out credential-read, exec, hardware or access-admin
+      actions) needs a security-key step-up bound to the exact request. The
+      first call answers 403 with error.requirement "step_up" and a
+      step_up_id; repeat the same request with the X-RunOS-Step-Up header
+      that names the completed proof.
+    - Changes to an existing role, group or grant need If-Match with the
+      ETag from the last read: 428 when it is missing, 412 when it is stale.
+    - Every change is audited before it takes effect, and is in force on
+      every roid replica for the next request.
+    - Lists are sorted by id. Pass limit (1 to 200, default 50) and the
+      next_cursor of the previous page as cursor.
+servers:
+  - url: https://roid.example.test
+security:
+  - session: []
+  - bearer: []
+paths:
+  /v1/accounts/{acct}/access/actions:
+    get:
+      operationId: listActions
+      summary: List the action catalog, for role editors.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: One page of actions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionPage'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/roles:
+    get:
+      operationId: listRoles
+      summary: List built-in and custom roles with their actions.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: One page of roles. Each item carries its etag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePage'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createRole
+      summary: Create a custom role.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/stepUp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/Role'
+        '409':
+          description: role.exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/roles/{role}:
+    get:
+      operationId: getRole
+      summary: Read one role.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/role'
+      responses:
+        '200':
+          $ref: '#/components/responses/Role'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: updateRole
+      summary: Replace a custom role's name and actions. Built-in roles are fixed (400).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/role'
+        - $ref: '#/components/parameters/ifMatch'
+        - $ref: '#/components/parameters/stepUp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleUpdate'
+      responses:
+        '200':
+          $ref: '#/components/responses/Role'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteRole
+      summary: Delete a custom role that no grant binds (409 role.in_use otherwise).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/role'
+        - $ref: '#/components/parameters/ifMatch'
+      responses:
+        '204':
+          description: Deleted.
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/groups:
+    get:
+      operationId: listGroups
+      summary: List groups with their members.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: One page of groups. Each item carries its etag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupPage'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createGroup
+      summary: Create a group. An IdP-managed group takes its members from a company sign-in connection only.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/Group'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/groups/{group}:
+    get:
+      operationId: getGroup
+      summary: Read one group.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/group'
+      responses:
+        '200':
+          $ref: '#/components/responses/Group'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: renameGroup
+      summary: Change a group's display name. The id stays; IdP-managed groups are read only (409).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/group'
+        - $ref: '#/components/parameters/ifMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+      responses:
+        '200':
+          $ref: '#/components/responses/Group'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteGroup
+      summary: Delete a group that no grant names and no company sign-in maps (409 group.in_use otherwise).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/group'
+        - $ref: '#/components/parameters/ifMatch'
+      responses:
+        '204':
+          description: Deleted.
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/groups/{group}/members/{person}:
+    put:
+      operationId: addGroupMember
+      summary: Add an account member to a group. The person gets the group's grants, so this is a delegation of each.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/group'
+        - $ref: '#/components/parameters/person'
+        - $ref: '#/components/parameters/ifMatch'
+        - $ref: '#/components/parameters/stepUp'
+      responses:
+        '200':
+          $ref: '#/components/responses/Group'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: removeGroupMember
+      summary: Remove a person from a group.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/group'
+        - $ref: '#/components/parameters/person'
+        - $ref: '#/components/parameters/ifMatch'
+      responses:
+        '200':
+          $ref: '#/components/responses/Group'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/grants:
+    get:
+      operationId: listGrants
+      summary: List grants, with optional filters.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - name: subject
+          in: query
+          description: kind:id, for example person:p_123 or group:ops.
+          schema:
+            type: string
+        - name: role
+          in: query
+          schema:
+            type: string
+        - name: scope
+          in: query
+          description: Exactly this scope.
+          schema:
+            type: string
+        - name: under
+          in: query
+          description: This scope and every scope below it.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: One page of grants. Each item carries its etag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantPage'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createGrant
+      summary: Grant a role, or a list of actions, to a person, group or machine key at a scope.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/stepUp'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantCreate'
+      responses:
+        '201':
+          $ref: '#/components/responses/Grant'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/grants/{grant}:
+    get:
+      operationId: getGrant
+      summary: Read one grant.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/grant'
+      responses:
+        '200':
+          $ref: '#/components/responses/Grant'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: revokeGrant
+      summary: Revoke a grant. The last admin grant at account scope stays (409 grant.last_admin).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/grant'
+        - $ref: '#/components/parameters/ifMatch'
+      responses:
+        '204':
+          description: Revoked.
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/grants/{grant}/audit:
+    get:
+      operationId: getGrantAudit
+      summary: The audit records that name one grant, oldest first (at most 500).
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - $ref: '#/components/parameters/grant'
+      responses:
+        '200':
+          description: Audit records.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        default:
+          $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/effective:
+    get:
+      operationId: getEffectiveAccess
+      summary: What a person can do at a scope, and why. A person may always ask about themselves; asking about another person needs access.read.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+        - name: person
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: scope
+          in: query
+          required: true
+          description: A scope in this account, for example acct/a1/cluster/c1.
+          schema:
+            type: string
+        - name: action
+          in: query
+          description: Only this action.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One entry per action that applies at the scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EffectiveAccess'
+        default:
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-roid_session
+    bearer:
+      type: http
+      scheme: bearer
+  parameters:
+    acct:
+      name: acct
+      in: path
+      required: true
+      schema:
+        type: string
+    role:
+      name: role
+      in: path
+      required: true
+      schema:
+        type: string
+    group:
+      name: group
+      in: path
+      required: true
+      schema:
+        type: string
+    person:
+      name: person
+      in: path
+      required: true
+      schema:
+        type: string
+    grant:
+      name: grant
+      in: path
+      required: true
+      schema:
+        type: string
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    cursor:
+      name: cursor
+      in: query
+      description: The next_cursor of the previous page.
+      schema:
+        type: string
+    ifMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: The ETag from the last read of the resource.
+      schema:
+        type: string
+    stepUp:
+      name: X-RunOS-Step-Up
+      in: header
+      description: The completed step-up proof for an escalation-class change.
+      schema:
+        type: string
+  responses:
+    Error:
+      description: An error. 400 invalid request, 403 refused or needs a step-up, 404 not found, 409 conflict, 412 stale ETag, 428 If-Match missing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Role:
+      description: A role.
+      headers:
+        ETag:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Role'
+    Group:
+      description: A group.
+      headers:
+        ETag:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Group'
+    Grant:
+      description: A grant.
+      headers:
+        ETag:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Grant'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code]
+          properties:
+            code:
+              type: string
+              examples: [delegation.escalation, precondition_failed, role.in_use, group.in_use, grant.last_admin, group.managed_by_idp]
+            reason:
+              type: string
+            detail:
+              type: string
+            requirement:
+              type: string
+              description: step_up when the change needs a security-key step-up.
+            step_up_id:
+              type: string
+    Action:
+      type: object
+      required: [id, class, scope_type, module, escalation]
+      properties:
+        id:
+          type: string
+        class:
+          type: string
+          enum: [read, write, credential-read, exec, destructive, hardware, access-admin]
+        scope_type:
+          type: string
+        module:
+          type: string
+        escalation:
+          type: boolean
+    ActionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Action'
+        next_cursor:
+          type: string
+    Role:
+      type: object
+      required: [id, name, builtin, actions, version]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        builtin:
+          type: boolean
+        actions:
+          type: array
+          items:
+            type: string
+        version:
+          type: integer
+        etag:
+          type: string
+          description: In list answers only; a single read carries it in the ETag header.
+    RoleCreate:
+      type: object
+      required: [id, name, actions]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,47}$'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            description: An action id or a prefix pattern such as clusters.*
+    RoleUpdate:
+      type: object
+      required: [name, actions]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+    RolePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        next_cursor:
+          type: string
+    Group:
+      type: object
+      required: [id, name, members, idp_managed]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+        idp_managed:
+          type: boolean
+        etag:
+          type: string
+    GroupCreate:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,47}$'
+        name:
+          type: string
+          maxLength: 80
+        idp_managed:
+          type: boolean
+    GroupPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        next_cursor:
+          type: string
+    Subject:
+      type: object
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [person, group, key]
+        id:
+          type: string
+    Conditions:
+      type: object
+      properties:
+        source_ranges:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            description: A CIDR prefix.
+        window:
+          type: object
+          required: [start_min, end_min]
+          properties:
+            start_min:
+              type: integer
+              minimum: 0
+              maximum: 1439
+            end_min:
+              type: integer
+              minimum: 0
+              maximum: 1439
+        require_mfa:
+          type: boolean
+        min_assurance:
+          type: string
+          enum: [password, otp, passkey, hardware]
+    Grant:
+      type: object
+      required: [id, subject, role, actions, scope, conditions, granted_by, version]
+      properties:
+        id:
+          type: string
+        subject:
+          $ref: '#/components/schemas/Subject'
+        role:
+          type: string
+        actions:
+          type: array
+          items:
+            type: string
+        scope:
+          type: string
+        conditions:
+          $ref: '#/components/schemas/Conditions'
+        not_before:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        granted_by:
+          type: string
+        version:
+          type: integer
+        etag:
+          type: string
+    GrantCreate:
+      type: object
+      required: [subject, scope]
+      description: Give role or actions, not both.
+      properties:
+        subject:
+          $ref: '#/components/schemas/Subject'
+        role:
+          type: string
+        actions:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+        scope:
+          type: string
+        conditions:
+          $ref: '#/components/schemas/Conditions'
+        not_before:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    GrantPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Grant'
+        next_cursor:
+          type: string
+    AuditEntry:
+      type: object
+      required: [seq, event, at, actor]
+      properties:
+        seq:
+          type: integer
+        event:
+          type: string
+          examples: [access.grant.created, access.grant.revoked]
+        at:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        actor_class:
+          type: string
+        attrs:
+          type: object
+          additionalProperties:
+            type: string
+    EffectiveAccess:
+      type: object
+      required: [person, scope, policy_version, assumes, actions]
+      properties:
+        person:
+          type: string
+        scope:
+          type: string
+        policy_version:
+          type: integer
+        assumes:
+          type: string
+        actions:
+          type: array
+          items:
+            type: object
+            required: [action, class, outcome]
+            properties:
+              action:
+                type: string
+              class:
+                type: string
+              outcome:
+                type: string
+                enum: [permit, needs, deny]
+              code:
+                type: string
+              reason:
+                type: string
+              needs:
+                type: array
+                items:
+                  type: string
+              grant:
+                type: string
+                description: The grant that decided a permit.
+              via:
+                type: string
+                description: person, or group:<id> or key:<id>.

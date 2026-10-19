@@ -10,7 +10,8 @@ import (
 )
 
 // ErrNotAuthenticated is returned when no credential path is available:
-// no RUNOS_API_KEY, no stored PAT, and no Firebase refresh-token config.
+// no RUNOS_API_KEY, no stored PAT, no roid sign-in, and no Firebase
+// refresh-token config.
 // Callers use errors.Is to distinguish the expected "not signed in yet"
 // state (new install, logged out) from genuine failures, so first-run
 // output can stay friendly instead of dumping recovery jargon.
@@ -68,6 +69,11 @@ const (
 	// carries an `auth_time` claim, which is what makes a decision
 	// checkably fresh.
 	CredentialInteractive CredentialKind = "interactive"
+	// CredentialRoid means a sign-in through roid, the RunOS identity
+	// service, for the environment's issuer. A person signed in through a
+	// device approval, so it is not a PAT. Its tokens are bound to this
+	// install's proof key in the OS credential store.
+	CredentialRoid CredentialKind = "roid"
 )
 
 // IsPAT reports whether this kind is a stored secret rather than an
@@ -88,6 +94,9 @@ func Kind(cfg *config.Config) CredentialKind {
 	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
 		return CredentialStoredPAT
 	}
+	if cfg.HasRoidSignIn() {
+		return CredentialRoid
+	}
 	if cfg != nil && cfg.Firebase != nil {
 		return CredentialInteractive
 	}
@@ -95,7 +104,7 @@ func Kind(cfg *config.Config) CredentialKind {
 }
 
 // ResolveToken returns the bearer token to send in Authorization headers.
-// Three paths, in the priority order Kind reports:
+// Four paths, in the priority order Kind reports:
 //
 //  1. CredentialEnvPAT: RUNOS_API_KEY set in the environment, returned
 //     verbatim. This is the CI/CD path: a PAT minted via
@@ -108,13 +117,17 @@ func Kind(cfg *config.Config) CredentialKind {
 //     instead of the browser flow. The env var still wins over the
 //     stored key so a CI runner can override a local default.
 //
-//  3. CredentialInteractive: the Firebase refresh-token exchange the
+//  3. CredentialRoid: the roid sign-in for the environment's issuer. The
+//     access token is bound to this install's proof key; the proof
+//     transport in internal/roidauth adds the proof to each request.
+//
+//  4. CredentialInteractive: the Firebase refresh-token exchange the
 //     interactive `runos login` flow set up. This is the human-developer
 //     path: refresh token + Firebase API key live in ~/.runos/config.json
 //     and produce a fresh ID token (~1h lifetime) per call.
 //
 // Returns a clear "not authenticated" error when no path is available
-// (no env var, no stored PAT, AND no Firebase config).
+// (no env var, no stored PAT, no roid sign-in, AND no Firebase config).
 func ResolveToken(cfg *config.Config) (string, error) {
 	// Issue 110: a PAT pasted from Slack / docs / web UIs often carries
 	// a trailing newline or leading space. Pre-fix the trailing-newline
@@ -128,6 +141,8 @@ func ResolveToken(cfg *config.Config) (string, error) {
 		return strings.TrimSpace(os.Getenv(APIKeyEnvVar)), nil
 	case CredentialStoredPAT:
 		return strings.TrimSpace(cfg.APIKey), nil
+	case CredentialRoid:
+		return roidBearer(cfg)
 	case CredentialInteractive:
 		return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 	default:
@@ -149,6 +164,9 @@ func HasCredentials(cfg *config.Config) bool {
 		return false
 	}
 	if strings.TrimSpace(cfg.APIKey) != "" {
+		return true
+	}
+	if cfg.HasRoidSignIn() {
 		return true
 	}
 	// Deliberately stricter than Kind's CredentialInteractive, which asks

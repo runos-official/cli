@@ -53,6 +53,7 @@ func (d RemoteDomains) APIURL() string {
 // RemoteEnvironment represents a single environment entry in the remote config.
 type RemoteEnvironment struct {
 	Domains RemoteDomains `json:"domains"`
+	Auth    RemoteAuth    `json:"auth,omitempty"`
 }
 
 // RemoteConfig represents the remote configuration file fetched from the CDN.
@@ -78,6 +79,10 @@ type Config struct {
 	Firebase         *FirebaseConfig `json:"firebase,omitempty"`
 	SignedInAt       string          `json:"signed_in_at,omitempty"` // RFC3339 timestamp of login
 	KnownAccounts    []KnownAccount  `json:"known_accounts,omitempty"`
+	// AuthIssuer is the roid issuer the environment signs in through.
+	// Empty means Firebase. Environment state: logout keeps it.
+	AuthIssuer string      `json:"auth_issuer,omitempty"`
+	Roid       *RoidSignIn `json:"roid,omitempty"`
 }
 
 // ApplySessionLogin records a Firebase refresh-token session on the
@@ -96,6 +101,7 @@ func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, r
 	c.RefreshToken = refreshToken
 	c.SignedInAt = signedInAt
 	c.APIKey = ""
+	c.Roid = nil
 	c.RememberAccount(accountID, signedInAt)
 	c.rememberCredential(accountID, refreshToken, "", firebase, signedInAt)
 }
@@ -114,6 +120,7 @@ func (c *Config) ApplyAPIKeyLogin(accountID, apiKey, signedInAt string) {
 	c.SignedInAt = signedInAt
 	c.RefreshToken = ""
 	c.Firebase = nil
+	c.Roid = nil
 	c.RememberAccount(accountID, signedInAt)
 	c.rememberCredential(accountID, "", apiKey, nil, signedInAt)
 }
@@ -126,6 +133,7 @@ environment, and that is not what signing out means. The default cluster does NO
 account state, and after a logout there is no account for it to belong to.
 */
 func (c *Config) ClearSession() {
+	c.Roid = nil
 	c.RefreshToken = ""
 	c.Firebase = nil
 	c.AccountID = ""
@@ -155,6 +163,10 @@ restoring from a plain copy restored the credential fields and left the account 
 func (c *Config) Clone() Config {
 	clone := *c
 	clone.Firebase = copyFirebase(c.Firebase)
+	if c.Roid != nil {
+		roid := *c.Roid
+		clone.Roid = &roid
+	}
 	if c.KnownAccounts == nil {
 		return clone
 	}
@@ -417,6 +429,7 @@ func applyRemoteEnv(rc *RemoteConfig, envName string) (*Config, error) {
 	}
 
 	cfg.ApplyEnvironment(envName, env.Domains.Console, env.Domains.APIURL())
+	cfg.ApplyEnvironmentAuth(env.Auth)
 
 	if err := cfg.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)

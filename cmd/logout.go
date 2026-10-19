@@ -37,7 +37,7 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	}
 
 	// Report an existing logout only when no active account metadata remains.
-	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" && cfg.APIKey == "" && !hasActiveAccount {
+	if cfg.RefreshToken == "" && cfg.Firebase == nil && cfg.AccountID == "" && cfg.APIKey == "" && cfg.Roid == nil && !hasActiveAccount {
 		fmt.Println("Already logged out.")
 		return nil
 	}
@@ -69,6 +69,10 @@ func runLogout(cmd *cobra.Command, args []string) error {
 			fmt.Println("Disconnected the VPN.")
 		}
 	}
+
+	// A roid sign-in is revoked on the server and its secrets leave the credential store; clearing
+	// config.json alone would leave a live refresh token in the keychain.
+	endRoidSignIn(cmd, cfg)
 
 	// The environment survives; everything about the person does not, the default cluster included.
 	// See Config.ClearSession.

@@ -23,7 +23,7 @@ import (
 //     `runos status` so the user's natural copy-paste lands on a
 //     real key.
 func TestConfigKeyLists_AreConsistent(t *testing.T) {
-	wantSettable := map[string]bool{"cid": true, "console-url": true, "api-url": true}
+	wantSettable := map[string]bool{"cid": true, "console-url": true, "api-url": true, "auth-issuer": true}
 	if len(configSettableKeys) != len(wantSettable) {
 		t.Fatalf("configSettableKeys size %d, want %d", len(configSettableKeys), len(wantSettable))
 	}
@@ -33,7 +33,7 @@ func TestConfigKeyLists_AreConsistent(t *testing.T) {
 		}
 	}
 
-	wantGettable := []string{"env", "account-id", "cid", "console-url", "api-url"}
+	wantGettable := []string{"env", "account-id", "cid", "console-url", "api-url", "auth-issuer"}
 	if !equalStringSlice(configGettableKeys, wantGettable) {
 		t.Errorf("configGettableKeys = %v, want %v", configGettableKeys, wantGettable)
 	}
@@ -149,6 +149,16 @@ func TestValidateConfigSet(t *testing.T) {
 		{"api-url malformed scheme rejected", "api-url", "://no-scheme", true, "scheme and host"},
 		{"api-url http passes (localhost dev)", "api-url", "http://localhost:3025", false, ""},
 		{"api-url https passes", "api-url", "https://api.runos.xyz", false, ""},
+
+		// auth-issuer: https, or http on a loopback host for local development,
+		// or "firebase" to go back to the Firebase sign-in.
+		{"auth-issuer https passes", "auth-issuer", "https://id.example.com", false, ""},
+		{"auth-issuer http on loopback passes", "auth-issuer", "http://127.0.0.1:8443", false, ""},
+		{"auth-issuer http on localhost passes", "auth-issuer", "http://localhost:8443", false, ""},
+		{"auth-issuer http elsewhere rejected", "auth-issuer", "http://id.example.com", true, "https"},
+		{"auth-issuer with a path rejected", "auth-issuer", "https://id.example.com/x", true, "no path"},
+		{"auth-issuer empty rejected", "auth-issuer", "", true, "firebase"},
+		{"auth-issuer firebase passes", "auth-issuer", "firebase", false, ""},
 
 		// Unknown key falls through (caller handles the error message)
 		{"unknown key passes validate (caller handles unknown)", "garbage", "anything", false, ""},

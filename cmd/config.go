@@ -139,6 +139,7 @@ var configKeyAliases = map[string]string{
 	"console_url":        "console-url",
 	"conductor_url":      "api-url",
 	"api_url":            "api-url",
+	"auth_issuer":        "auth-issuer",
 }
 
 // configSettableKeys is the canonical list of keys `runos config set`
@@ -148,13 +149,13 @@ var configKeyAliases = map[string]string{
 // implemented; this slice mirrors it. `env` and `account-id` are
 // deliberately omitted: they're populated by `runos config env <name>`
 // and the auth flow respectively, not by direct set.
-var configSettableKeys = []string{"cid", "console-url", "api-url"}
+var configSettableKeys = []string{"cid", "console-url", "api-url", "auth-issuer"}
 
 // configGettableKeys lists every key `runos config get` knows about.
 // Includes the two read-only keys (`env`, `account-id`) the setter
 // doesn't accept, so the error message for an unknown key shows the
 // user the full surface they can read.
-var configGettableKeys = []string{"env", "account-id", "cid", "console-url", "api-url"}
+var configGettableKeys = []string{"env", "account-id", "cid", "console-url", "api-url", "auth-issuer"}
 
 // normalizeConfigKey applies configKeyAliases and returns the canonical
 // CLI key. Unknown keys are returned unchanged so the caller can emit
@@ -198,6 +199,40 @@ func validateConfigSet(key, value string) error {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return fmt.Errorf("%s scheme must be http or https (got %q)", key, u.Scheme)
 		}
+	case "auth-issuer":
+		return validateAuthIssuer(value)
+	}
+	return nil
+}
+
+// authIssuerFirebase is the auth-issuer value that goes back to the
+// Firebase sign-in.
+const authIssuerFirebase = "firebase"
+
+/*
+validateAuthIssuer accepts the roid issuer URL an environment signs in through.
+
+An issuer receives refresh tokens and proofs, so it must be https. Plain http is allowed only on a
+loopback host, for a roid running on the developer's own machine. The issuer is an origin: a path
+would make the CLI call endpoints roid does not serve.
+*/
+func validateAuthIssuer(value string) error {
+	if value == authIssuerFirebase {
+		return nil
+	}
+	if value == "" {
+		return fmt.Errorf("auth-issuer must be the issuer URL, or %q to sign in through Firebase", authIssuerFirebase)
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("auth-issuer must be a URL with scheme and host (got %q)", value)
+	}
+	if u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("auth-issuer is an origin with no path (got %q)", value)
+	}
+	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+		return fmt.Errorf("auth-issuer must use https (http is allowed only on localhost); got %q", value)
 	}
 	return nil
 }
@@ -250,7 +285,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	// one. Validation rules stay byte-identical to today: unknown and
 	// read-only keys keep their existing errors.
 	switch key {
-	case "cid", "console-url", "api-url":
+	case "cid", "console-url", "api-url", "auth-issuer":
 		if err := validateConfigSet(key, value); err != nil {
 			return err
 		}
@@ -273,6 +308,14 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		// one `config env <name>` wrote makes the stored env label a lie,
 		// so setting one clears the other.
 		cfg.SetAPIURL(value)
+	case "auth-issuer":
+		// The issuer is environment state like the URLs. A sign-in made
+		// against another issuer stops counting (Config.HasRoidSignIn).
+		issuer := value
+		if issuer == authIssuerFirebase {
+			issuer = ""
+		}
+		cfg.AuthIssuer = strings.TrimRight(issuer, "/")
 	}
 
 	if err := cfg.Save(); err != nil {
@@ -306,6 +349,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		"cid":         cfg.DefaultClusterID,
 		"console-url": cfg.GetConsoleURL(),
 		"api-url":     cfg.GetAPIURL(),
+		"auth-issuer": cfg.AuthIssuer,
 	}
 
 	if len(args) == 0 {
@@ -317,6 +361,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Printf("cid:         %s\n", all["cid"])
 		fmt.Printf("console-url: %s\n", all["console-url"])
 		fmt.Printf("api-url:     %s\n", all["api-url"])
+		fmt.Printf("auth-issuer: %s\n", all["auth-issuer"])
 		return nil
 	}
 
