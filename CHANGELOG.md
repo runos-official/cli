@@ -1,12 +1,25 @@
 # Changelog
 
-## Unreleased
+## v1.22.0
 
 **Sign in through the RunOS identity service, per environment.** An environment whose config names an
 auth issuer signs in with a device sign-in through the identity service. Tokens are bound to a proof
 key, the key and the refresh token stay in the OS credential store, and every request carries a
 single-use proof. Every other environment keeps the Firebase sign-in unchanged. See Authentication in
 the README for the switch (`auth-issuer`).
+
+This takes effect only where the environment's CDN config names an issuer. A fresh install reads the
+issuer on its first run. An install that already has a config reads it when you run
+`runos config env <name>`. Until then, and for every environment with no issuer, nothing changes.
+Signing in through Firebase, and any sign-in you already have, keep working.
+
+**A new sign-in checks that the identity service is there.** Before `runos login` starts a sign-in
+through the identity service, the CLI asks the issuer for its discovery document
+(`/.well-known/openid-configuration`). If the issuer does not answer a valid one, for example
+because the service is not live in that environment yet, the CLI says so and signs in through
+Firebase for that login. Run `runos login` again once the service is live to use it. A sign-in
+that already exists through the identity service is never replaced this way: if the issuer is
+down, the command fails and says so.
 
 **A host with no OS credential store** now says what works: set `RUNOS_CREDENTIAL_PASSPHRASE` to keep
 the identity-service credentials in an encrypted file, or use a machine key in `RUNOS_API_KEY`. The

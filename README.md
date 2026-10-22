@@ -108,6 +108,7 @@ The switch is per environment:
 
 With an issuer set:
 
+- Before a new sign-in starts, the CLI asks the issuer for its discovery document (`/.well-known/openid-configuration`). If the issuer does not answer a valid one, for example because the service is not live in that environment yet, the CLI says so and that login uses Firebase. A sign-in you already have through the identity service is never replaced this way.
 - `runos login` runs a device sign-in that you approve in the browser. Each token is bound to a new proof key made for this sign-in, and each request carries a single-use proof of that key.
 - The proof key and the refresh token go to the OS credential store: the macOS Keychain, the Linux Secret Service or the Windows Credential Manager. `config.json` holds only the issuer and your person id. A host with no credential store cannot sign in this way unless `RUNOS_CREDENTIAL_PASSPHRASE` is set, which keeps the secrets in an encrypted file.
 - `runos logout`, `runos login --api-key` and a Firebase sign-in revoke the identity service sign-in and delete its secrets.
