@@ -103,7 +103,7 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if cfg.AuthIssuer != "" {
+	if useRoidSignIn(cfg, cmd.ErrOrStderr()) {
 		if t, ok := report.(textSignIn); ok {
 			report = roidTextSignIn{t}
 		}
