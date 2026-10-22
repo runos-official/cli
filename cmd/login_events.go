@@ -110,6 +110,13 @@ func (j *jsonSignIn) BrowserOpened(opened bool, _ string) {
 
 func (j *jsonSignIn) Pending()    { j.emit(signInEvent{Event: "pending"}) }
 func (j *jsonSignIn) Authorized() { j.emit(signInEvent{Event: "authorized"}) }
+
+// Notice reports something the person should know that does not stop the sign-in. A caller that
+// does not know the event ignores it (RunOS Desktop does, by design: SignInEvent.parse).
+func (j *jsonSignIn) Notice(reason, message string) {
+	j.emit(signInEvent{Event: "notice", Reason: reason, Message: message})
+}
+
 func (j *jsonSignIn) Failed(reason, message string) {
 	j.emit(signInEvent{Event: "error", Reason: reason, Message: message})
 }
