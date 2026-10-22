@@ -103,15 +103,20 @@ An environment can sign in through the RunOS identity service instead of Firebas
 
 The switch is per environment:
 
-- **Published environments.** The environment's entry in the CDN config carries an auth block: `"auth": {"provider": "roid", "issuer": "https://<issuer>"}`. A fresh install picks the block up on first run. An existing install picks it up on `runos config env <name>`. An environment with no block, or with another provider, keeps Firebase.
-- **By hand, for development.** `runos config set auth-issuer <issuer URL>` names an issuer. The issuer must use https; plain http is allowed only on a loopback host. `runos config set auth-issuer firebase` goes back to Firebase.
+- **Published environments.** The environment's entry in the CDN config carries an auth block: `"auth": {"provider": "roid", "issuer": "https://<issuer>"}`. A fresh install picks the block up on first run. An existing install picks it up on `runos config env <name>`. An environment with no block, or with another provider, keeps Firebase. The issuer is held to the same rule as `config set auth-issuer` (below); an issuer that breaks it is ignored with one line on stderr, and the environment keeps Firebase.
+- **By hand, for development.** `runos config set auth-issuer <issuer URL>` names an issuer. The issuer must use https; plain http is allowed only on a loopback host. It is an origin: no path, query or credentials. `runos config set auth-issuer firebase` goes back to Firebase.
 
 With an issuer set:
 
-- Before a new sign-in starts, the CLI asks the issuer for its discovery document (`/.well-known/openid-configuration`). If the issuer does not answer a valid one, for example because the service is not live in that environment yet, the CLI says so and that login uses Firebase. A sign-in you already have through the identity service is never replaced this way.
+- Before a new sign-in starts, the CLI asks the issuer for its discovery document (`/.well-known/openid-configuration`). Three outcomes:
+  - The issuer answers a valid document: the sign-in goes through the identity service.
+  - The issuer's host answers HTTP 404 or 410, which means the service is not deployed there yet: the CLI says so and that login uses Firebase. `runos login --json` carries the same message as a `notice` event.
+  - Anything else (a timeout, a reset, a TLS error, a 5xx, a redirect, a document that does not match) stops the sign-in with an error that names the issuer. It does not fall back to Firebase, because a flaky or filtered network must not move you to a weaker sign-in. Try again later, or run `runos config set auth-issuer firebase` to sign in through Firebase on purpose. `runos login --json` reports it as an `error` event with reason `identity_service_unavailable`.
+
+  A sign-in you already have through the identity service is never replaced this way.
 - `runos login` runs a device sign-in that you approve in the browser. Each token is bound to a new proof key made for this sign-in, and each request carries a single-use proof of that key.
 - The proof key and the refresh token go to the OS credential store: the macOS Keychain, the Linux Secret Service or the Windows Credential Manager. `config.json` holds only the issuer and your person id. A host with no credential store cannot sign in this way unless `RUNOS_CREDENTIAL_PASSPHRASE` is set, which keeps the secrets in an encrypted file.
-- `runos logout`, `runos login --api-key` and a Firebase sign-in revoke the identity service sign-in and delete its secrets.
+- `runos logout`, `runos login --api-key` and a Firebase sign-in revoke the identity service sign-in and delete its secrets, even when the environment no longer names that issuer. `runos config env <name>` alone does not: it only changes which issuer the environment uses, and switching back restores the sign-in. It prints a note when it leaves one behind.
 - `runos whoami` shows the credential in use and, for an identity service sign-in, who you are and your accounts.
 - `runos access` manages roles, groups and grants. It is listed in help only when the environment names an issuer.
 

@@ -15,11 +15,27 @@ Signing in through Firebase, and any sign-in you already have, keep working.
 
 **A new sign-in checks that the identity service is there.** Before `runos login` starts a sign-in
 through the identity service, the CLI asks the issuer for its discovery document
-(`/.well-known/openid-configuration`). If the issuer does not answer a valid one, for example
-because the service is not live in that environment yet, the CLI says so and signs in through
-Firebase for that login. Run `runos login` again once the service is live to use it. A sign-in
-that already exists through the identity service is never replaced this way: if the issuer is
-down, the command fails and says so.
+(`/.well-known/openid-configuration`). If the issuer's host answers HTTP 404 or 410, the service
+is not deployed there yet: the CLI says so and signs in through Firebase for that login. Run
+`runos login` again once the service is live to use it. If the check fails any other way (a
+timeout, a reset, a TLS error, a server error, a document that does not match) the login stops
+with an error that names the issuer. It does not fall back, so a flaky or filtered network cannot
+move you to a weaker sign-in. Try again later, or run `runos config set auth-issuer firebase` to
+choose Firebase on purpose. `runos login --json` reports the fallback as a `notice` event and the
+stop as an `error` event with reason `identity_service_unavailable`. A sign-in that already exists
+through the identity service is never replaced this way: if the issuer is down, the command fails
+and says so.
+
+**The issuer from the environment's config is checked like `config set auth-issuer`**: https (http
+only on localhost), an origin with no path, query or credentials. An issuer that breaks the rule is
+ignored with one line, and the environment keeps Firebase. Issuers are compared without a trailing
+slash and with the host in lower case.
+
+**Ending a sign-in revokes the identity-service sign-in this machine holds**, also after
+`runos config env` moved you to an environment that does not use that issuer. `runos logout`, a
+Firebase `runos login`, `runos login --api-key` and `runos account switch` revoke it on the server
+and delete its secrets from the credential store. `runos config env` itself does not end it, so
+switching back restores it, and it prints a note when it leaves one behind.
 
 **A host with no OS credential store** now says what works: set `RUNOS_CREDENTIAL_PASSPHRASE` to keep
 the identity-service credentials in an encrypted file, or use a machine key in `RUNOS_API_KEY`. The
