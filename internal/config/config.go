@@ -409,6 +409,10 @@ func InitFromRemoteEnv(envName string) (*Config, error) {
 	return applyRemoteEnv(rc, envName)
 }
 
+// authNoticeWriter receives the one line that says an environment's issuer was refused. A var so a
+// test reads it.
+var authNoticeWriter io.Writer = os.Stderr
+
 // applyRemoteEnv creates or updates the local config from a remote environment entry.
 func applyRemoteEnv(rc *RemoteConfig, envName string) (*Config, error) {
 	env, ok := rc.Environments[envName]
@@ -429,7 +433,9 @@ func applyRemoteEnv(rc *RemoteConfig, envName string) (*Config, error) {
 	}
 
 	cfg.ApplyEnvironment(envName, env.Domains.Console, env.Domains.APIURL())
-	cfg.ApplyEnvironmentAuth(env.Auth)
+	if err := cfg.ApplyEnvironmentAuth(env.Auth); err != nil {
+		fmt.Fprintf(authNoticeWriter, "Note: the %s environment names an identity-service issuer this CLI will not use (%v). Signing in through Firebase.\n", envName, err)
+	}
 
 	if err := cfg.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save config: %w", err)

@@ -210,11 +210,9 @@ func validateConfigSet(key, value string) error {
 const authIssuerFirebase = "firebase"
 
 /*
-validateAuthIssuer accepts the roid issuer URL an environment signs in through.
-
-An issuer receives refresh tokens and proofs, so it must be https. Plain http is allowed only on a
-loopback host, for a roid running on the developer's own machine. The issuer is an origin: a path
-would make the CLI call endpoints roid does not serve.
+validateAuthIssuer accepts the value of `config set auth-issuer`: "firebase", or an issuer URL that
+config.ValidateIssuer accepts (https, or http on a loopback host; an origin with no path). The CDN
+config is held to the same rule in Config.ApplyEnvironmentAuth.
 */
 func validateAuthIssuer(value string) error {
 	if value == authIssuerFirebase {
@@ -223,16 +221,8 @@ func validateAuthIssuer(value string) error {
 	if value == "" {
 		return fmt.Errorf("auth-issuer must be the issuer URL, or %q to sign in through Firebase", authIssuerFirebase)
 	}
-	u, err := url.Parse(value)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("auth-issuer must be a URL with scheme and host (got %q)", value)
-	}
-	if u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("auth-issuer is an origin with no path (got %q)", value)
-	}
-	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
-		return fmt.Errorf("auth-issuer must use https (http is allowed only on localhost); got %q", value)
+	if err := config.ValidateIssuer(value); err != nil {
+		return fmt.Errorf("auth-issuer: %w", err)
 	}
 	return nil
 }
@@ -315,7 +305,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		if issuer == authIssuerFirebase {
 			issuer = ""
 		}
-		cfg.AuthIssuer = strings.TrimRight(issuer, "/")
+		cfg.AuthIssuer = config.CanonicalIssuer(issuer)
 	}
 
 	if err := cfg.Save(); err != nil {
