@@ -124,6 +124,7 @@ func runConfigEnv(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Configured %s environment\n", envName)
 	fmt.Printf("  Console:   %s\n", cfg.ConsoleURL)
 	fmt.Printf("  API:       %s\n", cfg.ConductorURL)
+	fmt.Print(leftoverRoidNote(cfg))
 	fmt.Printf("\nRun 'runos login' to authenticate.\n")
 	return nil
 }

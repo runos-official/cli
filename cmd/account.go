@@ -121,6 +121,7 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 		return err
 	}
 	session.AccountID = activeAccountID
+	endRoidSignIn(cmd, cfg)
 	commitBrowserSession(cfg, session, memberships)
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save account context: %w", err)

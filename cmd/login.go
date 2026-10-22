@@ -118,6 +118,7 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 	if err != nil {
 		return err
 	}
+	endRoidSignIn(cmd, cfg) // a Firebase sign-in replaces any roid sign-in; revoke it, do not orphan it
 	commitBrowserSession(cfg, session, sessionMemberships(cfg, session))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)

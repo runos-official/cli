@@ -112,18 +112,25 @@ func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInRep
 }
 
 /*
-endRoidSignIn revokes this machine's roid sign-in on the server and deletes its secrets from the
-credential store. Every path that replaces or ends a sign-in calls it, so no live refresh token is
-left behind in the keychain when config.json stops naming it.
+endRoidSignIn revokes this machine's recorded roid sign-in on the server and deletes its secrets
+from the credential store. Every path that replaces or ends a sign-in calls it, so no live refresh
+token is left behind in the keychain when config.json stops naming it.
+
+It ends the sign-in config.json RECORDS, against the issuer that sign-in was made with, and not
+only one the environment names today. `runos config env <name>` for an environment with no issuer
+(the CDN block removed, or another environment) clears the issuer and keeps the record, so that
+switching back restores the sign-in; the next logout or Firebase sign-in must still revoke it.
 
 Best effort on the server side: a revoke the server did not confirm is a warning, because the local
 secrets are gone either way and the person is signing out or in on purpose.
 */
 func endRoidSignIn(cmd *cobra.Command, cfg *config.Config) {
-	if !cfg.HasRoidSignIn() {
+	if cfg == nil || cfg.Roid == nil || cfg.Roid.PersonID == "" || cfg.Roid.Issuer == "" {
 		return
 	}
-	s, err := auth.RoidSession(cfg)
+	recorded := cfg.Clone()
+	recorded.AuthIssuer = cfg.Roid.Issuer
+	s, err := auth.RoidSession(&recorded)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not open the credential store to remove the previous sign-in: %v\n", err)
 		return
@@ -131,4 +138,14 @@ func endRoidSignIn(cmd *cobra.Command, cfg *config.Config) {
 	if err := s.Logout(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)
 	}
+}
+
+// leftoverRoidNote says what a person is left with after `runos config env` moved them to an
+// environment that does not use the issuer their roid sign-in was made with: signed out here, the
+// sign-in recorded and its secrets in the credential store, until they sign out or in again.
+func leftoverRoidNote(cfg *config.Config) string {
+	if cfg == nil || cfg.Roid == nil || cfg.Roid.PersonID == "" || cfg.HasRoidSignIn() {
+		return ""
+	}
+	return fmt.Sprintf("Note: this machine still holds a sign-in through the identity service at %s, which this environment does not use, so you are signed out here. Switching back restores it. Run 'runos logout' to end it, or 'runos login' to sign in through Firebase (that ends it too).\n", cfg.Roid.Issuer)
 }

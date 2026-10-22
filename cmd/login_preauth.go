@@ -56,6 +56,7 @@ func runPreauth(cmd *cobra.Command, args []string) error {
 	}
 
 	session := deviceAuthSession(resp, signIn)
+	endRoidSignIn(cmd, cfg)
 	commitBrowserSession(cfg, session, sessionMemberships(cfg, session))
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
