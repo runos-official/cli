@@ -91,3 +91,28 @@ func TestStartUpSweepRunsBeforeTheTunnelIsRequested(t *testing.T) {
 		t.Fatalf("teardowns before the tunnel was requested = %d, want 1", sweptWhenRequested)
 	}
 }
+
+/*
+A daemon that was stopped does not start a tunnel.
+
+THE RACE. The resume runs on its own goroutine. When a stop signal wins the daemon lock first, Close
+finds nothing to stop and returns, and the resume then ran and created a tunnel and split-DNS files
+after the instance lock was released, with nobody left to remove them.
+*/
+func TestResumeAfterCloseDoesNotStartATunnel(t *testing.T) {
+	calls := stubEngine(t)
+	d := newTestDaemon(t)
+	fake := &fakePlatform{}
+	d.platform = fake
+	activeSession(t, d, time.Now().Add(time.Hour))
+
+	d.Close() // the stop wins the lock before the resume goroutine runs
+	d.Resume()
+
+	if *calls != 0 {
+		t.Errorf("tunnel requests = %d, want 0: a closed daemon started a tunnel", *calls)
+	}
+	if fake.teardownCount() != 0 {
+		t.Errorf("teardown calls = %d, want 0: a closed daemon touched the machine", fake.teardownCount())
+	}
+}

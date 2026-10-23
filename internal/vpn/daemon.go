@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,10 @@ type Daemon struct {
 	// also converged, so a DNS check that fails because the tunnel is dead would otherwise hide the
 	// very peers whose missing handshake is the cause.
 	appliedPeers []PeerPlan
+
+	// closed is set by Close BEFORE it takes mu, so a resume or an apply that holds mu can see that
+	// a stop is waiting and return at once. Never cleared: a closed daemon does not start again.
+	closed atomic.Bool
 
 	// ready is closed when the start-up resume ends; nil when no resume is gating requests.
 	ready <-chan struct{}
@@ -92,7 +97,13 @@ func (d *Daemon) Resume() {
 }
 
 func (d *Daemon) resumeLocked() {
+	if d.closed.Load() {
+		return
+	}
 	d.sweepLeftoversLocked()
+	if d.closed.Load() {
+		return
+	}
 	active := d.state.Active()
 	if active == nil || active.SessionToken == "" {
 		return
@@ -679,6 +690,9 @@ func (d *Daemon) startPollLoop() {
 // Close stops the poll loop and the engine, for daemon shutdown. It does NOT end the session:
 // a daemon stopped for an update or a reboot should resume the same session on restart.
 func (d *Daemon) Close() {
+	// Before the lock: a resume that holds it sees the flag and returns, instead of the stop waiting
+	// for the whole resume.
+	d.closed.Store(true)
 	d.mu.Lock()
 	d.stopTunnelLocked()
 	d.mu.Unlock()
