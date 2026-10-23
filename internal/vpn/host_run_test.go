@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -222,5 +223,44 @@ func TestStartGraceAndStopShareOneDeadline(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stop got its own full limit after the start used part of the budget")
+	}
+}
+
+/*
+The exit reason reaches the daemon log.
+
+THE GAP. runHost returned the reason as an error, cobra printed it to stderr, and the launchd plist
+sends stderr to /dev/null. On macOS the only evidence of a forced exit was a missing "stopped"
+line; `runos vpn logs` showed nothing. The reason now goes through logEvent, the same path the rest
+of the daemon log uses.
+*/
+func TestAForcedExitIsWrittenToTheDaemonLog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(sig chan os.Signal, release chan struct{}) error
+		want string
+	}{
+		{"stop outlasts the budget", func(sig chan os.Signal, release chan struct{}) error {
+			go func() { sig <- os.Interrupt }()
+			return runHost(func() (func(), error) { return func() { <-release }, nil }, sig)
+		}, "did not finish stopping"},
+		{"start outlasts the budget", func(sig chan os.Signal, release chan struct{}) error {
+			go func() { sig <- os.Interrupt }()
+			return runHost(func() (func(), error) { <-release; return func() {}, nil }, sig)
+		}, "before the VPN daemon finished starting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortStopTimeout(t, 200*time.Millisecond)
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			var err error
+			out := captureLog(t, func() { err = tc.run(make(chan os.Signal, 2), release) })
+			if err == nil {
+				t.Fatal("expected an exit reason")
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("daemon log = %q, want it to contain %q", out, tc.want)
+			}
+		})
 	}
 }

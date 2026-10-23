@@ -43,6 +43,16 @@ func stopWithin(stop func(), limit time.Duration, sig <-chan os.Signal) error {
 	}
 }
 
+// logExit writes a forced exit's reason to the daemon log and returns it. The returned error goes to
+// stderr, which the launchd plist sends to /dev/null, so without this line `runos vpn logs` shows
+// nothing about why the daemon left. A clean stop (nil) writes nothing here.
+func logExit(err error) error {
+	if err != nil {
+		logEvent("exiting: %s", err)
+	}
+	return err
+}
+
 type startResult struct {
 	stop func()
 	err  error
@@ -70,16 +80,16 @@ func runHost(start func() (stop func(), err error), sig <-chan os.Signal) error 
 		select {
 		case result = <-started:
 		case <-time.After(time.Until(deadline)):
-			return errStoppedWhileStarting
+			return logExit(errStoppedWhileStarting)
 		}
 		if result.err != nil {
 			return result.err
 		}
-		return stopWithin(result.stop, time.Until(deadline), sig)
+		return logExit(stopWithin(result.stop, time.Until(deadline), sig))
 	}
 	if result.err != nil {
 		return result.err
 	}
 	<-sig
-	return stopWithin(result.stop, shutdownBudget, sig)
+	return logExit(stopWithin(result.stop, shutdownBudget, sig))
 }
