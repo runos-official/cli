@@ -268,7 +268,12 @@ func (f *fakeRoid) userAccounts(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 401, "invalid_token", "")
 		return
 	}
-	writeJSONBody(w, map[string]any{"accounts": f.accounts})
+	// The shape of conductor's GET /user/accounts: objects, not bare ids.
+	list := make([]map[string]any, 0, len(f.accounts))
+	for i, aid := range f.accounts {
+		list = append(list, map[string]any{"aid": aid, "name": "Account " + aid, "companyName": "", "accountRole": "admin", "isDefault": i == 0})
+	}
+	writeJSONBody(w, map[string]any{"accounts": list})
 }
 
 func (f *fakeRoid) approve() {

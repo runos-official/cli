@@ -226,8 +226,11 @@ func (c *Client) identity(access string, key *Key) (Identity, error) {
 	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/v1/me", Token: access, Header: hdr}, &id); err != nil {
 		return Identity{}, err
 	}
+	// conductor's GET /user/accounts lists objects (aid, name, role); the session keeps the ids.
 	var accts struct {
-		Accounts []string `json:"accounts"`
+		Accounts []struct {
+			AID string `json:"aid"`
+		} `json:"accounts"`
 	}
 	hdr, err = c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/user/accounts")
 	if err != nil {
@@ -236,6 +239,8 @@ func (c *Client) identity(access string, key *Key) (Identity, error) {
 	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/user/accounts", Token: access, Header: hdr}, &accts); err != nil {
 		return Identity{}, err
 	}
-	id.Accounts = accts.Accounts
+	for _, a := range accts.Accounts {
+		id.Accounts = append(id.Accounts, a.AID)
+	}
 	return id, nil
 }
