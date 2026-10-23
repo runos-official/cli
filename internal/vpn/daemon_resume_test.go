@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,5 +115,26 @@ func TestResumeAfterCloseDoesNotStartATunnel(t *testing.T) {
 	}
 	if fake.teardownCount() != 0 {
 		t.Errorf("teardown calls = %d, want 0: a closed daemon touched the machine", fake.teardownCount())
+	}
+}
+
+// A request that was already past the listener when the daemon closed cannot start a tunnel. The
+// docs (edge case 6) rely on this.
+func TestAnUpAfterCloseIsRefusedAndAsksForNoTunnel(t *testing.T) {
+	calls := stubEngine(t)
+	d := newTestDaemon(t)
+	d.platform = &fakePlatform{}
+	if _, err := d.state.IdentityForAccount("acct"); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	resp := d.Handle(upRequest("acct"))
+
+	if resp.Error == "" || !strings.Contains(resp.Error, "stopping") {
+		t.Fatalf("error = %q, want a stopping refusal", resp.Error)
+	}
+	if *calls != 0 {
+		t.Fatalf("tunnel requests = %d, want 0", *calls)
 	}
 }
