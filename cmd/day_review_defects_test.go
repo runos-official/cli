@@ -162,7 +162,7 @@ func TestAnUpdateOnAnInStepMachineAsksForARestart(t *testing.T) {
 	if !vpnDaemonNeedsRestart(true, "1.17.0", installed) {
 		t.Fatal("the daemon is loaded on 1.17.0 and 1.18.0 is now on disk; that is the case the notice exists for")
 	}
-	notice := vpnRestartNotice("1.17.0", installed)
+	notice := vpnRestartNotice("1.17.0", installed, tunnelDown)
 	if !strings.Contains(notice, "1.18.0") {
 		t.Errorf("the notice must name the build now installed, got %q", notice)
 	}

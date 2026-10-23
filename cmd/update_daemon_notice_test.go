@@ -67,7 +67,7 @@ func TestTheRestartNoticeFiresOnlyOnARealSkew(t *testing.T) {
 // The wording has to name the one command that fixes it, because the whole point of the notice is
 // that `runos update` cannot do it: restarting needs admin and update does not.
 func TestTheRestartNoticeNamesTheCommand(t *testing.T) {
-	notice := vpnRestartNotice("1.17.0", "1.18.0")
+	notice := vpnRestartNotice("1.17.0", "1.18.0", tunnelDown)
 
 	if !strings.Contains(notice, "sudo runos vpn restart") {
 		t.Errorf("must name the command, got %q", notice)

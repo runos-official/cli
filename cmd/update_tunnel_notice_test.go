@@ -3,6 +3,8 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/runos-official/cli/internal/vpn"
 )
 
 /*
@@ -36,11 +38,59 @@ func TestTheNoticeBeforeAnUpdateSaysTheTunnelStaysUp(t *testing.T) {
 	}
 }
 
-func TestTheRestartNoticeSaysWhatARestartDoesToTheTunnel(t *testing.T) {
-	notice := vpnRestartNotice("1.17.0", "1.18.0")
+func TestTheRestartNoticeSaysWhatARestartDoesToALiveTunnel(t *testing.T) {
+	notice := vpnRestartNotice("1.17.0", "1.18.0", tunnelLive)
 	for _, want := range []string{"few seconds", "without a new sign-in"} {
 		if !strings.Contains(notice, want) {
 			t.Errorf("restart notice must contain %q, got %q", want, notice)
+		}
+	}
+}
+
+// With no tunnel there is nothing to reconnect, so the notice must not promise it.
+func TestTheRestartNoticeMakesNoPromiseWhenNoTunnelIsUp(t *testing.T) {
+	notice := vpnRestartNotice("1.17.0", "1.18.0", tunnelDown)
+	for _, banned := range []string{"few seconds", "connects again", "reconnect"} {
+		if strings.Contains(notice, banned) {
+			t.Errorf("restart notice must not contain %q when no tunnel is up, got %q", banned, notice)
+		}
+	}
+	if !strings.Contains(notice, "sudo runos vpn restart") {
+		t.Errorf("must still name the command, got %q", notice)
+	}
+}
+
+// A tunnel whose session has ended does not come back by itself: the person signs in again.
+func TestTheRestartNoticeSaysSignInAgainWhenTheSessionHasEnded(t *testing.T) {
+	notice := vpnRestartNotice("1.17.0", "1.18.0", tunnelLapsed)
+	if strings.Contains(notice, "connects again by itself") {
+		t.Errorf("must not promise a reconnect for an ended session, got %q", notice)
+	}
+	if !strings.Contains(notice, "sign in again") {
+		t.Errorf("must say to sign in again, got %q", notice)
+	}
+}
+
+func TestTunnelStateComesFromTheDaemonStatus(t *testing.T) {
+	live := &vpn.Status{Running: true}
+	live.Session.Present = true
+	lapsed := &vpn.Status{Running: true}
+	lapsed.Session.Present = true
+	lapsed.Session.LoginRequired = true
+	expired := &vpn.Status{Running: true} // session not present
+	for _, tc := range []struct {
+		name   string
+		status *vpn.Status
+		want   tunnelState
+	}{
+		{"no answer", nil, tunnelDown},
+		{"not running", &vpn.Status{}, tunnelDown},
+		{"running with a live session", live, tunnelLive},
+		{"running and login required", lapsed, tunnelLapsed},
+		{"running without a session", expired, tunnelLapsed},
+	} {
+		if got := tunnelStateOf(tc.status); got != tc.want {
+			t.Errorf("%s: tunnelStateOf = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

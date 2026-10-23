@@ -39,3 +39,25 @@ func daemonStatus(cmd *cobra.Command) *vpn.Status {
 	}
 	return resp.Status
 }
+
+// tunnelState is what the daemon says about the connection at the moment of the update.
+type tunnelState int
+
+const (
+	// tunnelDown: no tunnel, or no answer from the daemon.
+	tunnelDown tunnelState = iota
+	// tunnelLive: a tunnel is up and its session is valid, so a restarted service resumes it.
+	tunnelLive
+	// tunnelLapsed: the interface is up but the session has ended, so a restart does not resume it.
+	tunnelLapsed
+)
+
+func tunnelStateOf(status *vpn.Status) tunnelState {
+	if status == nil || !status.Running {
+		return tunnelDown
+	}
+	if status.Session.Present && !status.Session.LoginRequired {
+		return tunnelLive
+	}
+	return tunnelLapsed
+}

@@ -179,10 +179,14 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	// command is the honest half, and it is stated only when a daemon is actually loaded, so a
 	// machine that never installed the VPN reads nothing about it.
 	if running, err := vpn.NewService().Running(); err == nil && running {
-		daemonVersion := runningDaemonVersion(cmd)
+		status := daemonStatus(cmd)
+		daemonVersion := ""
+		if status != nil {
+			daemonVersion = status.Version
+		}
 		installed := installedCLIVersion(currentVersion, result.CLI)
 		if vpnDaemonNeedsRestart(true, daemonVersion, installed) {
-			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, installed))
+			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, installed, tunnelStateOf(status)))
 		}
 	}
 	return nil
@@ -226,23 +230,20 @@ func vpnDaemonNeedsRestart(running bool, daemonVersion, cliVersion string) bool 
 // vpnRestartNotice names both builds, so the reader can see the skew is real rather than take it on
 // trust, and the one command that fixes it. `runos update` cannot do it itself: restarting needs
 // admin and update does not, so escalating here would prompt for a password mid-command.
-func vpnRestartNotice(daemonVersion, cliVersion string) string {
-	return fmt.Sprintf(
+func vpnRestartNotice(daemonVersion, cliVersion string, tunnel tunnelState) string {
+	notice := fmt.Sprintf(
 		"\nThe VPN service is running a different build (%s) from the one now installed (%s):\n"+
 			"replacing the binary does not reload a daemon that is already loaded.\n"+
-			"  Pick it up with: sudo runos vpn restart\n"+
-			"  The restart cuts the tunnel for a few seconds. It then connects again by itself,\n"+
-			"  without a new sign-in, while your 24 hour VPN session is valid.\n",
+			"  Pick it up with: sudo runos vpn restart\n",
 		daemonVersion, cliVersion,
 	)
-}
-
-// runningDaemonVersion asks the daemon what build it is. Empty when it cannot be reached or is too
-// old to say, which the caller treats as "no evidence of a skew".
-func runningDaemonVersion(cmd *cobra.Command) string {
-	status := daemonStatus(cmd)
-	if status == nil {
-		return ""
+	// What the restart does to the connection depends on what is connected now, so say only that.
+	switch tunnel {
+	case tunnelLive:
+		notice += "  The restart cuts the tunnel for a few seconds. It then connects again by itself,\n" +
+			"  without a new sign-in, while your 24 hour VPN session is valid.\n"
+	case tunnelLapsed:
+		notice += "  Your VPN session has ended, so the VPN stays off after the restart until you sign in again.\n"
 	}
-	return status.Version
+	return notice
 }
