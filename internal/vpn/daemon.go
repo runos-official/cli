@@ -59,6 +59,9 @@ type Daemon struct {
 // the daemon asks for a tunnel without creating a real interface, which needs root.
 var createEngine = newEngine
 
+// errStopping is returned by the steps of a resume or an apply that notice a stop is waiting.
+var errStopping = errors.New("the VPN daemon is stopping")
+
 // startRequestWait is how long a request waits for the resume. Under serveConn's 60 s deadline, so
 // the client always gets an answer instead of a dropped connection. A variable for tests.
 var startRequestWait = 30 * time.Second
@@ -435,6 +438,9 @@ func (d *Daemon) startTunnelLocked() error {
 		return fmt.Errorf("no active VPN account")
 	}
 	d.stopTunnelLocked()
+	if d.closed.Load() {
+		return errStopping
+	}
 	resetPollLog()
 	eng, err := createEngine(defaultTunName, d.verbose)
 	if err != nil {
@@ -479,6 +485,9 @@ The error is still returned, so a caller that wants to report the first failure 
 changed is that the daemon keeps TRYING while it does.
 */
 func (d *Daemon) beginPollingLocked() error {
+	if d.closed.Load() {
+		return errStopping
+	}
 	d.startPollLoop()
 	return d.pollAndApplyLocked()
 }
@@ -591,6 +600,9 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 		return err
 	}
 
+	if d.closed.Load() {
+		return errStopping
+	}
 	iface := d.engine.InterfaceName()
 	if plan.Address.IsValid() {
 		if err := d.platform.SetInterfaceAddress(iface, plan.Address); err != nil {
@@ -598,6 +610,9 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 			return err
 		}
 		stepOutcome("address", nil, plan.Address.String()+" on "+iface)
+	}
+	if d.closed.Load() {
+		return errStopping
 	}
 	if err := d.engine.ApplyPlan(privHex, plan); err != nil {
 		stepOutcome("wireguard-config", err, "")
@@ -628,6 +643,9 @@ func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan
 		return err
 	}
 	stepOutcome("routes", nil, fmt.Sprintf("%d route(s) via %s", len(plan.Routes), iface))
+	if d.closed.Load() {
+		return errStopping
+	}
 
 	clientAddr := netip.Addr{}
 	if plan.Address.IsValid() {
@@ -646,6 +664,9 @@ func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan
 func (d *Daemon) convergeRoutesLocked(iface string, haveRoutes []netip.Prefix, plan Plan) error {
 	routeDiff := DiffPrefixes(haveRoutes, plan.Routes)
 	for _, prefix := range routeDiff.Add {
+		if d.closed.Load() {
+			return errStopping
+		}
 		if err := d.platform.AddRoute(iface, prefix); err != nil {
 			return err
 		}
