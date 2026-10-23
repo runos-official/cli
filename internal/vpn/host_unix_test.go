@@ -44,3 +44,40 @@ func TestStopSignalDuringStartStillRunsTheStopFunction(t *testing.T) {
 		t.Fatalf("RunDaemonHost: %v", err)
 	}
 }
+
+/*
+A stop signal must still end the process when start is stuck.
+
+THE GAP in the first fix: the handler was registered before start, but start ran on the signalling
+goroutine, so nothing read the channel until start returned. Start now covers the instance-lock
+wait (up to 15 s) and the resume, and the resume runs external commands (scutil, route, PowerShell,
+resolvectl). A hung one swallowed every SIGTERM and SIGINT, and only SIGKILL ended the process.
+Before the first fix the Go default would have exited.
+*/
+func TestStopSignalEndsTheHostWhileStartIsStuck(t *testing.T) {
+	previous := startStopGrace
+	startStopGrace = 300 * time.Millisecond
+	t.Cleanup(func() { startStopGrace = previous })
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	done := make(chan error, 1)
+	go func() {
+		done <- RunDaemonHost(func() (func(), error) {
+			<-block
+			return func() {}, nil
+		})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the host returned nil although start never finished; the exit must say why")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a SIGTERM during a stuck start was swallowed")
+	}
+}
