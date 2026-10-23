@@ -27,6 +27,7 @@ const (
 	authNone      authMethod = "none"
 	authPATEnv    authMethod = "pat-env"    // RUNOS_API_KEY
 	authPATStored authMethod = "pat-stored" // cfg.APIKey, set by `runos login --api-key`
+	authRoid      authMethod = "roid"       // browser sign-in through roid
 	authFirebase  authMethod = "firebase"   // interactive refresh-token session
 )
 
@@ -41,6 +42,9 @@ func resolveAuthMethod(cfg *config.Config, apiKeyEnv string) authMethod {
 	}
 	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
 		return authPATStored
+	}
+	if cfg.HasRoidSignIn() {
+		return authRoid
 	}
 	if cfg != nil && cfg.RefreshToken != "" && cfg.Firebase != nil {
 		return authFirebase
@@ -120,6 +124,19 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		status["authMethod"] = string(method)
 		if cfg.SignedInAt != "" {
 			status["signedInAt"] = cfg.SignedInAt
+		}
+	case authRoid:
+		// The same call ordinary commands make: it spends the stored refresh token when the access
+		// token is stale, so a sign-in roid has ended reads as signed out here too.
+		if _, err := auth.ResolveToken(cfg); err != nil {
+			status["authenticated"] = false
+			status["authError"] = err.Error()
+		} else {
+			status["authenticated"] = true
+			status["authMethod"] = string(method)
+			if cfg.Roid.SignedInAt != "" {
+				status["signedInAt"] = cfg.Roid.SignedInAt
+			}
 		}
 	case authFirebase:
 		_, err := auth.RefreshIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)

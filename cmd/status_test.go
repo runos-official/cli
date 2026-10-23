@@ -37,6 +37,23 @@ func TestResolveAuthMethod(t *testing.T) {
 			want: authPATStored,
 		},
 		{
+			name: "roid sign-in when no PAT present, and it wins over firebase fields",
+			cfg: &config.Config{AuthIssuer: "https://id.example.test", Roid: &config.RoidSignIn{Issuer: "https://id.example.test", PersonID: "p_alice"},
+				RefreshToken: "r", Firebase: firebase},
+			want: authRoid,
+		},
+		{
+			name: "a roid sign-in made against another issuer does not count",
+			cfg:  &config.Config{AuthIssuer: "https://id.example.test", Roid: &config.RoidSignIn{Issuer: "https://other.example.test", PersonID: "p_alice"}},
+			want: authNone,
+		},
+		{
+			name: "stored PAT wins over a roid sign-in",
+			cfg: &config.Config{APIKey: "stored-pat", AuthIssuer: "https://id.example.test",
+				Roid: &config.RoidSignIn{Issuer: "https://id.example.test", PersonID: "p_alice"}},
+			want: authPATStored,
+		},
+		{
 			name: "firebase session when no PAT present",
 			cfg:  &config.Config{RefreshToken: "r", Firebase: firebase},
 			want: authFirebase,
