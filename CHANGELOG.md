@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.22.2
+
+**Updating RunOS while a VPN tunnel is up is safer.** The VPN service now cleans up after itself on
+every way it can start and stop.
+
+- A stop signal during start-up is honoured. The service used to ignore it until start-up finished.
+- Only one VPN service runs on a machine. A second one waits for the first to leave, then gives up.
+- A starting service removes the DNS files that a dead one left behind. It only matches files whose
+  first line is exactly the RunOS marker, and it flushes the DNS cache only when it removed something.
+- A request that arrives while the service is still starting waits, or is told it is still starting.
+  It no longer reads as "the service is not running, reinstall it".
+- Every system command the service runs has a time limit, so one stuck command cannot hold the whole
+  service. Install and restart wait longer, because they wait for the old service to leave.
+- `runos update` says that a running tunnel stays up and what the restart does to it: the tunnel is
+  cut for a few seconds and then reconnects by itself while the 24 hour session is valid. It waits at
+  most two seconds for the service to answer.
+- On Windows, a DNS rule that cannot be removed is reported, and the other rules are still removed.
+
+See docs/vpn-daemon.md for the limits and for what still needs a test on a real machine.
+
 ## v1.22.1
 
 **`runos vpn up` and the Desktop app's VPN switch no longer fail right after you approve the browser
