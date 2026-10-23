@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"strings"
@@ -162,8 +163,10 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 			releaseLock()
 			return nil, err
 		}
-		d.Resume()
-		listener, err := vpn.Serve(d, orDefaultSocket(socket), socketGroup, groupSource == "explicit")
+		// The socket opens before the resume and requests wait for it: see Daemon.ServeAndResume.
+		listener, err := d.ServeAndResume(func() (net.Listener, error) {
+			return vpn.Serve(d, orDefaultSocket(socket), socketGroup, groupSource == "explicit")
+		})
 		if err != nil {
 			vpn.LogDaemonFailure("socket", err)
 			d.Close()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -80,6 +81,10 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 func (d *Daemon) Resume() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.resumeLocked()
+}
+
+func (d *Daemon) resumeLocked() {
 	d.sweepLeftoversLocked()
 	active := d.state.Active()
 	if active == nil || active.SessionToken == "" {
@@ -123,6 +128,30 @@ func (d *Daemon) sweepLeftoversLocked() {
 		return
 	}
 	logEvent("start-up sweep: removed any DNS state a previous daemon left on this machine")
+}
+
+/*
+ServeAndResume opens the control socket and then resumes the stored session, holding the daemon's
+lock from before the first to after the last.
+
+A request that arrives during the resume therefore waits and gets the real answer. The resume takes
+seconds (an engine, a Conductor poll, a DNS check), and binding the socket after it meant every CLI
+call right after `vpn restart` said "the RunOS VPN service is not running ... Run 'sudo runos vpn
+install'" about a service that was running and about to answer. The Desktop app read the same
+absence as a missing service and could offer to reinstall it.
+
+Without the lock held, a request between the bind and the resume would run against a daemon that
+has not swept or resumed yet.
+*/
+func (d *Daemon) ServeAndResume(serve func() (net.Listener, error)) (net.Listener, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	listener, err := serve()
+	if err != nil {
+		return nil, err
+	}
+	d.resumeLocked()
+	return listener, nil
 }
 
 // Handle serves one socket request. It is the only entry point besides Resume.
