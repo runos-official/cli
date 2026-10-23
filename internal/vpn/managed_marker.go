@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"bytes"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -32,20 +33,34 @@ func nrptManagedClause() string {
 	return "$_.Comment -ceq '" + nrptComment + "'"
 }
 
-// nrptTeardownScript removes every NRPT rule the daemon owns and prints how many it removed, in one
-// PowerShell start. The count lets Teardown flush the DNS cache only when something was removed.
+// nrptTeardownScript removes every NRPT rule the daemon owns, in one PowerShell start, and prints
+// "removed remaining". It stops on the first error, so a failed removal gives a non-zero exit, and it
+// counts what is still present afterwards, so a removal that did not work cannot read as success.
 func nrptTeardownScript() string {
-	return "$r = @(Get-DnsClientNrptRule | Where-Object { " + nrptManagedClause() + " }); " +
-		"$r | Remove-DnsClientNrptRule -Force; $r.Count"
+	clause := nrptManagedClause()
+	return "$ErrorActionPreference = 'Stop'; " +
+		"$r = @(Get-DnsClientNrptRule | Where-Object { " + clause + " }); " +
+		"foreach ($x in $r) { $x | Remove-DnsClientNrptRule -Force }; " +
+		"$left = @(Get-DnsClientNrptRule | Where-Object { " + clause + " }).Count; " +
+		`"$($r.Count) $left"`
 }
 
-// removedRuleCount reads the last line of the teardown script's output. -1 means the output could
-// not be read, which callers treat as "something may have been removed".
-func removedRuleCount(out string) int {
+// nrptTeardownOutcome reads the script's last line. flush says whether the DNS cache needs a flush:
+// when a rule was removed or the output cannot be read. err is set when a rule remains or the output
+// cannot be read, because the sweep must not report a clean machine it could not confirm.
+func nrptTeardownOutcome(out string) (flush bool, err error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	count, err := strconv.Atoi(strings.TrimSpace(lines[len(lines)-1]))
-	if err != nil || count < 0 {
-		return -1
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(fields) != 2 {
+		return true, fmt.Errorf("could not read the result of the NRPT teardown: %q", out)
 	}
-	return count
+	removed, errRemoved := strconv.Atoi(fields[0])
+	left, errLeft := strconv.Atoi(fields[1])
+	if errRemoved != nil || errLeft != nil || removed < 0 || left < 0 {
+		return true, fmt.Errorf("could not read the result of the NRPT teardown: %q", out)
+	}
+	if left > 0 {
+		return removed > 0, fmt.Errorf("%d NRPT rule(s) of the VPN are still present after the removal", left)
+	}
+	return removed > 0, nil
 }

@@ -144,13 +144,14 @@ func (p windowsPlatform) Teardown(string) error {
 	if err != nil {
 		return fmt.Errorf("remove NRPT rules: %w: %s", err, out)
 	}
-	// Flush only when a rule was removed (or the count could not be read). Teardown also runs as the
-	// sweep on every daemon start.
-	if removedRuleCount(string(out)) != 0 {
+	// Flush only when a rule was removed (or the result could not be read). Teardown also runs as
+	// the sweep on every daemon start. A rule that remains is a failure, not a quiet success.
+	flush, outcomeErr := nrptTeardownOutcome(string(out))
+	if flush {
 		_ = p.FlushDNS()
 	}
 	// Routes go with the adapter when the engine closes it.
-	return nil
+	return outcomeErr
 }
 
 func powershell(command string) ([]byte, error) {
