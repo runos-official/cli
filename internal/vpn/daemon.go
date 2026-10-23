@@ -46,6 +46,10 @@ type Daemon struct {
 	wg           sync.WaitGroup
 }
 
+// createEngine makes the tun interface and the WireGuard device. A variable so a test can prove WHEN
+// the daemon asks for a tunnel without creating a real interface, which needs root.
+var createEngine = newEngine
+
 // PollInterval is how often the daemon re-reads the desired-state document. 30 s matches the
 // document's design (it changes on operator actions, so a poll is enough) and the 304 path keeps
 // an unchanged poll cheap.
@@ -354,7 +358,7 @@ func (d *Daemon) startTunnelLocked() error {
 	}
 	d.stopTunnelLocked()
 	resetPollLog()
-	eng, err := newEngine(defaultTunName, d.verbose)
+	eng, err := createEngine(defaultTunName, d.verbose)
 	if err != nil {
 		err = interfaceError(err)
 		stepOutcome("interface", err, "")
