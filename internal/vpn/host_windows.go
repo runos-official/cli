@@ -33,12 +33,14 @@ func RunDaemonHost(start func() (stop func(), err error)) error {
 		return fmt.Errorf("query service context: %w", err)
 	}
 	if !isService {
+		// Registered before start so a Ctrl-C during the first resume still reaches stop.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt)
+		defer signal.Stop(sig)
 		stop, err := start()
 		if err != nil {
 			return err
 		}
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt)
 		<-sig
 		stop()
 		return nil

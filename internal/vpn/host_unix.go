@@ -26,12 +26,16 @@ const AdminHint = "re-run with 'sudo runos vpn install'"
 // runs the returned stop func. On unix the host is launchd or systemd (or a terminal) and the
 // stop is a signal.
 func RunDaemonHost(start func() (stop func(), err error)) error {
+	// BEFORE start, not after. start resumes the stored session, which takes seconds, and a signal
+	// in that window used to hit the Go default (exit at once) with the split-DNS files already on
+	// disk. The channel holds one signal, so one that arrives during start runs stop below.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
 	stop, err := start()
 	if err != nil {
 		return err
 	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	stop()
 	return nil
