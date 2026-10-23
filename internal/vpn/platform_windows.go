@@ -140,11 +140,15 @@ func (windowsPlatform) FlushDNS() error {
 }
 
 func (p windowsPlatform) Teardown(string) error {
-	out, err := powershell(`Get-DnsClientNrptRule | Where-Object { ` + nrptManagedClause() + ` } | Remove-DnsClientNrptRule -Force`)
+	out, err := powershell(nrptTeardownScript())
 	if err != nil {
 		return fmt.Errorf("remove NRPT rules: %w: %s", err, out)
 	}
-	_ = p.FlushDNS()
+	// Flush only when a rule was removed (or the count could not be read). Teardown also runs as the
+	// sweep on every daemon start.
+	if removedRuleCount(string(out)) != 0 {
+		_ = p.FlushDNS()
+	}
 	// Routes go with the adapter when the engine closes it.
 	return nil
 }

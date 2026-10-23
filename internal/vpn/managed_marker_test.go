@@ -44,3 +44,33 @@ func TestTheNrptTestIsCaseSensitive(t *testing.T) {
 		t.Errorf("clause %q must name the daemon's comment", clause)
 	}
 }
+
+// Teardown runs on every daemon start, so it must not start PowerShell twice or flush the cache when
+// it found nothing. One script removes the rules and prints the count.
+func TestTheNrptTeardownScriptRemovesOurRulesAndCountsThem(t *testing.T) {
+	script := nrptTeardownScript()
+	for _, want := range []string{"Remove-DnsClientNrptRule", nrptManagedClause(), "$r.Count"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script %q must contain %q", script, want)
+		}
+	}
+}
+
+func TestRemovedRuleCountReadsTheLastLine(t *testing.T) {
+	for _, tc := range []struct {
+		out  string
+		want int
+	}{
+		{"0\r\n", 0},
+		{"3\n", 3},
+		{"\r\n2\r\n", 2},
+		{"warning: something\r\n1\r\n", 1},
+		{"", -1},
+		{"not a number", -1},
+		{"-4", -1},
+	} {
+		if got := removedRuleCount(tc.out); got != tc.want {
+			t.Errorf("removedRuleCount(%q) = %d, want %d", tc.out, got, tc.want)
+		}
+	}
+}

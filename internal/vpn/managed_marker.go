@@ -2,6 +2,8 @@ package vpn
 
 import (
 	"bytes"
+	"strconv"
+	"strings"
 )
 
 // resolverMarker is the first line of every resolver file the macOS daemon writes. Kept out of the
@@ -28,4 +30,22 @@ func isManagedResolverFile(data []byte) bool {
 // case, so a rule commented RUNOS-VPN (somebody else's) matched and was removed.
 func nrptManagedClause() string {
 	return "$_.Comment -ceq '" + nrptComment + "'"
+}
+
+// nrptTeardownScript removes every NRPT rule the daemon owns and prints how many it removed, in one
+// PowerShell start. The count lets Teardown flush the DNS cache only when something was removed.
+func nrptTeardownScript() string {
+	return "$r = @(Get-DnsClientNrptRule | Where-Object { " + nrptManagedClause() + " }); " +
+		"$r | Remove-DnsClientNrptRule -Force; $r.Count"
+}
+
+// removedRuleCount reads the last line of the teardown script's output. -1 means the output could
+// not be read, which callers treat as "something may have been removed".
+func removedRuleCount(out string) int {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	count, err := strconv.Atoi(strings.TrimSpace(lines[len(lines)-1]))
+	if err != nil || count < 0 {
+		return -1
+	}
+	return count
 }

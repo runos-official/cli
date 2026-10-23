@@ -27,7 +27,27 @@ const resolverDir = "/etc/resolver"
 // defaultTunName is the interface the engine requests on macOS; the kernel appends the number.
 const defaultTunName = "utun"
 
-type darwinPlatform struct{}
+type darwinPlatform struct {
+	// dir is the resolver directory; empty means /etc/resolver. Set by tests only, so they never
+	// write to the real one.
+	dir string
+	// flush replaces the real DNS flush; nil means the real one. Set by tests only.
+	flush func() error
+}
+
+func (p darwinPlatform) resolverPath() string {
+	if p.dir != "" {
+		return p.dir
+	}
+	return resolverDir
+}
+
+func (p darwinPlatform) flushDNS() error {
+	if p.flush != nil {
+		return p.flush()
+	}
+	return p.FlushDNS()
+}
 
 func newPlatform() platform { return darwinPlatform{} }
 
@@ -72,20 +92,20 @@ func (darwinPlatform) RemoveRoute(iface string, prefix netip.Prefix) error {
 	return nil
 }
 
-func (darwinPlatform) Resolvers() (map[string]netip.Addr, error) {
+func (p darwinPlatform) Resolvers() (map[string]netip.Addr, error) {
 	found := map[string]netip.Addr{}
-	entries, err := os.ReadDir(resolverDir)
+	entries, err := os.ReadDir(p.resolverPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return found, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", resolverDir, err)
+		return nil, fmt.Errorf("read %s: %w", p.resolverPath(), err)
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		path := filepath.Join(resolverDir, entry.Name())
+		path := filepath.Join(p.resolverPath(), entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil || !isManagedResolverFile(data) {
 			continue // not ours
@@ -97,19 +117,19 @@ func (darwinPlatform) Resolvers() (map[string]netip.Addr, error) {
 	return found, nil
 }
 
-func (darwinPlatform) SetResolver(zone string, resolver netip.Addr) error {
-	if err := os.MkdirAll(resolverDir, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", resolverDir, err)
+func (p darwinPlatform) SetResolver(zone string, resolver netip.Addr) error {
+	if err := os.MkdirAll(p.resolverPath(), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", p.resolverPath(), err)
 	}
 	content := fmt.Sprintf("%s\nnameserver %s\n", resolverMarker, resolver.String())
-	if err := os.WriteFile(filepath.Join(resolverDir, zone), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(p.resolverPath(), zone), []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write resolver for %s: %w", zone, err)
 	}
 	return nil
 }
 
-func (darwinPlatform) RemoveResolver(zone string) error {
-	path := filepath.Join(resolverDir, zone)
+func (p darwinPlatform) RemoveResolver(zone string) error {
+	path := filepath.Join(p.resolverPath(), zone)
 	// Only remove a file the daemon wrote, never a hand-authored /etc/resolver entry.
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -144,7 +164,7 @@ func (p darwinPlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []Resolve
 		}
 	}
 	if len(diff.Set) > 0 || len(diff.Remove) > 0 {
-		_ = p.FlushDNS()
+		_ = p.flushDNS()
 	}
 	if len(resolvers) == 0 {
 		return DNSStatus{Mode: "unavailable", Error: "no private DNS zones are active"}, nil
@@ -204,7 +224,11 @@ func (p darwinPlatform) Teardown(iface string) error {
 			err = rmErr
 		}
 	}
-	_ = p.FlushDNS()
+	// Only when something was removed. Teardown also runs as the sweep on every daemon start, and a
+	// flush there reloaded the machine's resolver for nothing.
+	if len(resolvers) > 0 {
+		_ = p.flushDNS()
+	}
 	// The interface's routes go with the interface when the engine closes it, so there is nothing
 	// to delete by prefix here; RemoveRoute is used for a single disconnected cluster while the
 	// tunnel stays up.
