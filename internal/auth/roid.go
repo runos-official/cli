@@ -89,7 +89,7 @@ func RoidSession(cfg *config.Config) (*roidauth.Session, error) {
 		Person:     person,
 		Store:      store,
 		LockPath:   filepath.Join(dir, "roid.lock"),
-		Client:     roidauth.NewClient(cfg.AuthIssuer),
+		Client:     roidauth.NewClientWithAPI(cfg.AuthIssuer, cfg.GetAPIURL()),
 		ProofHosts: []string{hostOf(cfg.GetAPIURL()), hostOf(cfg.AuthIssuer)},
 	}
 	roidSessions[cacheKey] = s

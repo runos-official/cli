@@ -76,6 +76,18 @@ func login(t *testing.T, f *fakeRoid, s *Session) Identity {
 	return id
 }
 
+func TestLoginReadsIdentityFromTheAPIHostWhenTheHostsAreSplit(t *testing.T) {
+	f := newFakeRoid(t)
+	f.splitAPIHost()
+	c := NewClientWithAPI(f.srv.URL, f.api.URL)
+	c.Sleep = noSleep
+	s := &Session{Issuer: f.srv.URL, Store: newMemStore(), LockPath: filepath.Join(t.TempDir(), "roid.lock"), Client: c}
+	id := login(t, f, s)
+	if id.PersonID != "p_alice" || len(id.Accounts) != 1 {
+		t.Fatalf("identity = %+v", id)
+	}
+}
+
 func TestLoginKeepsEverySecretInTheStore(t *testing.T) {
 	f := newFakeRoid(t)
 	store := newMemStore()

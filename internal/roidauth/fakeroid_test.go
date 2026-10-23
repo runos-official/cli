@@ -41,6 +41,7 @@ type fakeRoid struct {
 	refreshes  int
 	logouts    int
 	accessTTL  int
+	api        *httptest.Server // set by splitAPIHost: the host that serves the identity routes
 }
 
 func newFakeRoid(t *testing.T) *fakeRoid {
@@ -56,6 +57,26 @@ func newFakeRoid(t *testing.T) *fakeRoid {
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// splitAPIHost makes the fake behave like prod, where the issuer host serves the OIDC routes only and
+// the API host serves /v1/me and /user/accounts: the issuer answers 404 for those two.
+func (f *fakeRoid) splitAPIHost() {
+	f.api = httptest.NewServer(f.srv.Config.Handler)
+	f.t.Cleanup(f.api.Close)
+}
+
+// origin is the origin a proof must name for r: the host that received it.
+func (f *fakeRoid) origin(r *http.Request) string {
+	if f.api != nil && r.Host == strings.TrimPrefix(f.api.URL, "http://") {
+		return f.api.URL
+	}
+	return f.srv.URL
+}
+
+// identityHere says whether this host serves the identity routes.
+func (f *fakeRoid) identityHere(r *http.Request) bool {
+	return f.api == nil || f.origin(r) == f.api.URL
 }
 
 func randHex(n int) string {
@@ -106,7 +127,7 @@ func (f *fakeRoid) checkProof(r *http.Request, purpose, subject string) bool {
 	}
 	// FPL321 c5: the proof names this request: the method and the fake's
 	// own origin with the path (roid's issuer origin, never the Host header).
-	if p.Method != r.Method || p.Target != f.srv.URL+r.URL.EscapedPath() {
+	if p.Method != r.Method || p.Target != f.origin(r)+r.URL.EscapedPath() {
 		return false
 	}
 	msg := "runos-proof-v2\x00" + p.Purpose + "\x00" + p.Subject + "\x00" + p.Method + "\x00" + p.Target +
@@ -223,6 +244,10 @@ func (f *fakeRoid) accessFamily(r *http.Request) (string, bool) {
 }
 
 func (f *fakeRoid) me(w http.ResponseWriter, r *http.Request) {
+	if !f.identityHere(r) {
+		http.NotFound(w, r)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.accessFamily(r); !ok {
@@ -233,6 +258,10 @@ func (f *fakeRoid) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeRoid) userAccounts(w http.ResponseWriter, r *http.Request) {
+	if !f.identityHere(r) {
+		http.NotFound(w, r)
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.accessFamily(r); !ok {

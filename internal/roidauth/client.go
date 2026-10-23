@@ -72,20 +72,39 @@ type Identity struct {
 type Client struct {
 	api    *api.Client
 	issuer string // the issuer URL; proofs name it with each path
+	// idAPI and apiURL reach /v1/me and /user/accounts. On a host split (prod) the issuer host
+	// serves the OIDC routes only and the API host serves these two; otherwise both are the issuer.
+	idAPI  *api.Client
+	apiURL string
 	Now    func() time.Time
 	Sleep  func(time.Duration)
 }
 
 // NewClient returns a client for the roid issuer at issuerURL.
 func NewClient(issuerURL string) *Client {
+	return NewClientWithAPI(issuerURL, issuerURL)
+}
+
+// NewClientWithAPI is NewClient for a deployment that serves the identity routes (/v1/me,
+// /user/accounts) on apiURL while the issuer at issuerURL serves the OIDC routes.
+func NewClientWithAPI(issuerURL, apiURL string) *Client {
 	iss := strings.TrimRight(issuerURL, "/")
-	return &Client{api: api.NewClient(iss), issuer: iss, Now: time.Now, Sleep: time.Sleep}
+	apiBase := strings.TrimRight(apiURL, "/")
+	if apiBase == "" {
+		apiBase = iss
+	}
+	return &Client{api: api.NewClient(iss), issuer: iss, idAPI: api.NewClient(apiBase), apiURL: apiBase, Now: time.Now, Sleep: time.Sleep}
 }
 
 // proof is the ProofHeader for one request to roid: method and path on
 // the issuer (FPL321 c5).
 func (c *Client) proof(key *Key, purpose, subject, method, path string) (http.Header, error) {
-	h, err := key.header(purpose, subject, method, c.issuer+path, c.Now())
+	return c.proofAt(c.issuer, key, purpose, subject, method, path)
+}
+
+// proofAt is proof for a request to the host at origin.
+func (c *Client) proofAt(origin string, key *Key, purpose, subject, method, path string) (http.Header, error) {
+	h, err := key.header(purpose, subject, method, origin+path, c.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +113,12 @@ func (c *Client) proof(key *Key, purpose, subject, method, path string) (http.He
 
 // call sends one request and turns a non-2xx answer into an *Error.
 func (c *Client) call(r api.Request, out any) error {
-	res, err := c.api.Send(r)
+	return c.callOn(c.api, r, out)
+}
+
+// callOn is call on the given host's client.
+func (c *Client) callOn(host *api.Client, r api.Request, out any) error {
+	res, err := host.Send(r)
 	if err != nil {
 		return fmt.Errorf("could not reach the RunOS identity service: %w", err)
 	}
@@ -195,21 +219,21 @@ func (c *Client) Logout(refresh string) error {
 // identity reads who the access token signs in as, and their accounts.
 func (c *Client) identity(access string, key *Key) (Identity, error) {
 	var id Identity
-	hdr, err := c.proof(key, purposeAccess, subjectHash(access), http.MethodGet, "/v1/me")
+	hdr, err := c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/v1/me")
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := c.call(api.Request{Method: http.MethodGet, Path: "/v1/me", Token: access, Header: hdr}, &id); err != nil {
+	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/v1/me", Token: access, Header: hdr}, &id); err != nil {
 		return Identity{}, err
 	}
 	var accts struct {
 		Accounts []string `json:"accounts"`
 	}
-	hdr, err = c.proof(key, purposeAccess, subjectHash(access), http.MethodGet, "/user/accounts")
+	hdr, err = c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/user/accounts")
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := c.call(api.Request{Method: http.MethodGet, Path: "/user/accounts", Token: access, Header: hdr}, &accts); err != nil {
+	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/user/accounts", Token: access, Header: hdr}, &accts); err != nil {
 		return Identity{}, err
 	}
 	id.Accounts = accts.Accounts
