@@ -102,6 +102,12 @@ func NewClient(socketPath string) *Client {
 // distinct error so the CLI can say "the VPN service is not running; run 'runos vpn install'".
 func (c *Client) Call(req Request) (*Response, error) { return c.call(req, callTimeout) }
 
+// CallWithin is Call with its own deadline, for a caller that must not wait the ordinary 120 s: a
+// status question answered in milliseconds, asked on the way to something else.
+func (c *Client) CallWithin(req Request, timeout time.Duration) (*Response, error) {
+	return c.call(req, timeout)
+}
+
 // callTimeout is how long an ordinary call may wait for the daemon: an up request creates a tunnel.
 const callTimeout = 120 * time.Second
 

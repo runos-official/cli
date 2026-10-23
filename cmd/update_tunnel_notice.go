@@ -1,9 +1,17 @@
 package cmd
 
 import (
+	"time"
+
 	"github.com/runos-official/cli/internal/vpn"
 	"github.com/spf13/cobra"
 )
+
+// daemonStatusTimeout bounds the status question `runos update` asks the daemon. The ordinary
+// socket call waits up to 120 s because an `up` builds a tunnel; a status answer takes
+// milliseconds, so a wedged daemon must cost an update two seconds, not two minutes. A variable
+// for tests.
+var daemonStatusTimeout = 2 * time.Second
 
 // vpnTunnelUpdateNotice is what `runos update` says BEFORE it replaces the program when the VPN is
 // connected. Empty when no tunnel is up, so a machine that never used the VPN reads nothing.
@@ -25,7 +33,7 @@ func vpnTunnelUpdateNotice(tunnelUp bool) string {
 // daemonStatus asks the daemon for its status. Nil when it cannot be reached or is too old to say,
 // which callers treat as "no evidence".
 func daemonStatus(cmd *cobra.Command) *vpn.Status {
-	resp, err := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpStatus})
+	resp, err := vpnSocketClient(cmd).CallWithin(vpn.Request{Op: vpn.OpStatus}, daemonStatusTimeout)
 	if err != nil {
 		return nil
 	}
