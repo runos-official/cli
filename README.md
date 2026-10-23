@@ -393,6 +393,9 @@ The pre-commit hook can be skipped in a genuine emergency with
 `git commit --no-verify`, and it says so when it fires. Skipping does not get
 the change released: the release gate runs the same checker over the whole tree.
 
+The VPN daemon, what an update does to a running tunnel, and the known edge cases are in
+[docs/vpn-daemon.md](docs/vpn-daemon.md).
+
 ### Project Structure
 
 ```
