@@ -409,7 +409,8 @@ func signInAndReload(cmd *cobra.Command) (*config.Config, string, error) {
 		report = &jsonSignIn{out: cmd.OutOrStdout()}
 	}
 	noBrowser, _ := cmd.Flags().GetBool("no-browser")
-	if err := interactiveLoginReporting(cmd, report, !useJSON, !noBrowser); err != nil {
+	// The check is for the person who is signed in, so an approval by anybody else is refused.
+	if err := interactiveLoginReportingWith(cmd, report, !useJSON, !noBrowser, signInOptions{requireSamePerson: true}); err != nil {
 		return nil, "", err
 	}
 	cfg, err := config.Load()

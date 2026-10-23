@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.22.3
+
+**Cancelling a sign-in check no longer signs you out.** Starting a new sign-in used to end your
+current one straight away, before you had approved the new one. A check that you cancelled, that
+expired or that was interrupted left you signed out of the CLI, the Console and the Desktop app.
+
+- Your current sign-in now stays live until the new one is approved. Only then is the old one ended,
+  and only the old one: the new sign-in is never touched.
+- The sign-in check that a VPN session needs (`runos vpn up`, Connect and Renew Session in Desktop)
+  is for the person who is signed in. If somebody else approves it, for example in a browser that
+  is signed in as another account holder, it is refused. Your sign-in and your running tunnel stay
+  exactly as they were, and the message tells you to open the link in the right browser.
+- `runos login` is unchanged: signing in as someone else is still allowed.
+
 ## v1.22.2
 
 **Updating RunOS while a VPN tunnel is up is safer.** The VPN service now cleans up after itself on

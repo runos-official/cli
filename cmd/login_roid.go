@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -47,17 +48,33 @@ func pickRoidAccount(previous string, accounts []string) string {
 }
 
 /*
+signInOptions are the few things a caller can ask of a sign-in.
+
+requireSamePerson is for the sign-in check a VPN session needs (`runos vpn up`): the check is for
+the person who is signed in, so an approval by anybody else is refused and nothing changes.
+`runos login` leaves it off, because signing in as someone else is a legitimate reason to run it.
+*/
+type signInOptions struct {
+	requireSamePerson bool
+}
+
+/*
 roidLoginReporting signs in through roid, the RunOS identity service, for an environment whose
 config names an auth issuer.
 
 The device flow runs against roid itself; nothing passes through conductor. Every token is bound
 to a fresh proof key, and the key and the refresh token go to the OS credential store. config.json
-records only the issuer and the person. A previous roid sign-in on this machine is revoked first,
-so exactly one is live.
+records only the issuer and the person.
+
+A previous roid sign-in on this machine is NOT touched until the new one is approved, stored and
+saved. It used to be revoked first, so a check that was cancelled, expired or killed before approval
+left the person signed out of the CLI, the Console and the Desktop app (FCR 1562). Now it is
+retired afterwards, so exactly one is live when this returns and a sign-in that never finished
+changes nothing.
 */
-func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInReporter, chatty, autoOpenBrowser bool) error {
+func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInReporter, chatty, autoOpenBrowser bool, opts signInOptions) error {
 	previousAccountID := cfg.AccountID
-	endRoidSignIn(cmd, cfg)
+	held := holdPreviousRoidSignIn(cmd, cfg)
 	fresh := cfg.Clone()
 	fresh.Roid = nil
 	session, err := auth.RoidSession(&fresh)
@@ -88,6 +105,10 @@ func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInRep
 		report.Failed(reason, err.Error())
 		return fmt.Errorf("sign-in failed: %w", err)
 	}
+	if err := refuseDifferentPerson(held, session, id.PersonID, opts.requireSamePerson, cmd.ErrOrStderr()); err != nil {
+		report.Failed("different_person", err.Error())
+		return err
+	}
 	report.Authorized()
 
 	account := pickRoidAccount(previousAccountID, id.Accounts)
@@ -95,6 +116,7 @@ func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInRep
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("signed in, but could not save the config: %w", err)
 	}
+	held.retire(id.PersonID, cfg.AuthIssuer, cmd.ErrOrStderr())
 	reportVPNAccountChange(cmd, previousAccountID, cfg.AccountID)
 	if chatty {
 		fmt.Fprintf(os.Stdout, "\nSigned in as %s.\n", id.PersonID)
@@ -109,6 +131,82 @@ func roidLoginReporting(cmd *cobra.Command, cfg *config.Config, report signInRep
 		warmManifestCache(cfg)
 	}
 	return nil
+}
+
+// replaceableSignIn is what a new sign-in needs of the one it replaces. *roidauth.Session is one.
+type replaceableSignIn interface {
+	SignedInPerson() string
+	Release()
+	RevokeCaptured(token []byte) error
+	Logout() error
+}
+
+/*
+heldSignIn is the sign-in a new one will replace, kept live while the new one is being approved.
+
+refresh is its refresh token as it was BEFORE the new sign-in. The new sign-in of the same person on
+the same issuer writes to the same credential-store slots, so the old token is gone from the store
+once the new one is saved, while the server still holds its token family and must be told.
+*/
+type heldSignIn struct {
+	session replaceableSignIn
+	person  string
+	issuer  string
+	refresh []byte
+}
+
+// holdPreviousRoidSignIn opens the sign-in config.json records, the way endRoidSignIn does (against
+// the issuer it was made with), and reads its refresh token. It changes nothing. Nil when there is
+// no recorded sign-in or its store cannot be opened (the new sign-in then has nothing to retire).
+func holdPreviousRoidSignIn(cmd *cobra.Command, cfg *config.Config) *heldSignIn {
+	if cfg == nil || cfg.Roid == nil || cfg.Roid.PersonID == "" || cfg.Roid.Issuer == "" {
+		return nil
+	}
+	recorded := cfg.Clone()
+	recorded.AuthIssuer = cfg.Roid.Issuer
+	s, err := auth.RoidSession(&recorded)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not open the credential store to read the previous sign-in: %v\n", err)
+		return nil
+	}
+	return &heldSignIn{session: s, person: cfg.Roid.PersonID, issuer: cfg.Roid.Issuer, refresh: s.CaptureRefresh()}
+}
+
+// retire ends the held sign-in after the new one is approved, stored and saved. Best effort: a
+// revoke the server did not confirm is a warning, never a failed sign-in.
+func (h *heldSignIn) retire(newPerson, newIssuer string, warn io.Writer) {
+	if h == nil || h.session == nil {
+		return
+	}
+	if h.person == newPerson && h.issuer == newIssuer {
+		// Same slots: the new secrets are there now, so only this process's memory is dropped and
+		// the old token family is revoked on the server. A Logout here would delete the new secrets.
+		h.session.Release()
+		if err := h.session.RevokeCaptured(h.refresh); err != nil {
+			fmt.Fprintf(warn, "Warning: %v\n", err)
+		}
+		return
+	}
+	// Other slots: they belong to the old sign-in alone.
+	if err := h.session.Logout(); err != nil {
+		fmt.Fprintf(warn, "Warning: %v\n", err)
+	}
+}
+
+// errDifferentApprover is the plain refusal for a sign-in check approved by someone else.
+const errDifferentApprover = "you approved as a different account holder than the one signed in here. Nothing was changed. Open the sign-in link in the browser that is signed in as the right person, then try again"
+
+// refuseDifferentPerson is for the sign-in check a VPN session needs. When the approver is not the
+// person signed in here, it ends the NEW sign-in and returns the refusal, so the old sign-in and the
+// running tunnel stay exactly as they were. With require off, or nothing held, it does nothing.
+func refuseDifferentPerson(h *heldSignIn, newSession replaceableSignIn, newPerson string, require bool, warn io.Writer) error {
+	if !require || h == nil || h.person == "" || h.person == newPerson {
+		return nil
+	}
+	if err := newSession.Logout(); err != nil {
+		fmt.Fprintf(warn, "Warning: the sign-in made by the other person could not be fully ended: %v\n", err)
+	}
+	return errors.New(errDifferentApprover)
 }
 
 /*

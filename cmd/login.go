@@ -99,6 +99,12 @@ the last line a caller is parsing, and a caller reading events already knows it 
 it was told.
 */
 func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty bool, autoOpenBrowser bool) error {
+	return interactiveLoginReportingWith(cmd, report, chatty, autoOpenBrowser, signInOptions{})
+}
+
+// interactiveLoginReportingWith is interactiveLoginReporting with options. Only the roid sign-in
+// reads them.
+func interactiveLoginReportingWith(cmd *cobra.Command, report signInReporter, chatty bool, autoOpenBrowser bool, opts signInOptions) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -111,7 +117,7 @@ func interactiveLoginReporting(cmd *cobra.Command, report signInReporter, chatty
 		if t, ok := report.(textSignIn); ok {
 			report = roidTextSignIn{t}
 		}
-		return roidLoginReporting(cmd, cfg, report, chatty, autoOpenBrowser)
+		return roidLoginReporting(cmd, cfg, report, chatty, autoOpenBrowser, opts)
 	}
 	previousAccountID := cfg.AccountID
 	session, err := browserAuthenticateReporting(cfg, report, autoOpenBrowser)

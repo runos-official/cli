@@ -127,6 +127,46 @@ func (s *Session) Login(ctx context.Context, show func(DeviceStart)) (Identity, 
 	return id, nil
 }
 
+// CaptureRefresh returns a copy of the stored refresh token of this sign-in, or nil when there is
+// none. It changes nothing. A caller that is about to replace this sign-in reads it first: the new
+// sign-in of the same person writes to the same store slots, so the old token is gone from the
+// store the moment the new one is saved, and the server still holds its family.
+func (s *Session) CaptureRefresh() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Person == "" || s.Store == nil {
+		return nil
+	}
+	rt, err := s.Store.Get(s.refreshItem())
+	if err != nil || len(rt) == 0 {
+		return nil
+	}
+	return rt
+}
+
+// Release forgets this session in memory only: the access token, the key and the person. It never
+// touches the store or the server. A caller uses it when another sign-in now owns the stored
+// secrets, so a later lookup builds a new session from them instead of answering with this one.
+func (s *Session) Release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defaultRegistry.remove(s.access)
+	s.access, s.key, s.accessExp, s.Person = "", nil, time.Time{}, ""
+}
+
+// RevokeCaptured revokes on the server the token family of a refresh token read earlier with
+// CaptureRefresh. It changes no local secret. The server's answer is returned so the caller can
+// say that the revoke was not confirmed.
+func (s *Session) RevokeCaptured(token []byte) error {
+	if len(token) == 0 || s.Client == nil {
+		return nil
+	}
+	if err := s.Client.Logout(string(token)); err != nil {
+		return fmt.Errorf("the previous sign-in could not be revoked on the server: %w", err)
+	}
+	return nil
+}
+
 // SignedInPerson is the person this session signs in as, empty after Logout or before a sign-in.
 func (s *Session) SignedInPerson() string {
 	s.mu.Lock()
