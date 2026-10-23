@@ -72,10 +72,11 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 
 // Resume brings the tunnel back up on daemon start when the state holds a session that has not
 // lapsed: a daemon restart or a reboot must not force a new sign-in while the session is still
-// valid. Called once after NewDaemon.
+// valid. Called once after NewDaemon. It first clears the DNS state of a previous daemon.
 func (d *Daemon) Resume() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.sweepLeftoversLocked()
 	active := d.state.Active()
 	if active == nil || active.SessionToken == "" {
 		return
@@ -95,6 +96,29 @@ func (d *Daemon) Resume() {
 		logEvent("resume did not complete its first poll: %s (the retry loop is running)",
 			redactURL(err.Error()))
 	}
+}
+
+/*
+sweepLeftoversLocked removes the split-DNS state a previous daemon left on the machine.
+
+This process has no tunnel yet, so anything the platform holds for the tunnel belongs to a daemon
+that is gone. A clean stop already removed it. A crash, a SIGKILL after launchd's exit timeout or a
+kill during a resume did not, and the stale entries send lookups for the private zones to a resolver
+that no interface carries any more. A resume repairs them as a side effect of applying a document,
+but a daemon with no session to resume never applies one, so the sweep runs first and always.
+
+The caller holds the instance lock (AcquireInstanceLock), which is what makes this safe: without it
+a second daemon would remove the files of the first one's live tunnel.
+*/
+func (d *Daemon) sweepLeftoversLocked() {
+	if d.engine != nil {
+		return
+	}
+	if err := d.platform.Teardown(defaultTunName); err != nil {
+		logEvent("start-up sweep of leftover DNS state failed: %s", err)
+		return
+	}
+	logEvent("start-up sweep: removed any DNS state a previous daemon left on this machine")
 }
 
 // Handle serves one socket request. It is the only entry point besides Resume.
