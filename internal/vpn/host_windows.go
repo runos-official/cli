@@ -61,7 +61,7 @@ func (h *scmHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, stat
 			status <- req.CurrentStatus
 		case svc.Stop, svc.Shutdown:
 			status <- svc.Status{State: svc.StopPending}
-			if err := stopWithin(stop, stopTimeout, nil); err != nil {
+			if err := stopWithin(stop, shutdownBudget, nil); err != nil {
 				logEvent("%s", err)
 			}
 			return false, 0

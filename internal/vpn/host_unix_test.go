@@ -55,9 +55,9 @@ resolvectl). A hung one swallowed every SIGTERM and SIGINT, and only SIGKILL end
 Before the first fix the Go default would have exited.
 */
 func TestStopSignalEndsTheHostWhileStartIsStuck(t *testing.T) {
-	previous := startStopGrace
-	startStopGrace = 300 * time.Millisecond
-	t.Cleanup(func() { startStopGrace = previous })
+	previous := shutdownBudget
+	shutdownBudget = 300 * time.Millisecond
+	t.Cleanup(func() { shutdownBudget = previous })
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
 	done := make(chan error, 1)

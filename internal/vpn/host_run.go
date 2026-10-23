@@ -6,21 +6,17 @@ import (
 	"time"
 )
 
-// startStopGrace is how long a stop signal waits for a start that is still running. A start that
-// finishes inside it is stopped cleanly. One that does not is abandoned and the process exits, so a
-// hung external command cannot hold the daemon past the host's own kill timeout (launchd: 20 s).
-// A variable for tests.
-var startStopGrace = 10 * time.Second
+// shutdownBudget is the whole time from the first stop signal to the end of the stop: the wait for a
+// start that is still running AND the stop. One shared deadline, so the two cannot add up past
+// launchd's 20 s kill timeout, and a hung external command cannot hold the daemon past it. A
+// variable for tests.
+var shutdownBudget = 15 * time.Second
 
 // errStoppedWhileStarting is the exit reason when a stop signal arrives and start does not finish
-// inside startStopGrace. Whatever start had written to the machine is swept by the next daemon.
-// stopTimeout is how long the stop may run after a stop signal. Under launchd's 20 s kill timeout, so
-// the process exits with a reason instead of ending in SIGKILL. A variable for tests.
-var stopTimeout = 15 * time.Second
-
+// inside the budget. Whatever start had written to the machine is swept by the next daemon.
 var errStoppedWhileStarting = errors.New("stopped by signal before the VPN daemon finished starting")
 
-// errStopDidNotFinish is the exit reason when the stop outlasts stopTimeout or is interrupted by a
+// errStopDidNotFinish is the exit reason when the stop outlasts the budget or is interrupted by a
 // second signal. The next start sweeps whatever the stop left.
 var errStopDidNotFinish = errors.New("the VPN daemon did not finish stopping in time")
 
@@ -69,19 +65,21 @@ func runHost(start func() (stop func(), err error), sig <-chan os.Signal) error 
 	select {
 	case result = <-started:
 	case <-sig:
+		// One deadline from the first signal covers the wait for start AND the stop.
+		deadline := time.Now().Add(shutdownBudget)
 		select {
 		case result = <-started:
-		case <-time.After(startStopGrace):
+		case <-time.After(time.Until(deadline)):
 			return errStoppedWhileStarting
 		}
 		if result.err != nil {
 			return result.err
 		}
-		return stopWithin(result.stop, stopTimeout, sig)
+		return stopWithin(result.stop, time.Until(deadline), sig)
 	}
 	if result.err != nil {
 		return result.err
 	}
 	<-sig
-	return stopWithin(result.stop, stopTimeout, sig)
+	return stopWithin(result.stop, shutdownBudget, sig)
 }

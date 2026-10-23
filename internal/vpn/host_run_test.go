@@ -11,15 +11,15 @@ import (
 
 func shortStopTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
-	previous := stopTimeout
-	stopTimeout = d
-	t.Cleanup(func() { stopTimeout = previous })
+	previous := shutdownBudget
+	shutdownBudget = d
+	t.Cleanup(func() { shutdownBudget = previous })
 }
 
 /*
 The stop itself has a time limit.
 
-THE GAP. startStopGrace bounds a start that is still running when the signal arrives. A start that
+THE GAP. The start grace bounded a start that is still running when the signal arrives. A start that
 had already returned left the stop unbounded: stop closes the daemon, which waits for the daemon
 lock, and a resume holds that lock through external commands that each take up to 10 s. Their sum
 can pass launchd's 20 s, and the process ended in SIGKILL with no word. A second SIGTERM during the
@@ -182,5 +182,45 @@ func TestAnApplyOnAnOpenDaemonStillRunsEveryStep(t *testing.T) {
 	}
 	if platform.routes != 2 || platform.dnsApplied != 1 {
 		t.Errorf("routes=%d dns=%d, want 2 and 1", platform.routes, platform.dnsApplied)
+	}
+}
+
+/*
+The wait for a start and the stop share one deadline, measured from the first signal.
+
+THE GAP. The grace for a start that was still running (10 s) and the limit on the stop (15 s) were two
+separate clocks. A start that took 9 s to finish and then a stop that took 15 s add up to 24 s, past
+launchd's 20 s kill timeout, and the process ended in SIGKILL without its reason.
+*/
+func TestStartGraceAndStopShareOneDeadline(t *testing.T) {
+	previous := shutdownBudget
+	shutdownBudget = 600 * time.Millisecond
+	t.Cleanup(func() { shutdownBudget = previous })
+	releaseStart := make(chan struct{})
+	releaseStop := make(chan struct{})
+	t.Cleanup(func() { close(releaseStop) })
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runHost(func() (func(), error) {
+			<-releaseStart
+			return func() { <-releaseStop }, nil
+		}, sig)
+	}()
+	sig <- os.Interrupt
+	time.Sleep(400 * time.Millisecond)
+	signalled := time.Now().Add(-400 * time.Millisecond)
+	close(releaseStart) // the start ends late, with 200 ms of the budget left; the stop then hangs
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stop that hung must exit with a reason")
+		}
+		if elapsed := time.Since(signalled); elapsed > 1100*time.Millisecond {
+			t.Fatalf("shutdown took %v from the first signal, want about the 600 ms budget", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop got its own full limit after the start used part of the budget")
 	}
 }

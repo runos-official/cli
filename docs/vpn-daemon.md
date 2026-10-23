@@ -23,8 +23,7 @@ running tunnel when the program is updated, and it lists the edge cases that are
 | Limit | Value | Where |
 |---|---|---|
 | Wait for the old daemon to leave (instance lock) | 15 s | `InstanceLockWait` |
-| Grace for a start that is still running after a stop signal | 10 s | `startStopGrace` |
-| The stop itself, after a stop signal (a second signal ends the wait) | 15 s | `stopTimeout` |
+| Shutdown after the first stop signal: the wait for a start that is still running PLUS the stop, one shared deadline (a second signal ends the wait) | 15 s in total | `shutdownBudget` |
 | Any external command (route, scutil, PowerShell, resolvectl) | 10 s | `commandTimeout` |
 | Installer and restart commands (launchctl 30 s, systemctl 100 s) | 30 s / 100 s | `serviceCommandLimit` |
 | A request waiting for the resume | 30 s | `startRequestWait` |
@@ -37,8 +36,9 @@ What is guaranteed after a stop signal:
   daemon lock, and the resume and the apply check it before the tunnel, the address, the WireGuard
   configuration, each route and the DNS step. A step that is already running (one external command, or
   the 10 s HTTP poll) finishes first.
-- The host leaves within `startStopGrace` if the start is still running, or within `stopTimeout` if the
-  stop does not finish. It then exits with a reason. This bound is under the 20 s launchd kill timeout.
+- The host leaves within `shutdownBudget` (15 s) of the first stop signal, whatever mix of a running start
+  and a slow stop uses it. It then exits with a reason. The budget is one deadline, not a grace plus a
+  stop limit, so the two cannot add up past the 20 s launchd kill timeout.
   It is a bound on how long the host waits, not on how long the work takes: what the stop did not finish
   is swept by the next start.
 - A daemon that was stopped does not resume. A resume that starts after `Close` returns at once.
@@ -86,4 +86,4 @@ root-owned.
    children. Plan: run commands in their own process group and kill the group, if one ever does.
 10. **A resume that started before `Close` finishes its current step.** The check is between steps, so a
     stop waits for the step that is running: up to 10 s for a command, or the HTTP poll. The host does not
-    wait for this (see `stopTimeout`); the next start sweeps what it left.
+    wait for this (see `shutdownBudget`); the next start sweeps what it left.
