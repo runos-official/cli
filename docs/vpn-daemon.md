@@ -24,13 +24,27 @@ running tunnel when the program is updated, and it lists the edge cases that are
 |---|---|---|
 | Wait for the old daemon to leave (instance lock) | 15 s | `InstanceLockWait` |
 | Grace for a start that is still running after a stop signal | 10 s | `startStopGrace` |
+| The stop itself, after a stop signal (a second signal ends the wait) | 15 s | `stopTimeout` |
 | Any external command (route, scutil, PowerShell, resolvectl) | 10 s | `commandTimeout` |
+| Installer and restart commands (launchctl 30 s, systemctl 100 s) | 30 s / 100 s | `serviceCommandLimit` |
 | A request waiting for the resume | 30 s | `startRequestWait` |
 | One socket connection | 60 s | `serveConn` |
 | The status question that `runos update` asks | 2 s | `daemonStatusTimeout` |
 
-The service manager's own kill timeout on macOS is 20 s by default. The values above are chosen to stay
-under it. A daemon that is abandoned by the grace period leaves what it wrote; the next start sweeps it.
+What is guaranteed after a stop signal:
+
+- A stop makes a running resume or apply return at the next step. `Close` sets a flag before it takes the
+  daemon lock, and the resume and the apply check it before the tunnel, the address, the WireGuard
+  configuration, each route and the DNS step. A step that is already running (one external command, or
+  the 10 s HTTP poll) finishes first.
+- The host leaves within `startStopGrace` if the start is still running, or within `stopTimeout` if the
+  stop does not finish. It then exits with a reason. This bound is under the 20 s launchd kill timeout.
+  It is a bound on how long the host waits, not on how long the work takes: what the stop did not finish
+  is swept by the next start.
+- A daemon that was stopped does not resume. A resume that starts after `Close` returns at once.
+
+The values are chosen to stay under the macOS kill timeout (20 s). The 10 s command limit alone does not
+guarantee that: the commands of one resume can add up to more. That is why the stop has its own limit.
 
 ## Known edge cases (not fixed)
 
@@ -55,5 +69,21 @@ root-owned.
    `runHost` does, and accept the stop control while starting.
 6. **A request that is already past the listener can reach `Handle` after `Close`.** A connection accepted
    just before the stop can call `Handle` on a daemon that is shutting down (an `up` could start a tunnel
-   that nothing then stops). This window existed before the update work. Plan: set a closed flag in
-   `Close` and make `Handle` answer "stopping" when it is set.
+   that nothing then stops). This window existed before the update work. `Close` now sets a closed flag
+   and the resume honours it, but `Handle` does not check it yet. Plan: make `Handle` answer "stopping"
+   when the flag is set.
+7. **`SetResolver` truncates the file first.** On macOS `os.WriteFile` truncates, then writes. A kill
+   between the two leaves an empty file. It has no marker, so the sweep does not remove it. Before this
+   work it was the same. The effect is an empty resolver file for one zone, which macOS ignores. Plan:
+   write to a temporary name and rename it into place.
+8. **A managed file with no parsable nameserver is not swept.** The macOS sweep reads the files that
+   `Resolvers` returns, and `Resolvers` skips a file whose nameserver line it cannot parse. A file that has
+   the marker line and nothing else stays. The daemon never writes such a file. Plan: have `Teardown` list
+   files by marker, not by nameserver.
+9. **A timed-out command kills only the parent process.** `exec.CommandContext` kills the process it
+   started, not its children, and `WaitDelay` stops the call from waiting on them. A grandchild of
+   `powershell` or `sh` can outlive the timeout. The commands the daemon runs do not start long-lived
+   children. Plan: run commands in their own process group and kill the group, if one ever does.
+10. **A resume that started before `Close` finishes its current step.** The check is between steps, so a
+    stop waits for the step that is running: up to 10 s for a command, or the HTTP poll. The host does not
+    wait for this (see `stopTimeout`); the next start sweeps what it left.
