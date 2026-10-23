@@ -22,10 +22,7 @@ import (
 // Every resolver file the daemon writes carries a marker comment so Teardown removes exactly the
 // daemon's files and never a hand-written one.
 
-const (
-	resolverDir    = "/etc/resolver"
-	resolverMarker = "# managed by runos-vpn"
-)
+const resolverDir = "/etc/resolver"
 
 // defaultTunName is the interface the engine requests on macOS; the kernel appends the number.
 const defaultTunName = "utun"
@@ -90,7 +87,7 @@ func (darwinPlatform) Resolvers() (map[string]netip.Addr, error) {
 		}
 		path := filepath.Join(resolverDir, entry.Name())
 		data, err := os.ReadFile(path)
-		if err != nil || !bytes.Contains(data, []byte(resolverMarker)) {
+		if err != nil || !isManagedResolverFile(data) {
 			continue // not ours
 		}
 		if addr, ok := parseResolverNameserver(data); ok {
@@ -121,7 +118,7 @@ func (darwinPlatform) RemoveResolver(zone string) error {
 		}
 		return err
 	}
-	if !bytes.Contains(data, []byte(resolverMarker)) {
+	if !isManagedResolverFile(data) {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

@@ -19,11 +19,8 @@ import (
 // netsh and PowerShell are shelled out to rather than the IP helper and WMI APIs: both are on
 // every supported Windows, and their words in an error are what a person can act on.
 
-const (
-	// defaultTunName is the adapter name wireguard-go requests; it is also what netsh calls it.
-	defaultTunName = "runos"
-	nrptComment    = "runos-vpn"
-)
+// defaultTunName is the adapter name wireguard-go requests; it is also what netsh calls it.
+const defaultTunName = "runos"
 
 type windowsPlatform struct{}
 
@@ -73,7 +70,7 @@ func (windowsPlatform) RemoveRoute(iface string, prefix netip.Prefix) error {
 }
 
 func (windowsPlatform) Resolvers() (map[string]netip.Addr, error) {
-	out, err := powershell(`Get-DnsClientNrptRule | Where-Object { $_.Comment -eq '` + nrptComment + `' } | ForEach-Object { ($_.Namespace -join ',') + '|' + ($_.NameServers -join ',') }`)
+	out, err := powershell(`Get-DnsClientNrptRule | Where-Object { ` + nrptManagedClause() + ` } | ForEach-Object { ($_.Namespace -join ',') + '|' + ($_.NameServers -join ',') }`)
 	if err != nil {
 		return nil, fmt.Errorf("read NRPT rules: %w: %s", err, out)
 	}
@@ -96,8 +93,8 @@ func (p windowsPlatform) SetResolver(zone string, resolver netip.Addr) error {
 }
 
 func (windowsPlatform) RemoveResolver(zone string) error {
-	out, err := powershell(fmt.Sprintf(`Get-DnsClientNrptRule | Where-Object { $_.Comment -eq '%s' -and (($_.Namespace -contains '.%s') -or ($_.Namespace -contains '%s')) } | Remove-DnsClientNrptRule -Force`,
-		nrptComment, zone, zone))
+	out, err := powershell(fmt.Sprintf(`Get-DnsClientNrptRule | Where-Object { %s -and (($_.Namespace -contains '.%s') -or ($_.Namespace -contains '%s')) } | Remove-DnsClientNrptRule -Force`,
+		nrptManagedClause(), zone, zone))
 	if err != nil {
 		return fmt.Errorf("remove NRPT rule for %s: %w: %s", zone, err, out)
 	}
@@ -143,7 +140,7 @@ func (windowsPlatform) FlushDNS() error {
 }
 
 func (p windowsPlatform) Teardown(string) error {
-	out, err := powershell(`Get-DnsClientNrptRule | Where-Object { $_.Comment -eq '` + nrptComment + `' } | Remove-DnsClientNrptRule -Force`)
+	out, err := powershell(`Get-DnsClientNrptRule | Where-Object { ` + nrptManagedClause() + ` } | Remove-DnsClientNrptRule -Force`)
 	if err != nil {
 		return fmt.Errorf("remove NRPT rules: %w: %s", err, out)
 	}
