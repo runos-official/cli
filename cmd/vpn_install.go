@@ -148,9 +148,18 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 		vpn.LogDaemonFailure("daemon-start", fmt.Errorf("could not restrict access to the state directory: %w", secureErr))
 	}
 	return vpn.RunDaemonHost(func() (func(), error) {
+		// First, before anything touches the machine: a second daemon would steal the control socket
+		// and later remove the split-DNS files of the first one's live tunnel. A restart waits here
+		// for the old process to leave.
+		releaseLock, err := vpn.AcquireInstanceLock(stateDir, vpn.InstanceLockWait)
+		if err != nil {
+			vpn.LogDaemonFailure("daemon-start", err)
+			return nil, err
+		}
 		d, err := vpn.NewDaemon(stateDir, version.Version, verbose)
 		if err != nil {
 			vpn.LogDaemonFailure("daemon-start", err)
+			releaseLock()
 			return nil, err
 		}
 		d.Resume()
@@ -158,11 +167,13 @@ func runVPNDaemon(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			vpn.LogDaemonFailure("socket", err)
 			d.Close()
+			releaseLock()
 			return nil, err
 		}
 		return func() {
 			listener.Close()
 			d.Close()
+			releaseLock()
 		}, nil
 	})
 }
