@@ -108,6 +108,9 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 			result.CLI.UpdateAvailable = true
 			result.CLI.Message = "A CLI update is available."
 		} else {
+			if status := daemonStatus(cmd); status != nil {
+				fmt.Fprint(progress, vpnTunnelUpdateNotice(status.Running))
+			}
 			fmt.Fprintln(progress, "Downloading the CLI update…")
 			if err := updater.DownloadAndInstall(latestVersion); err != nil {
 				return err
@@ -227,7 +230,9 @@ func vpnRestartNotice(daemonVersion, cliVersion string) string {
 	return fmt.Sprintf(
 		"\nThe VPN service is running a different build (%s) from the one now installed (%s):\n"+
 			"replacing the binary does not reload a daemon that is already loaded.\n"+
-			"  Pick it up with: sudo runos vpn restart\n",
+			"  Pick it up with: sudo runos vpn restart\n"+
+			"  The restart cuts the tunnel for a few seconds. It then connects again by itself,\n"+
+			"  without a new sign-in, while your 24 hour VPN session is valid.\n",
 		daemonVersion, cliVersion,
 	)
 }
@@ -235,9 +240,9 @@ func vpnRestartNotice(daemonVersion, cliVersion string) string {
 // runningDaemonVersion asks the daemon what build it is. Empty when it cannot be reached or is too
 // old to say, which the caller treats as "no evidence of a skew".
 func runningDaemonVersion(cmd *cobra.Command) string {
-	resp, err := vpnSocketClient(cmd).Call(vpn.Request{Op: vpn.OpStatus})
-	if err != nil || resp.Status == nil {
+	status := daemonStatus(cmd)
+	if status == nil {
 		return ""
 	}
-	return resp.Status.Version
+	return status.Version
 }
