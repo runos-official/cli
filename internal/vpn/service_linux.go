@@ -28,21 +28,21 @@ func (s systemdService) Install(execPath, socketGroup string, groupExplicit bool
 	if err := os.WriteFile(systemdUnitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit (need sudo?): %w", err)
 	}
-	if out, err := run("systemctl", "daemon-reload"); err != nil {
+	if out, err := runLong("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, out)
 	}
-	if out, err := run("systemctl", "enable", "--now", "runos-vpn.service"); err != nil {
+	if out, err := runLong("systemctl", "enable", "--now", "runos-vpn.service"); err != nil {
 		return fmt.Errorf("enable runos-vpn: %w: %s", err, out)
 	}
 	return nil
 }
 
 func (s systemdService) Uninstall() error {
-	_, _ = run("systemctl", "disable", "--now", "runos-vpn.service")
+	_, _ = runLong("systemctl", "disable", "--now", "runos-vpn.service")
 	if err := os.Remove(systemdUnitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove systemd unit: %w", err)
 	}
-	_, _ = run("systemctl", "daemon-reload")
+	_, _ = runLong("systemctl", "daemon-reload")
 	if err := os.Remove(SocketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove socket: %w", err)
 	}
@@ -50,7 +50,7 @@ func (s systemdService) Uninstall() error {
 }
 
 func (s systemdService) Restart() error {
-	if out, err := run("systemctl", "restart", "runos-vpn.service"); err != nil {
+	if out, err := runLong("systemctl", "restart", "runos-vpn.service"); err != nil {
 		return fmt.Errorf("restart runos-vpn (is it installed? try `sudo runos vpn install`): %w: %s", err, out)
 	}
 	return nil

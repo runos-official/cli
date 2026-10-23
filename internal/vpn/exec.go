@@ -46,3 +46,23 @@ var errQueryTimedOut = errors.New("did not answer in time")
 func runBounded(name string, args ...string) ([]byte, error) {
 	return runWithin(serviceQueryTimeout, name, args...)
 }
+
+// serviceCommandLimit is how long an installer or restart command may run. These commands wait for
+// the old daemon to exit (launchd up to 20 s, systemd up to 90 s), so the 10 s limit of an ordinary
+// command made them report a timeout while the job went on, and a timed-out `launchctl bootout` on
+// install was ignored, so the bootstrap after it failed with "already loaded".
+func serviceCommandLimit(name string) time.Duration {
+	if name == "systemctl" {
+		return 100 * time.Second
+	}
+	return 30 * time.Second
+}
+
+// runLongFn is the runner behind runLong. A variable so a test can see which limit a caller asks
+// for without running a real command.
+var runLongFn = runWithin
+
+// runLong runs a service-manager command (launchctl, systemctl) with serviceCommandLimit.
+func runLong(name string, args ...string) ([]byte, error) {
+	return runLongFn(serviceCommandLimit(name), name, args...)
+}

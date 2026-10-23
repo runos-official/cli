@@ -34,7 +34,7 @@ func (s launchdService) Install(execPath, socketGroup string, groupExplicit bool
 		return fmt.Errorf("write launchd plist (need sudo?): %w", err)
 	}
 	// bootout first so a re-install reloads cleanly; ignore its error (nothing loaded is fine).
-	_, _ = run("launchctl", "bootout", "system/"+launchdLabel)
+	_, _ = runLong("launchctl", "bootout", "system/"+launchdLabel)
 
 	// THEN ENABLE THE LABEL, and this line is the whole of a defect that cost a real afternoon.
 	//
@@ -51,9 +51,9 @@ func (s launchdService) Install(execPath, socketGroup string, groupExplicit bool
 	//
 	// Enable is idempotent and harmless on a label that was never disabled, so it is unconditional
 	// rather than conditional on a query that has just been shown not to answer.
-	_, _ = run("launchctl", "enable", "system/"+launchdLabel)
+	_, _ = runLong("launchctl", "enable", "system/"+launchdLabel)
 
-	if out, err := run("launchctl", "bootstrap", "system", launchdPlistPath()); err != nil {
+	if out, err := runLong("launchctl", "bootstrap", "system", launchdPlistPath()); err != nil {
 		// AND IF IT STILL FAILS, say something the operator can act on rather than passing
 		// launchd's errno through. "Input/output error" sent two people down the wrong path.
 		return fmt.Errorf(
@@ -68,7 +68,7 @@ func (s launchdService) Install(execPath, socketGroup string, groupExplicit bool
 }
 
 func (s launchdService) Uninstall() error {
-	_, _ = run("launchctl", "bootout", "system/"+launchdLabel)
+	_, _ = runLong("launchctl", "bootout", "system/"+launchdLabel)
 	if err := os.Remove(launchdPlistPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove launchd plist: %w", err)
 	}
@@ -80,7 +80,7 @@ func (s launchdService) Uninstall() error {
 
 func (s launchdService) Restart() error {
 	// kickstart -k kills and restarts in place, keeping the loaded definition; no plist rewrite.
-	if out, err := run("launchctl", "kickstart", "-k", "system/"+launchdLabel); err != nil {
+	if out, err := runLong("launchctl", "kickstart", "-k", "system/"+launchdLabel); err != nil {
 		return fmt.Errorf("restart launchd daemon (is it installed? try `sudo runos vpn install`): %w: %s", err, out)
 	}
 	return nil
