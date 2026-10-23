@@ -68,10 +68,13 @@ root-owned.
    console run registers signals before start. Plan: run start on its own goroutine in the handler, as
    `runHost` does, and accept the stop control while starting.
 6. **A request that is already past the listener can reach `Handle` after `Close`.** A connection accepted
-   just before the stop can call `Handle` on a daemon that is shutting down (an `up` could start a tunnel
-   that nothing then stops). This window existed before the update work. `Close` now sets a closed flag
-   and the resume honours it, but `Handle` does not check it yet. Plan: make `Handle` answer "stopping"
-   when the flag is set.
+   just before the stop can call `Handle` on a daemon that is shutting down. It can no longer start a
+   tunnel: the closed checks in `startTunnelLocked` and `beginPollingLocked` make an `up` after `Close`
+   answer "the VPN daemon is stopping", and the engine is not created (a test shows 0 engine requests).
+   Two things remain. `Handle` itself does not check the flag, so other operations still run against a
+   closed daemon. And a refused `up` still saves the new session to the state file before it is refused.
+   That is harmless: the next daemon resumes the saved session. Plan: make `Handle` answer "stopping"
+   when the flag is set, before it saves anything.
 7. **`SetResolver` truncates the file first.** On macOS `os.WriteFile` truncates, then writes. A kill
    between the two leaves an empty file. It has no marker, so the sweep does not remove it. Before this
    work it was the same. The effect is an empty resolver file for one zone, which macOS ignores. Plan:
@@ -87,3 +90,23 @@ root-owned.
 10. **A resume that started before `Close` finishes its current step.** The check is between steps, so a
     stop waits for the step that is running: up to 10 s for a command, or the HTTP poll. The host does not
     wait for this (see `shutdownBudget`); the next start sweeps what it left.
+11. **The DNS flush can be skipped when a stop is killed late.** A stop that is killed after the last
+    resolver file was removed but before the flush leaves a stale cache entry. The entries expire; the
+    next start that removes a file flushes. Not planned.
+12. **The exit code differs by platform.** A forced exit returns an error, so a unix daemon exits with
+    code 1 (the service manager restarts it, which is wanted). The Windows service handler returns 0
+    after a stop. Not planned; the reason is in the daemon log on both.
+
+## Unknown: needs a real test
+
+On macOS, `launchctl kickstart -k` is the restart. What signal it sends, and the delay before SIGKILL,
+are taken from the launchd documentation and not measured here. On Windows nothing in `internal/vpn` has
+run, because there is no Windows machine in the test setup. These need a real Windows test:
+
+- `Get-DnsClientNrptRule` on a machine with no NRPT rules at all: does it return nothing, or an error?
+  The teardown script assumes nothing and counts 0.
+- The text PowerShell adds to merged output (CLIXML for errors, progress records when a script is run
+  with `-NonInteractive`). The outcome parser reads the last line only, but this was not seen on a
+  real run.
+- A stop request while the service reports StartPending. Whether the service control manager refuses it
+  is assumed, not tested (edge case 5).
