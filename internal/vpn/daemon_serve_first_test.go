@@ -1,7 +1,9 @@
 package vpn
 
 import (
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,5 +76,53 @@ func TestControlSocketAnswersWhileTheDaemonIsStillResuming(t *testing.T) {
 	}
 	if listener := <-listenerCh; listener != nil {
 		listener.Close()
+	}
+}
+
+/*
+A request that waits on a long resume gets an answer, not a dropped connection.
+
+serveConn gives each connection 60 s. A request queued behind a resume that runs longer used to
+reach that deadline: the client read "EOF", and the request still ran later (a queued up, down or
+logout executed after its caller had left). Requests now wait for the resume only up to
+startRequestWait, then get a plain "still starting" answer and run nothing.
+*/
+func TestRequestDuringALongResumeGetsAStillStartingAnswerInTime(t *testing.T) {
+	previous := startRequestWait
+	startRequestWait = 300 * time.Millisecond
+	t.Cleanup(func() { startRequestWait = previous })
+	d := newTestDaemon(t)
+	platform := &blockingTeardownPlatform{entered: make(chan struct{}), release: make(chan struct{})}
+	d.platform = platform
+	sock := shortSocketPath(t, "runos-vpn-longres.sock")
+	listener, err := d.ServeAndResume(func() (net.Listener, error) { return Serve(d, sock, "", false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	select {
+	case <-platform.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the resume never started")
+	}
+
+	started := time.Now()
+	_, err = NewClient(sock).call(Request{Op: OpDown}, 3*time.Second)
+
+	if err == nil || !strings.Contains(err.Error(), "still starting") {
+		t.Fatalf("err = %v, want a still-starting answer", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("the answer took %v; the wait must be bounded", time.Since(started))
+	}
+	var notRunning *NotRunningError
+	if errors.As(err, &notRunning) || strings.Contains(err.Error(), "vpn install") {
+		t.Fatalf("a starting service must not read as missing: %v", err)
+	}
+
+	// The refused down must not run later: after the resume the daemon is still as it was.
+	close(platform.release)
+	if _, err := NewClient(sock).call(Request{Op: OpStatus}, 5*time.Second); err != nil {
+		t.Fatalf("status after the resume: %v", err)
 	}
 }

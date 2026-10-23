@@ -42,6 +42,9 @@ type Daemon struct {
 	// very peers whose missing handshake is the cause.
 	appliedPeers []PeerPlan
 
+	// ready is closed when the start-up resume ends; nil when no resume is gating requests.
+	ready <-chan struct{}
+
 	pollInterval time.Duration
 	cancelPoll   context.CancelFunc
 	wg           sync.WaitGroup
@@ -50,6 +53,10 @@ type Daemon struct {
 // createEngine makes the tun interface and the WireGuard device. A variable so a test can prove WHEN
 // the daemon asks for a tunnel without creating a real interface, which needs root.
 var createEngine = newEngine
+
+// startRequestWait is how long a request waits for the resume. Under serveConn's 60 s deadline, so
+// the client always gets an answer instead of a dropped connection. A variable for tests.
+var startRequestWait = 30 * time.Second
 
 // PollInterval is how often the daemon re-reads the desired-state document. 30 s matches the
 // document's design (it changes on operator actions, so a poll is enough) and the 304 path keeps
@@ -131,31 +138,62 @@ func (d *Daemon) sweepLeftoversLocked() {
 }
 
 /*
-ServeAndResume opens the control socket and then resumes the stored session, holding the daemon's
-lock from before the first to after the last.
+ServeAndResume opens the control socket and resumes the stored session in the background. A request
+that arrives before the resume ends waits for it, up to startRequestWait, and then gets a plain
+"still starting" answer.
 
-A request that arrives during the resume therefore waits and gets the real answer. The resume takes
-seconds (an engine, a Conductor poll, a DNS check), and binding the socket after it meant every CLI
-call right after `vpn restart` said "the RunOS VPN service is not running ... Run 'sudo runos vpn
-install'" about a service that was running and about to answer. The Desktop app read the same
-absence as a missing service and could offer to reinstall it.
+The resume takes seconds (an engine, a Conductor poll, a DNS check), and binding the socket after it
+meant every CLI call right after `vpn restart` said "the RunOS VPN service is not running ... Run
+'sudo runos vpn install'" about a service that was running and about to answer. The Desktop app read
+the same absence as a missing service and could offer to reinstall it.
 
-Without the lock held, a request between the bind and the resume would run against a daemon that
-has not swept or resumed yet.
+The wait is bounded because serveConn gives a connection 60 s. A request held longer than that lost
+its connection ("EOF") and still ran later, after its caller had left.
+
+The gate is d.ready, set before the socket opens so no request can pass it unseen. Handle reads it
+without the lock, which is safe because nothing writes it once the socket is open.
 */
 func (d *Daemon) ServeAndResume(serve func() (net.Listener, error)) (net.Listener, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	ready := make(chan struct{})
+	d.ready = ready
 	listener, err := serve()
 	if err != nil {
+		close(ready)
 		return nil, err
 	}
-	d.resumeLocked()
+	go func() {
+		defer close(ready)
+		d.Resume()
+	}()
 	return listener, nil
+}
+
+// awaitStart blocks a request until the resume ends. It reports false, with the answer to send,
+// when the resume outlasts startRequestWait.
+func (d *Daemon) awaitStart() (Response, bool) {
+	if d.ready == nil {
+		return Response{}, true
+	}
+	select {
+	case <-d.ready:
+		return Response{}, true
+	default:
+	}
+	timer := time.NewTimer(startRequestWait)
+	defer timer.Stop()
+	select {
+	case <-d.ready:
+		return Response{}, true
+	case <-timer.C:
+		return Response{Error: "the RunOS VPN service is still starting and has not finished restoring your session; try again in a moment"}, false
+	}
 }
 
 // Handle serves one socket request. It is the only entry point besides Resume.
 func (d *Daemon) Handle(req Request) Response {
+	if answer, ok := d.awaitStart(); !ok {
+		return answer
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
