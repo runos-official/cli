@@ -62,10 +62,31 @@ func TestTheNrptTeardownScriptStopsOnErrorAndCountsWhatRemains(t *testing.T) {
 	if strings.Count(script, nrptManagedClause()) != 2 {
 		t.Errorf("script must find our rules before AND after the removal: %q", script)
 	}
-	for _, want := range []string{"Remove-DnsClientNrptRule", `"$($r.Count) $left"`} {
+	for _, want := range []string{"Remove-DnsClientNrptRule", `"$removed $left"`} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script %q must contain %q", script, want)
 		}
+	}
+}
+
+/*
+One failed removal must not abort the rest.
+
+With $ErrorActionPreference = 'Stop' a throw ends the pipeline, so the first rule that could not be
+removed left every later rule in place. Each removal now has its own try/catch: a failure is
+reported on a line of its own, the loop goes on, and the count of what is STILL present decides
+whether Teardown fails.
+*/
+func TestTheNrptTeardownScriptRemovesEachRuleInItsOwnTry(t *testing.T) {
+	script := nrptTeardownScript()
+	loop := script[strings.Index(script, "foreach"):strings.Index(script, "$left =")]
+	for _, want := range []string{"try {", "Remove-DnsClientNrptRule -Force", "$removed++", "} catch {", "failed:"} {
+		if !strings.Contains(loop, want) {
+			t.Errorf("the per-rule loop %q must contain %q", loop, want)
+		}
+	}
+	if strings.Index(loop, "try {") > strings.Index(loop, "Remove-DnsClientNrptRule") {
+		t.Errorf("the removal must sit inside the try: %q", loop)
 	}
 }
 
@@ -81,6 +102,7 @@ func TestTheNrptTeardownOutcome(t *testing.T) {
 		{"output has other lines first", "warning\r\n2 0\r\n", true, false},
 		{"a rule is left behind", "1 1\n", true, true},
 		{"nothing removed and one remains", "0 2\n", false, true},
+		{"one failed and one removed", "failed: access denied\r\n1 1\r\n", true, true},
 		{"unreadable output", "oops", true, true},
 		{"empty output", "", true, true},
 		{"negative numbers", "-1 0", true, true},
@@ -92,5 +114,13 @@ func TestTheNrptTeardownOutcome(t *testing.T) {
 					tc.out, flush, err, tc.wantFlush, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The reason a removal failed is kept in the error, so the log says why a rule remains.
+func TestTheNrptTeardownErrorCarriesTheFailureText(t *testing.T) {
+	_, err := nrptTeardownOutcome("failed: access denied\r\n0 1\r\n")
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("err = %v, want the failure text in it", err)
 	}
 }

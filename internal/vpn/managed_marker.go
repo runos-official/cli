@@ -34,15 +34,19 @@ func nrptManagedClause() string {
 }
 
 // nrptTeardownScript removes every NRPT rule the daemon owns, in one PowerShell start, and prints
-// "removed remaining". It stops on the first error, so a failed removal gives a non-zero exit, and it
-// counts what is still present afterwards, so a removal that did not work cannot read as success.
+// "removed remaining" as its last line. It stops on an error outside the loop, so that gives a
+// non-zero exit. Each removal has its own try/catch: a rule that cannot be removed is reported on a
+// line of its own ("failed: ...") and the loop goes on to the rest. The count of what is still
+// present afterwards, not the exit code, decides whether the sweep worked.
 func nrptTeardownScript() string {
 	clause := nrptManagedClause()
 	return "$ErrorActionPreference = 'Stop'; " +
 		"$r = @(Get-DnsClientNrptRule | Where-Object { " + clause + " }); " +
-		"foreach ($x in $r) { $x | Remove-DnsClientNrptRule -Force }; " +
+		"$removed = 0; " +
+		"foreach ($x in $r) { try { $x | Remove-DnsClientNrptRule -Force; $removed++ } " +
+		"catch { Write-Output ('failed: ' + $_.Exception.Message) } }; " +
 		"$left = @(Get-DnsClientNrptRule | Where-Object { " + clause + " }).Count; " +
-		`"$($r.Count) $left"`
+		`"$removed $left"`
 }
 
 // nrptTeardownOutcome reads the script's last line. flush says whether the DNS cache needs a flush:
@@ -60,7 +64,8 @@ func nrptTeardownOutcome(out string) (flush bool, err error) {
 		return true, fmt.Errorf("could not read the result of the NRPT teardown: %q", out)
 	}
 	if left > 0 {
-		return removed > 0, fmt.Errorf("%d NRPT rule(s) of the VPN are still present after the removal", left)
+		return removed > 0, fmt.Errorf("%d NRPT rule(s) of the VPN are still present after the removal: %s",
+			left, strings.Join(strings.Fields(strings.Join(lines[:len(lines)-1], " ")), " "))
 	}
 	return removed > 0, nil
 }
