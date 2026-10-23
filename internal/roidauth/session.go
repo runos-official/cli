@@ -127,6 +127,13 @@ func (s *Session) Login(ctx context.Context, show func(DeviceStart)) (Identity, 
 	return id, nil
 }
 
+// SignedInPerson is the person this session signs in as, empty after Logout or before a sign-in.
+func (s *Session) SignedInPerson() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Person
+}
+
 // Bearer returns an access token to send. It reuses the process's token
 // while it is fresh; otherwise it spends the stored refresh token under
 // the lock and stores the replacement.

@@ -77,3 +77,30 @@ func TestResolveTokenReportsANoSecureStoreHostPlainly(t *testing.T) {
 		t.Fatalf("err = %v, want the no-secure-store error, not a sign-out", err)
 	}
 }
+
+// After a fresh sign-in inside one process (`runos vpn up` asks for one), the session that signed
+// the person out first must not be reused: Logout empties its person, and the new sign-in is made
+// on another session object, so the cached one would answer "not signed in" right after approval.
+func TestASessionEmptiedByLogoutIsNotReusedForTheSamePerson(t *testing.T) {
+	t.Setenv(APIKeyEnvVar, "")
+	restore := openRoidStore
+	openRoidStore = func() (securestore.Store, error) { return emptyStore{}, nil }
+	t.Cleanup(func() { openRoidStore = restore; resetRoidSessions() })
+	resetRoidSessions()
+	cfg := roidConfig()
+	first, err := RoidSession(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Person != "p_alice" {
+		t.Fatalf("session person = %q", first.Person)
+	}
+	first.Person = "" // what Session.Logout leaves behind
+	second, err := RoidSession(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Person != "p_alice" {
+		t.Fatalf("the cached session that Logout emptied was reused: person %q", second.Person)
+	}
+}

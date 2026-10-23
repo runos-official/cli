@@ -69,9 +69,11 @@ func RoidSession(cfg *config.Config) (*roidauth.Session, error) {
 	roidMu.Lock()
 	defer roidMu.Unlock()
 	cacheKey := cfg.AuthIssuer + "\x00" + person
-	if s, ok := roidSessions[cacheKey]; ok {
+	if s, ok := roidSessions[cacheKey]; ok && (person == "" || s.SignedInPerson() == person) {
 		return s, nil
 	}
+	// A cached session whose person Logout emptied is stale: a sign-in made since lives on another
+	// session object, so build a new one from the stored secrets.
 	store, err := openRoidStore()
 	if err != nil {
 		return nil, err

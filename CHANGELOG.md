@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.22.1
+
+**`runos vpn up` and the Desktop app's VPN switch no longer fail right after you approve the browser
+check.** When the VPN needs a recent sign-in, the CLI signs you in again and then carries on. It
+looked up the session it had signed out a moment earlier, found it empty and stopped with "not
+signed in: run 'runos login'", although the approval had worked. The CLI now builds a new session
+from the stored sign-in after a sign-out in the same run.
+
 ## v1.22.0
 
 **Sign in through the RunOS identity service, per environment.** An environment whose config names an
