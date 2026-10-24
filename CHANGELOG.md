@@ -4,7 +4,8 @@
 
 ### Security
 
-- The CLI builds with Go 1.26.10 instead of Go 1.25.0 (FCR 1654). The v1.22.3 binaries were built with go1.25.0, a line without security fixes. A toolchain line in go.mod selects Go 1.26.10, which carries the standard-library fixes, including the HTTP/2 SETTINGS denial of service (CVE-2026-78669). govulncheck: 34 standard-library findings before, none after; the module findings that remain are tracked separately.
+- The CLI builds with Go 1.26.10 instead of Go 1.25.0 (FCR 1654). The v1.22.3 binaries were built with go1.25.0, a line without security fixes. A toolchain line in go.mod selects Go 1.26.10, which carries the standard-library fixes, including the HTTP/2 SETTINGS denial of service (CVE-2026-78669). govulncheck: 34 standard-library findings before, none after.
+- Dependencies with known, reachable vulnerabilities move to fixed releases (FCR 1671): golang.org/x/net v0.57.0 to v0.60.0, google.golang.org/grpc v1.76.0 to v1.83.2, sigstore-go v1.1.4 to v1.2.1 (which brings timestamp-authority v2.1.2 and go-tuf v2.4.2 pre-release 20260407), rekor v1.4.3 to v1.5.2 and in-toto-golang v0.9.0 to v0.11.0. grpc 1.83 needs Go 1.26 language mode, so go.mod declares go 1.26.0. govulncheck reports no vulnerabilities in source or in the built binary.
 
 ## v1.22.3
 
