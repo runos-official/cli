@@ -2,6 +2,8 @@ module github.com/runos-official/cli
 
 go 1.25.0
 
+toolchain go1.26.10
+
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/golang/snappy v1.0.0

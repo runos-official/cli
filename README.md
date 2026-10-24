@@ -43,7 +43,7 @@ cd cli
 make local
 ```
 
-Requires Go 1.25+. The binary is installed to `~/.local/bin/runos`.
+Requires Go 1.26.10+ (the `toolchain` line in `go.mod`). The binary is installed to `~/.local/bin/runos`.
 
 ### Check a checkout
 
@@ -322,7 +322,7 @@ If a feature can be a single endpoint, prefer adding it to the manifest. Reach f
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26.10+
 - A RunOS account with access to a cluster
 
 ### Building
