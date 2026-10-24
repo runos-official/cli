@@ -13,6 +13,7 @@ expired or that was interrupted left you signed out of the CLI, the Console and 
   is signed in as another account holder, it is refused. Your sign-in and your running tunnel stay
   exactly as they were, and the message tells you to open the link in the right browser.
 - `runos login` is unchanged: signing in as someone else is still allowed.
+- The CLI's own tests can no longer touch a real machine: the VPN service, your config and the credential store are out of reach of a test binary. This changes nothing for you at run time.
 
 ## v1.22.2
 
