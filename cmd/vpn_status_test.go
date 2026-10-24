@@ -13,6 +13,7 @@ import (
 )
 
 func TestVPNStatusShowsPrivateDNSFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	status := &vpn.Status{Running: true, Interface: "runos0"}
 	status.DNS = vpn.DNSStatus{
 		Mode:  "unavailable",
@@ -141,6 +142,7 @@ func TestConnectedButUnreachableSaysWhatToDo(t *testing.T) {
 // a daemon NEWER than the binary is the ordinary state after installing a local build over a
 // release. The remedy is the same either way, so the notice states the fact it has.
 func TestVPNStatusNamesBothBuildsWhenTheyDiffer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	previous := version.Version
 	version.Version = "dev-2026-08-18T19:40:41Z"
 	defer func() { version.Version = previous }()
@@ -168,6 +170,7 @@ func TestVPNStatusNamesBothBuildsWhenTheyDiffer(t *testing.T) {
 
 // The warning must NOT fire when the two agree, or every normal run carries noise.
 func TestVPNStatusIsQuietWhenTheBuildsMatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	previous := version.Version
 	version.Version = "dev-2026-08-18T19:40:41Z"
 	defer func() { version.Version = previous }()
@@ -294,6 +297,7 @@ func TestIsPublicEndpoint(t *testing.T) {
 //
 // A reader scanning the first line must not come away thinking the tunnel works.
 func TestVPNStatusHeadlineSaysExpiredRatherThanUp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	status := &vpn.Status{Running: true, Interface: "utun0", Address: "198.51.100.3/32"}
 	status.Session.LoginRequired = true
 
@@ -316,6 +320,7 @@ func TestVPNStatusHeadlineSaysExpiredRatherThanUp(t *testing.T) {
 
 // A live session must keep the plain, reassuring headline.
 func TestVPNStatusHeadlineStaysUpWhenTheSessionIsLive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	status := &vpn.Status{Running: true, Interface: "utun0", Address: "198.51.100.3/32"}
 	status.Session.Present = true
 	status.Session.ExpiresAt = time.Now().Add(2 * time.Hour)
@@ -428,6 +433,7 @@ The tunnel carried nothing: utun0 had no inet address and no routes.
 error with no clusters: no state has ever been applied, and the last attempt to fetch it failed.
 */
 func TestHeadlineSaysSoWhenTheTunnelNeverConverged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	status := &vpn.Status{
 		Running:     true,
 		Interface:   "utun0",
@@ -456,6 +462,7 @@ func TestHeadlineSaysSoWhenTheTunnelNeverConverged(t *testing.T) {
 // The control. A tunnel that HAS converged must still read as up, or the fix above would just
 // make every status alarming and teach the reader to ignore the first line.
 func TestAConvergedTunnelStillReadsAsUp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // printVPNStatus reads the config for the next step
 	status := &vpn.Status{
 		Running:   true,
 		Interface: "utun0",

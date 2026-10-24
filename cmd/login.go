@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -329,11 +328,10 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 // manifest update' step. Silent on failure: the next command's first-run
 // bootstrap retries the fetch.
 func warmManifestCache(cfg *config.Config) {
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return
 	}
-	configDir := filepath.Join(home, ".runos")
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	if _, err := loader.Load(); err != nil {
 		return

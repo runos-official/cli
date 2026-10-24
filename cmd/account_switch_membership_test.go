@@ -76,11 +76,14 @@ func TestAStoredSignInForAMemberAccountSwitchesWithoutABrowser(t *testing.T) {
 	cfg.ApplySessionLogin("bbbbb", &config.FirebaseConfig{APIKey: "KEY-B", ProjectID: "project-b"}, "REFRESH-B", "2026-01-01T00:00:00Z")
 	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY-A", ProjectID: "project-a"}, "REFRESH-A", "2026-01-02T00:00:00Z")
 
-	switched, err := switchWithStoredCredential(switchTestCommand(), cfg, "bbbbb", "aaaaa")
+	command, daemon := switchTestCommandWithDaemon(t)
+
+	switched, err := switchWithStoredCredential(command, cfg, "bbbbb", "aaaaa")
 
 	if !switched || err != nil {
 		t.Fatalf("expected a switch, got switched=%v err=%v", switched, err)
 	}
+	assertHasCall(t, daemon.recorded(), "down")
 	if cfg.AccountID != "bbbbb" || cfg.RefreshToken != "REFRESH-B" {
 		t.Fatalf("active = %q with token %q", cfg.AccountID, cfg.RefreshToken)
 	}
@@ -133,13 +136,14 @@ func TestAnUnreadableMembershipListDoesNotBlockTheSwitch(t *testing.T) {
 	cfg := membershipTestConfig(t, conductor.server.URL)
 	cfg.ApplySessionLogin("bbbbb", &config.FirebaseConfig{APIKey: "KEY"}, "REFRESH-B", "2026-01-01T00:00:00Z")
 	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY"}, "REFRESH-A", "2026-01-02T00:00:00Z")
-	command := switchTestCommand()
+	command, daemon := switchTestCommandWithDaemon(t)
 
 	switched, err := switchWithStoredCredential(command, cfg, "bbbbb", "aaaaa")
 
 	if !switched || err != nil {
 		t.Fatalf("expected a switch, got switched=%v err=%v", switched, err)
 	}
+	assertHasCall(t, daemon.recorded(), "down")
 	if cfg.AccountID != "bbbbb" {
 		t.Fatalf("active = %q, want bbbbb", cfg.AccountID)
 	}
@@ -158,13 +162,14 @@ func TestAnAccountJoinedAfterSignInUsesTheCurrentSignIn(t *testing.T) {
 	conductor.memberships = []string{"aaaaa", "ccccc"}
 	cfg := membershipTestConfig(t, conductor.server.URL)
 	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY", ProjectID: "proj"}, "REFRESH", "2026-01-01T00:00:00Z")
-	command := switchTestCommand()
+	command, daemon := switchTestCommandWithDaemon(t)
 
 	switched, err := switchWithStoredCredential(command, cfg, "ccccc", "aaaaa")
 
 	if !switched || err != nil {
 		t.Fatalf("expected a switch, got switched=%v err=%v", switched, err)
 	}
+	assertHasCall(t, daemon.recorded(), "down")
 	if cfg.AccountID != "ccccc" || cfg.RefreshToken != "REFRESH" {
 		t.Fatalf("active = %q with token %q", cfg.AccountID, cfg.RefreshToken)
 	}

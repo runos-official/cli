@@ -171,11 +171,10 @@ func newMCPServer(category string) (*mcp.Server, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return nil, err
 	}
-	configDir := filepath.Join(home, ".runos")
 
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
@@ -698,11 +697,10 @@ func runMCPConfigureCodex(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
-	configDir := filepath.Join(home, ".runos")
 
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
@@ -897,7 +895,7 @@ prefix_rule(
 }
 
 func addCodexTrustedProject() error {
-	home, err := os.UserHomeDir()
+	home, err := config.HomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
@@ -963,11 +961,11 @@ func runMCPToolsetsShow() error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return err
 	}
-	loader := manifest.NewLoader(cfg.GetAPIURL(), filepath.Join(home, ".runos"))
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	m, err := loader.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)

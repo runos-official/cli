@@ -4,6 +4,7 @@ package desktop
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/update"
 	"io"
 	"net/http"
@@ -56,7 +57,7 @@ func NewManager() (*Manager, error) {
 	if runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("RunOS Desktop supports macOS only")
 	}
-	home, err := os.UserHomeDir()
+	home, err := config.HomeDir()
 	if err != nil {
 		return nil, err
 	}

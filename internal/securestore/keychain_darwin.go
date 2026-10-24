@@ -50,6 +50,9 @@ func (k *Keychain) addCommand(item string, secret []byte) ([]string, string, err
 // Set stores or replaces an item, then reads it back: the exit status of
 // the interactive mode is not trusted alone.
 func (k *Keychain) Set(item string, secret []byte) error {
+	if err := k.refuseInTest(); err != nil {
+		return err
+	}
 	argv, script, err := k.addCommand(item, secret)
 	if err != nil {
 		return err
@@ -74,6 +77,9 @@ func (k *Keychain) Set(item string, secret []byte) error {
 
 // Get reads an item. The secret comes back on stdout.
 func (k *Keychain) Get(item string) ([]byte, error) {
+	if err := k.refuseInTest(); err != nil {
+		return nil, err
+	}
 	if err := checkName("item", item); err != nil {
 		return nil, err
 	}
@@ -92,6 +98,9 @@ func (k *Keychain) Get(item string) ([]byte, error) {
 
 // Delete removes an item.
 func (k *Keychain) Delete(item string) error {
+	if err := k.refuseInTest(); err != nil {
+		return err
+	}
 	if err := checkName("item", item); err != nil {
 		return err
 	}
@@ -104,6 +113,15 @@ func (k *Keychain) Delete(item string) error {
 		return fmt.Errorf("securestore: keychain delete failed: %v", err)
 	}
 	return nil
+}
+
+// refuseInTest keeps a test binary out of the login keychain, except under a throwaway test
+// service name with RUNOS_TEST_KEYCHAIN=1 (testguard.go).
+func (k *Keychain) refuseInTest() error {
+	if realStoreAllowed(k.Service) {
+		return nil
+	}
+	return errRealStoreInTest("the login keychain is off limits under service " + k.Service)
 }
 
 func platformStore(service string) (Store, bool) {

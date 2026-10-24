@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/runos-official/cli/internal/apps"
+	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/git"
@@ -1634,11 +1635,10 @@ func vcsRepoRelPath(path string) string {
 // needs read-only access to the manifest. Surfaces a clear error so the
 // caller can fall back gracefully (cascade off, deploy proceeds, etc).
 func loadLocalManifest(conductorURL string) (*manifest.Manifest, error) {
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("locate home dir: %w", err)
 	}
-	configDir := filepath.Join(home, ".runos")
 	loader := manifest.NewLoader(conductorURL, configDir)
 	// Load() falls through to a remote fetch when the cache is missing
 	// or stale; the apps_pull cascade needs a working manifest, and a

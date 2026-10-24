@@ -3,8 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/runos-official/cli/internal/config"
@@ -92,11 +90,11 @@ func loadManifest() (*manifest.Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
-	loader := manifest.NewLoader(cfg.GetAPIURL(), filepath.Join(home, ".runos"))
+	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	return loader.Load()
 }
 
@@ -182,11 +180,10 @@ func runManifestUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
-	configDir := filepath.Join(home, ".runos")
 
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 

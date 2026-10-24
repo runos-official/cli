@@ -124,3 +124,20 @@ func TestOpenPicksTheKeychainOnThisMac(t *testing.T) {
 		t.Fatalf("kind %q", s.Kind())
 	}
 }
+
+// The login keychain under the CLI's real service name is off limits to a test binary, even
+// through the backend directly. Each call must refuse before security(1) runs.
+func TestKeychainRefusesTheRealServiceInATestBinary(t *testing.T) {
+	t.Setenv("RUNOS_TEST_KEYCHAIN", "1")
+	k := NewKeychain("runos-cli-roid")
+	var nss *NoSecureStoreError
+	if _, err := k.Get("probe"); !errors.As(err, &nss) || !strings.Contains(err.Error(), "test binary") {
+		t.Fatalf("Get under the real service = %v, want the test-binary refusal", err)
+	}
+	if err := k.Set("probe", []byte("x")); !errors.As(err, &nss) {
+		t.Fatalf("Set under the real service = %v, want the test-binary refusal", err)
+	}
+	if err := k.Delete("probe"); !errors.As(err, &nss) {
+		t.Fatalf("Delete under the real service = %v, want the test-binary refusal", err)
+	}
+}

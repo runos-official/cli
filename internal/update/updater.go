@@ -514,11 +514,10 @@ func CheckForUpdate() string {
 	}
 
 	// Get config directory for cache
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return ""
 	}
-	configDir := filepath.Join(home, ".runos")
 	cacheManager := cache.NewManager(configDir)
 
 	// Check if we recently checked for updates

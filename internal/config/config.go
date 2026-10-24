@@ -194,20 +194,8 @@ func (c *Config) forgetDefaultClusterOnAccountChange(accountID string) {
 	}
 }
 
-// Dir is the CLI's config directory (~/.runos). Exported because the MCP
-// toolset cache lives beside the manifest cache.
-func Dir() (string, error) { return configDir() }
-
-func configDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, configDirName), nil
-}
-
 func configPath() (string, error) {
-	dir, err := configDir()
+	dir, err := Dir()
 	if err != nil {
 		return "", err
 	}
@@ -314,7 +302,7 @@ func (c *Config) GetAccountID() string {
 
 // Save writes the config to disk, creating the config directory if needed.
 func (c *Config) Save() error {
-	dir, err := configDir()
+	dir, err := Dir()
 	if err != nil {
 		return err
 	}

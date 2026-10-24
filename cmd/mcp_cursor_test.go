@@ -33,6 +33,14 @@ func readJSONFile(t *testing.T, path string) map[string]any {
 
 // cursorTestOptions runs the command with the confirmation already answered, so
 // a case that is not about the confirmation does not have to feed it.
+// isolateCursorTest runs a cursor test in a temp project under a temp HOME. The command writes
+// into the project, and its sign-in check reads the config under HOME.
+func isolateCursorTest(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+}
+
 func cursorTestOptions() cursorOptions {
 	return cursorOptions{yes: true, in: strings.NewReader(""), out: io.Discard}
 }
@@ -283,7 +291,7 @@ func TestBuildCursorHooksConfig(t *testing.T) {
 // again. The version before this printed "already configured, skipping", exited
 // 0, and left the project with four servers loading and no guard at all.
 func TestConfigureCursor_RepairsADeletedGuard(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 
 	if err := configureCursor(cursorTestOptions()); err != nil {
 		t.Fatalf("first run: %v", err)
@@ -312,7 +320,7 @@ func TestConfigureCursor_RepairsADeletedGuard(t *testing.T) {
 // The reviewer's second reproduction, in two halves. A malformed hooks.json
 // used to be found only AFTER mcp.json had declared four servers.
 func TestConfigureCursor_AMalformedHooksFileWritesNothing(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := os.MkdirAll(".cursor", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -340,7 +348,7 @@ func TestConfigureCursor_AMalformedHooksFileWritesNothing(t *testing.T) {
 }
 
 func TestConfigureCursor_FixingTheHooksFileThenRerunningRepairs(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := os.MkdirAll(".cursor", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -369,7 +377,7 @@ func TestConfigureCursor_FixingTheHooksFileThenRerunningRepairs(t *testing.T) {
 // A project that already names a runos server, from a hand-written config or a
 // teammate's commit, still gets the guard.
 func TestConfigureCursor_AHandWrittenRunosEntryStillGetsTheGuard(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := os.MkdirAll(".cursor", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -394,7 +402,7 @@ func TestConfigureCursor_AHandWrittenRunosEntryStillGetsTheGuard(t *testing.T) {
 }
 
 func TestConfigureCursor_SecondRunChangesNothing(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 
 	if err := configureCursor(cursorTestOptions()); err != nil {
 		t.Fatalf("first run: %v", err)
@@ -449,7 +457,7 @@ func TestLoadCursorJSON_NonObjectJSON(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Chdir(t.TempDir())
+			isolateCursorTest(t)
 			if err := os.MkdirAll(".cursor", 0o755); err != nil {
 				t.Fatalf("mkdir: %v", err)
 			}
@@ -478,7 +486,7 @@ func TestLoadCursorJSON_NonObjectJSON(t *testing.T) {
 }
 
 func TestConfigureCursor_ANullConfigDoesNotPanic(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := os.MkdirAll(".cursor", 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -501,7 +509,7 @@ func TestConfigureCursor_ANullConfigDoesNotPanic(t *testing.T) {
 // that fails allow the call through, so the risky servers must not be declared
 // there at all.
 func TestConfigureCursor_WindowsRefusesTheRiskyServers(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	original := cursorGOOS
 	cursorGOOS = "windows"
 	t.Cleanup(func() { cursorGOOS = original })
@@ -519,7 +527,7 @@ func TestConfigureCursor_WindowsRefusesTheRiskyServers(t *testing.T) {
 }
 
 func TestConfigureCursor_WindowsAllowsReadOnly(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	original := cursorGOOS
 	cursorGOOS = "windows"
 	t.Cleanup(func() { cursorGOOS = original })
@@ -556,7 +564,7 @@ func TestConfigureCursor_TheConfirmationGatesTheWrite(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Chdir(t.TempDir())
+			isolateCursorTest(t)
 			var report strings.Builder
 			opts := cursorOptions{in: strings.NewReader(tc.typed), out: &report}
 
@@ -578,7 +586,7 @@ func TestConfigureCursor_TheConfirmationGatesTheWrite(t *testing.T) {
 }
 
 func TestConfigureCursor_TheWarningNamesEveryRiskyServer(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	var report strings.Builder
 	opts := cursorOptions{in: strings.NewReader("no\n"), out: &report}
 	if err := configureCursor(opts); err != nil {
@@ -601,7 +609,7 @@ func TestConfigureCursor_TheWarningNamesEveryRiskyServer(t *testing.T) {
 // Something can strip the executable bit: a checkout on a filesystem that drops
 // it, or an over-eager umask. Cursor then cannot run the guard.
 func TestConfigureCursor_RestoresTheGuardExecutableBit(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := configureCursor(cursorTestOptions()); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -625,7 +633,7 @@ func TestConfigureCursor_RestoresTheGuardExecutableBit(t *testing.T) {
 // Cursor runs the registered command from the project root, so the path
 // registered in hooks.json has to be the path the file is written to.
 func TestConfigureCursor_TheRegisteredPathIsTheWrittenPath(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateCursorTest(t)
 	if err := configureCursor(cursorTestOptions()); err != nil {
 		t.Fatalf("run: %v", err)
 	}

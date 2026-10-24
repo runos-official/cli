@@ -17,6 +17,16 @@ func switchTestCommand() *cobra.Command {
 	return command
 }
 
+// switchTestCommandWithDaemon is switchTestCommand pointed at a fake daemon. A switch that changes
+// account sends the daemon `down`, so a test of one must never leave --socket at the default.
+func switchTestCommandWithDaemon(t *testing.T) (*cobra.Command, *fakeDaemon) {
+	t.Helper()
+	daemon := newFakeDaemon(t)
+	command := switchTestCommand()
+	_ = command.Flags().Set("socket", daemon.path)
+	return command, daemon
+}
+
 // Nothing stored means the browser, exactly as before. This is every switch on
 // the first run after an upgrade, so it must not become an error.
 func TestStoredSwitchDefersToTheBrowserWhenItHasNothing(t *testing.T) {

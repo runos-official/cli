@@ -341,6 +341,31 @@ make build
 make test
 ```
 
+### Test hygiene
+
+A test can never reach the real VPN daemon, the real config or the real credential store. Each
+opener checks `testing.Testing()` (`internal/testguard`), so the guards cost a release binary
+nothing:
+
+- `vpn.NewClient` with no path, or with the real socket path, dials a path that cannot exist. The
+  call ends with the ordinary "not running" error. `vpn.Serve` refuses the real socket path.
+- `config.HomeDir` and `config.Dir` refuse a `HOME` outside the system temp directory. Every path
+  under home goes through them.
+- `securestore.Open` treats the OS credential store as absent. It opens an encrypted file only
+  under the temp directory.
+
+To write a test that needs one of these:
+
+- Daemon: start a fake on a temp socket and pass its path (`--socket`, or `vpn.NewClient(path)`).
+  `newFakeDaemon` in `cmd/vpn_up_harness_test.go` does this.
+- Config: call `t.Setenv("HOME", t.TempDir())` before the code under test runs.
+- Credential store: pass `securestore.Options.Platform` with a fake store, or set
+  `RUNOS_CREDENTIAL_PASSPHRASE` with a temp `HOME` to use the encrypted file.
+
+The keychain tests in `internal/securestore` are the one exception. They run only with
+`RUNOS_TEST_KEYCHAIN=1`, and only under a throwaway service name that starts with
+`runos-cli-test-`.
+
 ### Git hooks
 
 Run `make hooks` once per clone. It points `core.hooksPath` at the tracked

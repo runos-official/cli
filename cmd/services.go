@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -96,11 +94,10 @@ func prepareServicesCmd(cmd *cobra.Command) (*servicesCmdContext, error) {
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
 	}
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("locate home dir: %w", err)
 	}
-	configDir := filepath.Join(home, ".runos")
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
 	// Load() falls through to a remote fetch when the cache is missing
 	// or stale; LoadLocal() is cache-only. Headless CI runs (PAT, no

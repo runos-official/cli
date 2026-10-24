@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -117,11 +116,11 @@ func manifestLoaderWithTimeout(timeout time.Duration) (*manifest.Loader, error) 
 	if err != nil {
 		return nil, err
 	}
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return nil, err
 	}
-	return manifest.NewLoaderWithTimeout(cfg.GetAPIURL(), filepath.Join(home, ".runos"), timeout), nil
+	return manifest.NewLoaderWithTimeout(cfg.GetAPIURL(), configDir, timeout), nil
 }
 
 // explainPossiblyStaleManifest prints guidance after an unknown-command failure, and refreshes

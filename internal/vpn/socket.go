@@ -35,6 +35,9 @@ func restartServiceHint() string {
 // It replaces a stale socket file left by a crashed daemon. The returned listener is closed by
 // the caller to stop serving.
 func Serve(d *Daemon, socketPath, socketGroup string, groupExplicit bool) (net.Listener, error) {
+	if err := refuseRealSocketInTest(socketPath); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
@@ -90,12 +93,10 @@ type Client struct {
 	socketPath string
 }
 
-// NewClient returns a socket client for the default (or given) path.
+// NewClient returns a socket client for the default (or given) path. A test binary never gets
+// the real daemon's socket (socket_testguard.go).
 func NewClient(socketPath string) *Client {
-	if socketPath == "" {
-		socketPath = SocketPath
-	}
-	return &Client{socketPath: socketPath}
+	return &Client{socketPath: clientSocketPath(socketPath)}
 }
 
 // Call sends one request and returns the daemon's response. A connection failure is reported as a

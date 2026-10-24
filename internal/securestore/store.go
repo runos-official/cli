@@ -69,14 +69,22 @@ func Open(o Options) (Store, error) {
 	if err := checkName("service", o.Service); err != nil {
 		return nil, err
 	}
+	// A test binary never gets the real OS store or a file outside the temp dir (testguard.go).
 	plat := o.Platform
+	inTestWithoutFake := plat == nil && !realStoreAllowed(o.Service)
 	if plat == nil {
 		plat = platformStore
+	}
+	if inTestWithoutFake {
+		plat = absentInTest
 	}
 	if s, ok := plat(o.Service); ok {
 		return s, nil
 	}
 	if !o.AllowEncryptedFile {
+		if inTestWithoutFake {
+			return nil, errRealStoreInTest("the real OS credential store is off limits")
+		}
 		return nil, &NoSecureStoreError{Reason: "no OS credential store on this host; set RUNOS_CREDENTIAL_PASSPHRASE to keep the credentials in an encrypted file, or use a machine key in RUNOS_API_KEY"}
 	}
 	if len(o.Passphrase) == 0 {
@@ -84,6 +92,9 @@ func Open(o Options) (Store, error) {
 	}
 	if o.FilePath == "" {
 		return nil, &NoSecureStoreError{Reason: "no encrypted file path"}
+	}
+	if !encryptedFileAllowed(o.FilePath) {
+		return nil, errRealStoreInTest("the encrypted file " + o.FilePath + " is outside the temp dir")
 	}
 	s, err := NewEncryptedFile(o.FilePath, o.Passphrase)
 	if err != nil {

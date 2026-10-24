@@ -55,6 +55,8 @@ func (emptyStore) Kind() string               { return "empty" }
 
 func TestResolveTokenWithAMissingStoredSecretSaysNotAuthenticated(t *testing.T) {
 	t.Setenv(APIKeyEnvVar, "")
+	// RoidSession creates the config dir for its lock file; keep it off the real ~/.runos.
+	t.Setenv("HOME", t.TempDir())
 	restore := openRoidStore
 	openRoidStore = func() (securestore.Store, error) { return emptyStore{}, nil }
 	t.Cleanup(func() { openRoidStore = restore; resetRoidSessions() })
@@ -83,6 +85,8 @@ func TestResolveTokenReportsANoSecureStoreHostPlainly(t *testing.T) {
 // on another session object, so the cached one would answer "not signed in" right after approval.
 func TestASessionEmptiedByLogoutIsNotReusedForTheSamePerson(t *testing.T) {
 	t.Setenv(APIKeyEnvVar, "")
+	// RoidSession creates the config dir for its lock file; keep it off the real ~/.runos.
+	t.Setenv("HOME", t.TempDir())
 	restore := openRoidStore
 	openRoidStore = func() (securestore.Store, error) { return emptyStore{}, nil }
 	t.Cleanup(func() { openRoidStore = restore; resetRoidSessions() })

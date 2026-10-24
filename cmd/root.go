@@ -176,8 +176,7 @@ var rootCmd = &cobra.Command{
 		// failure so a transient network blip doesn't block the run; the
 		// dependent command (apps_pull, services_*) will surface its own
 		// "(run 'runos manifest update'?)" hint with the wrapped error.
-		if home, err := os.UserHomeDir(); err == nil {
-			configDir := filepath.Join(home, ".runos")
+		if configDir, err := config.Dir(); err == nil {
 			manifestPath := filepath.Join(configDir, manifestFileName)
 			_, statErr := os.Stat(manifestPath)
 			parentName := ""
@@ -385,11 +384,10 @@ func registerDynamicCommands() error {
 	}
 
 	// Get config directory for manifest storage
-	home, err := os.UserHomeDir()
+	configDir, err := config.Dir()
 	if err != nil {
 		return err
 	}
-	configDir := filepath.Join(home, ".runos")
 
 	// Load manifest from Conductor API
 	loader := manifest.NewLoader(cfg.GetAPIURL(), configDir)
