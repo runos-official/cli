@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -110,8 +111,9 @@ func TestHostileInstallDirAndUnknownArgumentsRunNothing(t *testing.T) {
 func TestValidPinPassesTheChecks(t *testing.T) {
 	for _, args := range [][]string{{"--release", "v1.22.3"}, {"--release=1.22.3-rc.1"}, {"--install-dir", "/tmp/runos-bin"}} {
 		_, _, ran := runInstaller(t, nil, args...)
-		if len(ran) == 0 || ran[0] != "uname" {
-			t.Errorf("args %q: ran %v, want uname first", args, ran)
+		// uname and tr run as one pipeline, so the order they are recorded in is not fixed.
+		if !slices.Contains(ran, "uname") {
+			t.Errorf("args %q: ran %v, want the install to reach uname", args, ran)
 		}
 	}
 }
