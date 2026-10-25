@@ -135,3 +135,87 @@ func TestTheScriptsAreStatic(t *testing.T) {
 		}
 	}
 }
+
+// fakeInstall runs the script against a fake world: real text tools, a curl that answers like
+// the validated registry and fails the archive download, so the script stops right after it
+// chose the exact release. It returns every URL curl was asked for.
+func fakeInstall(t *testing.T, env []string, args ...string) (int, []string) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	dir := t.TempDir()
+	stubs := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stubs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, real := range []string{"sed", "head", "tr", "grep", "awk", "cat", "rm", "mkdir", "mktemp"} {
+		path, lookErr := exec.LookPath(real)
+		if lookErr != nil {
+			t.Skipf("%s is not installed", real)
+		}
+		if err := os.Symlink(path, filepath.Join(stubs, real)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(stubs, name), []byte("#!"+bash+"\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("uname", `case "$1" in -s) echo Linux;; *) echo x86_64;; esac`+"\n")
+	write("curl", `url=""
+for a in "$@"; do case "$a" in -*) ;; *) url="$a";; esac; done
+printf '%s\n' "$url" >> "$WORK/urls"
+case "$url" in
+  */current.json) echo '{"version":"v1.22.3","validated_at":"2026-10-24T07:21:16Z"}';;
+  *.sha256) printf '%064d\n' 0;;
+  *) exit 22;;
+esac
+`)
+	cmd := exec.Command(bash, append([]string{"cli-install.sh"}, args...)...)
+	cmd.Env = append([]string{"PATH=" + stubs, "WORK=" + dir, "HOME=" + dir, "TMPDIR=" + dir}, env...)
+	err = cmd.Run()
+	code := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "urls"))
+	return code, strings.Fields(string(raw))
+}
+
+// TestAnExactReleaseCandidateIsInstalledExactly: a pinned hidden RC reads that release's own
+// validated digest and downloads that exact archive, in every pin spelling.
+func TestAnExactReleaseCandidateIsInstalledExactly(t *testing.T) {
+	want := []string{
+		"https://runoscdn.com/cli/validated/v1.22.3-rc.2/runos-linux-amd64.sha256",
+		"https://github.com/runos-official/cli/releases/download/v1.22.3-rc.2/runos-linux-amd64.tar.gz",
+	}
+	for name, run := range map[string]func() (int, []string){
+		"--release":     func() (int, []string) { return fakeInstall(t, nil, "--release", "v1.22.3-rc.2") },
+		"bare version":  func() (int, []string) { return fakeInstall(t, nil, "--release=1.22.3-rc.2") },
+		"RUNOS_VERSION": func() (int, []string) { return fakeInstall(t, []string{"RUNOS_VERSION=v1.22.3-rc.2"}) },
+	} {
+		code, urls := run()
+		if code != 1 || strings.Join(urls, " ") != strings.Join(want, " ") {
+			t.Errorf("%s: exit %d, fetched %v; want %v", name, code, urls, want)
+		}
+	}
+}
+
+// TestWithoutAPinTheValidatedCurrentReleaseIsInstalled: no pin, so the script reads the
+// validated current.json pointer and installs exactly that release.
+func TestWithoutAPinTheValidatedCurrentReleaseIsInstalled(t *testing.T) {
+	code, urls := fakeInstall(t, nil)
+	want := []string{
+		"https://runoscdn.com/cli/validated/current.json",
+		"https://runoscdn.com/cli/validated/v1.22.3/runos-linux-amd64.sha256",
+		"https://github.com/runos-official/cli/releases/download/v1.22.3/runos-linux-amd64.tar.gz",
+	}
+	if code != 1 || strings.Join(urls, " ") != strings.Join(want, " ") {
+		t.Fatalf("exit %d, fetched %v; want %v", code, urls, want)
+	}
+}
