@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `installer/cli-install.sh` and `installer/cli-install.ps1`, the CLI install scripts, now live in this repository (FPL356). They are static files: the RunOS API serves them unchanged at `/cli.sh` and `/cli.ps1`. A pin is an argument (`bash -s -- --release v1.2.3`, or `$RunOSRelease = 'v1.2.3'` before `iex`) or `RUNOS_VERSION`. Every input is checked before any command runs, and the archive is still installed only when its sha256 matches the validated registry.
+
 ### Security
 
 - The CLI builds with Go 1.26.10 instead of Go 1.25.0 (FCR 1654). The v1.22.3 binaries were built with go1.25.0, a line without security fixes. A toolchain line in go.mod selects Go 1.26.10, which carries the standard-library fixes, including the HTTP/2 SETTINGS denial of service (CVE-2026-78669). govulncheck: 34 standard-library findings before, none after.
