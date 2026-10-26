@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.23.1
+
+**Connecting the VPN on macOS no longer fails when the system is slow to apply private DNS.** On some
+Macs the first connect after sign-in stopped with "private DNS zone ... is not effective yet" and
+needed a second click. On macOS 26 the zone was never listed at all, even minutes later, so cluster
+names did not resolve although the tunnel was up.
+
+- Private DNS is now published through the system network store first, and through the resolver
+  file second. The zone is listed as soon as the tunnel is up, and `runos vpn status` reports
+  `Private DNS: available (store)`.
+- A zone that macOS has not listed yet no longer fails the connect. The connect succeeds, status says
+  the cluster names are still being applied, and a background check reports when they are ready. It
+  stops after three minutes and says so.
+- `runos vpn down`, a disconnect and a service stop remove the entries they published, and a service
+  start removes any that an earlier crash left behind. A resolver file you wrote by hand is never
+  overwritten or removed.
+- Resolver files are written atomically, so the zone file is never visible half written.
+- `runos vpn status --json` always returns the per-cluster lists as lists, never `null`, writes times as
+  UTC whole seconds, and carries `dns.pending`. RunOS Desktop reads this output, and a `null` list used
+  to blank its menu. The contract is documented in `docs/desktop-contract.md` and checked by tests.
+- `runos vpn diagnose` says which DNS mechanisms are in place for each zone.
+
+After you update, run `runos vpn restart`. The VPN service keeps running the old build until you do.
+
 ## v1.23.0
 
 ### Added
