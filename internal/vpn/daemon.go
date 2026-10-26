@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +26,7 @@ type Daemon struct {
 	platform platform
 
 	// Live tunnel, nil when down.
-	engine       *engine
+	engine       tunnelEngine
 	client       *conductorClient
 	doc          *Document
 	plan         Plan
@@ -42,6 +41,10 @@ type Daemon struct {
 	// also converged, so a DNS check that fails because the tunnel is dead would otherwise hide the
 	// very peers whose missing handshake is the cause.
 	appliedPeers []PeerPlan
+	// dnsWatch is the background check of a pending private DNS zone; nil when none is running or
+	// kept. dnsTiming is its clock, real unless a test replaces it. See dns_pending.go.
+	dnsWatch  *dnsWatch
+	dnsTiming dnsTiming
 
 	// closed is set by Close BEFORE it takes mu, so a resume or an apply that holds mu can see that
 	// a stop is waiting and return at once. Never cleared: a closed daemon does not start again.
@@ -54,10 +57,6 @@ type Daemon struct {
 	cancelPoll   context.CancelFunc
 	wg           sync.WaitGroup
 }
-
-// createEngine makes the tun interface and the WireGuard device. A variable so a test can prove WHEN
-// the daemon asks for a tunnel without creating a real interface, which needs root.
-var createEngine = newEngine
 
 // errStopping is returned by the steps of a resume or an apply that notice a stop is waiting.
 var errStopping = errors.New("the VPN daemon is stopping")
@@ -208,37 +207,50 @@ func (d *Daemon) Handle(req Request) Response {
 	if answer, ok := d.awaitStart(); !ok {
 		return answer
 	}
+	resp, settle := d.handleLocked(req)
+	if settle != nil {
+		// Outside the lock: a status request must be answered while a DNS zone settles.
+		resp = d.settleDNS(resp, settle)
+	}
+	return resp
+}
+
+// handleLocked runs one request under the daemon's lock. For a request that can start a pending DNS
+// check it also returns the watch to wait for.
+func (d *Daemon) handleLocked(req Request) (Response, *dnsWatch) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	switch req.Op {
 	case OpIdentity:
-		return d.handleIdentityLocked(req.AccountID)
+		return d.handleIdentityLocked(req.AccountID), nil
 	case OpIdentities:
-		return Response{Identities: d.identitiesLocked()}
+		return Response{Identities: d.identitiesLocked()}, nil
 	case OpStatus:
-		return Response{Status: d.statusLocked()}
+		return Response{Status: d.statusLocked()}, nil
 	case OpUp:
-		return d.handleUpLocked(req)
+		resp := d.handleUpLocked(req)
+		return resp, d.pendingWatchLocked()
 	case OpDown:
-		return d.handleDownLocked(false)
+		return d.handleDownLocked(false), nil
 	case OpLogout:
-		return d.handleDownLocked(true)
+		return d.handleDownLocked(true), nil
 	case OpRotateKey:
-		return d.handleRotateKeyLocked(req.AccountID)
+		return d.handleRotateKeyLocked(req.AccountID), nil
 	case OpForgetIdentity:
-		return d.handleForgetIdentityLocked(req.AccountID)
+		return d.handleForgetIdentityLocked(req.AccountID), nil
 	case OpConnect:
-		return d.handleSetMembershipLocked(req.CID, true)
+		resp := d.handleSetMembershipLocked(req.CID, true)
+		return resp, d.pendingWatchLocked()
 	case OpDisconnect:
-		return d.handleSetMembershipLocked(req.CID, false)
+		return d.handleSetMembershipLocked(req.CID, false), nil
 	case OpPoll:
 		if err := d.pollAndApplyLocked(); err != nil {
-			return Response{Error: err.Error()}
+			return Response{Error: err.Error()}, nil
 		}
-		return Response{Status: d.statusLocked()}
+		return Response{Status: d.statusLocked()}, d.pendingWatchLocked()
 	default:
-		return Response{Error: fmt.Sprintf("unknown op %q", req.Op)}
+		return Response{Error: fmt.Sprintf("unknown op %q", req.Op)}, nil
 	}
 }
 
@@ -287,6 +299,9 @@ func (d *Daemon) handleUpLocked(req Request) Response {
 	 Refusing is recoverable in one command. Silently minting was not recoverable at all, because
 	 nothing about it looked wrong.
 	*/
+	if resp, handled := d.upWhilePendingLocked(req); handled {
+		return resp
+	}
 	resetPollLog()
 	logEvent("up requested for account %s device %s", req.AccountID, req.DeviceID)
 	identity := d.state.ExistingIdentityForAccount(req.AccountID)
@@ -503,6 +518,7 @@ func (d *Daemon) stopTunnelLocked() {
 		d.cancelPoll()
 		d.cancelPoll = nil
 	}
+	d.stopDNSWatchLocked()
 	if d.engine != nil {
 		_ = d.platform.Teardown(d.engine.InterfaceName())
 		d.engine.Close()
@@ -573,6 +589,7 @@ func (d *Daemon) applyLoginRequiredLocked() {
 		_ = d.platform.Teardown(d.engine.InterfaceName())
 	}
 	d.appliedPeers = nil
+	d.stopDNSWatchLocked()
 	if d.cancelPoll != nil {
 		d.cancelPoll()
 		d.cancelPoll = nil
@@ -626,56 +643,6 @@ func (d *Daemon) applyDocumentLocked(doc *Document) error {
 	d.doc = doc
 	d.plan = plan
 	d.revision = doc.Revision
-	return nil
-}
-
-// convergeRoutesAndDNSLocked brings the routes and the split DNS to the plan. haveRoutes is what
-// the daemon believes is on the machine: the previous plan's routes when a document changed
-// (so dropped clusters lose their route), nil to re-assert every route (AddRoute is idempotent
-// on every platform). Resolvers are always read back from the platform.
-func (d *Daemon) convergeRoutesAndDNSLocked(haveRoutes []netip.Prefix, plan Plan) error {
-	if d.engine == nil {
-		return nil
-	}
-	iface := d.engine.InterfaceName()
-	if err := d.convergeRoutesLocked(iface, haveRoutes, plan); err != nil {
-		stepOutcome("routes", err, "")
-		return err
-	}
-	stepOutcome("routes", nil, fmt.Sprintf("%d route(s) via %s", len(plan.Routes), iface))
-	if d.closed.Load() {
-		return errStopping
-	}
-
-	clientAddr := netip.Addr{}
-	if plan.Address.IsValid() {
-		clientAddr = plan.Address.Addr()
-	}
-	dns, err := d.platform.ReconcileDNS(iface, clientAddr, plan.Resolvers)
-	d.dns = dns
-	stepOutcome("dns", err, "mode="+dns.Mode)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// convergeRoutesLocked adds the routes the plan has and the machine lacks, and removes the reverse.
-func (d *Daemon) convergeRoutesLocked(iface string, haveRoutes []netip.Prefix, plan Plan) error {
-	routeDiff := DiffPrefixes(haveRoutes, plan.Routes)
-	for _, prefix := range routeDiff.Add {
-		if d.closed.Load() {
-			return errStopping
-		}
-		if err := d.platform.AddRoute(iface, prefix); err != nil {
-			return err
-		}
-	}
-	for _, prefix := range routeDiff.Remove {
-		if err := d.platform.RemoveRoute(iface, prefix); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

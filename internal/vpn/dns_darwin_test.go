@@ -89,8 +89,8 @@ func TestReconcileDNSReportsWhatMacOSListsRightNow(t *testing.T) {
 			plans("a.example.test", "192.0.2.53", "b.example.test", "192.0.2.54"), false, false, true, ""},
 		{"another resolver answers for the zone", map[string]string{"a.example.test": "198.51.100.9"}, nil,
 			plans("a.example.test", "192.0.2.53"), true, false, false, "overridden"},
-		{"the Mac's DNS view cannot be read", nil, errors.New("scutil: exit status 1"),
-			plans("a.example.test", "192.0.2.53"), false, false, false, "could not read"},
+		{"the Mac's DNS view cannot be read: unverified, not failed", nil, errors.New("scutil: exit status 1"),
+			plans("a.example.test", "192.0.2.53"), false, false, false, ""},
 		{"no zone wanted", nil, nil, nil, false, false, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,32 +122,14 @@ func TestPendingAndUnreadableTextIsPlain(t *testing.T) {
 	pending, _ := m.ReconcileDNS("utun9", mustAddr("192.0.2.2"), plans("zone.example.test", "192.0.2.53"))
 	m.readErr = errors.New("scutil: signal: killed")
 	unreadable, err := m.ReconcileDNS("utun9", mustAddr("192.0.2.2"), plans("zone.example.test", "192.0.2.53"))
-	if err == nil {
-		t.Fatal("want an error when the DNS view cannot be read")
+	if err != nil {
+		t.Fatalf("a DNS view that cannot be read is unverified, not a failed connect: %v", err)
 	}
-	for name, text := range map[string]string{
-		"pending": pending.Error, "unreadable status": unreadable.Error, "unreadable error": err.Error(),
-		"notice": dnsPendingNotice, "gave up": dnsGaveUpText,
-	} {
-		assertPlainText(t, name, text)
+	if unreadable.Available || unreadable.Pending {
+		t.Errorf("status = %+v, want neither available nor pending: nothing was verified", unreadable)
 	}
-}
-
-// assertPlainText: Desktop shows the CLI's words unchanged, so they carry no command, no backtick,
-// no zone name and no address, and stay short.
-func assertPlainText(t *testing.T, name, text string) {
-	t.Helper()
-	if text == "" {
-		t.Errorf("%s: empty", name)
-	}
-	for _, bad := range []string{"`", "sudo", "scutil", "runos ", "dscacheutil", "/etc/", "example.test", "192.0.2."} {
-		if strings.Contains(text, bad) {
-			t.Errorf("%s: %q must not contain %q", name, text, bad)
-		}
-	}
-	if len(text) > 200 {
-		t.Errorf("%s: %d characters, want a short sentence", name, len(text))
-	}
+	assertPlainText(t, "pending", pending.Error)
+	assertPlainText(t, "unreadable", unreadable.Error)
 }
 
 // Idempotence: a normal reconcile of an unchanged plan writes nothing and does not flush.

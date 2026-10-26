@@ -12,7 +12,7 @@ func stubEngine(t *testing.T) *int {
 	t.Helper()
 	calls := 0
 	previous := createEngine
-	createEngine = func(string, bool) (*engine, error) {
+	createEngine = func(string, bool) (tunnelEngine, error) {
 		calls++
 		return nil, errors.New("stub: no interface in tests")
 	}
@@ -80,7 +80,7 @@ func TestStartUpSweepRunsBeforeTheTunnelIsRequested(t *testing.T) {
 	activeSession(t, d, time.Now().Add(time.Hour))
 	var sweptWhenRequested int
 	previous := createEngine
-	createEngine = func(string, bool) (*engine, error) {
+	createEngine = func(string, bool) (tunnelEngine, error) {
 		sweptWhenRequested = fake.teardownCount()
 		return nil, errors.New("stub")
 	}

@@ -46,8 +46,10 @@ func (p darwinPlatform) reconcileDNS(resolvers []ResolverPlan, republish bool) (
 
 	effective, err := p.effectiveDNS()
 	if err != nil {
+		// Unverified is not failed: the files are written and nothing says they did not work. Report
+		// it plainly and let the next poll look again, rather than fail a connect over it.
 		logEvent("dns: %s", err)
-		return DNSStatus{Mode: "unavailable", Error: dnsUnreadableText}, fmt.Errorf("%s", dnsUnreadableText)
+		return DNSStatus{Mode: "unavailable", Error: dnsUnreadableText}, nil
 	}
 	check := checkEffectiveResolvers(effective, resolvers)
 	// A zone this call has just rewritten may still be listed with its OLD resolver until macOS
