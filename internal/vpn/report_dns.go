@@ -42,6 +42,8 @@ type DNSProbe struct {
 	Effective map[string][]netip.Addr
 	// EffectiveErr is why the listing could not be read, when it could not.
 	EffectiveErr string
+	// Store is what the dynamic store holds for RunOS. The zero value means it was not collected.
+	Store StoreFact
 }
 
 // ZonesFromStatus lists the zones and resolvers of the clusters the device is connected to.
@@ -102,7 +104,12 @@ func ProbeMacDNSNow(zones []ResolverPlan) DNSProbe {
 		out, err := runBounded("scutil", "--dns")
 		return string(out), err
 	}
-	return ProbeMacDNS(resolverDir, zones, scutil, time.Now())
+	probe := ProbeMacDNS(resolverDir, zones, scutil, time.Now())
+	probe.Store = ProbeMacStore(func(script string) (string, error) {
+		out, err := runWithInputWithin(serviceQueryTimeout, script, "scutil")
+		return string(out), err
+	})
+	return probe
 }
 
 const dnsNextStep = "Next step: turn the VPN off and on again. If it keeps happening, send this report to support."
@@ -112,6 +119,12 @@ func dnsFindings(p DNSProbe) []string {
 	var findings []string
 	for _, plan := range p.Zones {
 		file := p.Files[plan.Zone]
+		if finding, handled := storeFinding(p, plan, file); handled {
+			if finding != "" {
+				findings = append(findings, finding)
+			}
+			continue
+		}
 		switch {
 		case !file.Present:
 			findings = append(findings, fmt.Sprintf(

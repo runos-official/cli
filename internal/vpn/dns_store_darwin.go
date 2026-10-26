@@ -106,13 +106,6 @@ func storeWantsIPv4(iface string, client netip.Addr) bool {
 	return storeIfaceName.MatchString(iface) && client.IsValid()
 }
 
-// storeServiceOf returns the service id of one of our keys.
-func storeServiceOf(key string) string {
-	key = strings.TrimPrefix(key, dnsStoreKeyRoot)
-	id, _, _ := strings.Cut(key, "/")
-	return id
-}
-
 // confirmStoreKeysGone lists our keys again and fails when any of the given ones is still there.
 func (p darwinPlatform) confirmStoreKeysGone(removed []string) error {
 	left, err := p.ownStoreKeys()

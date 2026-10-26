@@ -82,14 +82,17 @@ type DaemonLogFacts struct {
 
 // Report is the document `runos vpn diagnose` prints.
 type Report struct {
-	SchemaVersion int            `json:"schemaVersion"`
-	GeneratedAt   string         `json:"generatedAt"`
-	CLI           CLIFacts       `json:"cli"`
-	Daemon        DaemonFacts    `json:"daemon"`
-	Status        *Status        `json:"status,omitempty"`
-	LastFailure   *Failure       `json:"lastFailure"`
-	LastAttempt   []string       `json:"lastAttempt"`
-	Findings      []string       `json:"findings"`
+	SchemaVersion int         `json:"schemaVersion"`
+	GeneratedAt   string      `json:"generatedAt"`
+	CLI           CLIFacts    `json:"cli"`
+	Daemon        DaemonFacts `json:"daemon"`
+	Status        *Status     `json:"status,omitempty"`
+	LastFailure   *Failure    `json:"lastFailure"`
+	LastAttempt   []string    `json:"lastAttempt"`
+	Findings      []string    `json:"findings"`
+	// DNSMechanisms says, per private DNS zone, which mechanisms are in place on this Mac. Omitted
+	// when the probe did not run (not a Mac, or the tunnel is down).
+	DNSMechanisms []string       `json:"dnsMechanisms,omitempty"`
 	DaemonLog     DaemonLogFacts `json:"daemonLog"`
 }
 
@@ -125,6 +128,9 @@ func BuildReport(in ReportInput) Report {
 	}
 	r.LastFailure = pickFailure(in)
 	r.Findings = findingsFor(in, r.Status)
+	if in.DNS != nil && in.Status != nil && in.Status.Running {
+		r.DNSMechanisms = redactLines(dnsMechanismLines(*in.DNS))
+	}
 	return r
 }
 
@@ -272,6 +278,9 @@ func (r Report) Text() string {
 		w("session: present=%t loginRequired=%t expires=%s; last poll %s",
 			st.Session.Present, st.Session.LoginRequired, timeOrDash(st.Session.ExpiresAt), timeOrDash(st.LastPollAt))
 		w("dns: mode=%s available=%t%s", st.DNS.Mode, st.DNS.Available, parenthesised(st.DNS.Error))
+		for _, line := range r.DNSMechanisms {
+			w("  %s", line)
+		}
 		for _, c := range st.Clusters {
 			w("cluster %s (%s): connected=%t reachable=%t peerUp=%t handshake=%s rx=%d tx=%d",
 				c.CID, c.Name, c.Connected, c.Reachable, c.PeerUp, timeOrDash(c.LastHandshake), c.RxBytes, c.TxBytes)

@@ -157,6 +157,12 @@ func storeRemoveScript(keys []string) string {
 	return b.String()
 }
 
+// storeServiceOf returns the service id of one of our keys.
+func storeServiceOf(key string) string {
+	id, _, _ := strings.Cut(strings.TrimPrefix(key, dnsStoreKeyRoot), "/")
+	return id
+}
+
 func storeListScript() string { return "list " + dnsStoreListPattern + "\n" }
 
 func storeShowScript(svc storeService) string { return "show " + svc.dnsKey() + "\n" }
