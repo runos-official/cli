@@ -115,10 +115,16 @@ type Status struct {
 }
 
 // DNSStatus reports private DNS separately from tunnel reachability.
+//
+// Pending means the tunnel and routes are up and macOS has not yet listed the private DNS zones; it
+// is not a failure. Error then holds a plain sentence, so a CLI that predates Pending still prints a
+// reason. Available false with Pending false and an Error is a failure. Pending is omitted when
+// false, so a client that predates it reads the same JSON as before.
 type DNSStatus struct {
 	Available bool   `json:"available"`
 	Mode      string `json:"mode"`
 	Error     string `json:"error"`
+	Pending   bool   `json:"pending,omitempty"`
 }
 
 // ClusterStatus is one cluster of the account as the daemon sees it: the document's facts plus

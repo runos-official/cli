@@ -3,72 +3,81 @@ package vpn
 import (
 	"fmt"
 	"net/netip"
-	"time"
+	"sort"
 )
 
-// verifyEffectiveResolvers checks that the private DNS zones this session needs are the ones macOS
-// will actually use.
+// What the person is told while macOS applies the private DNS settings, and when it gives up. These
+// are shown unchanged by the CLI and by RunOS Desktop, so they stay short and plain: no command, no
+// quoted syntax and no zone name. A zone name is the person's own cluster domain, and a command only
+// helps someone who is at a terminal.
+const (
+	// dnsPendingText is DNSStatus.Error while Pending is true. It stays in Error so a CLI that
+	// predates the Pending field still prints a reason after "Private DNS: unavailable -".
+	dnsPendingText = "cluster names are still being applied by macOS"
+	// dnsPendingNotice is the sentence a connect prints when the tunnel is up and DNS is not yet.
+	dnsPendingNotice = "Connected. Cluster names are still being applied by macOS and may take a moment to resolve."
+	// dnsGaveUpText is DNSStatus.Error when macOS never listed the zones within the bound.
+	dnsGaveUpText = "macOS did not apply the private DNS settings for this cluster. " +
+		"The VPN is connected, but cluster names may not resolve. Turn the VPN off and on again."
+	// dnsUnreadableText is DNSStatus.Error when the Mac's own DNS view cannot be read.
+	dnsUnreadableText = "RunOS could not read this Mac's DNS settings to check the private DNS"
+)
+
+// dnsCheck is one look at the Mac's DNS view against the zones the plan needs.
+type dnsCheck struct {
+	// Pending lists the zones macOS does not list at all yet, sorted.
+	Pending []string
+	// Overridden is set when another resolver answers for a zone. That is a real fault, not a delay.
+	Overridden error
+	// OverriddenZones lists the zones another resolver answers for, sorted.
+	OverriddenZones []string
+}
+
+// OK reports whether every zone is served by the tunnel resolver.
+func (c dnsCheck) OK() bool { return len(c.Pending) == 0 && c.Overridden == nil }
+
+// checkEffectiveResolvers compares what macOS uses (parsed `scutil --dns`) with the plan.
 //
-// It is a single look. Writing /etc/resolver/<zone> does not take effect the instant the file
-// lands: macOS re-reads the directory and republishes its DNS configuration asynchronously, so a
-// check right after the write sees the zone missing. Callers wait with awaitEffectiveResolvers.
+// A zone macOS does not list is PENDING: writing /etc/resolver/<zone> does not take effect the
+// instant the file lands, because configd republishes its DNS configuration on its own schedule.
+// A zone macOS lists with a DIFFERENT resolver is a fault, and no waiting fixes it.
 //
-// Measured on a developer Mac: a connect failed on this check and the same command succeeded
-// moments later, with the file on disk and `scutil --dns` already listing the zone. Nothing was
-// wrong with the cluster. Right after a fresh sign-in, when the machine is busy, the republish took
-// longer than the five seconds this wait used to allow, so the first Connect in RunOS Desktop failed
-// and the second one worked.
-func verifyEffectiveResolvers(effective map[string][]netip.Addr, expected []ResolverPlan) error {
+// Measured on a developer Mac: the same connect failed on a single look and worked moments later with
+// the file already on disk and the zone listed. On another run the zone stayed unlisted for minutes,
+// so this check never decides alone that a pending zone is lost; the daemon's watcher does, after a
+// bound (dns_schedule.go).
+func checkEffectiveResolvers(effective map[string][]netip.Addr, expected []ResolverPlan) dnsCheck {
+	var c dnsCheck
 	for _, plan := range expected {
 		servers := effective[plan.Zone]
 		if len(servers) == 0 {
-			return fmt.Errorf("macOS has not finished applying the private DNS settings for this " +
-				"cluster. This usually clears within seconds: connect again")
+			c.Pending = append(c.Pending, plan.Zone)
+			continue
 		}
 		for _, server := range servers {
 			if server != plan.Resolver {
-				return fmt.Errorf("private DNS zone %s is overridden by resolver %s", plan.Zone, server)
+				if c.Overridden == nil {
+					c.Overridden = fmt.Errorf("private DNS zone %s is overridden by resolver %s", plan.Zone, server)
+				}
+				c.OverriddenZones = append(c.OverriddenZones, plan.Zone)
+				break
 			}
 		}
 	}
-	return nil
+	sort.Strings(c.Pending)
+	sort.Strings(c.OverriddenZones)
+	return c
 }
 
-// resolverWait is awaitEffectiveResolvers' view of the machine, so a test can run it on a fake clock.
-type resolverWait struct {
-	// read returns the resolvers macOS is using now, by zone.
-	read func() (map[string][]netip.Addr, error)
-	// nudge asks macOS to republish its DNS configuration. Called once, after nudgeAfter.
-	nudge func()
-	now   func() time.Time
-	sleep func(time.Duration)
-	// timeout bounds the wait: a zone that never appears is a real fault and must still be reported.
-	timeout, poll, nudgeAfter time.Duration
-}
-
-// awaitEffectiveResolvers polls until every expected zone is the one macOS uses, or the timeout
-// passes. A read error ends the wait at once. When the timeout passes it returns the last
-// verification error, which says what to do next.
-func awaitEffectiveResolvers(w resolverWait, expected []ResolverPlan) error {
-	start := w.now()
-	nudged := false
-	for {
-		effective, err := w.read()
-		if err != nil {
-			return err
-		}
-		verr := verifyEffectiveResolvers(effective, expected)
-		if verr == nil {
-			return nil
-		}
-		elapsed := w.now().Sub(start)
-		if elapsed >= w.timeout {
-			return verr
-		}
-		if !nudged && elapsed >= w.nudgeAfter {
-			nudged = true
-			w.nudge()
-		}
-		w.sleep(w.poll)
+// verifyEffectiveResolvers is the one-shot check Windows keeps: its NRPT policy applies when the
+// rule is added, so an unlisted zone there is a fault and not a delay.
+func verifyEffectiveResolvers(effective map[string][]netip.Addr, expected []ResolverPlan) error {
+	check := checkEffectiveResolvers(effective, expected)
+	if check.Overridden != nil {
+		return check.Overridden
 	}
+	if len(check.Pending) > 0 {
+		return fmt.Errorf("private DNS zone %s is not effective yet", check.Pending[0])
+	}
+	return nil
 }
