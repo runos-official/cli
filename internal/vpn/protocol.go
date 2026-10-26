@@ -10,7 +10,10 @@
 // reply.
 package vpn
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Op names one request the CLI can make of the daemon.
 type Op string
@@ -112,6 +115,17 @@ type Status struct {
 	LastPollErr  string    `json:"lastPollError,omitempty"`
 	LastApplyErr string    `json:"lastApplyError,omitempty"`
 	Version      string    `json:"version"`
+}
+
+// MarshalJSON keeps `clusters` a list, never null. A daemon that has not applied a cluster document
+// yet has none, and a Go nil slice encodes as null, which RunOS Desktop cannot read: it then loses
+// the whole status (the cluster rows, the Restart VPN item) instead of showing an empty list.
+func (s Status) MarshalJSON() ([]byte, error) {
+	type plain Status
+	if s.Clusters == nil {
+		s.Clusters = []ClusterStatus{}
+	}
+	return json.Marshal(plain(s))
 }
 
 // DNSStatus reports private DNS separately from tunnel reachability.
