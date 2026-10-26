@@ -33,7 +33,21 @@ type darwinPlatform struct {
 	dir string
 	// flush replaces the real DNS flush; nil means the real one. Set by tests only.
 	flush func() error
+	// fs replaces the real file system for the resolver writes; nil means the real one. Set by
+	// tests only.
+	fs resolverFS
 }
+
+func (p darwinPlatform) files() resolverFS {
+	if p.fs != nil {
+		return p.fs
+	}
+	return osResolverFS{}
+}
+
+// tempDir is where resolver files are staged before the rename: the parent of the resolver
+// directory (/etc), which is on the same file system but is not the directory macOS watches.
+func (p darwinPlatform) tempDir() string { return filepath.Dir(p.resolverPath()) }
 
 func (p darwinPlatform) resolverPath() string {
 	if p.dir != "" {
@@ -122,7 +136,8 @@ func (p darwinPlatform) SetResolver(zone string, resolver netip.Addr) error {
 		return fmt.Errorf("create %s: %w", p.resolverPath(), err)
 	}
 	content := fmt.Sprintf("%s\nnameserver %s\n", resolverMarker, resolver.String())
-	if err := os.WriteFile(filepath.Join(p.resolverPath(), zone), []byte(content), 0o644); err != nil {
+	dest := filepath.Join(p.resolverPath(), zone)
+	if err := writeFileAtomic(p.files(), p.tempDir(), dest, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write resolver for %s: %w", zone, err)
 	}
 	return nil
@@ -212,6 +227,8 @@ func (darwinPlatform) FlushDNS() error {
 }
 
 func (p darwinPlatform) Teardown(iface string) error {
+	// A killed daemon can leave a staged temp file next to the resolver directory.
+	removeStaleResolverTemps(p.files(), p.tempDir())
 	resolvers, err := p.Resolvers()
 	if err != nil {
 		return err
