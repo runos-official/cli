@@ -54,6 +54,7 @@ func newMacWithScutil(t *testing.T) *macWithScutil {
 	p, flushes := testDarwinPlatform(t)
 	m.darwinPlatform, m.flushes = p, flushes
 	m.darwinPlatform.fs = m.fs
+	m.darwinPlatform.store = noStore
 	m.darwinPlatform.scutil = func() (string, error) {
 		if m.readErr != nil {
 			return "", m.readErr

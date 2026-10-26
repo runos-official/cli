@@ -120,7 +120,7 @@ func (s *fakeScutilStore) run(script string) (string, error) {
 				}
 			}
 			if n == 0 {
-				out.WriteString("  no keys\n")
+				out.WriteString("  no keys.\n")
 			}
 		default:
 			return out.String(), fmt.Errorf("unknown scutil command %q", cmd)

@@ -58,6 +58,7 @@ func TestAHandAuthoredResolverFileIsNeverRemoved(t *testing.T) {
 	if _, err := m.ReconcileDNS("utun9", mustAddr("192.0.2.2"), nil); err != nil {
 		t.Fatal(err)
 	}
+	m.darwinPlatform.store = newFakeScutilStore().run // Teardown also sweeps the store; this test is about files
 	if err := m.Teardown("utun9"); err != nil {
 		t.Fatal(err)
 	}

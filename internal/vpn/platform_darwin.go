@@ -35,6 +35,9 @@ type darwinPlatform struct {
 	fs resolverFS
 	// scutil replaces `scutil --dns`; nil means the real one. Set by tests only.
 	scutil func() (string, error)
+	// store replaces the scutil that reads a script on stdin and talks to the dynamic store; nil means
+	// the real one. Set by tests only, so they never reach the machine's network configuration.
+	store func(script string) (string, error)
 }
 
 func (p darwinPlatform) files() resolverFS {
@@ -190,9 +193,16 @@ func (p darwinPlatform) Teardown(iface string) error {
 			err = rmErr
 		}
 	}
+	// The dynamic-store entries go too. Their failure is logged and joined into the result, and it
+	// never stops the file sweep above: the two mechanisms are cleaned independently.
+	removedKeys, storeErr := p.sweepStore()
+	if storeErr != nil {
+		logEvent("dns: removing the RunOS entries from the dynamic store: %s", storeErr)
+		err = errors.Join(err, storeErr)
+	}
 	// Only when something was removed. Teardown also runs as the sweep on every daemon start, and a
 	// flush there reloaded the machine's resolver for nothing.
-	if len(resolvers) > 0 {
+	if len(resolvers) > 0 || removedKeys > 0 {
 		_ = p.flushDNS()
 	}
 	// The interface's routes go with the interface when the engine closes it, so there is nothing

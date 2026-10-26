@@ -3,6 +3,7 @@
 package vpn
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,8 +14,14 @@ import (
 func testDarwinPlatform(t *testing.T) (darwinPlatform, *int) {
 	t.Helper()
 	flushes := 0
-	return darwinPlatform{dir: t.TempDir(), flush: func() error { flushes++; return nil }}, &flushes
+	return darwinPlatform{dir: t.TempDir(), flush: func() error { flushes++; return nil }, store: newFakeScutilStore().run}, &flushes
 }
+
+// testDarwinPlatform starts with an empty dynamic store. noStore is one that cannot be reached, as when
+// scutil is missing: the tests about the resolver files run against it, because the file chain must
+// work without the store. A test that reads the store's keys sets platform.store to its own
+// fakeScutilStore.
+func noStore(string) (string, error) { return "", errors.New("scutil is not available in this test") }
 
 func writeResolverFile(t *testing.T, dir, name, body string) string {
 	t.Helper()
@@ -75,7 +82,7 @@ func TestTeardownRemovesOurFilesAndFlushesOnce(t *testing.T) {
 
 func TestTeardownOnAMissingResolverDirectoryIsQuiet(t *testing.T) {
 	flushes := 0
-	p := darwinPlatform{dir: filepath.Join(t.TempDir(), "absent"), flush: func() error { flushes++; return nil }}
+	p := darwinPlatform{dir: filepath.Join(t.TempDir(), "absent"), flush: func() error { flushes++; return nil }, store: newFakeScutilStore().run}
 	if err := p.Teardown("utun9"); err != nil {
 		t.Fatal(err)
 	}
