@@ -74,6 +74,12 @@ leakcheck-update:
 leakcheck-test:
 	@python3 scripts/leakcheck_test.py
 
+# The contract with RunOS Desktop (docs/desktop-contract.md): every JSON output Desktop decodes, the
+# error text it shows, and the version it compares. Only these tests run, so it takes seconds.
+.PHONY: desktopcontract
+desktopcontract:
+	@go test ./internal/desktopcontract/ ./internal/vpn/ ./cmd/ -run '^TestDesktopContract'
+
 # Replay the release record-ref rule in a scratch bare repo: two consecutive
 # releases, a stale local copy, both refusals, the objective-scoped exemption,
 # the explicit lease and an unreachable origin. Needs no network, no gh, no go.

@@ -21,7 +21,7 @@ var sample = Contract{
 
 // The checker is what every contract test leans on, so each rule gets a case that must be caught
 // and one that must pass. A checker that accepts everything would turn the whole suite green.
-func TestViolations(t *testing.T) {
+func TestDesktopContractViolations(t *testing.T) {
 	cases := []struct {
 		name string
 		doc  string
@@ -55,7 +55,7 @@ func TestViolations(t *testing.T) {
 	}
 }
 
-func TestPopulateSetsEveryExportedFieldAtAnyDepth(t *testing.T) {
+func TestDesktopContractPopulateSetsEveryExportedFieldAtAnyDepth(t *testing.T) {
 	var v struct {
 		S      string
 		B      bool
@@ -77,11 +77,40 @@ func TestPopulateSetsEveryExportedFieldAtAnyDepth(t *testing.T) {
 	}
 }
 
-func TestPopulatePanicsOnAKindItCannotFill(t *testing.T) {
+func TestDesktopContractPopulatePanicsOnAKindItCannotFill(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Error("Populate must panic on a kind it cannot fill, not skip it")
 		}
 	}()
 	Populate(&struct{ Any any }{})
+}
+
+func TestDesktopContractPlainErrorProblems(t *testing.T) {
+	long := strings.Repeat("word ", 70) // 350 characters on one line
+	wrapped := strings.TrimSpace(strings.Repeat("word word word word\n", 20))
+	cases := []struct {
+		name, text, want string
+	}{
+		{"plain sentence", "the VPN needs a fresh sign-in.", ""},
+		{"wrapped long text", wrapped, ""},
+		{"empty", "", "empty"},
+		{"trailing newline", "failed\n", "whitespace"},
+		{"leading space", " failed", "whitespace"},
+		{"colour code", "\x1b[31mfailed\x1b[0m", "ANSI escape"},
+		{"carriage return", "failed\rretry", "control character"},
+		{"nul byte", "failed\x00", "control character"},
+		{"one long line", strings.TrimSpace(long), "limit 300"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(PlainErrorProblems(tc.text), "; ")
+			switch {
+			case tc.want == "" && got != "":
+				t.Errorf("want no problem, got %q", got)
+			case tc.want != "" && !strings.Contains(got, tc.want):
+				t.Errorf("want a problem containing %q, got %q", tc.want, got)
+			}
+		})
+	}
 }
