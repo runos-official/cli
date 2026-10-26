@@ -19,7 +19,7 @@ THE ORDER.
  1. The dynamic-store entry (dns_store.go) is PRIMARY. It is the door VPN clients use, it goes to
     configd directly instead of waiting for a directory watch to fire, and it is the one mechanism
     this daemon can read back and prove. NOT MEASURED: nothing about how fast macOS picks it up
-    could be measured without root; `make dnsprobe` (method D) measures it on the operator's Mac.
+    could be measured without root; `make dnsprobe` (method D) measures it on a Mac.
  2. The /etc/resolver file stays SECOND. Some tools and older macOS versions read it, and it is the
     mechanism that has worked in the past. It costs one atomic write.
  3. Readiness is what `scutil --dns` LISTS with the cluster's resolver, never what was written. A

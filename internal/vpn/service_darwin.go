@@ -40,7 +40,7 @@ func (s launchdService) Install(execPath, socketGroup string, groupExplicit bool
 	//
 	// launchd keeps a persistent DISABLED set per domain, and `bootstrap` refuses a disabled label
 	// with `Bootstrap failed: 5: Input/output error`. That message names nothing: not the label,
-	// not the disabled state, not the remedy. Measured on the operator's Mac 2026-08-20, on a
+	// not the disabled state, not the remedy. Measured on a developer Mac 2026-08-20, on a
 	// machine where the daemon had run happily on 16 August. The label was not loaded, the plist
 	// linted clean, the binary existed and was correctly ad-hoc signed, and nothing was
 	// quarantined, so every obvious cause read as fine while install kept failing.
