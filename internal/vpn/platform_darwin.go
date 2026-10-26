@@ -3,7 +3,6 @@
 package vpn
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -21,8 +20,6 @@ import (
 //
 // Every resolver file the daemon writes carries a marker comment so Teardown removes exactly the
 // daemon's files and never a hand-written one.
-
-const resolverDir = "/etc/resolver"
 
 // defaultTunName is the interface the engine requests on macOS; the kernel appends the number.
 const defaultTunName = "utun"
@@ -202,17 +199,4 @@ func (p darwinPlatform) Teardown(iface string) error {
 	// to delete by prefix here; RemoveRoute is used for a single disconnected cluster while the
 	// tunnel stays up.
 	return err
-}
-
-func parseResolverNameserver(data []byte) (netip.Addr, bool) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) == 2 && fields[0] == "nameserver" {
-			if addr, err := netip.ParseAddr(fields[1]); err == nil {
-				return addr, true
-			}
-		}
-	}
-	return netip.Addr{}, false
 }

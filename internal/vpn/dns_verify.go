@@ -14,8 +14,8 @@ const (
 	// dnsPendingText is DNSStatus.Error while Pending is true. It stays in Error so a CLI that
 	// predates the Pending field still prints a reason after "Private DNS: unavailable -".
 	dnsPendingText = "cluster names are still being applied by macOS"
-	// dnsPendingNotice is the sentence a connect prints when the tunnel is up and DNS is not yet.
-	dnsPendingNotice = "Connected. Cluster names are still being applied by macOS and may take a moment to resolve."
+	// DNSPendingNotice is the sentence a connect prints when the tunnel is up and DNS is not yet.
+	DNSPendingNotice = "Connected. Cluster names are still being applied by macOS and may take a moment to resolve."
 	// dnsGaveUpText is DNSStatus.Error when macOS never listed the zones within the bound.
 	dnsGaveUpText = "macOS did not apply the private DNS settings for this cluster. " +
 		"The VPN is connected, but cluster names may not resolve. Turn the VPN off and on again."

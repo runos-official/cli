@@ -113,6 +113,10 @@ func printVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 
 	if status.DNS.Available {
 		fmt.Fprintf(out, "Private DNS: available (%s)\n", status.DNS.Mode)
+	} else if status.DNS.Pending {
+		// Connected, and macOS has not listed the cluster's DNS yet. Not a failure, so not "unavailable".
+		fmt.Fprintf(out, "Private DNS: pending - %s\n", status.DNS.Error)
+		fmt.Fprintln(out, vpn.DNSPendingNotice)
 	} else if status.DNS.Error != "" {
 		fmt.Fprintf(out, "Private DNS: unavailable - %s\n", status.DNS.Error)
 	} else {

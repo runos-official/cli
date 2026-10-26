@@ -91,6 +91,13 @@ func collectReportInput(cmd *cobra.Command, logLines int) vpn.ReportInput {
 	in.CredentialKind = string(kind)
 
 	in.Socket, in.Status = vpn.ProbeDaemon(vpnSocketClient(cmd))
+	// On a Mac, look at the resolver files and what macOS lists for them. Both need no root.
+	if runtime.GOOS == "darwin" && in.Status != nil && in.Status.Running {
+		if zones := vpn.ZonesFromStatus(in.Status); len(zones) > 0 {
+			probe := vpn.ProbeMacDNSNow(zones)
+			in.DNS = &probe
+		}
+	}
 	if dir, err := config.Dir(); err == nil {
 		in.Trace = vpn.ReadTrace(filepath.Join(dir, upTraceFile))
 	}

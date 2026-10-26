@@ -1,11 +1,16 @@
 package vpn
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 )
+
+// resolverDir is where macOS reads per-domain resolvers. Untagged so the diagnose report can read it.
+const resolverDir = "/etc/resolver"
 
 // resolverMarker is the first line of every resolver file the macOS daemon writes. Kept out of the
 // darwin build tag so the Linux and Windows test runs cover the matching rule too.
@@ -68,4 +73,18 @@ func nrptTeardownOutcome(out string) (flush bool, err error) {
 			left, strings.Join(strings.Fields(strings.Join(lines[:len(lines)-1], " ")), " "))
 	}
 	return removed > 0, nil
+}
+
+// parseResolverNameserver reads the nameserver a resolver file names.
+func parseResolverNameserver(data []byte) (netip.Addr, bool) {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 2 && fields[0] == "nameserver" {
+			if addr, err := netip.ParseAddr(fields[1]); err == nil {
+				return addr, true
+			}
+		}
+	}
+	return netip.Addr{}, false
 }

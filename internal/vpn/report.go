@@ -42,8 +42,10 @@ type ReportInput struct {
 	ServiceState string
 	Socket       SocketProbe
 	Status       *Status
-	Trace        []string
-	DaemonLog    LogResult
+	// DNS is the macOS resolver state, collected on a Mac while the tunnel is up; nil elsewhere.
+	DNS       *DNSProbe
+	Trace     []string
+	DaemonLog LogResult
 }
 
 // CLIFacts describes the CLI side.
@@ -218,7 +220,16 @@ func findingsFor(in ReportInput, st *Status) []string {
 		add("the daemon could not apply the configuration to this machine: %s", st.LastApplyErr)
 	}
 	if st.Running && !st.DNS.Available && st.DNS.Error != "" {
-		add("private DNS is not working: %s", st.DNS.Error)
+		if st.DNS.Pending {
+			add("the tunnel is up and private DNS is still being applied: %s", st.DNS.Error)
+		} else {
+			add("private DNS is not working: %s", st.DNS.Error)
+		}
+	}
+	if in.DNS != nil && st.Running {
+		for _, line := range dnsFindings(*in.DNS) {
+			add("%s", line)
+		}
 	}
 	connected := 0
 	for _, c := range st.Clusters {
