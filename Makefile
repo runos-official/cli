@@ -91,6 +91,24 @@ unscannable:
 	@python3 scripts/unscannable_check.py
 
 # ============================================================================
+# macOS DNS publish probe (opt-in, needs sudo)
+# ============================================================================
+
+# Times how long macOS takes to list a scratch zone after the old (truncate, then write) and the new
+# (atomic rename) resolver-file write, and prints a small table. It builds as you and runs only the
+# test binary under sudo. It writes scratch zones under example.test to /etc/resolver, removes them,
+# and refuses to touch any file without the RunOS marker. N is the runs per method (default 10).
+# Usage: make dnsprobe   or   make dnsprobe N=20
+.PHONY: dnsprobe
+dnsprobe:
+	@test "$$(uname)" = Darwin || { echo "$(RED)the DNS publish probe is for macOS$(NC)"; exit 1; }
+	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
+	  go test -c -tags probe -o "$$dir/dnsprobe.test" ./internal/vpn && \
+	  echo "$(CYAN)Running the probe under sudo (it writes scratch zones to /etc/resolver and removes them)$(NC)" && \
+	  sudo env RUNOS_DNS_PROBE=1 RUNOS_DNS_PROBE_N=$(or $(N),10) "$$dir/dnsprobe.test" \
+	    -test.run '^TestDNSPublishProbe$$' -test.v -test.timeout 40m
+
+# ============================================================================
 # Release
 # ============================================================================
 
@@ -125,6 +143,7 @@ help:
 	@echo "  make leakcheck-staged Scan only the staged diff"
 	@echo "  make leakcheck-update Ratchet the baseline down after removing an identifier"
 	@echo "  make leakcheck-test   Test the leak checker itself"
+	@echo "  make dnsprobe         Time macOS DNS pick-up of the old and new resolver write (sudo, opt-in)"
 	@echo "  make replay-record-ref Replay the release record-ref rule in a scratch repo"
 	@echo "  make unscannable      Fail on a tracked file leakcheck cannot read"
 	@echo ""

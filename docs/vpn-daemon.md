@@ -18,6 +18,34 @@ running tunnel when the program is updated, and it lists the edge cases that are
   and resumes in the background. A request that arrives during the resume waits up to 30 s, then gets a
   "still starting" answer.
 
+## Private DNS on macOS
+
+The daemon writes `/etc/resolver/<zone>` and then checks that macOS lists the zone in `scutil --dns`.
+macOS applies the file on its own schedule: under a second on one run, and not within two minutes on
+another, with the file on disk and the resolver reachable through the tunnel (FCR 1730).
+
+- A zone that macOS has not listed yet is **pending**, not a failure. `up` succeeds, `status` says
+  "Connected. Cluster names are still being applied by macOS", and `DNSStatus.Pending` is true. The
+  field is omitted when false, so a client that predates it reads the same JSON.
+- A watch in the daemon (`dns_pending.go`, timing in `dns_schedule.go`) keeps looking, twice a second
+  for ten seconds and then every five. It re-publishes the file (an atomic rewrite and a flush) after
+  three seconds and every fifteen after, and gives up after three minutes with a plain failed state.
+  The tunnel stays up. The next poll looks again, so a zone that macOS lists late still turns ready.
+- The watch holds the daemon lock for one look at a time. A connect waits up to four seconds for the
+  outcome, outside the lock, so `status` and `diagnose` are answered meanwhile.
+- A second `up` for the same device while DNS is pending keeps the tunnel, the files and the clock.
+- A real fault still fails the step: another resolver that owns the zone, a resolver file that
+  RunOS did not write (never replaced), or a resolver directory that cannot be written.
+- Resolver files are written to a temp file next to `/etc` and renamed into place, mode 0644, so no
+  reader sees an empty or partial file. `make dnsprobe` (run it with sudo) times the old and the new
+  method against `scutil --dns`.
+- `runos vpn diagnose` reads the resolver files and `scutil --dns` without root and says whether the
+  file is on disk but macOS does not list it.
+
+Measured: the old write is observable as an empty file (a test reads it during rewrites). Theory, not
+yet measured on a Mac: that this empty read is what macOS trips over (H1), and that re-publishing
+makes macOS list a zone it skipped (H2). The probe settles H1.
+
 ## Time limits
 
 | Limit | Value | Where |
@@ -75,10 +103,10 @@ root-owned.
    closed daemon. And a refused `up` still saves the new session to the state file before it is refused.
    That is harmless: the next daemon resumes the saved session. Plan: make `Handle` answer "stopping"
    when the flag is set, before it saves anything.
-7. **`SetResolver` truncates the file first.** On macOS `os.WriteFile` truncates, then writes. A kill
-   between the two leaves an empty file. It has no marker, so the sweep does not remove it. Before this
-   work it was the same. The effect is an empty resolver file for one zone, which macOS ignores. Plan:
-   write to a temporary name and rename it into place.
+7. **An empty resolver file from an older daemon is not swept.** Older builds truncated the file before
+   they wrote it, so a kill between the two left an empty file with no marker, and the sweep does not
+   remove it. The current build writes through a rename, so it no longer makes one. It replaces an empty
+   file the next time it writes that zone, but a zone that is never written again keeps it.
 8. **A managed file with no parsable nameserver is not swept.** The macOS sweep reads the files that
    `Resolvers` returns, and `Resolvers` skips a file whose nameserver line it cannot parse. A file that has
    the marker line and nothing else stays. The daemon never writes such a file. Plan: have `Teardown` list
