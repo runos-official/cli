@@ -56,9 +56,11 @@ const (
 	// dnsStoreServiceID is the base service id. A service for a given resolver appends ".<slug>".
 	dnsStoreServiceID = "com.runos.vpn"
 	dnsStoreKeyRoot   = "State:/Network/Service/"
-	// dnsStoreListPattern matches every key under our service ids and a few look-alikes. The brackets
-	// avoid a backslash that scutil's own argument parsing could eat. parseStoreKeys is the real filter.
-	dnsStoreListPattern = "State:/Network/Service/com[.]runos[.]vpn"
+	// dnsStoreListPattern matches every key under our service ids and a few look-alikes. scutil
+	// anchors the pattern to the whole key, so it must end in ".*": without that suffix `list`
+	// returned nothing, and the sweep and the repair never saw an entry. The brackets avoid a
+	// backslash that scutil's own argument parsing could eat. parseStoreKeys is the real filter.
+	dnsStoreListPattern = "State:/Network/Service/com[.]runos[.]vpn.*"
 )
 
 var (

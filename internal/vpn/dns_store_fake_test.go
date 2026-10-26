@@ -108,7 +108,10 @@ func (s *fakeScutilStore) run(script string) (string, error) {
 			}
 			out.WriteString(renderStoreDict(props))
 		case "list":
-			re, err := regexp.Compile(rest)
+			// scutil matches the whole key, not a part of it: a pattern that ends before the suffix
+			// lists nothing. Anchoring here keeps the fake as strict as the real tool (measured on
+			// macOS 26: "...com[.]runos[.]vpn" lists no keys, "...com[.]runos[.]vpn.*" lists them).
+			re, err := regexp.Compile("^(?:" + rest + ")$")
 			if err != nil {
 				return out.String(), err
 			}
