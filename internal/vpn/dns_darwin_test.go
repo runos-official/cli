@@ -219,7 +219,7 @@ func TestRecheckDNSRepublishesOnlyTheUnlistedZones(t *testing.T) {
 			m.listed = tc.listed
 			m.fs.renames, *m.flushes = 0, 0
 
-			if _, err := m.RecheckDNS(want, tc.republish); err != nil {
+			if _, err := m.RecheckDNS("utun9", mustAddr("192.0.2.2"), want, tc.republish); err != nil {
 				t.Fatal(err)
 			}
 
@@ -239,7 +239,7 @@ func TestRecheckDNSReportsAWriteFailure(t *testing.T) {
 	}
 	m.darwinPlatform.fs = failingResolverFS{failAt: "rename"}
 
-	status, err := m.RecheckDNS(plans("a.example.test", "192.0.2.53"), true)
+	status, err := m.RecheckDNS("utun9", mustAddr("192.0.2.2"), plans("a.example.test", "192.0.2.53"), true)
 
 	if err == nil || status.Pending || status.Available {
 		t.Fatalf("status=%+v err=%v, want an error and no pending state", status, err)
@@ -256,7 +256,7 @@ func TestAnOverrideThatPersistsWithoutARewriteIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, err := m.RecheckDNS(plan, false)
+	status, err := m.RecheckDNS("utun9", mustAddr("192.0.2.2"), plan, false)
 
 	if err == nil || !strings.Contains(err.Error(), "overridden") {
 		t.Fatalf("status=%+v err=%v, want the override reported on the second look", status, err)

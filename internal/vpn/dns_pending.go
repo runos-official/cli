@@ -89,7 +89,7 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 // dnsRechecker is the part of a platform that can look again and re-publish. A platform without it
 // (Linux, Windows) never reports a pending zone.
 type dnsRechecker interface {
-	RecheckDNS(resolvers []ResolverPlan, republish bool) (DNSStatus, error)
+	RecheckDNS(iface string, clientAddr netip.Addr, resolvers []ResolverPlan, republish bool) (DNSStatus, error)
 }
 
 func resolverKey(resolvers []ResolverPlan) string {
@@ -179,16 +179,13 @@ func (d *Daemon) runDNSWatch(ctx context.Context, w *dnsWatch, resolvers []Resol
 	w.ended = true
 	if end == dnsEndGaveUp {
 		w.gaveUp = true
-		d.dns = DNSStatus{Mode: "native", Error: dnsGaveUpText}
+		d.dns = DNSStatus{Mode: gaveUpMode(d.dns.Mode), Error: dnsGaveUpText}
 		stepOutcome("dns", fmt.Errorf("macOS did not list the private DNS zones within %s", d.dnsTiming.loop().schedule.bound), "")
 	}
 }
 
 // recheckDNSLocked is one look at the platform, with a re-publish when asked.
 func (d *Daemon) recheckDNSLocked(resolvers []ResolverPlan, republish bool) (DNSStatus, error) {
-	if r, ok := d.platform.(dnsRechecker); ok {
-		return r.RecheckDNS(resolvers, republish)
-	}
 	iface := ""
 	if d.engine != nil {
 		iface = d.engine.InterfaceName()
@@ -196,6 +193,9 @@ func (d *Daemon) recheckDNSLocked(resolvers []ResolverPlan, republish bool) (DNS
 	var client netip.Addr
 	if d.plan.Address.IsValid() {
 		client = d.plan.Address.Addr()
+	}
+	if r, ok := d.platform.(dnsRechecker); ok {
+		return r.RecheckDNS(iface, client, resolvers, republish)
 	}
 	return d.platform.ReconcileDNS(iface, client, resolvers)
 }
@@ -246,4 +246,13 @@ func (d *Daemon) upWhilePendingLocked(req Request) (Response, bool) {
 	d.client = newConductorClient(active.ConductorURL, active.AccountID, active.DeviceID, active.SessionToken)
 	logEvent("up requested again while the private DNS zones are still being applied: keeping the tunnel")
 	return Response{Status: d.statusLocked()}, true
+}
+
+// gaveUpMode keeps the mechanism the last look named ("store" or "native"), so the final state still
+// says which one was in place. A look that named none falls back to "native".
+func gaveUpMode(last string) string {
+	if last == "" || last == "unavailable" {
+		return "native"
+	}
+	return last
 }

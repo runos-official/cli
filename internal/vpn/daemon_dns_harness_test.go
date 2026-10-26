@@ -104,7 +104,7 @@ func (p *dnsFakePlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []Resol
 	return p.look(resolvers, false, false)
 }
 
-func (p *dnsFakePlatform) RecheckDNS(resolvers []ResolverPlan, republish bool) (DNSStatus, error) {
+func (p *dnsFakePlatform) RecheckDNS(_ string, _ netip.Addr, resolvers []ResolverPlan, republish bool) (DNSStatus, error) {
 	p.mu.Lock()
 	p.rechecks++
 	p.mu.Unlock()
