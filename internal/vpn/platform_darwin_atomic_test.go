@@ -4,7 +4,6 @@ package vpn
 
 import (
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -67,8 +66,6 @@ func TestResolverFileIsNeverObservedEmptyOrPartialWhileItIsRewritten(t *testing.
 		t.Fatalf("the destination was observable in a bad state after %d reads: %v", reads.Load(), v)
 	}
 }
-
-func mustAddr(s string) netip.Addr { return netip.MustParseAddr(s) }
 
 // SetResolver leaves nothing but the destination: no temp file in the resolver directory or beside it.
 func TestSetResolverLeavesNoTempFileBehind(t *testing.T) {

@@ -337,4 +337,6 @@ func (h *dnsHarness) watchGone(t *testing.T) {
 	}
 }
 
+func mustAddr(s string) netip.Addr { return netip.MustParseAddr(s) }
+
 var errDisk = errors.New("write resolver: permission denied")
