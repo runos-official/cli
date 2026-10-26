@@ -53,7 +53,7 @@ type Request struct {
 	Op Op `json:"op"`
 	// Session fields, for OpUp.
 	SessionToken     string    `json:"sessionToken,omitempty"`
-	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitempty"`
+	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitzero"`
 	AccountID        string    `json:"accountId,omitempty"`
 	DeviceID         string    `json:"deviceId,omitempty"`
 	ConductorURL     string    `json:"conductorUrl,omitempty"`
@@ -91,7 +91,7 @@ type Identity struct {
 	// update (the running inode stays old until launchd restarts it).
 	Version          string    `json:"version"`
 	SessionPresent   bool      `json:"sessionPresent"`
-	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitempty"`
+	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitzero"`
 }
 
 // Status is the daemon's view of the tunnel, shaped for `runos vpn status --json`.
@@ -104,28 +104,59 @@ type Status struct {
 	AccountID     string `json:"accountId,omitempty"`
 	Session       struct {
 		Present       bool      `json:"present"`
-		ExpiresAt     time.Time `json:"expiresAt,omitempty"`
+		ExpiresAt     time.Time `json:"expiresAt,omitzero"`
 		LoginRequired bool      `json:"loginRequired"`
 	} `json:"session"`
 	DNS      DNSStatus       `json:"dns"`
 	Clusters []ClusterStatus `json:"clusters"`
 	// The revision of the last document applied, and when it was fetched.
 	Revision     string    `json:"revision,omitempty"`
-	LastPollAt   time.Time `json:"lastPollAt,omitempty"`
+	LastPollAt   time.Time `json:"lastPollAt,omitzero"`
 	LastPollErr  string    `json:"lastPollError,omitempty"`
 	LastApplyErr string    `json:"lastApplyError,omitempty"`
 	Version      string    `json:"version"`
 }
 
-// MarshalJSON keeps `clusters` a list, never null. A daemon that has not applied a cluster document
-// yet has none, and a Go nil slice encodes as null, which RunOS Desktop cannot read: it then loses
-// the whole status (the cluster rows, the Restart VPN item) instead of showing an empty list.
+// MarshalJSON writes the status the way RunOS Desktop can read it. Desktop decodes this with strict
+// types, and one null where it expects a list drops the whole status (the cluster rows, the Restart
+// VPN item) instead of showing an empty list. So `clusters` is always a list, and every time is
+// UTC in whole seconds or left out when it was never set (see wireTime). Pinned by
+// desktop_contract_test.go.
 func (s Status) MarshalJSON() ([]byte, error) {
 	type plain Status
 	if s.Clusters == nil {
 		s.Clusters = []ClusterStatus{}
 	}
+	s.Session.ExpiresAt = wireTime(s.Session.ExpiresAt)
+	s.LastPollAt = wireTime(s.LastPollAt)
 	return json.Marshal(plain(s))
+}
+
+// MarshalJSON keeps the three lists a list. A conductor document that leaves one out decodes to a nil
+// slice, which would encode as null, and Desktop reads peeredWith as a non-optional list.
+func (c ClusterStatus) MarshalJSON() ([]byte, error) {
+	type plain ClusterStatus
+	if c.AllowedIPs == nil {
+		c.AllowedIPs = []string{}
+	}
+	if c.Zones == nil {
+		c.Zones = []string{}
+	}
+	if c.PeeredWith == nil {
+		c.PeeredWith = []string{}
+	}
+	c.LastHandshake = wireTime(c.LastHandshake)
+	return json.Marshal(plain(c))
+}
+
+// wireTime is how a timestamp goes on the wire: UTC, whole seconds, so it reads the same in every
+// JSON date parser. A zero time stays zero so that `omitzero` leaves the key out; `omitempty` does
+// nothing for time.Time and used to write year 1 for "never".
+func wireTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Time{}
+	}
+	return t.UTC().Truncate(time.Second)
 }
 
 // DNSStatus reports private DNS separately from tunnel reachability.
@@ -156,7 +187,7 @@ type ClusterStatus struct {
 	PeeredWith []string `json:"peeredWith"`
 	// True when the engine currently holds a peer for this cluster.
 	PeerUp        bool      `json:"peerUp"`
-	LastHandshake time.Time `json:"lastHandshake,omitempty"`
+	LastHandshake time.Time `json:"lastHandshake,omitzero"`
 	RxBytes       int64     `json:"rxBytes"`
 	TxBytes       int64     `json:"txBytes"`
 }
