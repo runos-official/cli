@@ -25,6 +25,7 @@ func assertPlainText(t *testing.T, name, text string) {
 func TestUserFacingDNSTextIsPlain(t *testing.T) {
 	for name, text := range map[string]string{
 		"pending": dnsPendingText, "notice": dnsPendingNotice, "gave up": dnsGaveUpText, "unreadable": dnsUnreadableText,
+		"write": dnsWriteText, "remove": dnsRemoveText, "hand-authored": dnsHandAuthoredText, "not set up": dnsNotSetUpText, "down": dnsDownText,
 	} {
 		assertPlainText(t, name, text)
 	}

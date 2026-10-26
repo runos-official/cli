@@ -51,3 +51,12 @@ func (d *Daemon) convergeRoutesLocked(iface string, haveRoutes []netip.Prefix, p
 	}
 	return nil
 }
+
+// teardownPlatformLocked removes the routes and resolver entries. A failure cannot stop a stop, but
+// it must not be silent: entries left behind send lookups for the private zones to a resolver that no
+// interface carries any more, and the person cannot see that from anywhere else.
+func (d *Daemon) teardownPlatformLocked(iface string) {
+	if err := d.platform.Teardown(iface); err != nil {
+		logEvent("removing the DNS and route state of %s failed: %s (the next start of the service sweeps it)", iface, err)
+	}
+}

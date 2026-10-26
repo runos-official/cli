@@ -5,6 +5,7 @@ package vpn
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -134,12 +135,21 @@ func (p darwinPlatform) Resolvers() (map[string]netip.Addr, error) {
 
 func (p darwinPlatform) SetResolver(zone string, resolver netip.Addr) error {
 	if err := os.MkdirAll(p.resolverPath(), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", p.resolverPath(), err)
+		logEvent("dns: create %s: %s", p.resolverPath(), err)
+		return errors.New(dnsWriteText)
+	}
+	dest := filepath.Join(p.resolverPath(), zone)
+	// A file the daemon did not write is the person's own, and replacing it would silently change how
+	// their Mac resolves that zone. An empty file is the leftover of a write that was cut short by an
+	// older daemon, which truncated before it wrote, so it is ours to replace.
+	if existing, err := os.ReadFile(dest); err == nil && len(bytes.TrimSpace(existing)) > 0 && !isManagedResolverFile(existing) {
+		logEvent("dns: %s exists and is not managed by RunOS; leaving it alone", dest)
+		return errors.New(dnsHandAuthoredText)
 	}
 	content := fmt.Sprintf("%s\nnameserver %s\n", resolverMarker, resolver.String())
-	dest := filepath.Join(p.resolverPath(), zone)
 	if err := writeFileAtomic(p.files(), p.tempDir(), dest, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write resolver for %s: %w", zone, err)
+		logEvent("dns: write %s: %s", dest, err)
+		return errors.New(dnsWriteText)
 	}
 	return nil
 }
@@ -158,7 +168,8 @@ func (p darwinPlatform) RemoveResolver(zone string) error {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove resolver for %s: %w", zone, err)
+		logEvent("dns: remove %s: %s", path, err)
+		return errors.New(dnsRemoveText)
 	}
 	return nil
 }

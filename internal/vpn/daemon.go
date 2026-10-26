@@ -85,7 +85,7 @@ func NewDaemon(stateDir, version string, verbose bool) (*Daemon, error) {
 		state:        state,
 		platform:     newPlatform(),
 		pollInterval: PollInterval,
-		dns:          DNSStatus{Mode: "unavailable", Error: "the VPN is down"},
+		dns:          DNSStatus{Mode: "unavailable", Error: dnsDownText},
 	}, nil
 }
 
@@ -471,6 +471,7 @@ func (d *Daemon) startTunnelLocked() error {
 	}
 	stepOutcome("wireguard", nil, "engine up on "+eng.InterfaceName())
 	d.engine = eng
+	d.dns = DNSStatus{Mode: "unavailable", Error: dnsNotSetUpText}
 	d.client = newConductorClient(active.ConductorURL, active.AccountID, active.DeviceID, active.SessionToken)
 	d.revision = ""
 	logEvent("tunnel up on %s for account %s device %s, conductor %s",
@@ -520,7 +521,7 @@ func (d *Daemon) stopTunnelLocked() {
 	}
 	d.stopDNSWatchLocked()
 	if d.engine != nil {
-		_ = d.platform.Teardown(d.engine.InterfaceName())
+		d.teardownPlatformLocked(d.engine.InterfaceName())
 		d.engine.Close()
 		d.engine = nil
 	}
@@ -531,7 +532,7 @@ func (d *Daemon) stopTunnelLocked() {
 	d.lastApplyErr = ""
 	d.handshakes = nil
 	d.appliedPeers = nil
-	d.dns = DNSStatus{Mode: "unavailable", Error: "the VPN is down"}
+	d.dns = DNSStatus{Mode: "unavailable", Error: dnsDownText}
 }
 
 // pollAndApplyLocked fetches the document (conditional on the ETag) and, when it changed,
@@ -586,7 +587,7 @@ func (d *Daemon) applyLoginRequiredLocked() {
 		if hex, err := d.state.Active().PrivateKeyHex(); err == nil {
 			_ = d.engine.ApplyPlan(hex, Plan{})
 		}
-		_ = d.platform.Teardown(d.engine.InterfaceName())
+		d.teardownPlatformLocked(d.engine.InterfaceName())
 	}
 	d.appliedPeers = nil
 	d.stopDNSWatchLocked()
