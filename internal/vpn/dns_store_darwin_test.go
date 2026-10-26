@@ -250,3 +250,27 @@ func TestTeardownWithoutScutilIsAnErrorForTheLogNotAPanic(t *testing.T) {
 		t.Error("want the store sweep failure reported")
 	}
 }
+
+// The IPv4 entry carries the interface and the address. A new tunnel interface or a new device address
+// has to reach the store, not only a changed DNS entry.
+func TestEnsureStoreRepairsAChangedIPv4Entry(t *testing.T) {
+	p, store, _ := storePlatform(t)
+	plan := plans("a.example.test", "192.0.2.53")
+	if _, err := p.ensureStore("utun9", mustAddr("192.0.2.2"), plan, false); err != nil {
+		t.Fatal(err)
+	}
+	store.log = nil
+
+	changed, err := p.ensureStore("utun10", mustAddr("192.0.2.2"), plan, false)
+	if err != nil || !changed {
+		t.Fatalf("a new interface: changed=%v err=%v, want the entry rewritten", changed, err)
+	}
+	changed, err = p.ensureStore("utun10", mustAddr("192.0.2.7"), plan, false)
+	if err != nil || !changed {
+		t.Fatalf("a new address: changed=%v err=%v, want the entry rewritten", changed, err)
+	}
+	store.log = nil
+	if changed, err := p.ensureStore("utun10", mustAddr("192.0.2.7"), plan, false); err != nil || changed || len(store.log) != 0 {
+		t.Errorf("nothing changed: changed=%v err=%v commands=%v", changed, err, store.log)
+	}
+}

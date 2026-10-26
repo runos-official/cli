@@ -221,6 +221,31 @@ func parseStoreDNS(out string) (storeDNS, bool) {
 	return entry, true
 }
 
+// parseStoreIPv4 reads the output of `show State:/Network/Service/<id>/IPv4`: the interface and the
+// first address. It reports false when the output is not a dictionary.
+func parseStoreIPv4(out string) (iface string, addr netip.Addr, ok bool) {
+	if !strings.Contains(out, "<dictionary>") {
+		return "", netip.Addr{}, false
+	}
+	inAddresses := false
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "InterfaceName : "):
+			iface = strings.TrimPrefix(line, "InterfaceName : ")
+		case strings.HasPrefix(line, "Addresses : <array>"):
+			inAddresses = true
+		case line == "}":
+			inAddresses = false
+		case inAddresses && !addr.IsValid():
+			if _, value, found := strings.Cut(line, " : "); found {
+				addr, _ = netip.ParseAddr(strings.TrimSpace(value))
+			}
+		}
+	}
+	return iface, addr, true
+}
+
 // matches reports whether the store entry holds exactly this service: one server, the same zones,
 // in any order.
 func (s storeService) matches(e storeDNS) bool {

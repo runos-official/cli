@@ -279,3 +279,23 @@ func TestStoreApplyWritesTheIPv4EntryBeforeTheDNSEntry(t *testing.T) {
 		t.Errorf("set order = %v, want %v", got, want)
 	}
 }
+
+func TestParseStoreIPv4(t *testing.T) {
+	const present = `<dictionary> {
+  Addresses : <array> {
+    0 : 192.0.2.2
+  }
+  InterfaceName : utun9
+  SubnetMasks : <array> {
+    0 : 255.255.255.255
+  }
+}
+`
+	iface, addr, ok := parseStoreIPv4(present)
+	if !ok || iface != "utun9" || addr != netip.MustParseAddr("192.0.2.2") {
+		t.Errorf("iface=%q addr=%v ok=%v", iface, addr, ok)
+	}
+	if _, _, ok := parseStoreIPv4("  No such key\n"); ok {
+		t.Error("a missing key was read as an entry")
+	}
+}

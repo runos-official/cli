@@ -15,7 +15,9 @@ func (p darwinPlatform) runStore(script string) (string, error) {
 	if p.store != nil {
 		return p.store(script)
 	}
-	out, err := runWithInput(script, "scutil")
+	// serviceQueryTimeout, not commandTimeout: the daemon lock is held across these calls, and a wedged
+	// configd must not hold it for long. ensureStore stops at the first failure, so one timeout is the worst.
+	out, err := runWithInputWithin(serviceQueryTimeout, script, "scutil")
 	return string(out), err
 }
 
@@ -57,9 +59,7 @@ func (p darwinPlatform) ensureStore(iface string, client netip.Addr, resolvers [
 		wantID[svc.ID] = true
 		needs := republish || !have[svc.dnsKey()] || (storeWantsIPv4(iface, client) && !have[svc.ipv4Key()])
 		if !needs {
-			out, err := p.runStore(storeShowScript(svc))
-			entry, ok := parseStoreDNS(out)
-			needs = err != nil || !ok || !svc.matches(entry)
+			needs = !p.storeEntryCurrent(svc, iface, client)
 		}
 		if !needs {
 			continue
@@ -99,6 +99,21 @@ func (p darwinPlatform) ensureStore(iface string, client netip.Addr, resolvers [
 		}
 	}
 	return true, nil
+}
+
+// storeEntryCurrent reports whether the store holds this service exactly: the DNS entry, and the IPv4
+// entry when one is wanted. A read that fails counts as not current, so the entry is written again.
+func (p darwinPlatform) storeEntryCurrent(svc storeService, iface string, client netip.Addr) bool {
+	out, err := p.runStore(storeShowScript(svc))
+	if entry, ok := parseStoreDNS(out); err != nil || !ok || !svc.matches(entry) {
+		return false
+	}
+	if !storeWantsIPv4(iface, client) {
+		return true
+	}
+	out, err = p.runStore("show " + svc.ipv4Key() + "\n")
+	haveIface, haveAddr, ok := parseStoreIPv4(out)
+	return err == nil && ok && haveIface == iface && haveAddr == client
 }
 
 // storeWantsIPv4 says whether the apply script includes the IPv4 entry.
