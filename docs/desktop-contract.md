@@ -120,6 +120,10 @@ The same document is printed by `vpn up`, `down`, `connect`, `disconnect` and `f
 | `lastApplyError` | string | no | ignored |
 | `version` | string | yes | optional |
 
+`dns.mode` is free text for display. Values in use: `store` and `native` (macOS: private DNS in place
+through the dynamic store, or only through resolver files; Windows also says `native`), `local-proxy`
+(Linux) and `unavailable`. Desktop must not branch on it.
+
 An older service may omit `schemaVersion` (before 1), `dns` (before 2) or a cluster's lists. The CLI
 reads those replies and prints the table above anyway: a missing list becomes `[]`.
 

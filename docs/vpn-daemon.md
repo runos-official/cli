@@ -20,31 +20,59 @@ running tunnel when the program is updated, and it lists the edge cases that are
 
 ## Private DNS on macOS
 
-The daemon writes `/etc/resolver/<zone>` and then checks that macOS lists the zone in `scutil --dns`.
-macOS applies the file on its own schedule: under a second on one run, and not within two minutes on
-another, with the file on disk and the resolver reachable through the tunnel (FCR 1730).
+The daemon publishes split DNS two ways and then checks that macOS lists the zone in `scutil --dns`
+(FCR 1730):
 
+1. **The SystemConfiguration dynamic store, first.** For each distinct cluster resolver it sets
+   `State:/Network/Service/com.runos.vpn.<resolver>/IPv4` (the device address, `255.255.255.255`, the
+   tunnel interface; no router, so the service can never become the primary one) and then
+   `.../DNS` (`ServerAddresses` and `SupplementalMatchDomains`) through `scutil` on stdin. This is the
+   way VPN clients register split DNS, and configd applies it directly.
+2. **`/etc/resolver/<zone>`, second.** An atomic write (temp file next to `/etc`, then rename), mode
+   0644, marked `# managed by runos-vpn`. Some tools and older macOS versions read it. A file RunOS did
+   not write is never replaced or removed.
+
+Why this order: on one run macOS never listed a zone from the file alone, five minutes after an atomic
+write, with the resolver reachable through the tunnel, and a re-publish every 15 seconds changed
+nothing; on earlier runs a retry sometimes worked. The file path is flaky. How fast macOS picks up the
+store entry is not measured yet: `make dnsprobe` (below) times both.
+
+- The answer is what `scutil --dns` lists with the cluster's resolver, never what was written.
+  `DNSStatus.mode` is `store` when the store entry is in place and `native` when only the file is.
+  If the two disagree the store wins: a file of RunOS's own that cannot be rewritten is removed.
+- One mechanism failing is not an error. Both failing to write is a plain error; the tunnel and the
+  poll loop stay. If `scutil` cannot be read the DNS state is unverified, not failed.
 - A zone that macOS has not listed yet is **pending**, not a failure. `up` succeeds, `status` says
   "Connected. Cluster names are still being applied by macOS", and `DNSStatus.Pending` is true. The
   field is omitted when false, so a client that predates it reads the same JSON.
 - A watch in the daemon (`dns_pending.go`, timing in `dns_schedule.go`) keeps looking, twice a second
-  for ten seconds and then every five. It re-publishes the file (an atomic rewrite and a flush) after
-  three seconds and every fifteen after, and gives up after three minutes with a plain failed state.
+  for ten seconds and then every five. Every look puts back whichever mechanism went missing. After
+  three seconds and every fifteen after, it publishes both again (the store entry is removed and set,
+  the file rewritten, DNS flushed), and it gives up after three minutes with a plain failed state.
   The tunnel stays up. The next poll looks again, so a zone that macOS lists late still turns ready.
 - The watch holds the daemon lock for one look at a time. A connect waits up to four seconds for the
   outcome, outside the lock, so `status` and `diagnose` are answered meanwhile.
-- A second `up` for the same device while DNS is pending keeps the tunnel, the files and the clock.
-- A real fault still fails the step: another resolver that owns the zone, a resolver file that
-  RunOS did not write (never replaced), or a resolver directory that cannot be written.
-- Resolver files are written to a temp file next to `/etc` and renamed into place, mode 0644, so no
-  reader sees an empty or partial file. `make dnsprobe` (run it with sudo) times the old and the new
-  method against `scutil --dns`.
-- `runos vpn diagnose` reads the resolver files and `scutil --dns` without root and says whether the
-  file is on disk but macOS does not list it.
+- A second `up` for the same device while DNS is pending keeps the tunnel, the entries and the clock.
+- A real fault still fails the step: another resolver that owns the zone, or neither mechanism
+  writable.
+- **Cleanup.** `down` and the start-up sweep remove every store key under
+  `State:/Network/Service/com.runos.vpn[.<resolver>]/` and every marked resolver file, and nothing
+  else (a look-alike such as `com.runos.vpnx` is never named). A daemon that crashes leaves its
+  entries until the next start sweeps them; while they stay, the zones keep pointing at a resolver
+  that is only reachable through the tunnel, so those names stop resolving. Removal is read back and
+  a key that stays is logged.
+- `scutil` exits 0 even when a command is refused, so every write is read back with `show`.
+- `runos vpn diagnose` reads the resolver files, the store entries and `scutil --dns` without root. It
+  says per zone whether the file, the store entry and the listing are in place, and what to do next.
+- `make dnsprobe` (run it with sudo, VPN off) times four ways of publishing a scratch zone against
+  `scutil --dns`, interleaved: the old truncate-and-write file, the atomic file, the atomic file plus
+  a `notifyutil` network-change nudge, and the store entry. `EXTRA=1` adds the store's DNS entry
+  without the IPv4 entry.
 
-Measured: the old write is observable as an empty file (a test reads it during rewrites). Theory, not
-yet measured on a Mac: that this empty read is what macOS trips over (H1), and that re-publishing
-makes macOS list a zone it skipped (H2). The probe settles H1.
+Measured: the old write is observable as an empty file (a test reads it during rewrites); `scutil`
+exits 0 on a refused command. Theory, not yet measured on a Mac: that the store entry is picked up
+faster than the file, that the IPv4 entry is what makes configd honour the DNS entry, and that
+re-publishing makes macOS list a zone it skipped. The probe settles them.
 
 ## Time limits
 
