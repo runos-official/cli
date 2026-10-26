@@ -7,35 +7,36 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
 /*
-The opt-in probe for FCR 1730, hypothesis H1: does the way a resolver file is written change how long
-macOS takes to list the zone?
+The opt-in probe for FCR 1730: which way of publishing private DNS does macOS pick up, and how fast?
 
-It is NOT part of `go test`. It needs root, because it writes the real /etc/resolver, so it only runs
-through `make dnsprobe`, which builds it as you and runs the binary under sudo. It:
+It is NOT part of `go test`. It needs root, because it writes the real /etc/resolver and the system
+dynamic store, so it only runs through `make dnsprobe`, which builds it as you and runs the binary
+under sudo. With the VPN OFF (it refuses to start otherwise) it:
 
   - uses scratch zones under example.test and the documentation address 192.0.2.53, never a real zone;
-  - writes each zone with the OLD method (open with truncate, then write) and the NEW one (the
-    production atomic rename), interleaved so a slow minute does not favour either;
+  - publishes each zone with four methods, interleaved so a slow minute does not favour one:
+    A the old truncate+write file, B the atomic file, C the atomic file plus a network-change nudge as
+    root, D the dynamic-store entry (E, the store's DNS entry alone, with RUNOS_DNS_PROBE_EXTRA=1);
   - polls `scutil --dns` until the zone is listed and records how long that took;
-  - if a zone is still unlisted after a while, re-publishes it once (the H2 nudge) and records whether
-    that rescued it;
-  - removes every scratch file it made, and only a file that carries the RunOS marker. It refuses to
-    touch any other file, and any zone that is not a scratch zone.
+  - if a zone is still unlisted after a while, re-publishes it once and records whether that rescued it;
+  - removes every scratch file and store entry it made, on exit and on Ctrl-C, and only ones that carry
+    the RunOS marker (files) or the probe's own service id (store). It refuses to touch anything else.
 
-Settings (environment): RUNOS_DNS_PROBE=1 (required), RUNOS_DNS_PROBE_N runs per method (default 10).
+Settings (environment): RUNOS_DNS_PROBE=1 and RUNOS_DNS_PROBE_VIA=make (both set by the make target),
+RUNOS_DNS_PROBE_N runs per method (default 5), RUNOS_DNS_PROBE_EXTRA=1 to add method E.
+
+Nothing in this file was run against macOS by the author: there was no root. The logic tests
+(dnsprobe_logic_probe_test.go) run it on a fake Mac.
 */
 
 const (
@@ -47,7 +48,9 @@ const (
 type probeEnv struct {
 	dir     string
 	scutil  func() (string, error)
+	store   func(script string) (string, error)
 	flush   func() error
+	nudge   func() error
 	now     func() time.Time
 	sleep   func(time.Duration)
 	out     io.Writer
@@ -56,9 +59,16 @@ type probeEnv struct {
 	poll    time.Duration
 	giveUp  time.Duration
 	nudgeAt time.Duration
+	extra   bool
 	// stopped reports that the operator interrupted the run.
 	stopped func() bool
-	made    []string
+	made    []probeMade
+}
+
+// probeMade is one scratch zone and the method that published it, so cleanup removes it the right way.
+type probeMade struct {
+	method int
+	zone   string
 }
 
 type probeResult struct {
@@ -69,64 +79,12 @@ type probeResult struct {
 	republished bool
 }
 
-type probeMethod struct {
-	name  string
-	write func(env *probeEnv, zone string) error
-}
-
-func probeMethods() []probeMethod {
-	content := resolverMarker + "\nnameserver " + probeNameserver + "\n"
-	return []probeMethod{
-		{"truncate+write (old)", func(env *probeEnv, zone string) error {
-			return os.WriteFile(filepath.Join(env.dir, zone), []byte(content), 0o644)
-		}},
-		{"atomic rename (new)", func(env *probeEnv, zone string) error {
-			return env.platform().SetResolver(zone, netip.MustParseAddr(probeNameserver))
-		}},
-	}
-}
-
-// scratchZone is the only kind of zone the probe touches.
-func scratchZone(runID string, method, i int) string {
-	return fmt.Sprintf("%s%s-%d-%d%s", probeZonePrefix, runID, method, i, probeZoneSuffix)
-}
-
-func isScratchZone(zone string) bool {
-	return strings.HasPrefix(zone, probeZonePrefix) && strings.HasSuffix(zone, probeZoneSuffix) &&
-		!strings.ContainsAny(zone, "/\\")
-}
-
-// guard refuses to write over, or remove, anything that is not a scratch zone or not ours.
-func (env *probeEnv) guard(zone string) error {
-	if !isScratchZone(zone) {
-		return fmt.Errorf("refusing to touch %q: not a scratch zone", zone)
-	}
-	data, err := os.ReadFile(filepath.Join(env.dir, zone))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !isManagedResolverFile(data) {
-		return fmt.Errorf("refusing to touch %q: the file does not carry the RunOS marker", zone)
-	}
-	return nil
-}
-
-func (env *probeEnv) platform() darwinPlatform { return darwinPlatform{dir: env.dir} }
-
-func (env *probeEnv) remove(zone string) {
-	if env.guard(zone) != nil {
-		return
-	}
-	_ = os.Remove(filepath.Join(env.dir, zone))
-}
-
 func (env *probeEnv) cleanup() {
-	for _, zone := range env.made {
-		env.remove(zone)
+	methods := probeMethods(env.extra)
+	for _, m := range env.made {
+		methods[m.method].remove(env, m.zone)
 	}
+	env.made = nil
 	_ = env.flush()
 }
 
@@ -148,13 +106,13 @@ func (env *probeEnv) waitGone(zone string) {
 	}
 }
 
-// measure writes one zone and waits for macOS to list it.
-func (env *probeEnv) measure(m probeMethod, zone string, iteration int) (probeResult, error) {
+// measure publishes one zone with a method and waits for macOS to list it.
+func (env *probeEnv) measure(mi int, m probeMethod, zone string, iteration int) (probeResult, error) {
 	res := probeResult{method: m.name, iteration: iteration}
 	if err := env.guard(zone); err != nil {
 		return res, err
 	}
-	env.made = append(env.made, zone)
+	env.made = append(env.made, probeMade{mi, zone})
 	start := env.now()
 	if err := m.write(env, zone); err != nil {
 		return res, err
@@ -175,10 +133,9 @@ func (env *probeEnv) measure(m probeMethod, zone string, iteration int) (probeRe
 		}
 		if !res.republished && elapsed >= env.nudgeAt {
 			res.republished = true
-			if err := env.platform().SetResolver(zone, netip.MustParseAddr(probeNameserver)); err != nil {
+			if err := m.republish(env, zone); err != nil {
 				return res, err
 			}
-			_ = env.flush()
 		}
 		env.sleep(env.poll)
 	}
@@ -187,17 +144,21 @@ func (env *probeEnv) measure(m probeMethod, zone string, iteration int) (probeRe
 
 func runProbe(env *probeEnv) ([]probeResult, error) {
 	var results []probeResult
-	methods := probeMethods()
+	methods := probeMethods(env.extra)
 	for i := 0; i < env.n && !env.stopped(); i++ {
 		for mi, m := range methods {
+			if env.stopped() {
+				break
+			}
 			zone := scratchZone(env.runID, mi, i)
-			res, err := env.measure(m, zone, i+1)
+			res, err := env.measure(mi, m, zone, i+1)
 			if err != nil {
 				return results, err
 			}
 			results = append(results, res)
-			fmt.Fprintf(env.out, "  run %2d  %-22s %s\n", i+1, m.name, describeProbe(res))
-			env.remove(zone)
+			fmt.Fprintf(env.out, "  run %2d  %-24s %s\n", i+1, m.name, describeProbe(res))
+			m.remove(env, zone)
+			_ = env.flush()
 			env.waitGone(zone)
 		}
 	}
@@ -217,7 +178,7 @@ func describeProbe(r probeResult) string {
 	}
 }
 
-// probeTable renders one row per method.
+// probeTable renders one row per method, in the order the methods ran.
 func probeTable(results []probeResult) string {
 	order := []string{}
 	byMethod := map[string][]probeResult{}
@@ -228,7 +189,7 @@ func probeTable(results []probeResult) string {
 		byMethod[r.method] = append(byMethod[r.method], r)
 	}
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "%-24s %5s %7s %9s %12s %9s %9s %9s\n", "method", "runs", "listed", "unlisted", "re-published", "min", "median", "max")
+	fmt.Fprintf(&b, "%-26s %5s %7s %9s %12s %9s %9s %9s\n", "method", "runs", "listed", "unlisted", "re-published", "min", "median", "max")
 	for _, name := range order {
 		rs := byMethod[name]
 		var lat []time.Duration
@@ -249,24 +210,24 @@ func probeTable(results []probeResult) string {
 			med = lat[len(lat)/2].Round(time.Millisecond).String()
 			max = lat[len(lat)-1].Round(time.Millisecond).String()
 		}
-		fmt.Fprintf(&b, "%-24s %5d %7d %9d %12d %9s %9s %9s\n", name, len(rs), listed, len(rs)-listed, republished, min, med, max)
+		fmt.Fprintf(&b, "%-26s %5d %7d %9d %12d %9s %9s %9s\n", name, len(rs), listed, len(rs)-listed, republished, min, med, max)
 	}
 	return b.String()
 }
 
-// The real run: root, the real /etc/resolver, the real scutil.
+// The real run: root via sudo from the make target, the real /etc/resolver, the real store and scutil.
 func TestDNSPublishProbe(t *testing.T) {
 	if os.Getenv("RUNOS_DNS_PROBE") != "1" {
 		t.Skip("opt-in: run it with `make dnsprobe`")
 	}
-	if os.Geteuid() != 0 {
-		t.Fatal("the probe writes /etc/resolver and needs root: run it with `make dnsprobe`")
+	if err := probeAllowed(os.Getenv, os.Geteuid()); err != nil {
+		t.Fatal(err)
 	}
-	n := 10
+	n := 5
 	if v, err := strconv.Atoi(os.Getenv("RUNOS_DNS_PROBE_N")); err == nil && v > 0 {
 		n = v
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	env := &probeEnv{
 		dir: resolverDir,
@@ -274,7 +235,18 @@ func TestDNSPublishProbe(t *testing.T) {
 			out, err := runBounded("scutil", "--dns")
 			return string(out), err
 		},
-		flush:   darwinPlatform{}.FlushDNS,
+		store: func(script string) (string, error) {
+			out, err := runWithInput(script, "scutil")
+			return string(out), err
+		},
+		flush: darwinPlatform{}.FlushDNS,
+		nudge: func() error {
+			out, err := run("notifyutil", "-p", "com.apple.system.config.network_change")
+			if err != nil {
+				return fmt.Errorf("%w: %s", err, out)
+			}
+			return nil
+		},
 		now:     time.Now,
 		sleep:   time.Sleep,
 		out:     os.Stdout,
@@ -283,8 +255,13 @@ func TestDNSPublishProbe(t *testing.T) {
 		poll:    50 * time.Millisecond,
 		giveUp:  30 * time.Second,
 		nudgeAt: 8 * time.Second,
+		extra:   os.Getenv("RUNOS_DNS_PROBE_EXTRA") == "1",
 		stopped: func() bool { return ctx.Err() != nil },
 	}
+	if err := env.preflight(); err != nil {
+		t.Fatal(err)
+	}
+	env.sweepLeftovers()
 	defer env.cleanup()
 
 	fmt.Printf("DNS publish probe: %d run(s) per method, scratch zones under %s\n", n, probeZoneSuffix)
@@ -295,6 +272,6 @@ func TestDNSPublishProbe(t *testing.T) {
 	fmt.Println()
 	fmt.Print(probeTable(results))
 	if ctx.Err() != nil {
-		fmt.Println("\ninterrupted: the table covers the runs that finished; the scratch files are removed")
+		fmt.Println("\ninterrupted: the table covers the runs that finished; the scratch files and entries are removed")
 	}
 }

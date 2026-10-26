@@ -100,19 +100,23 @@ unscannable:
 # macOS DNS publish probe (opt-in, needs sudo)
 # ============================================================================
 
-# Times how long macOS takes to list a scratch zone after the old (truncate, then write) and the new
-# (atomic rename) resolver-file write, and prints a small table. It builds as you and runs only the
-# test binary under sudo. It writes scratch zones under example.test to /etc/resolver, removes them,
-# and refuses to touch any file without the RunOS marker. N is the runs per method (default 10).
-# Usage: make dnsprobe   or   make dnsprobe N=20
+# Times how long macOS takes to list a scratch zone published four ways, interleaved, and prints a
+# latency table: A the old truncate+write resolver file, B the atomic resolver file, C the atomic file
+# plus a network-change nudge (notifyutil) as root, D the dynamic-store entry the daemon publishes first.
+# It builds as you and runs only the test binary under sudo. It writes scratch zones under example.test
+# to /etc/resolver and the system dynamic store, removes them on exit and on Ctrl-C, and refuses to touch
+# anything without the RunOS marker or the probe's own service id. Turn the VPN off first (runos vpn
+# down): it refuses to start while the VPN's own DNS state is on the Mac.
+# N is the runs per method (default 5). EXTRA=1 adds method E, the store's DNS entry without the IPv4 entry.
+# Usage: make dnsprobe   or   make dnsprobe N=10 EXTRA=1
 .PHONY: dnsprobe
 dnsprobe:
 	@test "$$(uname)" = Darwin || { echo "$(RED)the DNS publish probe is for macOS$(NC)"; exit 1; }
 	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
 	  go test -c -tags probe -o "$$dir/dnsprobe.test" ./internal/vpn && \
-	  echo "$(CYAN)Running the probe under sudo (it writes scratch zones to /etc/resolver and removes them)$(NC)" && \
-	  sudo env RUNOS_DNS_PROBE=1 RUNOS_DNS_PROBE_N=$(or $(N),10) "$$dir/dnsprobe.test" \
-	    -test.run '^TestDNSPublishProbe$$' -test.v -test.timeout 40m
+	  echo "$(CYAN)Running the probe under sudo (scratch zones in /etc/resolver and the dynamic store, removed afterwards)$(NC)" && \
+	  sudo env RUNOS_DNS_PROBE=1 RUNOS_DNS_PROBE_VIA=make RUNOS_DNS_PROBE_N=$(or $(N),5) RUNOS_DNS_PROBE_EXTRA=$(or $(EXTRA),0) \
+	    "$$dir/dnsprobe.test" -test.run '^TestDNSPublishProbe$$' -test.v -test.timeout 90m
 
 # ============================================================================
 # Release
@@ -149,7 +153,7 @@ help:
 	@echo "  make leakcheck-staged Scan only the staged diff"
 	@echo "  make leakcheck-update Ratchet the baseline down after removing an identifier"
 	@echo "  make leakcheck-test   Test the leak checker itself"
-	@echo "  make dnsprobe         Time macOS DNS pick-up of the old and new resolver write (sudo, opt-in)"
+	@echo "  make dnsprobe         Time macOS DNS pick-up of four publish methods, file and dynamic store (sudo, opt-in)"
 	@echo "  make replay-record-ref Replay the release record-ref rule in a scratch repo"
 	@echo "  make unscannable      Fail on a tracked file leakcheck cannot read"
 	@echo ""
