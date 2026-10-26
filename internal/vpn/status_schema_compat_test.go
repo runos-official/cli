@@ -45,7 +45,7 @@ const (
 // OLD DAEMON, NEW CLI: every reply decodes into the current Status and re-encodes to a document
 // that still honours the contract. Nothing becomes null, no required key goes missing, and a field
 // the old daemon did not know comes out as its zero value rather than disappearing.
-func TestOldDaemonReplyReEncodesWithinTheContract(t *testing.T) {
+func TestDesktopContractOldDaemonReplyReEncodesWithinTheContract(t *testing.T) {
 	cases := []struct {
 		name, reply string
 		schema      int
@@ -97,7 +97,7 @@ type statusV1 struct {
 // NEW DAEMON, OLD CLI: the current reply, fully populated, still decodes into the old shape and
 // carries the same facts. Unknown keys (dns, pending) are ignored by the old reader, and a time it
 // reads is a valid timestamp, so an omitted zero time cannot break it.
-func TestNewDaemonReplyStillDecodesInTheOldShape(t *testing.T) {
+func TestDesktopContractNewDaemonReplyStillDecodesInTheOldShape(t *testing.T) {
 	for name, status := range map[string]*Status{"populated": populatedStatus(), "zero": {}} {
 		t.Run(name, func(t *testing.T) {
 			out, err := json.Marshal(status)

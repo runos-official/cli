@@ -34,7 +34,7 @@ func reportedVersion(t *testing.T, d *Daemon) string {
 	return wire.Version
 }
 
-func TestDaemonReportsTheVersionItWasStartedWithUnchanged(t *testing.T) {
+func TestDesktopContractDaemonReportsTheVersionItWasStartedWithUnchanged(t *testing.T) {
 	for name, v := range buildVersions {
 		t.Run(name, func(t *testing.T) {
 			d, err := NewDaemon(t.TempDir(), v, false)
@@ -50,7 +50,7 @@ func TestDaemonReportsTheVersionItWasStartedWithUnchanged(t *testing.T) {
 
 // A restart is a new daemon over the same state directory, started by the updated binary. Its
 // status carries the new version, and the old one leaves no trace in the saved state.
-func TestRestartMakesTheDaemonReportTheCLIVersion(t *testing.T) {
+func TestDesktopContractRestartMakesTheDaemonReportTheCLIVersion(t *testing.T) {
 	stateDir := t.TempDir()
 	before, err := NewDaemon(stateDir, "1.22.2", false)
 	if err != nil {
