@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,7 +35,7 @@ func vpnJSON(t *testing.T, run func(*cobra.Command, []string) error, socket stri
 
 // A daemon that answers without a status must not make `--json` print the word null: Desktop reads
 // the output as an object and loses the menu when it is not one.
-func TestVPNStatusJSONIsAnObjectWhateverTheDaemonAnswers(t *testing.T) {
+func TestDesktopContractVPNStatusJSONIsAnObjectWhateverTheDaemonAnswers(t *testing.T) {
 	populated := &vpn.Status{}
 	desktopcontract.Populate(populated)
 	cases := map[string]*vpn.Status{"no status": nil, "zero status": {}, "populated status": populated}
@@ -52,7 +55,7 @@ func TestVPNStatusJSONIsAnObjectWhateverTheDaemonAnswers(t *testing.T) {
 
 // The commands Desktop runs that print the daemon's status, end to end through the socket: the
 // daemon encodes, the CLI decodes and encodes again, and the result must still conform.
-func TestEveryVPNCommandPrintsAContractStatus(t *testing.T) {
+func TestDesktopContractEveryVPNCommandPrintsAContractStatus(t *testing.T) {
 	daemon := newFakeDaemon(t)
 	cases := map[string]struct {
 		run  func(*cobra.Command, []string) error
@@ -69,4 +72,22 @@ func TestEveryVPNCommandPrintsAContractStatus(t *testing.T) {
 			desktopcontract.Check(t, name, []byte(out), desktopcontract.VPNStatus)
 		})
 	}
+}
+
+// shortTestSocket is a socket path nothing listens on. macOS caps a socket path at 104 bytes, so it
+// goes under the system temp dir and not under t.TempDir().
+func shortTestSocket(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(os.TempDir(), fmt.Sprintf("runos-test-%d-%d.sock", os.Getpid(), len(t.Name())))
+}
+
+// vpnStatusAgainst runs `vpn status --json` against a socket and returns the error. The command
+// prints to the process's stdout, so a caller that cares about it wraps this in captureStdout.
+func vpnStatusAgainst(t *testing.T, socket string) error {
+	t.Helper()
+	cmd := &cobra.Command{Use: "status", RunE: runVPNStatus}
+	cmd.Flags().BoolP("json", "j", false, "")
+	cmd.Flags().String("socket", "", "")
+	cmd.SetArgs([]string{"--json", "--socket", socket})
+	return cmd.Execute()
 }

@@ -65,7 +65,7 @@ func statusDocument(t *testing.T, socket string) []byte {
 
 // `runos status --json` builds a map, so no Go nil can leak, but the keys, their types and the
 // timestamp format are still a contract: Desktop decodes `authenticated` as a non-optional Bool.
-func TestStatusJSONMatchesTheDesktopContract(t *testing.T) {
+func TestDesktopContractStatusJSONMatchesTheDesktopContract(t *testing.T) {
 	const expired = `{"error":"Your session has expired. Run ` + "`runos login`" + ` to sign in again.","code":"auth.session_expired"}`
 	cases := []struct {
 		name   string
@@ -105,6 +105,12 @@ func TestStatusJSONMatchesTheDesktopContract(t *testing.T) {
 			_ = json.Unmarshal(doc, &keys)
 			for key := range keys {
 				seen[key] = true
+			}
+			// Desktop puts authError in front of the person as it is.
+			if text, ok := keys["authError"].(string); ok {
+				for _, problem := range desktopcontract.PlainErrorProblems(text) {
+					t.Errorf("authError %q: %s", text, problem)
+				}
 			}
 		})
 	}

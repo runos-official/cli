@@ -11,7 +11,7 @@ import (
 // RunOS Desktop reads `runos login --json` and `runos vpn up --json` as one JSON object per line.
 // An event it does not know is ignored, so the contract is about the shape of each line: a line
 // that is not an object, or carries a null, is a sign-in window that stops updating.
-func TestSignInEventStreamMatchesTheDesktopContract(t *testing.T) {
+func TestDesktopContractSignInEventStreamMatchesTheDesktopContract(t *testing.T) {
 	var out strings.Builder
 	stream := &jsonSignIn{out: &out}
 	stream.DeviceCode("ABC-123", "https://console.example.test/device")
@@ -31,7 +31,7 @@ func TestSignInEventStreamMatchesTheDesktopContract(t *testing.T) {
 	}
 }
 
-func TestSignInEventShapeFromZeroAndPopulatedValues(t *testing.T) {
+func TestDesktopContractSignInEventShapeFromZeroAndPopulatedValues(t *testing.T) {
 	populated := &signInEvent{}
 	desktopcontract.Populate(populated)
 	for name, event := range map[string]signInEvent{"zero": {}, "populated": *populated} {
@@ -45,7 +45,7 @@ func TestSignInEventShapeFromZeroAndPopulatedValues(t *testing.T) {
 
 // `update --json` and `update --check --json`: Desktop reads schemaVersion and cli.updated as
 // non-optional, and the verdict flags as optional booleans.
-func TestUpdateJSONMatchesTheDesktopContract(t *testing.T) {
+func TestDesktopContractUpdateJSONMatchesTheDesktopContract(t *testing.T) {
 	populated := &combinedUpdateResult{}
 	desktopcontract.Populate(populated)
 	cases := map[string]combinedUpdateResult{
