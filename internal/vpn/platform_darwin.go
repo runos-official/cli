@@ -170,41 +170,38 @@ func (p darwinPlatform) ReconcileDNS(_ string, _ netip.Addr, resolvers []Resolve
 		return DNSStatus{Mode: "unavailable", Error: "no private DNS zones are active"}, nil
 	}
 	// POLL, DO NOT SNAPSHOT. Writing /etc/resolver/<zone> does not take effect the instant the file
-	// lands: macOS republishes its DNS configuration asynchronously. Reading `scutil --dns` once,
-	// immediately after the write, is a coin flip.
-	//
-	// MEASURED 2026-08-20: `runos vpn connect cl1` failed with "private DNS zone ... is not
-	// effective" and the SAME command, unchanged, succeeded moments later, with the resolver file
-	// already on disk and scutil already listing the zone as Reachable. Nothing was wrong with the
-	// cluster; the check was early. A first connect that reads as a broken cluster is the kind of
-	// failure people stop trusting the tool over.
-	//
-	// Bounded, because a zone that never appears is a real fault and must still be reported.
-	var lastErr error
-	deadline := time.Now().Add(dnsEffectiveTimeout)
-	for {
-		out, err := run("scutil", "--dns")
-		if err != nil {
-			err = fmt.Errorf("read effective macOS DNS: %w: %s", err, out)
-			return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
-		}
-		lastErr = verifyEffectiveResolvers(parseScutilDNS(string(out)), resolvers)
-		if lastErr == nil {
-			return DNSStatus{Available: true, Mode: "native"}, nil
-		}
-		if time.Now().After(deadline) {
-			return DNSStatus{Mode: "unavailable", Error: lastErr.Error()}, lastErr
-		}
-		time.Sleep(dnsEffectivePoll)
+	// lands: macOS republishes its DNS configuration asynchronously, and right after a fresh sign-in
+	// that can take longer than a few seconds. A zone that never appears is a real fault, so the wait
+	// is bounded, and it nudges macOS once with a DNS flush if the republish is slow. See
+	// awaitEffectiveResolvers.
+	err = awaitEffectiveResolvers(resolverWait{
+		read: func() (map[string][]netip.Addr, error) {
+			out, err := run("scutil", "--dns")
+			if err != nil {
+				return nil, fmt.Errorf("read effective macOS DNS: %w: %s", err, out)
+			}
+			return parseScutilDNS(string(out)), nil
+		},
+		nudge:      func() { _ = p.flushDNS() },
+		now:        time.Now,
+		sleep:      time.Sleep,
+		timeout:    dnsEffectiveTimeout,
+		poll:       dnsEffectivePoll,
+		nudgeAfter: dnsEffectiveNudgeAfter,
+	}, resolvers)
+	if err != nil {
+		return DNSStatus{Mode: "unavailable", Error: err.Error()}, err
 	}
+	return DNSStatus{Available: true, Mode: "native"}, nil
 }
 
-// How long to wait for macOS to republish its DNS configuration after a resolver write, and how
-// often to re-read it. Five seconds is generous against the sub-second propagation measured, and
-// short enough that a genuinely absent zone still reports promptly.
+// How long to wait for macOS to republish its DNS configuration after a resolver write, how often
+// to re-read it, and when to nudge it with a flush. A republish is usually sub-second, but right
+// after a sign-in on a busy Mac five seconds was not always enough, so the first connect failed.
 const (
-	dnsEffectiveTimeout = 5 * time.Second
-	dnsEffectivePoll    = 250 * time.Millisecond
+	dnsEffectiveTimeout    = 20 * time.Second
+	dnsEffectivePoll       = 250 * time.Millisecond
+	dnsEffectiveNudgeAfter = 3 * time.Second
 )
 
 func (darwinPlatform) FlushDNS() error {
