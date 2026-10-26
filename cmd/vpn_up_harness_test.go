@@ -342,7 +342,7 @@ func (d *fakeDaemon) handle(req vpn.Request) vpn.Response {
 		return vpn.Response{Status: &vpn.Status{Running: false}, TunnelWasUp: wasUp}
 	case vpn.OpStatus:
 		return vpn.Response{Status: &vpn.Status{Running: d.tunnelUp}}
-	case vpn.OpConnect:
+	case vpn.OpConnect, vpn.OpDisconnect:
 		return vpn.Response{Status: &vpn.Status{Running: true, AccountID: req.AccountID}}
 	default:
 		return vpn.Response{Error: fmt.Sprintf("unknown op %q", req.Op)}

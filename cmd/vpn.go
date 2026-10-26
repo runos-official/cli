@@ -375,6 +375,11 @@ func anyConnected(status *vpn.Status) bool {
 func emitVPNStatus(cmd *cobra.Command, status *vpn.Status) error {
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	if jsonOut {
+		// A daemon that answers without a status is a tunnel that is not running. Printing the
+		// nil as `null` hands RunOS Desktop a document it cannot read as a status.
+		if status == nil {
+			status = &vpn.Status{SchemaVersion: vpn.StatusSchemaVersion}
+		}
 		data, err := json.MarshalIndent(status, "", "  ")
 		if err != nil {
 			return err

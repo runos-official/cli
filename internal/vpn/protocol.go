@@ -94,6 +94,9 @@ type Identity struct {
 	SessionExpiresAt time.Time `json:"sessionExpiresAt,omitzero"`
 }
 
+// StatusSchemaVersion is Status.SchemaVersion as the daemon writes it. Version 1 had no `dns`; 2 added it.
+const StatusSchemaVersion = 2
+
 // Status is the daemon's view of the tunnel, shaped for `runos vpn status --json`.
 type Status struct {
 	SchemaVersion int    `json:"schemaVersion"`
