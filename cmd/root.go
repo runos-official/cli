@@ -316,6 +316,8 @@ func init() {
 	// access talks to the identity service directly (internal/roidapi), not conductor.
 	rootCmd.AddCommand(accessCmd)
 	hideAccessUnlessRoid()
+	// kube writes a kubeconfig entry that signs kubectl in through the identity service.
+	rootCmd.AddCommand(kubeCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(configCmd)
@@ -349,7 +351,13 @@ func init() {
 	// reusing this harbor parent for the manifest-driven harbor verbs.
 	wireStaticHarborSubtree()
 
-	// Dynamic commands from manifest
+	// Dynamic commands from manifest. kubectl runs 'kube credential' before many of
+	// its own commands and waits for it, so that run must not load the manifest, which
+	// can reach the network.
+	if isKubeCredentialRun(os.Args) {
+		strictenParentExitCodes(rootCmd)
+		return
+	}
 	if err := registerDynamicCommands(); err != nil {
 		// I25-E: when the manifest can't load at init time, dynacmd-
 		// driven commands (apps show, services list, integrations *,
@@ -403,7 +411,7 @@ func registerDynamicCommands() error {
 	// top-level entries (which used to render `config` and `deploy` twice in `runos --help`).
 	executor := dynacmd.NewExecutor(cfg.GetAPIURL())
 	builder := dynacmd.NewBuilder(m, executor).
-		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd, accessCmd)
+		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd, accessCmd, kubeCmd)
 
 	for _, cmd := range builder.BuildCommands() {
 		rootCmd.AddCommand(cmd)
