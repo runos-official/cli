@@ -61,7 +61,8 @@ func accessSession(cmd *cobra.Command) (*accessTarget, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
-	base, err := roidapi.BaseURL(cfg)
+	token := func() (string, error) { return auth.ResolveToken(cfg) }
+	client, err := accessClient(cfg, token)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +77,20 @@ func accessSession(cmd *cobra.Command) (*accessTarget, error) {
 		return nil, errors.New("no account selected: pass --account or run 'runos account switch'")
 	}
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	token := func() (string, error) { return auth.ResolveToken(cfg) }
-	return &accessTarget{client: roidapi.New(base, token), acct: acct, json: jsonOut}, nil
+	return &accessTarget{client: client, acct: acct, json: jsonOut}, nil
+}
+
+// accessClient is the client for the access API of this environment. The access routes are rapi routes:
+// the API host serves them on PROD (the sign-in host answers 404 not_on_this_host), and on DEV the API
+// host is conductor, which answers 404, while the sign-in host serves them. The client therefore tries
+// the API host first and the sign-in host after a 404, with no override. Both hosts come from the
+// config (roidapi.Router).
+func accessClient(cfg *config.Config, token func() (string, error)) (*roidapi.Client, error) {
+	r, err := roidapi.RouterFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return roidapi.NewRouted(r, token), nil
 }
 
 // do sends one call for this account and turns a refusal into an error a

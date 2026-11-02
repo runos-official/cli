@@ -86,12 +86,15 @@ func emitCredential(out, errw io.Writer, execInfo string, src *kubeaccess.Source
 // browser: a personal access token or API key has no person behind it, so
 // roid refuses it. A person with both is served from the sign-in.
 func credentialFetcher(cfg *config.Config, account, cluster string) (*kubeaccess.Fetcher, error) {
-	// The token route is a rapi route: roid answers it only behind the API host, never on the
-	// sign-in host (roidapi.GatewayURL). The proof hosts of the session hold both hosts.
-	base, err := roidapi.GatewayURL(cfg)
+	// The token route is a rapi route: on PROD roid answers it only behind the API host (the sign-in host
+	// answers 404 not_on_this_host), and on DEV the API host is conductor, which answers 404, while the
+	// sign-in host serves it. The call goes to the API host first and, after a 404, once to the sign-in
+	// host (roidapi.Router). The proof hosts of the session hold both hosts.
+	router, err := roidapi.RouterFor(cfg)
 	if err != nil {
 		return nil, errNoRoidEnvironment
 	}
+	base, _ := roidapi.GatewayURL(cfg)
 	if !cfg.HasRoidSignIn() {
 		if auth.Kind(cfg).IsPAT() {
 			return nil, errors.New("Kubernetes access needs a signed-in person. A personal access token or API key does not work. Run 'runos login' and sign in with your browser.")
@@ -114,5 +117,5 @@ func credentialFetcher(cfg *config.Config, account, cluster string) (*kubeaccess
 		}
 		return s.Bearer()
 	}
-	return &kubeaccess.Fetcher{BaseURL: base, Account: account, Cluster: cluster, Bearer: bearer}, nil
+	return &kubeaccess.Fetcher{BaseURL: base, Send: router.Send, Account: account, Cluster: cluster, Bearer: bearer}, nil
 }

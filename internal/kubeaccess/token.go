@@ -31,6 +31,9 @@ type Issued struct {
 // proof transport the sign-in installs adds the per-request proof.
 type Fetcher struct {
 	BaseURL string
+	// Send, when set, carries the request instead of a plain call to BaseURL. The CLI sets it to the
+	// host router (roidapi.Router.Send), which tries the API host and, after a 404, the sign-in host.
+	Send    func(api.Request) (*api.Result, error)
 	Account string
 	Cluster string
 	Bearer  func() (string, error)
@@ -44,7 +47,11 @@ func (f *Fetcher) Fetch() (Issued, error) {
 		return Issued{}, err
 	}
 	path := "/v1/accounts/" + url.PathEscape(f.Account) + "/clusters/" + url.PathEscape(f.Cluster) + "/k8s/token"
-	res, err := api.NewClient(f.BaseURL).Send(api.Request{Method: http.MethodPost, Path: path, Token: tok})
+	send := f.Send
+	if send == nil {
+		send = api.NewClient(f.BaseURL).Send
+	}
+	res, err := send(api.Request{Method: http.MethodPost, Path: path, Token: tok})
 	if err != nil {
 		return Issued{}, &TransportError{Err: err}
 	}
