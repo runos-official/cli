@@ -1,6 +1,7 @@
 # Which host answers a rapi-only roid route (FPL365, FCR 1797)
 
-Some identity-service routes are reachable only through rapi: the access API
+Some identity-service routes are reachable only through rapi: the sign-in identity reads
+(`GET /v1/me` and `GET /user/accounts`, made right after the device login and by `Session.Identity`), the access API
 (`runos access roles|groups|grants|explain|actions`) and the Kubernetes token route
 `POST /v1/accounts/{acct}/clusters/{cluster}/k8s/token`. Where rapi sits differs by environment:
 
@@ -30,7 +31,14 @@ One binary has to work on both with no `RUNOS_API_URL`.
 
 `runos access ...` (`cmd/access.go: accessClient`) and `runos kube credential`
 (`cmd/kube_credential.go: credentialFetcher`) both build their client from `roidapi.RouterFor(cfg)`.
-Sign-in, refresh and logout are not rapi routes and still go to the issuer only.
+The login identity lookup (`roidauth.Client.identity`) uses the same Router. It runs before the new
+access token is registered with the proof transport, so each request carries an explicit proof;
+`Router.SendFor` takes a `HeaderFor` callback and builds that proof once per host the request goes to,
+for that host's origin. On a dev login `/v1/me` costs one 404 on the API host and one call to the
+issuer; `/user/accounts` then goes straight to the issuer (the host is remembered), which answers
+with bare ids instead of objects (both shapes were already accepted). `runos login` therefore needs no
+`RUNOS_API_URL` on dev or prod. The device authorization, device poll, refresh and logout are
+issuer routes and still go to the issuer only; a test checks that the API host never sees them.
 `RUNOS_API_URL` still names the gateway (the first host). When it is the issuer address there is one
 host and nothing is retried. A 404 from an overridden gateway now also tries the configured
 issuer once; success paths are unchanged.
@@ -53,8 +61,6 @@ A write is safe to resend after a 404: a 404 means the route did nothing on that
 
 ## Not covered
 
-- `/v1/me` and `/user/accounts` (read at sign-in by `roidauth.identity`) have the same host
-  sensitivity; they are not changed here.
 - The step-up poll `GET /cli/stepup/{id}` rides the same Router, so it works wherever it is served.
 - Nothing here was run against a live rapi or PROD; the evidence is fakes that model both host
   shapes, with the fake roid verifying the proof (method, origin and path) on every use.

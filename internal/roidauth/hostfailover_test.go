@@ -51,10 +51,10 @@ func TestProdShapeTokenCallIsProvedForTheGatewayAndNotRetried(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Fatalf("status %d: %s", res.StatusCode, res.Body)
 	}
-	if hits := f.hitsAt(f.api.URL); len(hits) != 1 || hits[0].ProofTarget != f.api.URL+k8sTokenPath {
+	if hits := f.hitsAt(f.api.URL, k8sTokenPath); len(hits) != 1 || hits[0].ProofTarget != f.api.URL+k8sTokenPath {
 		t.Errorf("gateway hits = %+v, want one with a proof for the gateway origin", hits)
 	}
-	if hits := f.hitsAt(f.srv.URL); len(hits) != 0 {
+	if hits := f.hitsAt(f.srv.URL, k8sTokenPath); len(hits) != 0 {
 		t.Errorf("the issuer got %+v; nothing may go there when the gateway serves the route", hits)
 	}
 }
@@ -71,7 +71,7 @@ func TestDevShapeTokenCallRetriesOnTheIssuerWithAProofForTheIssuer(t *testing.T)
 	if res.StatusCode != 200 {
 		t.Fatalf("status %d: %s", res.StatusCode, res.Body)
 	}
-	g, i := f.hitsAt(f.api.URL), f.hitsAt(f.srv.URL)
+	g, i := f.hitsAt(f.api.URL, k8sTokenPath), f.hitsAt(f.srv.URL, k8sTokenPath)
 	if len(g) != 1 || g[0].Status != 404 || g[0].ProofTarget != f.api.URL+k8sTokenPath {
 		t.Errorf("gateway hits = %+v, want one 404 carrying a proof for the gateway origin", g)
 	}
@@ -84,10 +84,10 @@ func TestDevShapeTokenCallRetriesOnTheIssuerWithAProofForTheIssuer(t *testing.T)
 			t.Fatalf("later call %d: status %d", n, res.StatusCode)
 		}
 	}
-	if g := f.hitsAt(f.api.URL); len(g) != 1 {
+	if g := f.hitsAt(f.api.URL, k8sTokenPath); len(g) != 1 {
 		t.Errorf("the gateway was tried %d times in the run, want 1", len(g))
 	}
-	if i := f.hitsAt(f.srv.URL); len(i) != 3 {
+	if i := f.hitsAt(f.srv.URL, k8sTokenPath); len(i) != 3 {
 		t.Errorf("the issuer got %d calls, want 3", len(i))
 	}
 }
@@ -101,7 +101,7 @@ func TestAnUnauthorizedTokenCallIsNotRetried(t *testing.T) {
 	if res.StatusCode != 401 {
 		t.Fatalf("status %d, want 401", res.StatusCode)
 	}
-	if hits := f.hitsAt(f.srv.URL); len(hits) != 0 {
+	if hits := f.hitsAt(f.srv.URL, k8sTokenPath); len(hits) != 0 {
 		t.Errorf("a 401 on the gateway sent the bearer to the issuer: %+v", hits)
 	}
 }

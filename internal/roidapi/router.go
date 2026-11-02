@@ -76,25 +76,56 @@ func (r *Router) issuerFirst() bool {
 	return b
 }
 
+// HeaderFor builds the headers that depend on the host a request goes to, given that host's address
+// (origin, no trailing slash). A caller whose request carries a proof of its own uses it, because a proof
+// names the origin it is for: the retry on the second host must carry a proof for the second host.
+type HeaderFor func(origin string) (http.Header, error)
+
 // Send sends req to the preferred host and, on a 404 only, once to the other. Transport errors are not
 // retried. A host is remembered as the one that works when it gives an answer that is not a 404 and not a
 // server failure.
 func (r *Router) Send(req api.Request) (*api.Result, error) {
+	return r.SendFor(req, nil)
+}
+
+// SendFor is Send for a request with headers that name the host (see HeaderFor). headerFor runs once per
+// host the request is sent to, and its headers are added to req.Header for that attempt only.
+func (r *Router) SendFor(req api.Request, headerFor HeaderFor) (*api.Result, error) {
+	attempt := func(c *api.Client, origin string) (*api.Result, error) {
+		if headerFor == nil {
+			return c.Send(req)
+		}
+		h, err := headerFor(origin)
+		if err != nil {
+			return nil, err
+		}
+		own := req
+		own.Header = req.Header.Clone()
+		if own.Header == nil {
+			own.Header = http.Header{}
+		}
+		for k, vs := range h {
+			own.Header[k] = append([]string(nil), vs...)
+		}
+		return c.Send(own)
+	}
 	if r.single() {
-		return r.gw.Send(req)
+		return attempt(r.gw, r.gateway)
 	}
 	first, second, firstIsIssuer := r.gw, r.is, false
+	firstURL, secondURL := r.gateway, r.issuer
 	if r.issuerFirst() {
 		first, second, firstIsIssuer = r.is, r.gw, true
+		firstURL, secondURL = r.issuer, r.gateway
 	}
-	res, err := first.Send(req)
+	res, err := attempt(first, firstURL)
 	if err != nil || res.StatusCode != http.StatusNotFound {
 		if err == nil && res.StatusCode < 500 {
 			preferred.Store(r.key(), firstIsIssuer)
 		}
 		return res, err
 	}
-	res2, err2 := second.Send(req)
+	res2, err2 := attempt(second, secondURL)
 	if err2 != nil {
 		return res, nil // the second host is unreachable: the first host's 404 is the answer we have
 	}

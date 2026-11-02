@@ -271,3 +271,40 @@ func TestTheOverrideNamesTheFirstHost(t *testing.T) {
 		t.Errorf("gateway = %q issuer = %q", r.gateway, r.issuer)
 	}
 }
+
+// A request whose headers name the host (a proof) gets them built once per host it goes to, for that
+// host's own address, and the request's other headers stay.
+func TestSendForBuildsTheHeaderForEachHostItGoesTo(t *testing.T) {
+	gotHeader := map[string]string{}
+	var mu sync.Mutex
+	serve := func(status int) *httptest.Server {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			gotHeader[r.Host] = r.Header.Get("X-RunOS-Proof") + "|" + r.Header.Get("X-Keep")
+			mu.Unlock()
+			w.WriteHeader(status)
+		}))
+		t.Cleanup(s.Close)
+		return s
+	}
+	gw, is := serve(404), serve(200)
+	var origins []string
+	res, err := NewRouter(gw.URL, is.URL).SendFor(
+		api.Request{Method: "GET", Path: "/v1/me", Token: "at_x", Header: http.Header{"X-Keep": {"yes"}}},
+		func(origin string) (http.Header, error) {
+			origins = append(origins, origin)
+			return http.Header{"X-Runos-Proof": {"proof-for-" + origin}}, nil
+		})
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("result = %v err = %v", res, err)
+	}
+	if len(origins) != 2 || origins[0] != gw.URL || origins[1] != is.URL {
+		t.Fatalf("origins asked = %v, want the gateway then the issuer", origins)
+	}
+	for _, s := range []*httptest.Server{gw, is} {
+		host := s.Listener.Addr().String()
+		if want := "proof-for-" + s.URL + "|yes"; gotHeader[host] != want {
+			t.Errorf("host %s got %q, want %q", host, gotHeader[host], want)
+		}
+	}
+}
