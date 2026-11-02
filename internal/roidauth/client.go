@@ -9,6 +9,7 @@ package roidauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -228,9 +229,7 @@ func (c *Client) identity(access string, key *Key) (Identity, error) {
 	}
 	// conductor's GET /user/accounts lists objects (aid, name, role); the session keeps the ids.
 	var accts struct {
-		Accounts []struct {
-			AID string `json:"aid"`
-		} `json:"accounts"`
+		Accounts []json.RawMessage `json:"accounts"`
 	}
 	hdr, err = c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/user/accounts")
 	if err != nil {
@@ -239,8 +238,27 @@ func (c *Client) identity(access string, key *Key) (Identity, error) {
 	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/user/accounts", Token: access, Header: hdr}, &accts); err != nil {
 		return Identity{}, err
 	}
-	for _, a := range accts.Accounts {
-		id.Accounts = append(id.Accounts, a.AID)
+	for _, raw := range accts.Accounts {
+		if aid := accountID(raw); aid != "" {
+			id.Accounts = append(id.Accounts, aid)
+		}
 	}
 	return id, nil
+}
+
+// accountID reads one entry of a /user/accounts answer. conductor lists
+// objects with an aid; roid's own copy of the route, which a deployment
+// without a front service serves on the issuer host, lists bare ids.
+func accountID(raw json.RawMessage) string {
+	var bare string
+	if json.Unmarshal(raw, &bare) == nil {
+		return bare
+	}
+	var obj struct {
+		AID string `json:"aid"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return obj.AID
+	}
+	return ""
 }
