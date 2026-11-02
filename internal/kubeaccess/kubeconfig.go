@@ -21,12 +21,15 @@ import (
 // user and one context, all named Name. The user runs Command, which asks
 // for a token each time kubectl needs one, so the file holds no secret.
 type Entry struct {
-	Name    string
-	Server  string // https URL of the API server
-	CAPEM   []byte // PEM certificate(s) that sign the API server's certificate
-	Account string
-	Cluster string // RunOS cluster id
-	Command string // the CLI as kubectl finds it, "runos" by default
+	Name   string
+	Server string // https URL of the API server
+	CAPEM  []byte // PEM certificate(s) that sign the API server's certificate
+	// TLSServerName is the name to check the API server certificate against.
+	// It is set only when Server is a node address; empty otherwise.
+	TLSServerName string
+	Account       string
+	Cluster       string // RunOS cluster id
+	Command       string // the CLI as kubectl finds it, "runos" by default
 }
 
 // clusterID is the shape roid accepts for a cluster id in its token route.
@@ -123,12 +126,13 @@ func Merge(existing []byte, e Entry, use bool) ([]byte, error) {
 }
 
 type clusterEntry struct {
-	Server string `yaml:"server"`
-	CAData string `yaml:"certificate-authority-data"`
+	Server        string `yaml:"server"`
+	CAData        string `yaml:"certificate-authority-data"`
+	TLSServerName string `yaml:"tls-server-name,omitempty"`
 }
 
 func clusterBody(e Entry) clusterEntry {
-	return clusterEntry{Server: strings.TrimRight(e.Server, "/"), CAData: base64.StdEncoding.EncodeToString(e.CAPEM)}
+	return clusterEntry{Server: strings.TrimRight(e.Server, "/"), CAData: base64.StdEncoding.EncodeToString(e.CAPEM), TLSServerName: e.TLSServerName}
 }
 
 type execEntry struct {

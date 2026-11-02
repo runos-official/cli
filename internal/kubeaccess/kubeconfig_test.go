@@ -44,8 +44,9 @@ type kc struct {
 	Clusters       []struct {
 		Name    string `yaml:"name"`
 		Cluster struct {
-			Server string `yaml:"server"`
-			CAData string `yaml:"certificate-authority-data"`
+			Server        string `yaml:"server"`
+			CAData        string `yaml:"certificate-authority-data"`
+			TLSServerName string `yaml:"tls-server-name"`
 		} `yaml:"cluster"`
 	} `yaml:"clusters"`
 	Users []struct {
@@ -362,5 +363,24 @@ func TestDefaultPathFollowsKubectl(t *testing.T) {
 	}
 	if _, err := DefaultPath(func(string) string { return "" }, ""); err == nil {
 		t.Error("no home and no KUBECONFIG must be an error")
+	}
+}
+
+func TestMergeSetsTLSServerNameOnlyWhenGiven(t *testing.T) {
+	e := testEntry(t)
+	out, err := Merge(nil, e, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "tls-server-name") {
+		t.Errorf("no tls-server-name expected:\n%s", out)
+	}
+	e.TLSServerName = "kubernetes"
+	out, err = Merge(nil, e, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parse(t, out); got.Clusters[0].Cluster.TLSServerName != "kubernetes" {
+		t.Errorf("tls-server-name = %q", got.Clusters[0].Cluster.TLSServerName)
 	}
 }

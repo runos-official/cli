@@ -2,10 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/runos-official/cli/internal/kubeaccess"
 )
 
 func writeCA(t *testing.T) string {
@@ -101,5 +106,115 @@ func TestKubeAccessIsAHandWrittenCommandBesideClustersKubeconfig(t *testing.T) {
 	}
 	if f := kubeAccessCmd.Flags().Lookup("server"); f == nil {
 		t.Error("missing --server")
+	}
+}
+
+// fakeKubeConnection answers GET /{aid}/{cid}/kube-connection and counts the calls.
+func fakeKubeConnection(t *testing.T, status int, body string) (*kubeaccess.ConnectionFetcher, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &kubeaccess.ConnectionFetcher{BaseURL: srv.URL, Account: "acct-1", Cluster: "cl-1", Token: func() (string, error) { return "t", nil }}, &calls
+}
+
+func routeBody(t *testing.T, extra string) string {
+	b, _ := json.Marshal(string(testCAPEM(t)))
+	return `{"server":"https://k8s.cl-1.example.com:6443","ca_pem":` + string(b) + extra + `}`
+}
+
+func TestKubeAccessWithNoFlagsTakesServerAndCAFromTheConductor(t *testing.T) {
+	o := baseAccess(t)
+	o.Server, o.CAFile = "", ""
+	var calls *int
+	o.Connection, calls = fakeKubeConnection(t, 200, routeBody(t, ""))
+	if err := runKubeAccess(&bytes.Buffer{}, o); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(o.Kubeconfig)
+	if *calls != 1 || !strings.Contains(string(b), "server: https://k8s.cl-1.example.com:6443") || !strings.Contains(string(b), "certificate-authority-data:") {
+		t.Errorf("calls = %d, kubeconfig:\n%s", *calls, b)
+	}
+	if strings.Contains(string(b), "tls-server-name") {
+		t.Error("the route sent no tls_server_name, so the entry must have none")
+	}
+}
+
+func TestKubeAccessSetsTLSServerNameFromTheRoute(t *testing.T) {
+	o := baseAccess(t)
+	o.Server, o.CAFile = "", ""
+	o.Connection, _ = fakeKubeConnection(t, 200, strings.Replace(routeBody(t, `,"tls_server_name":"kubernetes"`), "https://k8s.cl-1.example.com:6443", "https://192.0.2.10:6443", 1))
+	if err := runKubeAccess(&bytes.Buffer{}, o); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(o.Kubeconfig)
+	if !strings.Contains(string(b), "tls-server-name: kubernetes") || !strings.Contains(string(b), "https://192.0.2.10:6443") {
+		t.Errorf("kubeconfig:\n%s", b)
+	}
+}
+
+func TestKubeAccessFlagsOverrideTheRoute(t *testing.T) {
+	// Both flags: the conductor is not asked at all.
+	o := baseAccess(t)
+	var calls *int
+	o.Connection, calls = fakeKubeConnection(t, 200, routeBody(t, `,"tls_server_name":"kubernetes"`))
+	if err := runKubeAccess(&bytes.Buffer{}, o); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(o.Kubeconfig)
+	if *calls != 0 || !strings.Contains(string(b), "https://203.0.113.10:6443") || strings.Contains(string(b), "tls-server-name") {
+		t.Errorf("calls = %d, kubeconfig:\n%s", *calls, b)
+	}
+
+	// One flag: the route fills the other. A --server override drops the route's
+	// tls_server_name, which belongs to the route's address, not to the override.
+	o = baseAccess(t)
+	o.CAFile = ""
+	o.Connection, calls = fakeKubeConnection(t, 200, routeBody(t, `,"tls_server_name":"kubernetes"`))
+	if err := runKubeAccess(&bytes.Buffer{}, o); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(o.Kubeconfig)
+	if *calls != 1 || !strings.Contains(string(b), "https://203.0.113.10:6443") || strings.Contains(string(b), "tls-server-name") || !strings.Contains(string(b), "certificate-authority-data:") {
+		t.Errorf("--server only: calls = %d, kubeconfig:\n%s", *calls, b)
+	}
+
+	// An explicit --tls-server-name wins over the route.
+	o = baseAccess(t)
+	o.TLSServerName = "custom"
+	if err := runKubeAccess(&bytes.Buffer{}, o); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = os.ReadFile(o.Kubeconfig); !strings.Contains(string(b), "tls-server-name: custom") {
+		t.Errorf("kubeconfig:\n%s", b)
+	}
+}
+
+func TestKubeAccessMapsConductorRefusalsToPlainMessagesAndWritesNothing(t *testing.T) {
+	cases := map[string]struct {
+		status int
+		body   string
+		want   string
+	}{
+		"not configured": {409, `{"code":"cluster.api_endpoint_not_configured","error":"x"}`, "--ca-file"},
+		"forbidden":      {403, `{"error":"Forbidden"}`, "may not read"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := baseAccess(t)
+			o.Server, o.CAFile = "", ""
+			o.Connection, _ = fakeKubeConnection(t, c.status, c.body)
+			err := runKubeAccess(&bytes.Buffer{}, o)
+			if err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), "{") {
+				t.Fatalf("err = %v, want %q", err, c.want)
+			}
+			if _, serr := os.Stat(o.Kubeconfig); serr == nil {
+				t.Error("a kubeconfig was written")
+			}
+		})
 	}
 }
