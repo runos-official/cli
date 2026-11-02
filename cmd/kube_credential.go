@@ -86,7 +86,9 @@ func emitCredential(out, errw io.Writer, execInfo string, src *kubeaccess.Source
 // browser: a personal access token or API key has no person behind it, so
 // roid refuses it. A person with both is served from the sign-in.
 func credentialFetcher(cfg *config.Config, account, cluster string) (*kubeaccess.Fetcher, error) {
-	base, err := roidapi.BaseURL(cfg)
+	// The token route is a rapi route: roid answers it only behind the API host, never on the
+	// sign-in host (roidapi.GatewayURL). The proof hosts of the session hold both hosts.
+	base, err := roidapi.GatewayURL(cfg)
 	if err != nil {
 		return nil, errNoRoidEnvironment
 	}

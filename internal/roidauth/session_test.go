@@ -312,3 +312,39 @@ func TestAProofMadeForTheAPICannotBeSpentAtRoid(t *testing.T) {
 		t.Fatal("roid accepted a proof the CLI made for the API")
 	}
 }
+
+// On a host split the token route of Kubernetes access is served by the API host only. The proof
+// transport must prove the session's token there (the session lists the API host in ProofHosts)
+// while the issuer host refuses the route.
+func TestKubernetesTokenRouteIsServedOnTheAPIHostOnlyAndIsProvedThere(t *testing.T) {
+	f := newFakeRoid(t)
+	f.splitAPIHost()
+	c := NewClientWithAPI(f.srv.URL, f.api.URL)
+	c.Sleep = noSleep
+	iss, _ := url.Parse(f.srv.URL)
+	apiu, _ := url.Parse(f.api.URL)
+	s := &Session{Issuer: f.srv.URL, Store: newMemStore(), LockPath: filepath.Join(t.TempDir(), "roid.lock"), Client: c,
+		ProofHosts: []string{apiu.Host, iss.Host}}
+	login(t, f, s)
+	at, err := s.Bearer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &proofTransport{base: http.DefaultTransport, reg: defaultRegistry}}
+	post := func(base string) *http.Response {
+		req, _ := http.NewRequest("POST", base+"/v1/accounts/acct1/clusters/cl1/k8s/token", nil)
+		req.Header.Set("Authorization", "Bearer "+at)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { res.Body.Close() })
+		return res
+	}
+	if res := post(f.api.URL); res.StatusCode != 200 {
+		t.Errorf("API host answered %d, want 200", res.StatusCode)
+	}
+	if res := post(f.srv.URL); res.StatusCode != 404 {
+		t.Errorf("issuer host answered %d, want 404 not_on_this_host", res.StatusCode)
+	}
+}

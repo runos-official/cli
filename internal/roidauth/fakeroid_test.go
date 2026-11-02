@@ -54,13 +54,15 @@ func newFakeRoid(t *testing.T) *fakeRoid {
 	mux.HandleFunc("POST /cli/logout", f.cliLogout)
 	mux.HandleFunc("GET /v1/me", f.me)
 	mux.HandleFunc("GET /user/accounts", f.userAccounts)
+	mux.HandleFunc("POST /v1/accounts/{acct}/clusters/{cluster}/k8s/token", f.k8sToken)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
 // splitAPIHost makes the fake behave like prod, where the issuer host serves the OIDC routes only and
-// the API host serves /v1/me and /user/accounts: the issuer answers 404 for those two.
+// the API host serves /v1/me, /user/accounts and the Kubernetes token route (rapi routes in roid's host
+// table): the issuer answers 404 not_on_this_host for those three.
 func (f *fakeRoid) splitAPIHost() {
 	f.api = httptest.NewServer(f.srv.Config.Handler)
 	f.t.Cleanup(f.api.Close)
@@ -255,6 +257,28 @@ func (f *fakeRoid) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONBody(w, map[string]any{"person_id": f.person, "credential_class": "cli", "assurance": 1, "method": "password"})
+}
+
+// k8sToken is the Kubernetes token route. Like /v1/me it is a rapi route: the issuer host of a split
+// deployment refuses it with 404 not_on_this_host, as roid's host table does.
+func (f *fakeRoid) k8sToken(w http.ResponseWriter, r *http.Request) {
+	if !f.identityHere(r) {
+		writeStatusJSON(w, 404, map[string]any{"error": map[string]string{"code": "not_found", "reason": "not_on_this_host"}})
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.accessFamily(r); !ok {
+		oauthError(w, 401, "invalid_token", "")
+		return
+	}
+	writeJSONBody(w, map[string]any{"token": "jwt.k8s.sig", "expires_at": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339), "expires_in": 300})
+}
+
+func writeStatusJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func (f *fakeRoid) userAccounts(w http.ResponseWriter, r *http.Request) {

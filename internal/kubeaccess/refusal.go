@@ -58,7 +58,7 @@ func (r *Refusal) plain() string {
 	case "authz.denied":
 		return r.denied()
 	case "authz.needs":
-		return "RunOS needs a fresh sign-in or an approval before it issues a Kubernetes token. " + signInAgain
+		return r.needs()
 	case "policy.unenforceable":
 		return "The access rules on this cluster cannot be turned into Kubernetes roles, so no token is issued. Ask an account admin to fix the grant." + addMessage(r.Message)
 	case "policy.invalid":
@@ -66,6 +66,10 @@ func (r *Refusal) plain() string {
 	case "k8s.not_ready":
 		return r.notReady()
 	case "not_found":
+		if r.Reason == "not_on_this_host" || r.Reason == "not_via_rapi" {
+			// The wrong host answered, not the cluster check: say so, or a person hunts for a cluster id.
+			return "The RunOS API address does not serve Kubernetes access. Check it with 'runos config get'; RUNOS_API_URL overrides it."
+		}
 		return "The account does not hold this cluster. Check --cluster and --account."
 	case "invalid_request":
 		return "The request was refused as malformed (" + oneLine(r.Reason) + "). Check --account and --cluster."
@@ -90,21 +94,42 @@ func (r *Refusal) denied() string {
 		// the CLI adds no detail that could tell an outsider which clusters exist.
 		return "You have no Kubernetes access on this cluster. Ask an account admin for a role on it."
 	case "deny_listed":
-		return "Your access to the account was cut a moment ago, so no token is issued." + addMessage(r.Message)
+		// roid's own words give the time to try again; they are plain.
+		if m := oneLine(r.Message); m != "" {
+			return m + " If you did not expect this, ask an account admin."
+		}
+		return "Your Kubernetes access was cut a short while ago, so no token is issued yet. Try again in a few minutes, or ask an account admin."
 	case "grant_ends_now":
 		return "Your Kubernetes access ends now, so no token is issued."
 	}
 	return "RunOS refused this Kubernetes access." + addMessage(r.Message)
 }
 
+// needs explains an authz.needs refusal. Only an old sign-in is fixed by signing in again: a token
+// request cannot do a step-up or an approval, so those name the admin as the way out.
+func (r *Refusal) needs() string {
+	switch r.Requirement {
+	case "step_up":
+		return "This account asks for a security-key check before it issues a Kubernetes token, and a token request cannot do that. Ask an account admin to change the grant."
+	case "approval":
+		return "This account asks for an approval before it issues a Kubernetes token, and a token request cannot do that. Ask an account admin to change the grant."
+	}
+	return "Your RunOS sign-in is too old for the rules of this account. " + signInAgain
+}
+
 func (r *Refusal) notReady() string {
+	const notReady = "The cluster is not ready for person access: "
 	switch r.Reason {
 	case "no_applier":
-		return "The cluster is not ready for person access: the RunOS applier has not connected to it yet. Ask an account admin."
-	case "retired":
-		return "The cluster is not ready for person access: it left the account."
+		return notReady + "the RunOS applier (the program that turns roles into Kubernetes permissions) has not connected to it. Ask an account admin to install the applier."
+	case "applier_unconfirmed":
+		return notReady + "its applier has not yet confirmed the first set of permissions. Wait a minute and try again. If it stays, ask an account admin to check the applier."
 	case "no_managed_namespace":
-		return "The cluster is not ready for person access: no namespace is managed by RunOS yet. Ask an account admin."
+		return notReady + "no namespace carries the label runos.com/roid-access=true. Ask an account admin to label the namespaces that people may use."
+	case "deny_only":
+		return notReady + "a grant on it has a condition that Kubernetes cannot express, so nobody gets access until it is fixed. Ask an account admin to find and fix that grant."
+	case "retired":
+		return notReady + "it left the account. Check --cluster and --account."
 	}
 	return "The cluster is not ready for person access yet. Ask an account admin."
 }

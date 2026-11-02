@@ -23,3 +23,20 @@ func BaseURL(cfg *config.Config) (string, error) {
 	}
 	return strings.TrimRight(cfg.AuthIssuer, "/"), nil
 }
+
+// GatewayURL returns where the routes that roid serves only behind the RunOS
+// API gateway (rapi) are reached: the API URL, which RUNOS_API_URL overrides.
+// On a host split (prod) the issuer host answers 404 not_on_this_host for
+// those routes, so the Kubernetes token call goes here and not to BaseURL.
+// With no API URL known there is one host, the issuer, as in a deployment
+// that names no front service.
+func GatewayURL(cfg *config.Config) (string, error) {
+	base, err := BaseURL(cfg)
+	if err != nil {
+		return "", err
+	}
+	if api := strings.TrimRight(cfg.GetAPIURL(), "/"); api != "" {
+		return api, nil
+	}
+	return base, nil
+}

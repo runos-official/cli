@@ -85,9 +85,10 @@ func TestCredentialRefusesAnExecInfoItCannotAnswer(t *testing.T) {
 
 func roidConfig() *config.Config {
 	return &config.Config{
-		AuthIssuer: "https://id.example.com",
-		AccountID:  "acct-1",
-		Roid:       &config.RoidSignIn{Issuer: "https://id.example.com", PersonID: "person-a"},
+		AuthIssuer:   "https://id.example.com",
+		ConductorURL: "https://api.example.com",
+		AccountID:    "acct-1",
+		Roid:         &config.RoidSignIn{Issuer: "https://id.example.com", PersonID: "person-a"},
 	}
 }
 
@@ -119,11 +120,12 @@ func TestCredentialSetupNeedsASignedInPerson(t *testing.T) {
 func TestCredentialSetupUsesTheRoidSessionEvenWhenAnAPIKeyIsSet(t *testing.T) {
 	t.Setenv("RUNOS_API_KEY", "key-from-env")
 	t.Setenv("RUNOS_ACCOUNT_ID", "")
+	t.Setenv("RUNOS_API_URL", "")
 	f, err := credentialFetcher(roidConfig(), "", "cl-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.BaseURL != "https://id.example.com" || f.Account != "acct-1" || f.Cluster != "cl-1" || f.Bearer == nil {
+	if f.BaseURL != "https://api.example.com" || f.Account != "acct-1" || f.Cluster != "cl-1" || f.Bearer == nil {
 		t.Errorf("fetcher = %+v", f)
 	}
 }
@@ -167,6 +169,107 @@ func TestKubectlRunsSkipTheManifestLoadAtStartup(t *testing.T) {
 	} {
 		if got := isKubeCredentialRun(strings.Fields(args)); got != want {
 			t.Errorf("isKubeCredentialRun(%q) = %v, want %v", args, got, want)
+		}
+	}
+}
+
+// hostSplitServers model prod: the sign-in host answers 404 not_on_this_host to the token route
+// (roid serves it only behind rapi), and the API host serves it.
+func hostSplitServers(t *testing.T) (issuer, apiHost *httptest.Server, issuerCalls, apiCalls *[]string) {
+	t.Helper()
+	exp := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	serve := func(calls *[]string, onRoute func(w http.ResponseWriter)) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*calls = append(*calls, r.Method+" "+r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			onRoute(w)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	issuerCalls, apiCalls = &[]string{}, &[]string{}
+	issuer = serve(issuerCalls, func(w http.ResponseWriter) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","reason":"not_on_this_host"}}`))
+	})
+	apiHost = serve(apiCalls, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`{"token":"jwt.a.b","expires_at":"` + exp + `"}`))
+	})
+	return issuer, apiHost, issuerCalls, apiCalls
+}
+
+func fetchWith(t *testing.T, cfg *config.Config) (kubeaccess.Issued, error) {
+	t.Helper()
+	t.Setenv("RUNOS_API_KEY", "")
+	t.Setenv("RUNOS_ACCOUNT_ID", "")
+	f, err := credentialFetcher(cfg, "", "cl-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Bearer = func() (string, error) { return "at_x", nil } // the session is not under test here
+	return f.Fetch()
+}
+
+func TestCredentialCallsTheAPIHostNotTheSignInHostForTheTokenRoute(t *testing.T) {
+	t.Setenv("RUNOS_API_URL", "")
+	issuer, apiHost, issuerCalls, apiCalls := hostSplitServers(t)
+	cfg := roidConfig()
+	cfg.AuthIssuer, cfg.Roid.Issuer, cfg.ConductorURL = issuer.URL, issuer.URL, apiHost.URL
+	iss, err := fetchWith(t, cfg)
+	if err != nil || iss.Token != "jwt.a.b" {
+		t.Fatalf("token = %+v err = %v", iss, err)
+	}
+	if len(*issuerCalls) != 0 {
+		t.Errorf("the sign-in host got %v; roid serves the token route only behind the API host", *issuerCalls)
+	}
+	if len(*apiCalls) != 1 || (*apiCalls)[0] != "POST /v1/accounts/acct-1/clusters/cl-1/k8s/token" {
+		t.Errorf("API host calls = %v", *apiCalls)
+	}
+}
+
+// RUNOS_API_URL replaces the stored API URL for the process. The dev environment sends its API host
+// to conductor, not to rapi, so a test there points the override at a host that serves the route.
+func TestCredentialFollowsTheAPIURLOverride(t *testing.T) {
+	issuer, apiHost, issuerCalls, apiCalls := hostSplitServers(t)
+	cfg := roidConfig()
+	cfg.AuthIssuer, cfg.Roid.Issuer, cfg.ConductorURL = issuer.URL, issuer.URL, "https://api.example.com"
+	t.Setenv("RUNOS_API_URL", apiHost.URL)
+	if _, err := fetchWith(t, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(*issuerCalls) != 0 || len(*apiCalls) != 1 {
+		t.Errorf("issuer calls = %v, API calls = %v", *issuerCalls, *apiCalls)
+	}
+}
+
+// With no API URL at all there is one host, the issuer, as in a deployment without a front service.
+func TestCredentialFallsBackToTheIssuerWhenNoAPIURLIsKnown(t *testing.T) {
+	t.Setenv("RUNOS_API_URL", "")
+	t.Setenv("RUNOS_API_KEY", "")
+	cfg := roidConfig()
+	cfg.ConductorURL = ""
+	f, err := credentialFetcher(cfg, "", "cl-1")
+	if err != nil || f.BaseURL != "https://id.example.com" {
+		t.Fatalf("fetcher = %+v err = %v", f, err)
+	}
+}
+
+// The token lives in memory for the run. A token call must leave no file behind in the home
+// directory, the working directory or the temp directory.
+func TestCredentialRunWritesNothingToDisk(t *testing.T) {
+	home, work, tmp := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMPDIR", tmp)
+	t.Chdir(work)
+	exp := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
+	srv, _ := tokenServer(t, 200, `{"token":"jwt.a.b","expires_at":"`+exp+`"}`)
+	var out, errw bytes.Buffer
+	if err := emitCredential(&out, &errw, "", sourceFor(srv)); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{home, work, tmp} {
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("%s holds %d entries after a token call", dir, len(entries))
 		}
 	}
 }
