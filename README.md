@@ -119,6 +119,7 @@ With an issuer set:
 - `runos logout`, `runos login --api-key` and a Firebase sign-in revoke the identity service sign-in and delete its secrets, even when the environment no longer names that issuer. `runos config env <name>` alone does not: it only changes which issuer the environment uses, and switching back restores the sign-in. It prints a note when it leaves one behind.
 - `runos whoami` shows the credential in use and, for an identity service sign-in, who you are and your accounts.
 - `runos access` manages roles, groups and grants. It is listed in help only when the environment names an issuer.
+- `runos kube access` adds a cluster to your kubeconfig so kubectl runs as you, with your RunOS role. The entry holds no token: kubectl runs the hidden `runos kube credential`, which asks the identity service for a short token with your `runos login` browser sign-in. It reads the cluster's API server address and CA from RunOS (the public `clusters kube-connection` route, open to every member); `--server`, `--ca-file` and `--tls-server-name` override it. A personal access token or API key does not work.
 
 `RUNOS_API_KEY` and a stored personal access token still win over every sign-in.
 

@@ -25,6 +25,7 @@ type fakeRoid struct {
 	srv *httptest.Server
 
 	mu         sync.Mutex
+	hitMu      sync.Mutex
 	jkt        string // the thumbprint the device flow was bound to
 	deviceCode string
 	userCode   string
@@ -42,6 +43,19 @@ type fakeRoid struct {
 	logouts    int
 	accessTTL  int
 	api        *httptest.Server // set by splitAPIHost: the host that serves the identity routes
+	// conductorGateway makes the fake behave like DEV: the API host goes to conductor, which answers a plain
+	// 404 for the rapi routes, and the issuer host serves every route.
+	conductorGateway bool
+	hits             []fakeHit // every request, in order
+}
+
+// fakeHit is one request: the origin that received it and the origin the proof on it names.
+type fakeHit struct {
+	Origin      string
+	Method      string
+	Path        string
+	ProofTarget string // empty when the request carried no proof
+	Status      int
 }
 
 func newFakeRoid(t *testing.T) *fakeRoid {
@@ -54,13 +68,60 @@ func newFakeRoid(t *testing.T) *fakeRoid {
 	mux.HandleFunc("POST /cli/logout", f.cliLogout)
 	mux.HandleFunc("GET /v1/me", f.me)
 	mux.HandleFunc("GET /user/accounts", f.userAccounts)
-	f.srv = httptest.NewServer(mux)
+	mux.HandleFunc("POST /v1/accounts/{acct}/clusters/{cluster}/k8s/token", f.k8sToken)
+	f.srv = httptest.NewServer(f.recordHits(mux))
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
+// recordHits logs each request with its status and the
+// target its proof names.
+func (f *fakeRoid) recordHits(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		h := fakeHit{Origin: f.origin(r), Method: r.Method, Path: r.URL.Path, Status: rec.status}
+		if raw, err := base64.RawURLEncoding.DecodeString(r.Header.Get(ProofHeader)); err == nil {
+			var p struct{ Target string }
+			if json.Unmarshal(raw, &p) == nil {
+				h.ProofTarget = p.Target
+			}
+		}
+		f.hitMu.Lock()
+		f.hits = append(f.hits, h)
+		f.hitMu.Unlock()
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) { s.status = code; s.ResponseWriter.WriteHeader(code) }
+
+// hitsAt returns the logged requests that reached origin with pathFrag in their path.
+func (f *fakeRoid) hitsAt(origin, pathFrag string) []fakeHit {
+	f.hitMu.Lock()
+	defer f.hitMu.Unlock()
+	var out []fakeHit
+	for _, h := range f.hits {
+		if h.Origin == origin && strings.Contains(h.Path, pathFrag) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// splitDevHosts makes the fake behave like DEV (see conductorGateway) and returns nothing: f.api is the API host.
+func (f *fakeRoid) splitDevHosts() {
+	f.splitAPIHost()
+	f.conductorGateway = true
+}
+
 // splitAPIHost makes the fake behave like prod, where the issuer host serves the OIDC routes only and
-// the API host serves /v1/me and /user/accounts: the issuer answers 404 for those two.
+// the API host serves /v1/me, /user/accounts and the Kubernetes token route (rapi routes in roid's host
+// table): the issuer answers 404 not_on_this_host for those three.
 func (f *fakeRoid) splitAPIHost() {
 	f.api = httptest.NewServer(f.srv.Config.Handler)
 	f.t.Cleanup(f.api.Close)
@@ -76,6 +137,9 @@ func (f *fakeRoid) origin(r *http.Request) string {
 
 // identityHere says whether this host serves the identity routes.
 func (f *fakeRoid) identityHere(r *http.Request) bool {
+	if f.conductorGateway {
+		return f.origin(r) == f.srv.URL
+	}
 	return f.api == nil || f.origin(r) == f.api.URL
 }
 
@@ -257,6 +321,32 @@ func (f *fakeRoid) me(w http.ResponseWriter, r *http.Request) {
 	writeJSONBody(w, map[string]any{"person_id": f.person, "credential_class": "cli", "assurance": 1, "method": "password"})
 }
 
+// k8sToken is the Kubernetes token route. Like /v1/me it is a rapi route: the issuer host of a split
+// deployment refuses it with 404 not_on_this_host, as roid's host table does.
+func (f *fakeRoid) k8sToken(w http.ResponseWriter, r *http.Request) {
+	if !f.identityHere(r) {
+		if f.conductorGateway {
+			writeStatusJSON(w, 404, map[string]any{"error": "Not found"}) // conductor does not know the route
+			return
+		}
+		writeStatusJSON(w, 404, map[string]any{"error": map[string]string{"code": "not_found", "reason": "not_on_this_host"}})
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.accessFamily(r); !ok {
+		oauthError(w, 401, "invalid_token", "")
+		return
+	}
+	writeJSONBody(w, map[string]any{"token": "jwt.k8s.sig", "expires_at": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339), "expires_in": 300})
+}
+
+func writeStatusJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func (f *fakeRoid) userAccounts(w http.ResponseWriter, r *http.Request) {
 	if !f.identityHere(r) {
 		http.NotFound(w, r)
@@ -266,6 +356,11 @@ func (f *fakeRoid) userAccounts(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	if _, ok := f.accessFamily(r); !ok {
 		oauthError(w, 401, "invalid_token", "")
+		return
+	}
+	if f.conductorGateway {
+		// DEV: roid's own copy of the route, served on the issuer host, lists bare ids.
+		writeJSONBody(w, map[string]any{"accounts": f.accounts})
 		return
 	}
 	// The shape of conductor's GET /user/accounts: objects, not bare ids.

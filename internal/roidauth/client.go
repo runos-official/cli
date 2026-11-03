@@ -9,6 +9,7 @@ package roidauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/runos-official/cli/internal/api"
+	"github.com/runos-official/cli/internal/roidapi"
 )
 
 // ClientID is the OAuth client id roid registers for the CLI.
@@ -72,10 +74,10 @@ type Identity struct {
 type Client struct {
 	api    *api.Client
 	issuer string // the issuer URL; proofs name it with each path
-	// idAPI and apiURL reach /v1/me and /user/accounts. On a host split (prod) the issuer host
-	// serves the OIDC routes only and the API host serves these two; otherwise both are the issuer.
-	idAPI  *api.Client
-	apiURL string
+	// router reaches /v1/me and /user/accounts, which are rapi routes: on prod the API host serves them and
+	// the issuer answers 404; on dev the API host is conductor, which answers 404 for /v1/me, and the
+	// issuer serves both. It tries the API host and, after a 404, the issuer (roidapi.Router).
+	router *roidapi.Router
 	Now    func() time.Time
 	Sleep  func(time.Duration)
 }
@@ -85,15 +87,16 @@ func NewClient(issuerURL string) *Client {
 	return NewClientWithAPI(issuerURL, issuerURL)
 }
 
-// NewClientWithAPI is NewClient for a deployment that serves the identity routes (/v1/me,
-// /user/accounts) on apiURL while the issuer at issuerURL serves the OIDC routes.
+// NewClientWithAPI is NewClient for a deployment whose identity routes (/v1/me, /user/accounts) are
+// reached on apiURL first and, when that answers 404, on the issuer at issuerURL, which serves the OIDC
+// routes. The device poll and the refresh always go to the issuer.
 func NewClientWithAPI(issuerURL, apiURL string) *Client {
 	iss := strings.TrimRight(issuerURL, "/")
 	apiBase := strings.TrimRight(apiURL, "/")
 	if apiBase == "" {
 		apiBase = iss
 	}
-	return &Client{api: api.NewClient(iss), issuer: iss, idAPI: api.NewClient(apiBase), apiURL: apiBase, Now: time.Now, Sleep: time.Sleep}
+	return &Client{api: api.NewClient(iss), issuer: iss, router: roidapi.NewRouter(apiBase, iss), Now: time.Now, Sleep: time.Sleep}
 }
 
 // proof is the ProofHeader for one request to roid: method and path on
@@ -119,6 +122,11 @@ func (c *Client) call(r api.Request, out any) error {
 // callOn is call on the given host's client.
 func (c *Client) callOn(host *api.Client, r api.Request, out any) error {
 	res, err := host.Send(r)
+	return c.finish(res, err, out)
+}
+
+// finish turns one exchange into the decoded answer or an *Error.
+func (c *Client) finish(res *api.Result, err error, out any) error {
 	if err != nil {
 		return fmt.Errorf("could not reach the RunOS identity service: %w", err)
 	}
@@ -216,31 +224,49 @@ func (c *Client) Logout(refresh string) error {
 	return c.call(api.Request{Method: http.MethodPost, Path: "/cli/logout", JSON: map[string]string{"token": refresh}}, nil)
 }
 
-// identity reads who the access token signs in as, and their accounts.
+// identity reads who the access token signs in as, and their accounts. Both reads are rapi routes and go
+// through the router. This runs before the token is registered with the proof transport, so each request
+// carries an explicit proof, built for the origin it goes to: the retry on the issuer gets its own.
 func (c *Client) identity(access string, key *Key) (Identity, error) {
-	var id Identity
-	hdr, err := c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/v1/me")
-	if err != nil {
-		return Identity{}, err
+	get := func(path string, out any) error {
+		proofFor := func(origin string) (http.Header, error) {
+			return c.proofAt(origin, key, purposeAccess, subjectHash(access), http.MethodGet, path)
+		}
+		res, err := c.router.SendFor(api.Request{Method: http.MethodGet, Path: path, Token: access}, proofFor)
+		return c.finish(res, err, out)
 	}
-	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/v1/me", Token: access, Header: hdr}, &id); err != nil {
+	var id Identity
+	if err := get("/v1/me", &id); err != nil {
 		return Identity{}, err
 	}
 	// conductor's GET /user/accounts lists objects (aid, name, role); the session keeps the ids.
 	var accts struct {
-		Accounts []struct {
-			AID string `json:"aid"`
-		} `json:"accounts"`
+		Accounts []json.RawMessage `json:"accounts"`
 	}
-	hdr, err = c.proofAt(c.apiURL, key, purposeAccess, subjectHash(access), http.MethodGet, "/user/accounts")
-	if err != nil {
+	if err := get("/user/accounts", &accts); err != nil {
 		return Identity{}, err
 	}
-	if err := c.callOn(c.idAPI, api.Request{Method: http.MethodGet, Path: "/user/accounts", Token: access, Header: hdr}, &accts); err != nil {
-		return Identity{}, err
-	}
-	for _, a := range accts.Accounts {
-		id.Accounts = append(id.Accounts, a.AID)
+	for _, raw := range accts.Accounts {
+		if aid := accountID(raw); aid != "" {
+			id.Accounts = append(id.Accounts, aid)
+		}
 	}
 	return id, nil
+}
+
+// accountID reads one entry of a /user/accounts answer. conductor lists
+// objects with an aid; roid's own copy of the route, which a deployment
+// without a front service serves on the issuer host, lists bare ids.
+func accountID(raw json.RawMessage) string {
+	var bare string
+	if json.Unmarshal(raw, &bare) == nil {
+		return bare
+	}
+	var obj struct {
+		AID string `json:"aid"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return obj.AID
+	}
+	return ""
 }

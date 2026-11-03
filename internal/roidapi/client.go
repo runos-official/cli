@@ -13,14 +13,26 @@ import (
 // the person's identity-service access token; the proof transport that
 // sign-in installs adds the per-request proof for the issuer host.
 type Client struct {
-	http  *api.Client
+	http  sender
 	token func() (string, error)
 }
 
-// New returns a client for the identity service at baseURL (see BaseURL).
-// token returns the access token for each call.
+// sender is where a Client's requests go: one host (api.Client) or the Router that picks between
+// the gateway and the issuer.
+type sender interface {
+	Send(api.Request) (*api.Result, error)
+}
+
+// New returns a client for the identity service at one address. token
+// returns the access token for each call.
 func New(baseURL string, token func() (string, error)) *Client {
 	return &Client{http: api.NewClient(baseURL), token: token}
+}
+
+// NewRouted returns a client whose requests go through r: the API gateway first, the sign-in host
+// when the gateway answers 404. This is what the CLI uses (see Router).
+func NewRouted(r *Router, token func() (string, error)) *Client {
+	return &Client{http: r, token: token}
 }
 
 // Call is one access API request. Op is the OpenAPI operationId. A change
