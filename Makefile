@@ -82,7 +82,9 @@ desktopcontract:
 
 # Replay the release record-ref rule in a scratch bare repo: two consecutive
 # releases, a stale local copy, both refusals, the objective-scoped exemption,
-# the explicit lease and an unreachable origin. Needs no network, no gh, no go.
+# the explicit lease and an unreachable origin, then the prod record: main as a
+# record argument refused, a final fast-forwarding main, a diverged or missing
+# main refused. Needs no network, no gh, no go.
 .PHONY: replay-record-ref
 replay-record-ref:
 	@bash scripts/record_ref_replay.sh

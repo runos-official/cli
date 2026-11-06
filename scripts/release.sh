@@ -15,19 +15,22 @@
 #   2. Code gates  - leak gate (PUBLIC repo: whole-tree scan for credentials and
 #                    un-baselined internal identifiers, cannot be skipped), then
 #                    go build ./..., go vet ./..., go test ./..., make local.
-#   3. Deploy      - tag the dev commit and push the tag + dev. main is NOT
-#                    touched (the human merges main after personal verification).
+#   3. Deploy      - tag the dev commit and push the tag + dev. The record
+#                    branches are not touched until step 6.
 #   4. CI watch    - wait for the Release workflow run for this tag to succeed.
 #   5. Attest      - download a published asset and verify its build-provenance
 #                    attestation is bound to release.yml @ refs/tags/<VERSION>.
-#   6. Record      - only after a successful deploy, advance the `deployed`
-#                    branch to the shipped commit and push it, through
-#                    scripts/record_ref.sh, which the pipeline calls too.
-#                    `deployed` is the record of what is live; main stays clean.
+#   6. Record      - only after a successful deploy, through scripts/record_ref.sh,
+#                    which the pipeline calls too. A candidate advances the
+#                    `deployed` branch to the shipped commit. A FINAL advances
+#                    `deployed` and then fast-forwards `main`, the prod record,
+#                    to the commit its tag names. Fast-forward only: a diverged
+#                    main is refused and nothing is forced.
 #
-# Branch model: dev = local development; deployed = what has shipped (advanced by
-# this script on success); main = human-controlled, never touched here. The human
-# merges dev/deployed into main themselves once they have verified.
+# Branch model: dev = local development; deployed = the last commit that was
+# tagged, candidate or final (advanced by this script on success); main = the prod
+# record, moved only by a final, to the final's commit. A final also needs main to
+# be an ancestor of dev, which the preflight checks before any tag exists.
 #
 # This is the single source of truth for deploying the CLI. foreman (or any agent
 # driven by the poller) should invoke this (or `make release`) rather than running
@@ -48,10 +51,14 @@ INTEGRATION_BRANCH="dev"     # where work lands; gates run here; this commit is 
 # `scripts/release.sh` from dev behaves exactly as before.
 # Both now go through scripts/record_ref.sh, so they read the same value by
 # construction rather than by two copies agreeing.
-DEPLOYED_BRANCH="${RUNOS_RELEASE_RECORD_BRANCH:-deployed}"
+RECORD_REQUEST="${RUNOS_RELEASE_RECORD_BRANCH:-}"
 # An unresolved pipeline placeholder arrives as literal "${{ ... }}" text,
 # which is non-empty, so :- above would happily accept it as a branch name.
-case "$DEPLOYED_BRANCH" in *'{'*|*'}'*|*' '*) DEPLOYED_BRANCH="deployed" ;; esac
+case "$RECORD_REQUEST" in *'{'*|*'}'*|*' '*) RECORD_REQUEST="" ;; esac
+# The prod record. A prod target holds deployed_branch: main, so the pipeline hands
+# it over here. It is NOT a candidate record: it is resolved below, once the version
+# says whether this is a final.
+PROD_BRANCH="main"
 RELEASE_WORKFLOW="release.yml"
 ATTEST_ASSET="runos-linux-amd64.tar.gz"  # representative asset for attestation check
 CI_POLL_SECONDS=10
@@ -76,6 +83,26 @@ CHECK_ONLY="false"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# Which branches does this release record on?
+#   - No record requested (a person at a terminal): a candidate records on
+#     `deployed`; a final is the prod release, so it also moves main.
+#   - main requested (the prod target): only a final may, and `deployed` stays the
+#     record that the candidate checks read.
+#   - Anything else (a dev target, or the ref Foreman scopes to one objective):
+#     that branch is the record, and main is never touched.
+if [[ -z "$RECORD_REQUEST" ]]; then
+  DEPLOYED_BRANCH="deployed"
+  if [[ "$VERSION" == *-* ]]; then RELEASE_ENV="dev"; else RELEASE_ENV="prod"; fi
+elif [[ "$RECORD_REQUEST" == "$PROD_BRANCH" ]]; then
+  [[ "$VERSION" != *-* ]] || die "$VERSION is a candidate and must not record on $PROD_BRANCH: only a final on a prod target moves it"
+  DEPLOYED_BRANCH="deployed"
+  RELEASE_ENV="prod"
+else
+  DEPLOYED_BRANCH="$RECORD_REQUEST"
+  RELEASE_ENV="dev"
+fi
+if [[ "$RELEASE_ENV" == "prod" ]]; then RECORD_BRANCH="$PROD_BRANCH"; else RECORD_BRANCH="$DEPLOYED_BRANCH"; fi
 
 # =============================================================================
 # 1. Preflight
@@ -112,7 +139,7 @@ ok "CHANGELOG has a $CHANGELOG_VERSION section"
 [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty; commit or stash first"
 
 # dev must exist and be in sync with origin (no behind/ahead surprises). main is
-# intentionally NOT inspected here: this script never touches it.
+# inspected only for a final on a prod target, below.
 git fetch --quiet origin "$INTEGRATION_BRANCH"
 git rev-parse -q --verify "refs/heads/$INTEGRATION_BRANCH" >/dev/null || die "missing local branch: $INTEGRATION_BRANCH"
 [[ "$(git rev-parse "$INTEGRATION_BRANCH")" == "$(git rev-parse "origin/$INTEGRATION_BRANCH")" ]] || \
@@ -141,6 +168,17 @@ PAYLOAD_BASE="$("$REPO_ROOT/scripts/record_ref.sh" check "$DEPLOYED_BRANCH" "$IN
   die "record-ref preflight failed for $DEPLOYED_BRANCH"
 [[ -n "$PAYLOAD_BASE" ]] || die "record-ref preflight produced no payload base for $DEPLOYED_BRANCH"
 ok "dev clean & synced; $DEPLOYED_BRANCH checked against origin (payload base $PAYLOAD_BASE)"
+
+# A final on a prod target fast-forwards main, so main must already be an ancestor of
+# dev. Refusing here, before the tag, leaves no tag and no release behind when main
+# has diverged. The check reads origin, the authority.
+if [[ "$RELEASE_ENV" == "prod" ]]; then
+  git fetch --quiet origin "+refs/heads/$PROD_BRANCH:refs/remotes/origin/$PROD_BRANCH" || \
+    die "cannot fetch $PROD_BRANCH from origin; a final fast-forwards it"
+  git merge-base --is-ancestor "origin/$PROD_BRANCH" "$INTEGRATION_BRANCH" || \
+    die "origin/$PROD_BRANCH is not an ancestor of $INTEGRATION_BRANCH, so $VERSION could not fast-forward it. Merge $PROD_BRANCH into $INTEGRATION_BRANCH first."
+  ok "$PROD_BRANCH is an ancestor of $INTEGRATION_BRANCH: $VERSION can fast-forward it"
+fi
 
 # ---- Sensitivity scan: this is a PUBLIC repo ------------------------------
 # Deterministic, fail-closed floor over the exact payload being deployed
@@ -267,7 +305,7 @@ if [[ "$CHECK_ONLY" == "true" ]]; then
 fi
 
 # =============================================================================
-# 3. Deploy: tag the dev commit and push (main is NOT touched)
+# 3. Deploy: tag the dev commit and push (the record moves in step 6)
 # =============================================================================
 step "Deploy: tag $VERSION on $INTEGRATION_BRANCH"
 git checkout --quiet "$INTEGRATION_BRANCH"
@@ -275,7 +313,7 @@ RELEASE_SHA="$(git rev-parse --short HEAD)"
 git tag "$VERSION"
 git push --quiet origin "$INTEGRATION_BRANCH"
 git push --quiet origin "$VERSION"
-ok "tagged $VERSION at $RELEASE_SHA, pushed $INTEGRATION_BRANCH + tag (main untouched)"
+ok "tagged $VERSION at $RELEASE_SHA, pushed $INTEGRATION_BRANCH + tag (the record moves in step 6)"
 
 # =============================================================================
 # 4. Watch the Release workflow run for this tag
@@ -317,22 +355,23 @@ ACTUAL_SAN="$(gh attestation verify "$TMP/$ATTEST_ASSET" --repo "$NWO" --format 
 ok "attestation bound to $ACTUAL_SAN"
 
 # =============================================================================
-# 6. Record: advance `deployed` to the shipped commit (only now, on success)
+# 6. Record: advance `deployed`, and for a final fast-forward `main`
 # =============================================================================
-step "Recording deploy: advance $DEPLOYED_BRANCH to $RELEASE_SHA"
-# The SAME advance the pipeline runs, from the SAME file, so the manual flow and
-# the pipeline can no longer disagree about which ref is authoritative. It pushes
-# with a lease that states the value it expects to replace, then moves the local
-# copy AND the remote-tracking ref, and asserts the two agree. main is never
-# touched: the human merges it after personal verification.
-"$REPO_ROOT/scripts/record_ref.sh" advance "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH" \
-  || die "could not advance $DEPLOYED_BRANCH to $RELEASE_SHA"
-ok "$DEPLOYED_BRANCH now at $RELEASE_SHA"
+step "Recording the release ($RELEASE_ENV record: $RECORD_BRANCH)"
+# The SAME record the pipeline runs, from the SAME file, so the manual flow and
+# the pipeline can no longer disagree about which ref is authoritative. A candidate
+# advances `deployed` with a lease that states the value it expects to replace,
+# then moves the local copy AND the remote-tracking ref, and asserts the two agree.
+# A final on a prod target also fast-forwards main to the commit its tag names, with
+# no lease and no force, and prints main_before, main_after and main_equals_final.
+"$REPO_ROOT/scripts/record_ref.sh" record "$VERSION" "$RELEASE_ENV" "$INTEGRATION_BRANCH" "$RECORD_BRANCH" \
+  || die "the release is published but the record did not move; fix the branch named above and run: scripts/record_ref.sh record $VERSION $RELEASE_ENV $INTEGRATION_BRANCH $RECORD_BRANCH"
+ok "recorded $VERSION at $RELEASE_SHA on $RECORD_BRANCH"
 
 # =============================================================================
 # Done
 # =============================================================================
-printf "\n${GREEN}Deployed %s${NC} (tagged on %s at %s; %s advanced; main untouched)\n" \
-  "$VERSION" "$INTEGRATION_BRANCH" "$RELEASE_SHA" "$DEPLOYED_BRANCH"
+printf "\n${GREEN}Deployed %s${NC} (tagged on %s at %s; recorded on %s)\n" \
+  "$VERSION" "$INTEGRATION_BRANCH" "$RELEASE_SHA" "$RECORD_BRANCH"
 printf "${GRAY}Release: $(gh release view "$VERSION" --repo "$NWO" --json url -q .url 2>/dev/null)${NC}\n"
-printf "${GRAY}main is yours to merge once you have verified. Templates R2/installer deploy is a separate repo.${NC}\n"
+printf "${GRAY}Templates R2/installer deploy is a separate repo.${NC}\n"

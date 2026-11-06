@@ -17,6 +17,8 @@
 # new script, including every refusal, because a gate that is never seen to
 # refuse is not known to work. Case 9 exercises the scripts/release.sh call
 # shape, which `release.sh --check` cannot rehearse in a container without gh.
+# Cases 10 to 13 exercise the prod record: `final-check` before the tag, `main`
+# refused as a candidate record, and `record` fast-forwarding main for a final.
 #
 set -euo pipefail
 
@@ -293,6 +295,105 @@ set -e
 [[ -z "$c9b_base" ]] && ok "no payload base was captured on the refusal" \
   || bad "captured '$c9b_base' from a refused check"
 git remote set-url origin "$T/origin.git"
+
+# =============================================================================
+# Cases 10 to 13: the prod record. `main` is the prod record: a FINAL on a prod
+# target fast-forwards it to the commit the final's tag names, a candidate never
+# does, and nothing here forces anything. Each case builds its own origin, so no
+# case depends on the state the cases above left behind.
+# =============================================================================
+fixture() { # fixture <name>: main at C1, dev and deployed at C2, tag v1.0.0-rc.1 at C2; sets C1 C2 and F=<dir>
+  F="$T/$1"
+  mkdir -p "$F"
+  git init --quiet --bare "$F/origin.git"
+  git init --quiet "$F/seed"
+  commit_on "$F/seed" "c1"
+  ( cd "$F/seed" && git branch -M dev && git remote add origin "$F/origin.git" \
+    && git push --quiet origin dev:refs/heads/main )
+  C1="$(git -C "$F/seed" rev-parse HEAD)"
+  commit_on "$F/seed" "c2"
+  ( cd "$F/seed" && git push --quiet origin dev && git push --quiet origin dev:refs/heads/deployed \
+    && git tag v1.0.0-rc.1 && git push --quiet origin v1.0.0-rc.1 )
+  C2="$(git -C "$F/seed" rev-parse HEAD)"
+  git clone --quiet "$F/origin.git" "$F/host"
+}
+osha() { git -C "$F/origin.git" rev-parse -q --verify "refs/heads/$1" 2>/dev/null || echo absent; }
+in_host() { ( cd "$F/host" && "$RECORD_REF" "$@" ); }
+fact() { sed -n "s/^::foreman:: $1=//p" "$F/out" | tail -1; }
+refuses() { # refuses <label> <stderr pattern> <args...>
+  local label="$1" pattern="$2"; shift 2
+  set +e; in_host "$@" >"$F/out" 2>"$F/err"; local rc=$?; set -e
+  if [[ "$rc" -ne 0 ]] && grep -q -- "$pattern" "$F/err"; then ok "$label"; else bad "$label (exit $rc): $(cat "$F/err")"; fi
+}
+
+case_hdr "Case 10, final-check: the record must fit the env and the final must come from a candidate"
+fixture k10
+in_host final-check v1.0.0-rc.1 dev dev deployed >"$F/out" 2>"$F/err" && ok "a candidate passes" || bad "a candidate was refused: $(cat "$F/err")"
+refuses "a candidate may not record on main" "must not record on main" final-check v1.0.0-rc.1 dev dev main
+in_host final-check v1.0.0 prod dev main >"$F/out" 2>"$F/err" && ok "a final on prod passes when deployed is at the dev tip" || bad "a good final was refused: $(cat "$F/err")"
+refuses "a prod target that records on deployed is refused" "records on main" final-check v1.0.0 prod dev deployed
+refuses "a dev final may not record on main" "must not record on main" final-check v1.0.0 dev dev main
+refuses "a bad env is refused" "unknown target env" final-check v1.0.0 staging dev deployed
+( cd "$F/seed" && echo more >> log.txt && git add log.txt && git commit --quiet -m c3 && git push --quiet origin dev )
+refuses "a final is refused when dev moved after the candidate" "release candidate" final-check v1.0.0 prod dev main
+fixture k10b
+( cd "$F/seed" && git push --quiet origin :refs/tags/v1.0.0-rc.1 ) && git -C "$F/host" tag -d v1.0.0-rc.1 >/dev/null
+refuses "a final is refused when no rc tag names the dev tip" "no release candidate tag" final-check v1.0.0 prod dev main
+fixture k10c
+( cd "$F/seed" && git checkout --quiet -b side "$C1" && echo side >> log.txt && git add log.txt && git commit --quiet -m side \
+  && git push --quiet --force origin side:refs/heads/main )
+refuses "a final is refused before the tag when main has diverged" "could not fast-forward main" final-check v1.0.0 prod dev main
+fixture k10d
+git -C "$F/origin.git" update-ref -d refs/heads/deployed
+refuses "a final is refused when no candidate has shipped" "no release candidate has shipped" final-check v1.0.0 prod dev main
+
+case_hdr "Case 11, check and advance never take main as a record (it would read as objective-scoped)"
+fixture k11
+refuses "check refuses main" "prod record" check main dev
+refuses "advance refuses main" "prod record" advance main dev
+check "main was not touched by the refused advance" "$(osha main)" "$C1"
+
+case_hdr "Case 12, record: a candidate moves its record and never main"
+fixture k12
+in_host record v1.0.0-rc.1 dev dev deployed >"$F/out" 2>"$F/err"; rc=$?
+check "the candidate record succeeds" "$rc" "0"
+check "main is untouched" "$(osha main)" "$C1"
+check "no main fact is printed" "$(fact main_before)" ""
+refuses "a candidate may not record on main" "must not record on main" record v1.0.0-rc.1 dev dev main
+
+case_hdr "Case 13, record: a final on prod fast-forwards main, only ever forward"
+fixture k13
+( cd "$F/host" && git fetch --quiet --tags origin && git tag v1.0.0 "$C2" )
+in_host record v1.0.0 prod dev main >"$F/out" 2>"$F/err"; rc=$?
+check "the final record succeeds" "$rc" "0"
+check "main moved to the final's commit" "$(osha main)" "$C2"
+check "deployed is at the final's commit" "$(osha deployed)" "$C2"
+check "main_before is what main held" "$(fact main_before)" "$C1"
+check "main_after is the final's commit" "$(fact main_after)" "$C2"
+check "main_equals_final" "$(fact main_equals_final)" "true"
+in_host record v1.0.0 prod dev main >"$F/out" 2>"$F/err"; rc=$?
+check "running it again is a no-op" "$rc" "0"
+check "the second run still says main_equals_final" "$(fact main_equals_final)" "true"
+fixture k13b
+( cd "$F/host" && git fetch --quiet --tags origin && git tag v1.0.0 "$C2" )
+( cd "$F/seed" && git checkout --quiet -b side "$C1" && echo side >> log.txt && git add log.txt && git commit --quiet -m side \
+  && git push --quiet --force origin side:refs/heads/main )
+DIV="$(osha main)"
+set +e; in_host record v1.0.0 prod dev main >"$F/out" 2>"$F/err"; rc=$?; set -e
+[[ "$rc" -ne 0 ]] && ok "a diverged main is refused (exit $rc)" || bad "a diverged main was accepted"
+check "the diverged main was not moved" "$(osha main)" "$DIV"
+check "the refusal reports main_equals_final=false" "$(fact main_equals_final)" "false"
+check "the refusal still reports main_before" "$(fact main_before)" "$DIV"
+fixture k13c
+( cd "$F/host" && git fetch --quiet --tags origin && git tag v1.0.0 "$C2" )
+git -C "$F/origin.git" update-ref -d refs/heads/main
+refuses "a missing main is refused, not created" "does not exist" record v1.0.0 prod dev main
+check "main was not created" "$(osha main)" "absent"
+fixture k13d
+( cd "$F/host" && git fetch --quiet --tags origin && git tag v1.0.0 "$C2" )
+in_host record v1.0.0 dev dev deployed >"$F/out" 2>"$F/err"; rc=$?
+check "a final on a dev target records on its own record" "$rc" "0"
+check "a dev final leaves main alone" "$(osha main)" "$C1"
 
 # =============================================================================
 printf '\n=== replay summary: %d passed, %d failed\n' "$PASS" "$FAIL"
