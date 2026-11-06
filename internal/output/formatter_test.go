@@ -470,8 +470,8 @@ func TestFormat_JSONPreservesFullValueWhenTextWouldTruncate(t *testing.T) {
 }
 
 // I5-B regression: column-header label upper-cases the aliased name
-// for legacy fields so the table reads `ID`, not the raw Firestore
-// subdoc convention `__DOCID`.
+// for legacy fields so the table reads `ID`, not the raw legacy
+// name `__DOCID`.
 func TestHeaderLabel(t *testing.T) {
 	cases := []struct {
 		in   string

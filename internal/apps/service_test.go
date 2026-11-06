@@ -336,8 +336,7 @@ func TestService_ListOverrides(t *testing.T) {
 		if r.URL.Path != "/acc-1/k1/apps/ab12c/overrides" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		// Shape matches what conductor actually returns (base64 data,
-		// firestore-style __docId).
+		// Legacy shape: base64 data and a `__docId` identifier.
 		writeJSON(t, w, 200, []map[string]any{
 			{
 				"__docId": "6eVfFtmaPlkPd2pQFXcJ",
@@ -358,7 +357,7 @@ func TestService_ListOverrides(t *testing.T) {
 	}
 	o := got[0]
 	if o.ID != "6eVfFtmaPlkPd2pQFXcJ" {
-		t.Errorf("ID = %q, want firestore id mapped from __docId", o.ID)
+		t.Errorf("ID = %q, want id mapped from __docId", o.ID)
 	}
 	if o.Name != "Deployed By RunOS" || !o.Enabled {
 		t.Errorf("metadata mismatch: %+v", o)
@@ -370,7 +369,7 @@ func TestService_ListOverrides(t *testing.T) {
 
 // TestService_ListOverrides_AcceptsPostNormalisationIDField guards the
 // 11c/11d regression: the conductor's `/apps/:id/overrides` route was
-// updated to emit `id` (instead of the Firestore-internal `__docId`),
+// updated to emit `id` (instead of the legacy `__docId`),
 // and the CLI must accept both shapes so a CLI binary built against
 // either generation works against either conductor.
 func TestService_ListOverrides_AcceptsPostNormalisationIDField(t *testing.T) {

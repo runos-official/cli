@@ -491,8 +491,8 @@ func formatCellValue(v any) string {
 
 // fieldNameAliases maps legacy manifest output field names to their
 // post-normalisation equivalents. The conductor's `apps_overrides`
-// (and related) endpoints used to expose Firestore's `__docId`
-// subdoc identifier as a field name; the response was later
+// (and related) endpoints used to expose the identifier as a
+// `__docId` field name; the response was later
 // normalised to `id` (iter-1 11b). The manifest's `output.fields`
 // list still carries the legacy `__docId` name in some commands,
 // so the response body has `id` but the renderer is asked to look

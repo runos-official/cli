@@ -390,7 +390,7 @@ func runAppsSync(cmd *cobra.Command, args []string) (rerr error) {
 
 	// Apply the plan and stop. We deliberately do NOT re-pull from the
 	// server afterwards: the PATCH triggers an async job and a GET
-	// issued here would race the Firestore write. The local yaml stays
+	// issued here would race the server-side write. The local yaml stays
 	// the source of truth; the user runs apps_pull when they want the
 	// server-applied normalisation on disk.
 	return applySyncPlan(svc, plan, yamlDir, follow, jsonOut)

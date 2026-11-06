@@ -695,7 +695,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 
 		// I2-1d: AppDocument is settled now, so it's safe to fetch the
 		// synthesized RRC and stamp it on the local yaml without
-		// racing the deploy job's Firestore writes.
+		// racing the deploy job's writes.
 		stampSynthesizedResources(svc, deployConfig, configPath, humanOut)
 
 		// Extract app ID for network access lookup
@@ -721,7 +721,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// conflict-detection UX so we keep it separate from the yaml,
 	// which intentionally does NOT auto-refresh after deploy: the
 	// conductor PATCH/build orchestration is async and a GET issued
-	// here would race the Firestore write. Users who want the
+	// here would race the server-side write. Users who want the
 	// server-applied defaults (clusterDomainId, requires.config,
 	// requires.env) on disk should run apps_pull.
 	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
@@ -736,7 +736,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// no transparency into which class their app actually runs under.
 	// Only fills absent local fields; user-set values are never
 	// overwritten. Fire-and-forget mode opts out (the GET would race
-	// the conductor's Firestore write before the deploy job touches
+	// the conductor's write before the deploy job touches
 	// the AppDocument); --follow waits for terminal state and runs
 	// later in the success branch instead. This pre-block path keeps
 	// the env / requires sync ordering identical to before.

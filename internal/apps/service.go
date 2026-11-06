@@ -287,8 +287,8 @@ func (s *Service) GetSecretFile(appID, filename string) (*SecretFileContent, err
 // a separate show call per override.
 //
 // The conductor's `/apps/:id/overrides` route used to expose the
-// Firestore subcollection convention `__docId` and now exposes a plain
-// `id` (the 11b normalisation). UnmarshalJSON below accepts both shapes
+// identifier as `__docId` and now exposes a plain `id` (the 11b
+// normalisation). UnmarshalJSON below accepts both shapes
 // and populates ID from whichever is present, so a CLI binary built
 // against one generation works against either conductor. Without the
 // dual-name read, post-normalisation responses left ID empty, which made
@@ -303,7 +303,7 @@ type OverrideSummary struct {
 }
 
 // UnmarshalJSON accepts either `id` (post-normalisation) or `__docId`
-// (legacy / Firestore-subdoc-shape) for the override identifier. Other
+// (legacy shape) for the override identifier. Other
 // fields decode by struct tag as usual.
 func (o *OverrideSummary) UnmarshalJSON(data []byte) error {
 	var raw struct {
