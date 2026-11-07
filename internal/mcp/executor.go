@@ -124,7 +124,7 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	// tool-schema argument, not a manifest field, so it is read here and
 	// never reaches the wire: buildBody and the query builder both
 	// iterate the manifest's own fields.
-	if err := refuseUnconfirmedDestructive(*cmdDef, args, dynacmd.IsDestructiveCommand); err != nil {
+	if err := refuseUnconfirmedDestructive(*cmdDef, args); err != nil {
 		return "", err
 	}
 

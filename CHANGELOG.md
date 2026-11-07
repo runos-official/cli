@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.24.1
+
+### Fixed
+
+- `runos maintenance-scripts watchdog-probe run` no longer asks for `--yes` on its default, read-only run (FCR 1909). The CLI now reads the manifest's `readOnlyUnless` marker: a command the server marks this way asks for confirmation only when the named field holds a listed value, so `--load-driver true` still asks. MCP follows the same rule for `confirm=true`. A marker the CLI cannot read keeps the confirmation, and every unmarked command (for example `node-apt-upgrade-reboot run`) asks as before. `--yes` stays accepted.
+
 ## v1.24.0
 
 ### Added
