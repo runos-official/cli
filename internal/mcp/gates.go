@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 )
 
@@ -94,6 +96,23 @@ func withConfirmNotice(description string) string {
 	return description + "\n\n" + notice
 }
 
+// conditionalConfirmText says when a readOnlyUnless command (FCR 1909)
+// needs confirm=true: only when the named field holds a listed value.
+func conditionalConfirmText(rule manifest.ReadOnlyUnless) string {
+	return fmt.Sprintf("Read-only by default. Set confirm=true only when %s is %s (case-insensitive), and only after the user has agreed to this exact target: that value changes state.",
+		rule.Field, strings.Join(rule.Values, " or "))
+}
+
+// withConditionalConfirmNotice is withConfirmNotice for a command that is
+// read-only unless one field holds a listed value.
+func withConditionalConfirmNotice(description string, rule manifest.ReadOnlyUnless) string {
+	notice := conditionalConfirmText(rule) + " The call is refused without it in that case."
+	if description == "" {
+		return notice
+	}
+	return description + "\n\n" + notice
+}
+
 // requireOnce appends name to a JSON Schema `required` list unless it is
 // already there.
 //
@@ -111,15 +130,16 @@ func requireOnce(required []string, name string) []string {
 }
 
 // refuseUnconfirmedDestructive refuses a destructive tool call that did
-// not state confirm=true.
+// not state confirm=true. A call the server marks read-only for these
+// arguments (readOnlyUnless, FCR 1909) needs no confirm.
 //
 // The CLI refuses a destructive verb outright when no TTY can answer its
 // prompt, which is every CI, MCP and --json caller. MCP went straight
 // through, so the surface an LLM drives was the unguarded one and a
 // mistyped id was unrecoverable there and only there. Regression target:
 // goal 19 A14.
-func refuseUnconfirmedDestructive(cmdDef manifest.Command, args map[string]any, isDestructive func(manifest.Command) bool) error {
-	if !isDestructive(cmdDef) {
+func refuseUnconfirmedDestructive(cmdDef manifest.Command, args map[string]any) error {
+	if !dynacmd.IsDestructiveInvocation(cmdDef, args) {
 		return nil
 	}
 	if confirmed, _ := args[confirmArgName].(bool); confirmed {

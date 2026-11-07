@@ -120,7 +120,9 @@ func IsDestructiveCommand(cmdDef manifest.Command) bool {
 	// individual script ids. Tagged on path containment + final segment
 	// so unrelated commands that happen to end in `run` (none today, but
 	// hypothetical future ones) aren't falsely gated. Regression target:
-	// foreman #37 / Story 50.
+	// foreman #37 / Story 50. A script the server marks readOnlyUnless
+	// (FCR 1909) keeps --yes registered here; destructivePromptApplies and
+	// IsDestructiveInvocation drop the prompt per call.
 	if last == "run" && strings.Contains(cmdDef.Command, "maintenance-scripts/") {
 		return true
 	}
@@ -155,10 +157,19 @@ func IsDestructiveCommand(cmdDef manifest.Command) bool {
 //     prompt for every diagnostic query was a real footgun (foreman
 //     #140). When --read-write is true, the prompt fires as before.
 //
+//   - a command carrying the server's readOnlyUnless marker prompts only
+//     when the named field holds a listed value (FCR 1909,
+//     readonly_unless.go). A marker the CLI cannot honour keeps the prompt.
+//
 // Other destructive verbs (delete / drain / reset / clear-cache / ...)
 // have no read-only mode and stay gated unconditionally.
 func destructivePromptApplies(c *cobra.Command, cmdDef manifest.Command) bool {
 	if !IsDestructiveCommand(cmdDef) {
+		return false
+	}
+	// FCR 1909: the server marks some commands read-only unless one field
+	// holds a listed value (readonly_unless.go). Unmarked commands skip this.
+	if cmdDef.ReadOnlyUnless != nil && !cliInvocationDestructive(c, cmdDef) {
 		return false
 	}
 	if lastPathSegment(cmdDef.Command) == "exec-sql" {

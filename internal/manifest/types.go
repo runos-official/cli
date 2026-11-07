@@ -23,6 +23,10 @@ type Command struct {
 	Input      *Input   `yaml:"input,omitempty" json:"input,omitempty"`
 	Output     *Output  `yaml:"output,omitempty" json:"output,omitempty"`
 	ReturnsJob bool     `yaml:"returnsJob,omitempty" json:"returnsJob,omitempty"` // Supports --wait flag
+	// ReadOnlyUnless narrows a destructive command: the server says it
+	// changes state only when the named field holds a listed value
+	// (FCR 1909). See readonly_unless.go.
+	ReadOnlyUnless *ReadOnlyUnless `yaml:"readOnlyUnless,omitempty" json:"readOnlyUnless,omitempty"`
 }
 
 // Input defines the input schema for a command

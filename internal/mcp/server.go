@@ -1015,7 +1015,15 @@ DOCKER BUILD ARGS (both deployTypes): pass one or more KEY=VALUE entries via the
 		// could confirm while MCP dispatched the same delete on the
 		// first ask, so the safer surface was the one a person drives
 		// and the unguarded one was the LLM's (A14).
-		if dynacmd.IsDestructiveCommand(cmd) {
+		if rule, _, ok := dynacmd.ConditionalReadOnly(cmd); ok && dynacmd.IsDestructiveCommand(cmd) {
+			// FCR 1909: read-only unless one field holds a listed value.
+			// confirm stays in the schema for that case, but not required.
+			tool.InputSchema.Properties[confirmArgName] = Property{
+				Type:        "boolean",
+				Description: conditionalConfirmText(rule),
+			}
+			tool.Description = withConditionalConfirmNotice(cmd.Description, rule)
+		} else if dynacmd.IsDestructiveCommand(cmd) {
 			tool.InputSchema.Properties[confirmArgName] = Property{
 				Type:        "boolean",
 				Description: "Must be true. This verb is destructive and cannot be undone: set confirm=true only after the user has agreed to this exact target. The CLI asks a human the same question through --yes.",
