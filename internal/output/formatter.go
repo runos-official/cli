@@ -156,8 +156,13 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 		return nil
 	}
 
-	// Plain text output
+	// Plain text output. Each hook below detects ONE response shape and
+	// reports false for every other response, so a command the hooks do
+	// not recognise keeps the generic rendering.
 	if handled, err := f.formatTeardownEnvelope(data, outputDef); handled {
+		return err
+	}
+	if handled, err := f.formatMaintenanceView(data, outputDef); handled {
 		return err
 	}
 

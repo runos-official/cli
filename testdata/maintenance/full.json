@@ -1,0 +1,208 @@
+{
+  "aid": "aid01",
+  "generatedAt": "2026-11-08T22:05:00Z",
+  "clusters": [
+    {
+      "cid": "ca001",
+      "name": "cluster-one",
+      "clusterFactsFrom": "live",
+      "collectedAt": "2026-11-08T22:04:58Z",
+      "clusterAgent": {
+        "agentState": "current",
+        "agentStateDetail": "The cluster agent runs the newest version RunOS installs.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster agent is already current.",
+        "version": "1.12.3"
+      },
+      "kubernetes": {
+        "currentPatch": "v1.31.4",
+        "newestPatchInMinor": "v1.31.6",
+        "desiredMinor": "v1.31",
+        "state": "patch_available",
+        "detail": "A newer patch is available inside v1.31."
+      },
+      "autoUpdateUnits": { "masked": 2, "enabledOutsideRunos": 1, "unknown": 1 },
+      "nodes": [
+        {
+          "nid": "na001",
+          "name": "control-plane-one",
+          "hostname": "control-plane-one",
+          "isCp": true,
+          "isWorker": false,
+          "nodeMaintenanceStatus": "up_to_date",
+          "nodeMaintenanceStatusLabel": "Up to date",
+          "nodeMaintenanceStatusDetail": "No security updates are waiting and no reboot is pending.",
+          "collectedAt": "2026-11-08T21:58:00Z",
+          "lastBootAgeSeconds": 259200,
+          "rebootPendingAgeSeconds": null,
+          "securityUpdateCount": 0,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-07T02:15:00Z",
+          "nodeAgentVersion": "1.8.7",
+          "agentState": "current",
+          "agentStateLabel": "Current",
+          "agentStateDetail": "The node agent runs the newest version RunOS installs.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent is already current.",
+          "autoUpdateUnitState": "masked",
+          "autoUpdateUnitStateDetail": "RunOS masked the automatic update timers on this node, so no package installs by itself.",
+          "detail": {
+            "waitingPackages": [],
+            "rebootTriggerPackages": [],
+            "runningKernel": "6.1.0-21-arm64",
+            "newestInstalledKernel": "6.1.0-21-arm64",
+            "heldPackages": [
+              { "name": "containerd", "version": "1.7.22-1" },
+              { "name": "kubelet", "version": "1.31.4-1.1" }
+            ]
+          }
+        },
+        {
+          "nid": "na002",
+          "name": "worker-one",
+          "hostname": "worker-one",
+          "isCp": false,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "both",
+          "nodeMaintenanceStatusLabel": "Both",
+          "nodeMaintenanceStatusDetail": "3 security updates are waiting, and a reboot is pending.",
+          "collectedAt": "2026-11-08T21:59:30Z",
+          "lastBootAgeSeconds": 604800,
+          "rebootPendingAgeSeconds": 5400,
+          "securityUpdateCount": 3,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-06T02:15:00Z",
+          "nodeAgentVersion": "1.8.7",
+          "agentState": "current",
+          "agentStateLabel": "Current",
+          "agentStateDetail": "The node agent runs the newest version RunOS installs.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent is already current.",
+          "autoUpdateUnitState": "masked",
+          "autoUpdateUnitStateDetail": "RunOS masked the automatic update timers on this node, so no package installs by itself.",
+          "detail": {
+            "waitingPackages": ["libssl3", "openssl", "libc-bin"],
+            "rebootTriggerPackages": ["linux-image-arm64"],
+            "runningKernel": "6.1.0-18-arm64",
+            "newestInstalledKernel": "6.1.0-21-arm64",
+            "heldPackages": [
+              { "name": "containerd", "version": "1.7.22-1" },
+              { "name": "runc", "version": "1.1.14-1" }
+            ]
+          }
+        },
+        {
+          "nid": "na003",
+          "name": "worker-two",
+          "hostname": "worker-two",
+          "isCp": false,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "blocked",
+          "nodeMaintenanceStatusLabel": "Blocked",
+          "nodeMaintenanceStatusDetail": "The node agent is not connected, so RunOS cannot read this node.",
+          "collectedAt": null,
+          "lastBootAgeSeconds": null,
+          "rebootPendingAgeSeconds": null,
+          "securityUpdateCount": null,
+          "lastSuccessfulMaintenanceRunAt": null,
+          "nodeAgentVersion": null,
+          "agentState": "offline",
+          "agentStateLabel": "Offline",
+          "agentStateDetail": "The node agent is not connected, so RunOS cannot read its version.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent is not connected.",
+          "autoUpdateUnitState": "unknown",
+          "autoUpdateUnitStateDetail": "RunOS cannot tell whether automatic update timers run on this node.",
+          "detail": {
+            "waitingPackages": [],
+            "rebootTriggerPackages": [],
+            "runningKernel": null,
+            "newestInstalledKernel": null,
+            "heldPackages": []
+          }
+        },
+        {
+          "nid": "na004",
+          "name": "worker-three",
+          "hostname": "worker-three",
+          "isCp": false,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "unknown",
+          "nodeMaintenanceStatusLabel": "Unknown",
+          "nodeMaintenanceStatusDetail": "The newest maintenance facts for this node are 4 hours old, so RunOS does not know its current state.",
+          "collectedAt": "2026-11-08T18:02:00Z",
+          "lastBootAgeSeconds": 1209600,
+          "rebootPendingAgeSeconds": null,
+          "securityUpdateCount": 2,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-01T02:15:00Z",
+          "nodeAgentVersion": "1.8.6",
+          "agentState": "behind",
+          "agentStateLabel": "Update available",
+          "agentStateDetail": "A newer node agent version is available for this node.",
+          "updateActionAllowed": true,
+          "updateActionReason": "The node agent can be updated.",
+          "autoUpdateUnitState": "enabled_outside_runos",
+          "autoUpdateUnitStateDetail": "The automatic update timers on this node were enabled outside RunOS. RunOS does not change them and does not manage package updates on this node.",
+          "detail": {
+            "waitingPackages": ["libssl3", "curl"],
+            "rebootTriggerPackages": [],
+            "runningKernel": "6.1.0-18-arm64",
+            "newestInstalledKernel": "6.1.0-18-arm64",
+            "heldPackages": [{ "name": "containerd", "version": "1.7.20-1" }]
+          }
+        }
+      ]
+    },
+    {
+      "cid": "cb002",
+      "name": "cluster-two",
+      "clusterFactsFrom": "none",
+      "collectedAt": null,
+      "clusterAgent": {
+        "agentState": "unknown",
+        "agentStateDetail": "RunOS cannot read the cluster agent version, because the cluster did not answer.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster did not answer.",
+        "version": null
+      },
+      "kubernetes": {
+        "currentPatch": null,
+        "newestPatchInMinor": null,
+        "desiredMinor": "v1.31",
+        "state": "unknown",
+        "detail": "The cluster did not answer, so RunOS cannot read its Kubernetes version."
+      },
+      "autoUpdateUnits": { "masked": 1, "enabledOutsideRunos": 0, "unknown": 0 },
+      "nodes": [
+        {
+          "nid": "nb001",
+          "name": "single-node",
+          "hostname": "single-node",
+          "isCp": true,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "updates_waiting",
+          "nodeMaintenanceStatusLabel": "Updates waiting",
+          "nodeMaintenanceStatusDetail": "1 security update is waiting.",
+          "collectedAt": "2026-11-08T21:50:00Z",
+          "lastBootAgeSeconds": 86400,
+          "rebootPendingAgeSeconds": null,
+          "securityUpdateCount": 1,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-08T02:15:00Z",
+          "nodeAgentVersion": "1.8.7",
+          "agentState": "current",
+          "agentStateLabel": "Current",
+          "agentStateDetail": "The node agent runs the newest version RunOS installs.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent is already current.",
+          "autoUpdateUnitState": "masked",
+          "autoUpdateUnitStateDetail": "RunOS masked the automatic update timers on this node, so no package installs by itself.",
+          "detail": {
+            "waitingPackages": ["libssl3"],
+            "rebootTriggerPackages": [],
+            "runningKernel": "6.1.0-21-arm64",
+            "newestInstalledKernel": "6.1.0-21-arm64",
+            "heldPackages": [{ "name": "etcd-client", "version": "3.5.15-1" }]
+          }
+        }
+      ]
+    }
+  ]
+}
