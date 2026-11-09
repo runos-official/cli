@@ -1,0 +1,131 @@
+{
+  "clusters": [
+    {
+      "cid": "cluster-1",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-1",
+      "nodes": [],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-2",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-2",
+      "nodes": [],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-3",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-3",
+      "nodes": [
+        {
+          "hostname": "node-3-1.example.test",
+          "isCp": true,
+          "isWorker": true,
+          "name": "node-3-1",
+          "nid": "node-3-1",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.2-rc.6",
+          "status": "no_heartbeat",
+          "updateAvailable": true
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-4",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-4",
+      "nodes": [
+        {
+          "hostname": "node-4-1.example.test",
+          "isCp": false,
+          "isWorker": true,
+          "name": "node-4-1",
+          "nid": "node-4-1",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.2-rc.6",
+          "status": "no_heartbeat",
+          "updateAvailable": true
+        },
+        {
+          "hostname": "node-4-2.example.test",
+          "isCp": true,
+          "isWorker": true,
+          "name": "node-4-2",
+          "nid": "node-4-2",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.2-rc.6",
+          "status": "no_heartbeat",
+          "updateAvailable": true
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-5",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-5",
+      "nodes": [
+        {
+          "hostname": "node-5-1.example.test",
+          "isCp": true,
+          "isWorker": true,
+          "name": "node-5-1",
+          "nid": "node-5-1",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.3-rc.2",
+          "status": "no_heartbeat",
+          "updateAvailable": true
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-6",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-6",
+      "nodes": [],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-7",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-7",
+      "nodes": [
+        {
+          "hostname": "node-7-1.example.test",
+          "isCp": true,
+          "isWorker": true,
+          "name": "node-7-1",
+          "nid": "node-7-1",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.3-rc.2",
+          "status": "no_heartbeat",
+          "updateAvailable": true
+        },
+        {
+          "hostname": "node-7-2.example.test",
+          "isCp": false,
+          "isWorker": true,
+          "name": "node-7-2",
+          "nid": "node-7-2",
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "1.8.3-rc.1",
+          "status": "cordoned",
+          "updateAvailable": true
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "cid": "cluster-8",
+      "clusterAgent": {"online": false, "updateAvailable": false, "version": ""},
+      "name": "cluster-8",
+      "nodes": [],
+      "status": "ok"
+    }
+  ],
+  "targetVersions": {"clusterAgent": "1.2.5", "nodeAgent": "1.8.7"}
+}
