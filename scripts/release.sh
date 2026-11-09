@@ -4,7 +4,7 @@
 #
 # Usage:
 #   scripts/release.sh v1.7.0          # full release
-#   scripts/release.sh v1.7.0 --check  # run every gate, stop before tag/push (no side effects)
+#   scripts/release.sh v1.7.0 --check  # run every gate, stop before tag/push
 #   make release VERSION=v1.7.0        # same, via the Makefile
 #
 # What it does, in order (any failure aborts before the tag is created):
@@ -40,7 +40,7 @@
 set -euo pipefail
 
 # ---- constants -------------------------------------------------------------
-INTEGRATION_BRANCH="dev"     # where work lands; gates run here; this commit is tagged
+INTEGRATION_BRANCH="${RUNOS_RELEASE_INTEGRATION_BRANCH-dev}"
 # The branch recording what has shipped. Overridable so an OBJECTIVE-SCOPED
 # release can record to its own ref instead of the shared one (item 198): a
 # mid-objective RC that advances `deployed` to an unmerged item branch leaves
@@ -52,9 +52,6 @@ INTEGRATION_BRANCH="dev"     # where work lands; gates run here; this commit is 
 # Both now go through scripts/record_ref.sh, so they read the same value by
 # construction rather than by two copies agreeing.
 RECORD_REQUEST="${RUNOS_RELEASE_RECORD_BRANCH:-}"
-# An unresolved pipeline placeholder arrives as literal "${{ ... }}" text,
-# which is non-empty, so :- above would happily accept it as a branch name.
-case "$RECORD_REQUEST" in *'{'*|*'}'*|*' '*) RECORD_REQUEST="" ;; esac
 # The prod record. A prod target holds deployed_branch: main, so the pipeline hands
 # it over here. It is NOT a candidate record: it is resolved below, once the version
 # says whether this is a final.
@@ -83,6 +80,25 @@ CHECK_ONLY="false"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# Foreman tags the objective branch after --check. Test that same source and
+# keep its record separate from the shared release branches.
+if [[ "$INTEGRATION_BRANCH" != dev ]]; then
+  [[ "$CHECK_ONLY" == true && "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || \
+    die "an objective branch requires a release candidate in --check mode"
+  [[ "$INTEGRATION_BRANCH" =~ ^fm/obj-([1-9][0-9]*)-[a-z0-9-]+$ ]] || \
+    die "invalid objective integration branch"
+  [[ "$RECORD_REQUEST" == "deployed-rc/obj-${BASH_REMATCH[1]}" ]] || \
+    die "the record branch must match the objective integration branch"
+  [[ "$(git symbolic-ref --quiet --short HEAD)" == "$INTEGRATION_BRANCH" ]] || \
+    die "check out the objective integration branch before running its release gates"
+elif [[ "$RECORD_REQUEST" == deployed-rc/* ]]; then
+  die "an objective record branch requires its matching objective integration branch"
+fi
+if [[ -n "$RECORD_REQUEST" ]]; then
+  [[ "$RECORD_REQUEST" != -* && "$RECORD_REQUEST" != *'{'* && "$RECORD_REQUEST" != *'}'* ]] && \
+    git check-ref-format "refs/heads/$RECORD_REQUEST" || die "invalid release record branch"
+fi
 
 # Which branches does this release record on?
 #   - No record requested (a person at a terminal): a candidate records on
@@ -138,7 +154,7 @@ ok "CHANGELOG has a $CHANGELOG_VERSION section"
 # Working tree must be clean.
 [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty; commit or stash first"
 
-# dev must exist and be in sync with origin (no behind/ahead surprises). main is
+# The source branch must exist and be in sync with origin. main is
 # inspected only for a final on a prod target, below.
 git fetch --quiet origin "$INTEGRATION_BRANCH"
 git rev-parse -q --verify "refs/heads/$INTEGRATION_BRANCH" >/dev/null || die "missing local branch: $INTEGRATION_BRANCH"
@@ -167,7 +183,7 @@ git rev-parse -q --verify "refs/heads/$INTEGRATION_BRANCH" >/dev/null || die "mi
 PAYLOAD_BASE="$("$REPO_ROOT/scripts/record_ref.sh" check "$DEPLOYED_BRANCH" "$INTEGRATION_BRANCH")" || \
   die "record-ref preflight failed for $DEPLOYED_BRANCH"
 [[ -n "$PAYLOAD_BASE" ]] || die "record-ref preflight produced no payload base for $DEPLOYED_BRANCH"
-ok "dev clean & synced; $DEPLOYED_BRANCH checked against origin (payload base $PAYLOAD_BASE)"
+ok "$INTEGRATION_BRANCH clean & synced; $DEPLOYED_BRANCH checked against origin (payload base $PAYLOAD_BASE)"
 
 # A final on a prod target fast-forwards main, so main must already be an ancestor of
 # dev. Refusing here, before the tag, leaves no tag and no release behind when main
@@ -182,7 +198,7 @@ fi
 
 # ---- Sensitivity scan: this is a PUBLIC repo ------------------------------
 # Deterministic, fail-closed floor over the exact payload being deployed
-# (every added line since the last shipped point, PAYLOAD_BASE..dev). High-
+# (every added line since the last shipped point). High-
 # precision secret patterns only, so it does not false-positive on commit SHAs,
 # pinned action SHAs, or the public OIDC identity URL. Internal identifiers (lab
 # machine names, account ids, IP address literals) are covered by the leak gate
@@ -236,7 +252,7 @@ fi
 ok "no secret-shaped content in release payload"
 
 # =============================================================================
-# 2. Code gates (run against the dev tree that will be released)
+# 2. Code gates (run against the source tree that will be released)
 # =============================================================================
 ORIGINAL_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 git checkout --quiet "$INTEGRATION_BRANCH"
