@@ -38,7 +38,13 @@ func makeToolCallRequest(name string) *Request {
 
 func newTestServer(category string, executor ToolExecutor) *Server {
 	return &Server{
-		manifest: &manifest.Manifest{},
+		manifest: &manifest.Manifest{Commands: []manifest.Command{
+			{Command: "clusters/list", MCP: []string{category}},
+			{Command: "some/tool", MCP: []string{category}},
+			{Command: "mcp/bootstrap"},
+			{Command: "mcp/topics/search"},
+			{Command: "mcp/topics/show"},
+		}},
 		executor: executor,
 		version:  "test",
 		category: category,
@@ -636,6 +642,7 @@ func TestBootstrapGate_WriteServerAlsoGated(t *testing.T) {
 	for _, category := range []string{"write", "sensitive_write"} {
 		t.Run(category, func(t *testing.T) {
 			srv := newTestServer(category, &mockExecutor{result: "ok"})
+			srv.manifest.Commands = append(srv.manifest.Commands, manifest.Command{Command: "vms/{id}/delete", MCP: []string{category}})
 			resp := srv.handleToolsCall(makeToolCallRequest("vms_delete"))
 			result := resp.Result.(CallToolResult)
 			if !result.IsError {

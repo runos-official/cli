@@ -74,9 +74,8 @@ func loadVLLMArtefact(t *testing.T) (vllmNewFields, vllmSnapshot) {
 	return set, snap
 }
 
-// toolNameFor mirrors buildTools: strip `{id}` placeholders, then `/` to `_`.
 func toolNameFor(commandPath string) string {
-	return strings.ReplaceAll(placeholderRegex.ReplaceAllString(commandPath, ""), "/", "_")
+	return manifestToolName(commandPath)
 }
 
 func TestEveryNewVLLMFieldIsProjectedIntoTheAgentSchema(t *testing.T) {

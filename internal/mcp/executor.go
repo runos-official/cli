@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/runos-official/cli/internal/apitimeout"
@@ -17,9 +16,6 @@ import (
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/manifest"
 )
-
-// cmdPlaceholderRegex matches {name} patterns in command paths
-var cmdPlaceholderRegex = regexp.MustCompile(`/?\{[^}]+\}`)
 
 // CommandExecutor executes manifest commands by making authenticated HTTP requests to the API.
 type CommandExecutor struct {
@@ -101,21 +97,7 @@ func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]an
 
 // Execute runs a tool by name, mapping it to the corresponding manifest command and making the API request.
 func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string, error) {
-	// Convert tool name back to command path
-	cmdPath := strings.ReplaceAll(toolName, "_", "/")
-
-	// Find the command - need to match against command paths with {id} placeholders stripped
-	var cmdDef *manifest.Command
-	for _, cmd := range e.manifest.Commands {
-		// Strip placeholders from manifest command for comparison
-		// e.g., "services/minio/{id}/show" -> "services/minio/show"
-		manifestCmdPath := cmdPlaceholderRegex.ReplaceAllString(cmd.Command, "")
-		if manifestCmdPath == cmdPath {
-			cmdDef = &cmd
-			break
-		}
-	}
-
+	cmdDef := manifestCommandForTool(e.manifest, toolName)
 	if cmdDef == nil {
 		return "", fmt.Errorf("unknown command: %s", toolName)
 	}
