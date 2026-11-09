@@ -310,8 +310,14 @@ step "Test"
 go test ./... || die "go test failed"
 ok "go test"
 
-step "make local (build + install to ~/.local/bin)"
-make local || die "make local failed"
+step "make local (build and install)"
+if [[ "$CHECK_ONLY" == "true" ]]; then
+  check_bin_dir="$(mktemp -d "${TMPDIR:-/tmp}/runos-release-check.XXXXXX")"
+  trap 'rm -rf -- "$check_bin_dir"' EXIT
+  make local LOCAL_BIN_DIR="$check_bin_dir" || die "make local failed"
+else
+  make local || die "make local failed"
+fi
 ok "make local"
 
 if [[ "$CHECK_ONLY" == "true" ]]; then
