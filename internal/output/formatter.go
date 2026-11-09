@@ -165,6 +165,9 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 	if handled, err := f.formatMaintenanceView(data, outputDef); handled {
 		return err
 	}
+	if handled, err := f.formatAgentsList(data, outputDef); handled {
+		return err
+	}
 
 	if outputDef == nil {
 		fmt.Println(string(data))
