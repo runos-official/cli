@@ -1,0 +1,81 @@
+{
+  "aid": "aid01",
+  "generatedAt": "2026-11-09T00:05:00Z",
+  "clusters": [
+    {
+      "cid": "ce005",
+      "name": "cluster-five",
+      "clusterFactsFrom": "none",
+      "collectedAt": null,
+      "clusterAgent": {
+        "agentState": "unknown",
+        "agentStateDetail": "RunOS cannot read the cluster agent version, because the cluster did not answer.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster did not answer.",
+        "version": null
+      },
+      "kubernetes": {
+        "currentPatch": null,
+        "newestPatchInMinor": null,
+        "desiredMinor": "v1.31",
+        "state": "unknown",
+        "detail": "The cluster did not answer, so RunOS cannot read its Kubernetes version."
+      },
+      "autoUpdateUnits": { "masked": 0, "enabledOutsideRunos": 0, "unknown": 0 },
+      "nodes": null
+    },
+    {
+      "cid": "cf006",
+      "name": "cluster-six",
+      "clusterFactsFrom": "live",
+      "collectedAt": "2026-11-09T00:04:30Z",
+      "clusterAgent": {
+        "agentState": "current",
+        "agentStateDetail": "The cluster agent runs the newest version RunOS installs.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster agent is already current.",
+        "version": "1.12.3"
+      },
+      "kubernetes": {
+        "currentPatch": "v1.31.6",
+        "newestPatchInMinor": "v1.31.6",
+        "desiredMinor": "v1.31",
+        "state": "current",
+        "detail": "The cluster runs the newest patch inside v1.31."
+      },
+      "autoUpdateUnits": { "masked": 1, "enabledOutsideRunos": 0, "unknown": 0 },
+      "nodes": [
+        {
+          "nid": "nf001",
+          "name": "healthy-worker",
+          "hostname": "healthy-worker",
+          "isCp": true,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "reboot_pending",
+          "nodeMaintenanceStatusLabel": "Reboot pending",
+          "nodeMaintenanceStatusDetail": "A reboot is pending, asked for by linux-image-arm64.",
+          "collectedAt": "2026-11-09T00:04:00Z",
+          "lastBootAgeSeconds": 432000,
+          "rebootPendingAgeSeconds": 900,
+          "securityUpdateCount": 0,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-09T02:15:00Z",
+          "nodeAgentVersion": "1.8.7",
+          "agentState": "current",
+          "agentStateLabel": "Current",
+          "agentStateDetail": "The node agent runs the newest version RunOS installs.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent is already current.",
+          "autoUpdateUnitState": "masked",
+          "autoUpdateUnitStateDetail": "RunOS masked the automatic update timers on this node, so no package installs by itself.",
+          "detail": {
+            "waitingPackages": [],
+            "rebootTriggerPackages": ["linux-image-arm64"],
+            "runningKernel": "6.1.0-18-arm64",
+            "newestInstalledKernel": "6.1.0-21-arm64",
+            "heldPackages": [{ "name": "containerd", "version": "1.7.22-1" }]
+          }
+        }
+      ]
+    }
+  ]
+}
