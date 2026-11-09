@@ -39,6 +39,13 @@ strings, which name no RunOS system.
   (`quarantineReleasesAt`, `detail.quarantineEvidence`). The renderer
   must print all of them verbatim. This file is what proves the client
   holds no word list, no mapping and no default word.
+- `cluster-nodes-null.json` — two clusters, and the first sends `nodes`
+  as null. Added for rework finding 405. The shape hook must NOT require
+  a node array in every element: when it did, one deviant cluster
+  dropped the whole account to the generic renderer and the healthy
+  cluster lost its node table silently. Its test also builds a second
+  variant in memory with the `nodes` KEY removed, so both the null and
+  the absent case are covered.
 - `clusters-list.json` and `clusters-list-empty.json` — NOT this view.
   They are the `clusters/list` response, which also answers
   `{"clusters":[...]}`. They exist so the fall-through test proves the

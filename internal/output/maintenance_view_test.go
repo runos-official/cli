@@ -92,8 +92,20 @@ func TestMaintenanceViewMarksAbsentFactsAndNeverBlanks(t *testing.T) {
 		t.Errorf("the offline node's row must mark every absent fact; got %d markers in %q",
 			strings.Count(row, absentMarker), row)
 	}
-	if blankRunPattern.MatchString(row) {
-		t.Errorf("the offline node's row carries a blank cell: %q", row)
+
+	// Every column position must hold text. The assertion reads cell
+	// POSITIONS, not the line ending: the renderer trims each row, so a
+	// cell that rendered as nothing leaves no trailing space to find and
+	// instead merges with its neighbour's separator.
+	fields := maintenanceRowFields(row)
+	if len(fields) != len(maintenanceNodeColumns) {
+		t.Errorf("the offline node's row has %d cells, want %d; a cell rendered as nothing: %q",
+			len(fields), len(maintenanceNodeColumns), row)
+	}
+	for i, field := range fields {
+		if field == "" {
+			t.Errorf("cell %d of the offline node's row is blank: %q", i, row)
+		}
 	}
 
 	// The marker is visibly not a status, so a reader cannot read a
@@ -223,6 +235,66 @@ func TestMaintenanceViewRendersEmptySets(t *testing.T) {
 	}
 }
 
+// T10. Finding 405. One deviant cluster must not take the whole view
+// down. A cluster whose node array is null, or whose node key is
+// absent, still prints its own block, and every OTHER cluster keeps its
+// node table. The server fixes the node array as present in every
+// element today, but this client has never met the real payload, so a
+// predicate that fails closed on one omitted key would lose the whole
+// account silently.
+func TestMaintenanceViewKeepsOtherClustersWhenOneHasNoNodeArray(t *testing.T) {
+	withKey := readMaintenanceFixture(t, "cluster-nodes-null.json")
+
+	// The same response with the node key REMOVED, not merely null.
+	var envelope map[string]any
+	if err := json.Unmarshal(withKey, &envelope); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	clusters, _ := envelope["clusters"].([]any)
+	first, _ := clusters[0].(map[string]any)
+	delete(first, "nodes")
+	withoutKey, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal variant: %v", err)
+	}
+
+	for _, probe := range []struct {
+		name string
+		data []byte
+	}{{"node array is null", withKey}, {"node key is absent", withoutKey}} {
+		t.Run(probe.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				if err := NewFormatter(false).Format(probe.data, maintenanceOutputDef()); err != nil {
+					t.Fatalf("format: %v", err)
+				}
+			})
+
+			// The healthy cluster keeps its node table in full.
+			for _, want := range []string{"cluster-six", "STATUS", "AUTO UPDATE UNITS", "healthy-worker"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the healthy cluster lost %q, so one deviant cluster took the view down\n--- output ---\n%s", want, out)
+				}
+			}
+			if !lineWithBoth(out, "healthy-worker", "Reboot pending") {
+				t.Errorf("the healthy cluster's node row lost its server status word\n--- output ---\n%s", out)
+			}
+
+			// The deviant cluster still prints, and says what it reports.
+			if !strings.Contains(out, "cluster-five") {
+				t.Errorf("the cluster with no node array must still print its block\n--- output ---\n%s", out)
+			}
+			if !strings.Contains(out, "no nodes") {
+				t.Errorf("the cluster with no node array must say so\n--- output ---\n%s", out)
+			}
+
+			// It must not have fallen through to the generic renderer.
+			if strings.Contains(out, "clusters   : 2 entries") {
+				t.Errorf("the response fell through to the generic renderer\n--- output ---\n%s", out)
+			}
+		})
+	}
+}
+
 // T6. Every other response keeps the output it has today. The empty
 // case matters: `clusters/list` answers `{"clusters":[...]}` as well,
 // so an empty list is the shape this hook could wrongly capture.
@@ -306,10 +378,18 @@ func TestMaintenanceViewSourceHoldsNoSecondDerivation(t *testing.T) {
 	}
 }
 
-// blankRunPattern finds a cell position that rendered as nothing: three
-// or more spaces between two column separators at the end of a cell.
-// A rendered row that matches has a gap where a fact belongs.
-var blankRunPattern = regexp.MustCompile(`\s{3,}$`)
+// maintenanceColumnGap separates two cells of a rendered node row. The
+// renderer pads each cell to its column width and joins the cells with
+// two spaces, so a run of two or more spaces is a column boundary.
+var maintenanceColumnGap = regexp.MustCompile(` {2,}`)
+
+// maintenanceRowFields splits one rendered node row into its cells. A
+// cell that rendered as nothing produces one fewer field, because its
+// padding merges with the separators on either side, so the caller
+// compares the count against the declared column count.
+func maintenanceRowFields(row string) []string {
+	return maintenanceColumnGap.Split(strings.TrimLeft(row, " "), -1)
+}
 
 func lineContaining(out, needle string) string {
 	for _, line := range strings.Split(out, "\n") {

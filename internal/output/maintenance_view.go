@@ -77,11 +77,22 @@ func (f *Formatter) formatMaintenanceView(data []byte, _ *manifest.Output) (bool
 // this view's, and reports false otherwise.
 //
 // DETECTION IS BY SHAPE, never by the command path, which copies the
-// teardown hook beside it. Two keys are required, and the second one is
-// not optional: `clusters/list` also answers `{"clusters":[...]}`, and
-// an EMPTY list from that command satisfies "every element carries a
-// node array" on its own. The top-level `generatedAt` key, which this
-// view carries and `clusters/list` does not, is what separates them.
+// teardown hook beside it. Two keys engage the hook: a top-level
+// `generatedAt`, and a top-level `clusters` array whose every element is
+// an object. The first key is what carries the discrimination.
+// `clusters/list` also answers `{"clusters":[...]}`, including an empty
+// list, and it does not carry `generatedAt`.
+//
+// THE NODE ARRAY IS DELIBERATELY NOT REQUIRED HERE, and that is a
+// correction. Requiring it in every element added no discrimination
+// power, because `generatedAt` already separates this view from
+// `clusters/list`. What it did add was a total failure: one cluster that
+// omitted its node array, or sent it as null, dropped the WHOLE account
+// to the generic renderer, which prints "[2 entries]" for the node list
+// and an empty cell for every absent fact. A healthy cluster degraded
+// with the deviant one, silently. A deviant cluster is now a rendering
+// case, not a detection case: printMaintenanceCluster says the cluster
+// reports no nodes and every other cluster keeps its table.
 func maintenanceClusters(envelope map[string]any) ([]map[string]any, bool) {
 	if _, present := envelope["generatedAt"]; !present {
 		return nil, false
@@ -98,9 +109,6 @@ func maintenanceClusters(envelope map[string]any) ([]map[string]any, bool) {
 	for _, item := range list {
 		cluster, ok := item.(map[string]any)
 		if !ok {
-			return nil, false
-		}
-		if _, ok := cluster["nodes"].([]any); !ok {
 			return nil, false
 		}
 		clusters = append(clusters, cluster)
