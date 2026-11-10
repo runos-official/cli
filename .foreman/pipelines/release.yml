@@ -54,8 +54,11 @@ steps:
     timeout: 120
 
   - name: Gate chain
-    description: "scripts/release.sh --check: preflight, sensitivity scan, leak gate, scannability gate and the build/vet/test suite. Every gate, no side effects, and it cannot be skipped."
-    run: RUNOS_RELEASE_RECORD_BRANCH="${{ target.deployed_branch }}" scripts/release.sh "${{ version }}" --check
+    description: Run every release gate on the branch Foreman will tag.
+    run: >-
+      RUNOS_RELEASE_INTEGRATION_BRANCH="${{ target.branch }}"
+      RUNOS_RELEASE_RECORD_BRANCH="${{ target.deployed_branch }}"
+      scripts/release.sh "${{ version }}" --check
     timeout: 1800
     slow: true
 

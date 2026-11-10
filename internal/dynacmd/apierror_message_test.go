@@ -39,6 +39,26 @@ func TestDescribeAPIError(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps the offline agent refusal in plain words", func(t *testing.T) {
+		got := describeAPIError(409, []byte(`{
+			"error":"The node agent is offline. Reconnect the node agent before starting an update.",
+			"code":"agent.node_offline"
+		}`))
+		for _, want := range []string{
+			"The node agent is offline.",
+			"Reconnect the node agent before starting an update.",
+			"HTTP 409",
+			"agent.node_offline",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the refusal is missing %q: %s", want, got)
+			}
+		}
+		if strings.Contains(got, "\n") {
+			t.Errorf("the refusal must stay on one line: %q", got)
+		}
+	})
+
 	t.Run("omits the code when there is none, rather than printing an empty one", func(t *testing.T) {
 		if got := describeAPIError(404, []byte(`{"error":"Gone"}`)); strings.Contains(got, ", )") {
 			t.Fatalf("got %q, want no empty code", got)
