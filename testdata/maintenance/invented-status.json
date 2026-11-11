@@ -1,0 +1,61 @@
+{
+  "aid": "aid01",
+  "generatedAt": "2026-11-08T22:05:00Z",
+  "clusters": [
+    {
+      "cid": "cd004",
+      "name": "cluster-four",
+      "clusterFactsFrom": "live",
+      "collectedAt": "2026-11-08T22:04:00Z",
+      "clusterAgent": {
+        "agentState": "quarantined-by-a-later-release",
+        "agentStateDetail": "A state this CLI build has never seen.",
+        "updateActionAllowed": false,
+        "updateActionReason": "A reason this CLI build has never seen.",
+        "version": "1.99.0"
+      },
+      "kubernetes": {
+        "currentPatch": "v1.31.6",
+        "newestPatchInMinor": "v1.31.6",
+        "desiredMinor": "v1.31",
+        "state": "a-state-this-build-has-never-seen",
+        "detail": "A sentence this CLI build has never seen."
+      },
+      "autoUpdateUnits": { "masked": 0, "enabledOutsideRunos": 0, "unknown": 1 },
+      "nodes": [
+        {
+          "nid": "nd001",
+          "name": "worker-four",
+          "hostname": "worker-four",
+          "isCp": false,
+          "isWorker": true,
+          "nodeMaintenanceStatus": "quarantined",
+          "nodeMaintenanceStatusLabel": "Quarantined by a later release",
+          "nodeMaintenanceStatusDetail": "A status word this CLI build has never seen.",
+          "collectedAt": "2026-11-08T22:00:00Z",
+          "lastBootAgeSeconds": 60,
+          "rebootPendingAgeSeconds": null,
+          "securityUpdateCount": 0,
+          "lastSuccessfulMaintenanceRunAt": "2026-11-08T02:15:00Z",
+          "nodeAgentVersion": "1.9.0",
+          "agentState": "a-state-this-build-has-never-seen",
+          "agentStateLabel": "A label this build has never seen",
+          "agentStateDetail": "A sentence this CLI build has never seen.",
+          "updateActionAllowed": false,
+          "updateActionReason": "A reason this CLI build has never seen.",
+          "autoUpdateUnitState": "a-unit-state-this-build-has-never-seen",
+          "autoUpdateUnitStateDetail": "A sentence this CLI build has never seen.",
+          "quarantineReleasesAt": "2026-11-09T00:00:00Z",
+          "detail": {
+            "waitingPackages": [],
+            "rebootTriggerPackages": [],
+            "runningKernel": "6.1.0-21-arm64",
+            "newestInstalledKernel": "6.1.0-21-arm64",
+            "heldPackages": [],
+            "quarantineEvidence": [{ "probe": "readiness", "result": "refused" }]
+          }
+        }
+      ]
+    }
+  ]
+}

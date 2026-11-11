@@ -10,6 +10,7 @@ NC := \033[0m
 
 # Extract version from latest git tag (falls back to "dev")
 VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "dev")
+LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 
 # Default target
 .DEFAULT_GOAL := help
@@ -22,11 +23,11 @@ VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || 
 local: clean
 	$(eval BUILD_STAMP := dev-$(shell date -u +%Y-%m-%dT%H:%M:%SZ))
 	@go build -ldflags="-X github.com/runos-official/cli/version.Version=$(BUILD_STAMP)" -o runos .
-	@mkdir -p ~/.local/bin
-	@rm -f ~/.local/bin/runos
-	@cp runos ~/.local/bin/
-	@xattr -c ~/.local/bin/runos 2>/dev/null || true
-	@echo "$(GREEN)Installed runos $(BUILD_STAMP) to ~/.local/bin/runos$(NC)"
+	@mkdir -p "$(LOCAL_BIN_DIR)"
+	@rm -f "$(LOCAL_BIN_DIR)/runos"
+	@cp runos "$(LOCAL_BIN_DIR)/"
+	@xattr -c "$(LOCAL_BIN_DIR)/runos" 2>/dev/null || true
+	@echo "$(GREEN)Installed runos $(BUILD_STAMP) to $(LOCAL_BIN_DIR)/runos$(NC)"
 
 .PHONY: build
 build:
