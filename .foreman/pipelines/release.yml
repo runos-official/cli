@@ -134,5 +134,5 @@ steps:
       # the tracking ref together, and exits non-zero if they disagree.
       scripts/record_ref.sh record "${{ version }}" "${{ target.env }}" "${{ target.branch }}" "${{ target.deployed_branch }}"
     timeout: 120
-    expect: [main_before, main_after, main_equals_final]
-    observe: Printed for a final on a prod target only. main_after must equal the final's tagged commit and main_equals_final must be true. main_before is what main held before.
+    expect: [record_branch, record_after, record_matches_source]
+    observe: Every release reports the candidate record branch, its exact commit and verified source equality. A final on a prod target also reports main_before, main_after and main_equals_final. The script refuses a non-fast-forward or a main commit that differs from the final tag.
