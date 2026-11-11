@@ -60,6 +60,7 @@ steps:
       RUNOS_RELEASE_RECORD_BRANCH="${{ target.deployed_branch }}"
       scripts/release.sh "${{ version }}" --check
     timeout: 1800
+    installs_local_binary: false
     slow: true
 
   - name: Tag and push
@@ -106,6 +107,7 @@ steps:
     timeout: 300
 
   - name: Record the release
+    installs_local_binary: false
     description: "Only now, on success, through scripts/record_ref.sh, the one place that defines the record. A candidate advances the record the target names. A final on a prod target advances deployed and fast-forwards main to the commit the final's tag names, and refuses anything that is not a fast-forward. Nothing is forced."
     run: |
       # Item 198. Use the ref foreman rewrites for an objective-scoped deploy,
