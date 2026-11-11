@@ -127,6 +127,10 @@ With an issuer set:
 
 Configuration is stored in `~/.runos/config.json`.
 
+Set `RUNOS_CONFIG_DIR` to an absolute directory for a separate CLI session. Configuration, account credentials, caches and identity-service keys use that directory or its own credential-store namespace. The machine home directory stays unchanged.
+
+Set `RUNOS_ENVIRONMENTS_FILE` to an absolute JSON file to use a private environment catalog. The file uses the CDN catalog format with `default` and `environments`. This supports internal environments without publishing them to the public CDN. An invalid or missing file fails explicitly. Run `runos config env <name>` to select an environment from that catalog.
+
 ### Environment Variables
 
 | Variable | Description |

@@ -352,6 +352,23 @@ func Exists() bool {
 
 // FetchRemoteConfig fetches the environment configuration from the CDN.
 func FetchRemoteConfig() (*RemoteConfig, error) {
+	if path := os.Getenv("RUNOS_ENVIRONMENTS_FILE"); path != "" {
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("RUNOS_ENVIRONMENTS_FILE must be an absolute path")
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read private environment catalog: %w", err)
+		}
+		var rc RemoteConfig
+		if err := json.Unmarshal(body, &rc); err != nil {
+			return nil, fmt.Errorf("parse private environment catalog: %w", err)
+		}
+		if len(rc.Environments) == 0 || rc.Environments[rc.Default].Domains.APIURL() == "" {
+			return nil, fmt.Errorf("private environment catalog requires environments and a usable default")
+		}
+		return &rc, nil
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Get(remoteConfigURL)
