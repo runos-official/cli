@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -128,7 +129,7 @@ func fetchClusterIDs(cfg *config.Config) ([]string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: api.NewTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

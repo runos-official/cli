@@ -346,7 +346,7 @@ func statusGetJSON(cfg *config.Config, path string, out any) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: api.NewTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

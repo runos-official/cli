@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/cache"
 	"github.com/runos-official/cli/internal/config"
@@ -62,7 +63,8 @@ func NewUpdater() (*Updater, error) {
 	return &Updater{
 		baseURL: cfg.GetAPIURL(),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: api.NewTransport(),
 		},
 		token:    token,
 		cfg:      cfg,
@@ -170,7 +172,7 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 
 	fmt.Fprintf(u.progress, "Downloading from %s...\n", downloadURL)
 
-	resp, err := u.httpClient.Get(downloadURL)
+	resp, err := api.WithoutVersion(u.httpClient).Get(downloadURL) // a release host, not RunOS
 	if err != nil {
 		return fmt.Errorf("failed to download update: %w", err)
 	}
@@ -244,7 +246,7 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 func verifyChecksum(version, binaryName, archivePath string) error {
 	checksumsURL := fmt.Sprintf("%s/v%s/checksums.txt", cdnBaseURL, version)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second} // no CLI user agent: the release CDN
 	resp, err := client.Get(checksumsURL)
 	if err != nil {
 		return fmt.Errorf("failed to download checksums: %w", err)
@@ -536,7 +538,7 @@ func CheckForUpdate() string {
 	}
 
 	// Check for latest version
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: api.NewTransport()}
 	url := fmt.Sprintf("%s/%s%s?key=CLI_VERSION", cfg.GetAPIURL(), cfg.AccountID, configEndpoint)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
 )
@@ -35,7 +36,8 @@ func NewService() (*Service, error) {
 	return &Service{
 		baseURL: cfg.GetAPIURL(),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: api.NewTransport(),
 		},
 		token: token,
 	}, nil

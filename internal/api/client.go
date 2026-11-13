@@ -30,7 +30,8 @@ func NewClientWithTimeout(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: NewTransport(),
 		},
 	}
 }

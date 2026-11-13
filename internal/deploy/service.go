@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/runos-official/cli/internal/api"
 )
 
 // Service handles deployment-related API calls
@@ -75,7 +77,8 @@ func NewService(baseURL, token, cid, aid string) *Service {
 	return &Service{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout:   60 * time.Second,
+			Transport: api.NewTransport(),
 		},
 		token: token,
 		cid:   cid,
@@ -146,7 +149,7 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 	req.Header.Set("Content-Type", "application/gzip")
 	req.Header.Set("Authorization", "Bearer "+uploadToken)
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := api.ForTarget(s.httpClient, s.baseURL, fullURL).Do(req)
 	if err != nil {
 		return fmt.Errorf("upload request failed: %w", err)
 	}

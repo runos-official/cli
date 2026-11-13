@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/cache"
 	"github.com/runos-official/cli/internal/config"
@@ -62,7 +63,8 @@ func NewLoaderWithTimeout(baseURL, configDir string, timeout time.Duration) *Loa
 		baseURL:   baseURL,
 		configDir: configDir,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: api.NewTransport(),
 		},
 	}
 }

@@ -81,7 +81,7 @@ func ExchangeCustomToken(customToken, apiKey string) (*SignInResponse, error) {
 
 	reqURL := fmt.Sprintf("%s?key=%s", firebaseAuthURL, url.QueryEscape(apiKey))
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second} // no CLI user agent: not conductor
 	resp, err := client.Post(reqURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, transportFailure(signInCall, err)
@@ -122,7 +122,7 @@ func RefreshIDToken(refreshToken, apiKey string) (*RefreshResponse, error) {
 
 	reqURL := fmt.Sprintf("%s?key=%s", firebaseTokenURL, url.QueryEscape(apiKey))
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second} // no CLI user agent: not conductor
 	resp, err := client.Post(reqURL, "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, transportFailure(refreshCall, err)

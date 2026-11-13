@@ -212,6 +212,7 @@ func browserAuthenticateReporting(
 	conductorClient := api.NewClient(cfg.GetAPIURL())
 	initResp, err := conductorClient.InitiateDeviceAuth()
 	if err != nil {
+		reportGateRefusal(report, err)
 		return browserSession{}, fmt.Errorf("failed to initiate device auth: %w", err)
 	}
 
@@ -248,7 +249,9 @@ func browserAuthenticateReporting(
 	for time.Now().Before(deadline) {
 		resp, err := conductorClient.PollDeviceAuth(deviceID, token)
 		if err != nil {
-			report.Failed("unreachable", err.Error())
+			if !reportGateRefusal(report, err) {
+				report.Failed("unreachable", err.Error())
+			}
 			return browserSession{}, fmt.Errorf("failed to check authorization: %w", err)
 		}
 
