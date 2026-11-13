@@ -108,6 +108,7 @@ func interactiveLoginReportingWith(cmd *cobra.Command, report signInReporter, ch
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+	moveOffRetiredEnvironment(cmd, cfg, report)
 	useRoid, err := useRoidSignIn(cfg, report, cmd.ErrOrStderr())
 	if err != nil {
 		return err

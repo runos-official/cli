@@ -352,7 +352,13 @@ func Exists() bool {
 
 // FetchRemoteConfig fetches the environment configuration from the CDN.
 func FetchRemoteConfig() (*RemoteConfig, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	return FetchRemoteConfigWithin(10 * time.Second)
+}
+
+// FetchRemoteConfigWithin is FetchRemoteConfig with the caller's deadline, for a fetch that
+// must not hold up what the person asked for.
+func FetchRemoteConfigWithin(timeout time.Duration) (*RemoteConfig, error) {
+	client := &http.Client{Timeout: timeout} // no CLI user agent: the CDN, not conductor
 
 	resp, err := client.Get(remoteConfigURL)
 	if err != nil {

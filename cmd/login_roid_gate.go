@@ -51,6 +51,7 @@ The fallback changes the sign-in method and nothing else. It sends no credential
 takes none from it, and the server still decides what a Firebase token may do.
 */
 func useRoidSignIn(cfg *config.Config, report signInReporter, notice io.Writer) (bool, error) {
+	refreshEmptyAuthIssuer(cfg, report, notice)
 	if cfg.AuthIssuer == "" {
 		return false, nil
 	}
