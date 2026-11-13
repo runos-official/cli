@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.24.3
+
+### Added
+
+- `runos update --force` installs the latest published final release over whatever is running, including a local development build and a build that is newer than the release (a release candidate, for example, which is a downgrade and is called one). It is explicit only: it first says exactly what is replaced and by what, for example `Replacing the development build dev-2026-11-13T09:00:00Z with the published release v1.24.2`, then downloads with the same checksum check as a normal update, and it never picks a release candidate. `--check --force` says what would be replaced and installs nothing. With `--json` the result carries `force`, `previousVersion` and `newVersion`. A development build that runs `runos update` without `--force` still skips, and now prints `Use runos update --force to replace it with the published release.` on stderr. The note about a VPN service that runs another build still applies after a forced install.
+
 ## v1.24.2
 
 ### Fixed
