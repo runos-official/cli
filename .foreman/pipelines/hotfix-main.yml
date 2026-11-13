@@ -1,0 +1,41 @@
+# The reviewed MAIN HOTFIX for the RunOS CLI: a patch final cut from main, released without
+# touching dev or `deployed`. Foreman's guide: docs/main-hotfix.md.
+#
+# The managed runner checks out the exact reviewed commit DETACHED and runs these steps inside that
+# clone. Both scripts build that initial HEAD. `${{ branch }}` is only the reviewed ref's NAME, used
+# to refuse a different branch; the production target's usual dev branch is never the source.
+#
+# scripts/hotfix_check.sh and scripts/hotfix_release.sh live beside the dev-first path and share
+# only scripts/hotfix_lib.sh, so the later main-to-dev merge has nothing to conflict on.
+#
+# Credentials: like release.yml, this recipe injects none. gh authenticates from the host's own
+# keyring, so there is no per-step `needs` to copy, and production target grants still apply.
+
+name: Main hotfix
+description: Release a reviewed patch final cut from main. Full checks first, then tag the exact source, verify the attestation and fast-forward main. Dev and deployed are not touched.
+kind: github_release
+
+hotfix:
+  base_branch: main
+  record_branch: main
+  preserves_dev: true
+
+advertises:
+  component: cli
+  env: prod
+
+steps:
+  - name: Full hotfix checks
+    description: "scripts/hotfix_check.sh: the refusals (main ancestry, next patch, tag, changelog, tree), the sensitivity scan over main to the source commit, the whole-tree leak gate, the scannability gate, and go build, vet and test. The binary is built in a scratch directory; nothing is installed, tagged or pushed."
+    run: scripts/hotfix_check.sh "${{ version }}" "${{ branch }}"
+    timeout: 1800
+    installs_local_binary: false
+    slow: true
+
+  - name: Release reviewed patch
+    description: "scripts/hotfix_release.sh: tags the exact source, pushes only the tag, waits for the release workflow at that commit, verifies the artefact attestation is bound to the workflow at the tag, then fast-forwards main to the tag's commit. Never forces, and never moves dev or deployed."
+    run: scripts/hotfix_release.sh "${{ version }}" "${{ branch }}"
+    timeout: 2400
+    installs_local_binary: false
+    expect: [main_before, main_after, main_equals_final]
+    observe: main_after must equal the tagged source commit and main_equals_final must be true. main_before is what main held.
