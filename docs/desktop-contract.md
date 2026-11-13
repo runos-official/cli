@@ -153,6 +153,12 @@ One JSON object per line on stdout, flushed as it happens. Desktop ignores an `e
 know. Known events: `device_code` (`deviceId`, `url`), `browser_opened` (`browserOpened`), `pending`,
 `authorized`, `notice` (`reason`, `message`), `error` (`reason`, `message`).
 
+Reasons Desktop may see: a `notice` with `reason` `identity_service_enabled` (the stored sign-in address was empty and the CLI filled it in, so this sign-in goes through the RunOS identity service), a `notice` with `reason` `environment_retired` (the stored environment no
+longer exists, so the CLI moved to the default one and ended the old sign-in; sign in again), and an
+`error` with `reason` `update_required` (RunOS refused this CLI version; run `runos update`). Every
+other command that RunOS refuses for the same cause exits 1 with `Error: ` and the same sentence on
+stderr, and in `--json` mode prints the JSON error with `code` `cli.update_required`.
+
 | Key | Type | Always sent | Desktop |
 | --- | --- | --- | --- |
 | `event` | string | yes | required |

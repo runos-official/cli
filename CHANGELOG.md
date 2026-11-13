@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.24.2
+
+### Fixed
+
+- `runos login` and the sign-in that `runos vpn up` starts now fill in a missing sign-in address. A config made before the environment named an identity service kept an empty address for ever and signed in the old way. When the address is empty, it is read once from the RunOS configuration, stored, and checked as usual. This covers a config with an `env` label, and an old config with no label (or a label its URLs no longer match) whose console and API addresses are exactly those of one RunOS environment; the label is filled in too. An address that is already stored is never replaced. A custom config (addresses that match no RunOS environment), an API address set with `RUNOS_API_URL`, a configuration that cannot be read within a few seconds, or an environment that names no address change nothing, and the sign-in goes on as before. When the address is filled, the CLI says so in one line on stderr, naming the identity service host, and sends a `notice` event with the reason `identity_service_enabled` in the `--json` sign-in stream.
+- A config on the retired `beta` environment now moves to the default RunOS environment at sign-in. The console address, API address and sign-in address come from the RunOS configuration, the rest of your config stays, and the beta sign-in (and any stored key) is ended, so you sign in again on the new environment. The CLI says so in one line on stderr, before it asks the old environment to end the sign-in, and as a `notice` event with the reason `environment_retired` in the `--json` sign-in stream. The CLI waits only a few seconds for the old environment to answer. A custom environment, an address you set by hand, or a `RUNOS_API_URL` override is never touched, and nothing changes if the RunOS configuration cannot be read. The configuration is read at most once per run, and a local development config (loopback, an IP address or plain http) does not read it at all.
+
+### Added
+
+- Every request to RunOS now announces the CLI version in its `User-Agent`, as `runos-cli/<version> (<os>/<arch>)` (a development build sends its own label). Requests to other hosts, such as the release download, do not. RunOS can then see which versions are still in use and, when it sets a minimum version, ask old ones to update.
+- When RunOS refuses a CLI that is below its minimum version, the CLI stops with one line, `Error: Your RunOS CLI is too old to talk to RunOS. Update it with 'runos update' (or download the latest release), then try again.`, and a non-zero exit, wherever in the command the refusal happens. In `--json` mode and over MCP the error carries `code` `cli.update_required`, and the sign-in stream sends an `error` event with the reason `update_required`. The CLI never updates itself. `runos update` and the version check keep working.
+
 ## v1.24.1
 
 ### Fixed
