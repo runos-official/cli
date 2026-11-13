@@ -138,12 +138,19 @@ reads those replies and prints the table above anyway: a missing list becomes `[
 | `cli.currentVersion` | string | no | optional |
 | `cli.version` | string | no | optional |
 | `cli.message` | string | no | optional |
+| `cli.force` | bool | no | ignored |
+| `cli.previousVersion` | string | no | ignored |
+| `cli.newVersion` | string | no | ignored |
 | `desktop` | object | no | optional |
 | `desktop.updated` | bool | yes | required |
 | `desktop.updateAvailable` | bool | yes | optional |
 | `desktop.currentVersion` | string | no | optional |
 | `desktop.version` | string | no | optional |
 | `desktop.message` | string | no | optional |
+
+`cli.force`, `cli.previousVersion` and `cli.newVersion` are sent only by `runos update --force`. `force` is
+`true`, `previousVersion` is the build that was running, and `newVersion` is the published release it
+was (or, with `--check`, would be) replaced by. An ordinary update never sends them.
 
 `desktop.*` is always sent when `desktop` is present. `desktop` is absent when Desktop is not installed.
 

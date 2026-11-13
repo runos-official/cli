@@ -26,8 +26,14 @@ import (
 	"github.com/runos-official/cli/version"
 )
 
+// cdnBaseURL is where release archives and checksums are downloaded from. A var only so a test can
+// point it at a fake release server; nothing else assigns it.
+var cdnBaseURL = "https://github.com/runos-official/cli/releases/download"
+
+// executablePath is the binary an update replaces. A var only so a test never replaces itself.
+var executablePath = os.Executable
+
 const (
-	cdnBaseURL          = "https://github.com/runos-official/cli/releases/download"
 	configEndpoint      = "/system-config"
 	updateCheckCacheKey = "cli_update_check"
 	updateCheckTTL      = 1 * time.Hour
@@ -215,7 +221,7 @@ func (u *Updater) DownloadAndInstall(latestVersion string) error {
 		return fmt.Errorf("failed to extract update: %w", err)
 	}
 
-	currentBinary, err := os.Executable()
+	currentBinary, err := executablePath()
 	if err != nil {
 		return fmt.Errorf("failed to get current binary path: %w", err)
 	}
