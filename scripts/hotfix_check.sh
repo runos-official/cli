@@ -23,6 +23,7 @@ for tool in git go python3; do command -v "$tool" >/dev/null 2>&1 || hotfix_die 
 SCRATCH=""
 trap '[[ -z "$SCRATCH" ]] || rm -rf -- "$SCRATCH"' EXIT
 
+VERSION="$(hotfix_tag "$VERSION")"
 hotfix_preflight "$VERSION" "$REF" check
 hotfix_sensitivity_scan "$HOTFIX_BASE" "$HOTFIX_SOURCE_SHA"
 

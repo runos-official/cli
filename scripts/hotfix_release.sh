@@ -29,6 +29,7 @@ for arg in "$@"; do
 done
 [[ -n "$VERSION" ]] || hotfix_die "usage: scripts/hotfix_release.sh vX.Y.Z [reviewed-ref] [--dry-run]"
 
+VERSION="$(hotfix_tag "$VERSION")"
 MODE="release"; [[ "$DRY" == "true" ]] && MODE="dry-run"
 hotfix_preflight "$VERSION" "$REF" "$MODE"
 SOURCE="$HOTFIX_SOURCE_SHA"

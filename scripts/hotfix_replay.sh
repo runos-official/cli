@@ -93,6 +93,10 @@ fixture c1b
   && git add -A && git commit --quiet -m "long changelog" && git push --quiet origin hotfix/fix )
 H1="$(git -C "$F/seed" rev-parse HEAD)"; ( cd "$F/host" && git fetch --quiet origin && git checkout --quiet --detach "$H1" )
 run_release v1.0.1 hotfix/fix --dry-run && ok "the section is found in a CHANGELOG longer than a pipe buffer" || bad "long CHANGELOG refused: $(cat "$F/err")"
+# Foreman passes the version without the leading v (its ${{ version }} is 1.0.1). Both spellings work.
+run_release 1.0.1 hotfix/fix --dry-run && ok "a version without the leading v is accepted by the release script" || bad "1.0.1 refused: $(cat "$F/err")"
+( cd "$F/host" && "$R/scripts/hotfix_check.sh" 1.0.1 hotfix/fix ) >"$F/out" 2>"$F/err" || true; grep -q "not a final version" "$F/err" && bad "check refused 1.0.1 as not final" || ok "a version without the leading v passes the check script's version test"
+refuses "a version that is not X.Y.Z is still refused" "not a final version" 1.0 hotfix/fix --dry-run
 
 case_hdr "Case 2, refusals"
 fixture c2a; echo dirty >> "$F/host/file.txt"

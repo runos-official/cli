@@ -58,10 +58,15 @@ hotfix_next_patch() {
 # ancestor of HEAD, or HEAD is main itself; the version is not the next patch of the version main
 # runs; HEAD's CHANGELOG has no section for the version; the reviewed ref on origin is not HEAD.
 #
+# The version may arrive as 1.2.3 (Foreman's `${{ version }}`) or as v1.2.3. hotfix_tag turns either
+# into the tag spelling vX.Y.Z; anything else is refused by the pattern in hotfix_preflight.
+hotfix_tag() { local v="$1"; [[ "$v" == v* ]] && printf '%s' "$v" || printf 'v%s' "$v"; }
+
 # Sets HOTFIX_SOURCE_SHA (the full id of HEAD, the commit that will be tagged), HOTFIX_MAIN_SHA and
 # HOTFIX_BASE (main, the start of the release range).
 hotfix_preflight() {
-  local version="$1" ref="${2:-}" mode="$3" branch
+  local version ref="${2:-}" mode="$3" branch
+  version="$(hotfix_tag "$1")"
   [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
     || hotfix_die "$version is not a final version (vX.Y.Z); a main hotfix is a final patch"
   git rev-parse --git-dir >/dev/null 2>&1 || hotfix_die "not inside a git repository"
