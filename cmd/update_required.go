@@ -55,3 +55,22 @@ func reportGateRefusal(report signInReporter, err error) bool {
 	report.Failed("update_required", gate.Error())
 	return true
 }
+
+// gateOf returns err when it is the version gate's refusal and nil for anything else. A command
+// that carries on after a failed side call uses it to stop for the gate alone.
+func gateOf(err error) error {
+	var gate *api.UpdateRequiredError
+	if errors.As(err, &gate) {
+		return gate
+	}
+	return nil
+}
+
+// statusRefused ends `runos status` on the gate's refusal: the JSON error under --json, the typed
+// error otherwise, for Execute to print as the one plain line.
+func statusRefused(cmd *cobra.Command, jsonOutput bool, gate error) error {
+	if jsonOutput {
+		return emitJSONError(cmd, gate)
+	}
+	return gate
+}

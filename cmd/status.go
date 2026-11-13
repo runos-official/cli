@@ -163,7 +163,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 
 			// A refresh proves Firebase still knows the user; it does NOT prove conductor still
 			// accepts the sign-in, because the session bound lives there. See probeSession.
-			if probe, known := probeSession(cfg); known {
+			probe, known, gate := probeSession(cfg)
+			if gate != nil {
+				return statusRefused(cmd, jsonOutput, gate)
+			}
+			if known {
 				switch {
 				case !probe.accepted:
 					status["authenticated"] = false
@@ -189,7 +193,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	// cluster's name. Best-effort: a network or auth failure just leaves
 	// the fields out so `runos status` keeps working offline.
 	if authenticated, _ := status["authenticated"].(bool); authenticated {
-		if profile := fetchAccountProfile(cfg); profile != nil {
+		profile, profileErr := fetchAccountProfile(cfg)
+		if gate := gateOf(profileErr); gate != nil {
+			return statusRefused(cmd, jsonOutput, gate)
+		}
+		if profile != nil {
 			if profile.CompanyName != "" {
 				status["companyName"] = profile.CompanyName
 			}
@@ -198,7 +206,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if defaultCID != "" {
-			if clusters, err := fetchClusters(cfg); err == nil {
+			clusters, err := fetchClusters(cfg)
+			if gate := gateOf(err); gate != nil {
+				return statusRefused(cmd, jsonOutput, gate)
+			}
+			if err == nil {
 				found := false
 				for _, c := range clusters {
 					if c.CID == defaultCID {
@@ -394,21 +406,22 @@ type sessionProbe struct {
 	expired bool
 }
 
-func probeSession(cfg *config.Config) (sessionProbe, bool) {
+func probeSession(cfg *config.Config) (sessionProbe, bool, error) {
 	aid := cfg.GetAccountID()
 	baseURL := cfg.GetAPIURL()
 	if aid == "" || baseURL == "" {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	result, err := api.NewClient(baseURL).Do(
 		http.MethodGet, "/"+url.PathEscape(aid)+"/account/profile", token, nil,
 	)
 	if err != nil {
-		return sessionProbe{}, false
+		// Unreachable is not expired, but the version gate is a refusal of this CLI, not a network fact.
+		return sessionProbe{}, false, gateOf(err)
 	}
 	var envelope struct {
 		Code string `json:"code"`
@@ -416,7 +429,7 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 	_ = result.Decode(&envelope)
 	accepted, known := sessionProbeVerdict(result.StatusCode)
 	if !known {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	if !accepted {
 		expired := envelope.Code == api.SessionExpiredCode
@@ -424,9 +437,9 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 		if !expired {
 			message = refusedCredentialMessage(message, baseURL)
 		}
-		return sessionProbe{accepted: false, message: message, expired: expired}, true
+		return sessionProbe{accepted: false, message: message, expired: expired}, true, nil
 	}
-	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true
+	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true, nil
 }
 
 /*
@@ -511,17 +524,18 @@ func refusedCredentialMessage(conductorMessage, apiURL string) string {
 }
 
 // fetchAccountProfile reads the account's company profile. Returns nil
-// when the account id is missing or the request fails.
-func fetchAccountProfile(cfg *config.Config) *accountProfile {
+// when the account id is missing or the request fails; the caller treats
+// every failure but the version gate as "leave the fields out".
+func fetchAccountProfile(cfg *config.Config) (*accountProfile, error) {
 	aid := cfg.GetAccountID()
 	if aid == "" {
-		return nil
+		return nil, nil
 	}
 	var profile accountProfile
 	if err := statusGetJSON(cfg, "/"+url.PathEscape(aid)+"/account/profile", &profile); err != nil {
-		return nil
+		return nil, err
 	}
-	return &profile
+	return &profile, nil
 }
 
 // statusClusterRow is the cid+name subset of a `/:aid/clusters` row

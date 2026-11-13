@@ -69,6 +69,9 @@ func runClustersDefault(cmd *cobra.Command, args []string) error {
 	}
 
 	ids, fetchErr := fetchClusterIDs(cfg)
+	if gate := gateOf(fetchErr); gate != nil {
+		return gate
+	}
 	if fetchErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not verify cluster %q exists on the account (%v); setting anyway. Run 'runos clusters list' once authenticated to confirm.\n", cid, fetchErr)
 	} else if !slices.Contains(ids, cid) {

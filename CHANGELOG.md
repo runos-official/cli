@@ -11,6 +11,7 @@
 
 - Every request to RunOS now announces the CLI version in its `User-Agent`, as `runos-cli/<version> (<os>/<arch>)` (a development build sends its own label). Requests to other hosts, such as the release download, do not. RunOS can then see which versions are still in use and, when it sets a minimum version, ask old ones to update.
 - When RunOS refuses a CLI that is below its minimum version, the CLI stops with one line, `Error: Your RunOS CLI is too old to talk to RunOS. Update it with 'runos update' (or download the latest release), then try again.`, and a non-zero exit, wherever in the command the refusal happens. In `--json` mode and over MCP the error carries `code` `cli.update_required`, and the sign-in stream sends an `error` event with the reason `update_required`. The CLI never updates itself. `runos update` and the version check keep working.
+- `runos status` and `runos clusters default` now stop on that refusal too. Before, `status` hid it behind its normal output and exited 0, and `clusters default` took it for a failure to look up the cluster and saved anyway. Any other failure of those side requests is still tolerated as before.
 
 ## v1.24.1
 
