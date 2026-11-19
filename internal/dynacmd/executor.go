@@ -399,8 +399,16 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// Runs BEFORE the guard below, not after (finding 1193): the ETag
 	// header is server-controlled data the CLI has not examined, and
 	// injecting it after the guard already ran would let a malicious or
-	// malformed ETag value reach printable output unscanned.
-	respBody = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
+	// malformed ETag value reach printable output unscanned. It also
+	// validates the ETag itself and never panics on a non-object body
+	// (finding 1215, G2).
+	respBody, err = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
+	if err != nil {
+		if jsonOutput {
+			return emitJSONErrorAndSilence(cmd, err)
+		}
+		return err
+	}
 
 	// Story 343 / FCR2030: for a credential command family only (see
 	// guardCredentialResponse), refuse to let a secret-shaped bearer value

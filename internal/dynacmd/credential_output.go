@@ -230,6 +230,17 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	}
 	var probe any
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
+	// internal/output/formatter.go's JSON renderer calls UseNumber before
+	// decoding; this guard did not, so a body carrying a number outside
+	// float64's exact range (decoded into `any` without UseNumber,
+	// strconv.ParseFloat returns ErrRange) made THIS decode fail while
+	// the formatter's decode of the SAME bytes succeeded, diverting this
+	// guard onto the weaker raw-byte fallback for a body the formatter
+	// renders structurally. UseNumber here matches the formatter's mode
+	// exactly, so this guard fails to decode only when the formatter
+	// would also fail to decode.
+	decoder.UseNumber()
 	if err := decoder.Decode(&probe); err != nil {
 		if runosSecretPattern.Match(trimmed) {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a non-JSON or malformed response body, which the inventory contract forbids")
@@ -256,9 +267,19 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a property name, which the inventory contract forbids")
 		}
 		if allowedField != "" && key == allowedField {
-			if s, ok := value.(string); ok && family.secretPattern != nil && family.secretPattern.MatchString(s) {
+			// Finding 1215 (G3): a value in the issuing field that matches
+			// NEITHER this family's own shape NOR any OTHER recognised
+			// shape used to fall through to findSecretValue below, which
+			// found nothing to object to and let it render -- the banners
+			// print any non-empty string, so a malformed or garbage
+			// "token" was presented to the user as a valid one-shot
+			// secret. The issuing field must hold EXACTLY the shape its
+			// own producer mints, or the response is refused outright.
+			s, isString := value.(string)
+			if isString && family.secretPattern != nil && family.secretPattern.MatchString(s) {
 				continue // the one legitimate carrier, on the one operation documented to return it, holding exactly the shape that operation's own producer mints
 			}
+			return fmt.Errorf("refusing to render response: the issuing field %q did not hold the exact bearer shape this operation's own producer mints, which the inventory contract forbids", key)
 		}
 		if found := findSecretValue(value, key); found != "" {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in field %q, which the inventory contract forbids", found)
@@ -300,13 +321,21 @@ func guardCredentialErrorBody(cmdDef manifest.Command, err error) error {
 // value anywhere: decoded JSON keys and values when raw parses as JSON,
 // the raw bytes directly as a fallback when it does not (a malformed or
 // non-JSON error body must not get a pass just because it didn't parse).
+//
+// Finding 1215 (G1): decodes with UseNumber, matching
+// describeAPIError's eventual rendering of the same bytes (and
+// guardCredentialResponse's success-path decode) exactly, so a number
+// outside float64's range elsewhere in the body cannot make this decode
+// fail while a renderer downstream still succeeds on it.
 func responseContainsSecret(raw []byte) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return false
 	}
 	var probe any
-	if err := json.Unmarshal(trimmed, &probe); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	if err := decoder.Decode(&probe); err != nil {
 		return runosSecretPattern.Match(trimmed)
 	}
 	return valueContainsSecret(probe)
@@ -417,24 +446,43 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 // first means the guard's structured scan sees the "etag" key like any
 // other field and refuses it the same way it would refuse that same
 // text anywhere else in the body.
-func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) []byte {
+//
+// Returns an error, and never respBody, for a secret-shaped ETag
+// (finding 1215, G2): this function validates the value it is about to
+// insert on its own, rather than relying solely on the guard running
+// afterward, so this contract holds even if a future caller changes
+// that order.
+//
+// Finding 1215 (G2): json.Unmarshal of a body that is the literal JSON
+// value `null` succeeds with item left nil (Go's documented behaviour
+// for unmarshalling null into a map), and the unchecked `item["etag"]
+// = etag` below then panicked assigning into a nil map, crashing before
+// the guard or the --json error envelope ever ran. The nil check treats
+// `null` the same as every other non-object body (an array, a bare
+// string, a malformed body): nothing to inject an etag field into, so
+// respBody passes through unchanged for guardCredentialResponse to
+// examine on its own terms.
+func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) ([]byte, error) {
 	if _, _, ok := credentialFamilyFor(cmdDef.Command); !ok {
-		return respBody
+		return respBody, nil
 	}
 	etag := strings.TrimSpace(headers.Get("ETag"))
 	if etag == "" {
-		return respBody
+		return respBody, nil
+	}
+	if runosSecretPattern.MatchString(etag) {
+		return nil, fmt.Errorf("refusing to render response: the response's ETag header was a bearer-secret-shaped value, which the inventory contract forbids")
 	}
 	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
-		return respBody
+	if err := json.Unmarshal(respBody, &item); err != nil || item == nil {
+		return respBody, nil
 	}
 	item["etag"] = etag
 	sanitized, err := json.Marshal(item)
 	if err != nil {
-		return respBody
+		return respBody, nil
 	}
-	return sanitized
+	return sanitized, nil
 }
 
 // printOneShotBanner prints the one-shot-secret banner for a successful

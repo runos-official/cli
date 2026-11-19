@@ -268,3 +268,45 @@ func TestDispatch_HeaderLocatedFieldOnGETNeverReachesQueryString(t *testing.T) {
 		t.Errorf("ifMatch must never reach the query string, got: %q", gotQuery)
 	}
 }
+
+// Story 343 criterion 6's DELETE half: the exact PUBLISHED shape of
+// account/access/grants/withdraw (Conductor src/util/cliManifest/
+// accountAccessGrants.manifest.ts, commit fd3a3631: endpoint
+// /:aid/account/access/grants/:grant, method DELETE, fields `grant`
+// (positional) and IF_MATCH_FIELD `ifMatch`, Location "header"). This is
+// a real DELETE route, not a synthetic GET, so it exercises
+// buildEndpoint's DELETE query-string branch directly.
+var accountAccessGrantsWithdrawFixture = manifest.Command{
+	Command:  "account/access/grants/withdraw",
+	Method:   http.MethodDelete,
+	Endpoint: "/:aid/account/access/grants/:grant",
+	Input: &manifest.Input{Fields: []manifest.Field{
+		{Name: "grant", Type: "string", Required: true, Positional: true},
+		{Name: "ifMatch", Type: "string", Required: true, Location: "header"},
+	}},
+}
+
+func TestDispatch_HeaderLocatedFieldOnDELETENeverReachesQueryString(t *testing.T) {
+	var gotHeaders http.Header
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{AccountID: "acct1"}
+	input := map[string]any{"grant": "g1", "ifMatch": `"etag-value-0"`}
+	_, _, err := NewExecutor(srv.URL).dispatch(accountAccessGrantsWithdrawFixture, []string{"g1"}, input, "", cfg, "test-token")
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := gotHeaders.Get("If-Match"); got != `"etag-value-0"` {
+		t.Errorf("If-Match header = %q, want %q", got, `"etag-value-0"`)
+	}
+	if gotQuery != "" {
+		t.Errorf("ifMatch must never reach the query string on DELETE, got: %q", gotQuery)
+	}
+}

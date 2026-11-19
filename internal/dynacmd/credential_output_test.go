@@ -2,6 +2,8 @@ package dynacmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -448,5 +450,115 @@ func TestSanitizeForTableRender(t *testing.T) {
 	// Non-credential command: never altered.
 	if got := sanitizeForTableRender(cmdDef("apps/logs"), body, false); string(got) != string(body) {
 		t.Errorf("a non-credential command must be returned unchanged, got: %s", got)
+	}
+}
+
+// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
+// internal/output/formatter.go's JSON renderer calls UseNumber before
+// decoding; this guard's decoder did not. A number outside float64's
+// exact range elsewhere in the body made ONLY this guard's decode fail
+// (strconv.ParseFloat returns ErrRange without UseNumber), diverting a
+// LEGITIMATE issuance onto the raw-byte fallback, which has no concept
+// of the one-shot field exemption and refuses on ANY recognised bearer
+// shape anywhere -- a false refusal of a response the formatter would
+// have rendered correctly.
+func TestGuardCredentialResponse_HugeNumberFieldDoesNotForceRawFallback(t *testing.T) {
+	huge := strings.Repeat("9", 400)
+	body := `{"id":"k1","token":"` + fakeLegacyPAT + `","quota":` + huge + `}`
+	if err := guardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
+		t.Fatalf("a legitimate issuance with an oversized unrelated number must not be refused, got: %v", err)
+	}
+}
+
+// Finding 1215 (G2): json.Unmarshal of the literal JSON value `null`
+// succeeds with the target map left nil; the unchecked assignment used
+// to panic before the guard or the --json error envelope ever ran.
+func TestInjectETagIntoCredentialResponse_NullBodyDoesNotPanic(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("ETag", `"etag-1"`)
+	got, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte("null"), headers)
+	if err != nil {
+		t.Fatalf("expected no error for a null body, got: %v", err)
+	}
+	if string(got) != "null" {
+		t.Errorf("a null body must pass through unchanged, got: %s", got)
+	}
+}
+
+// Finding 1215 (G2): the ETag value itself is validated before
+// insertion, independent of the guard that runs on the result
+// afterward, so this function's own contract holds regardless of call
+// order.
+func TestInjectETagIntoCredentialResponse_SecretShapedETagIsRefused(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("ETag", fakeTypedPAT)
+	_, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
+	if err == nil {
+		t.Fatal("expected a refusal for a secret-shaped ETag, got nil")
+	}
+}
+
+func TestInjectETagIntoCredentialResponse_LegitimateETagStillWorks(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("ETag", `"abc123"`)
+	got, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
+	if err != nil {
+		t.Fatalf("expected no error for an ordinary ETag, got: %v", err)
+	}
+	var item map[string]any
+	if jsonErr := json.Unmarshal(got, &item); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v, got: %s", jsonErr, got)
+	}
+	if item["etag"] != `"abc123"` {
+		t.Errorf("expected etag field in the result, got: %v", item)
+	}
+}
+
+// Finding 1215 (G3): a value in the issuing field that matches NEITHER
+// this family's own shape NOR any other recognised shape used to fall
+// through unexamined (findSecretValue finds nothing to object to), and
+// the banners print any non-empty string, presenting garbage as a valid
+// one-shot secret.
+func TestGuardCredentialResponse_GarbageIssuingValueIsRefused(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		field   string
+	}{
+		{"legacy api-keys add", "account/api-keys/add", "token"},
+		{"legacy api-keys add-personal", "account/api-keys/add-personal", "token"},
+		{"notify-keys add", "account/notify-keys/add", "keyValue"},
+		{"personal-access-tokens add", "account/personal-access-tokens/add", "secret"},
+		{"personal-access-tokens rotate", "account/personal-access-tokens/rotate", "secret"},
+		{"account-api-keys add", "account/account-api-keys/add", "secret"},
+		{"account-api-keys rotate", "account/account-api-keys/rotate", "secret"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := `{"id":"k1","` + c.field + `":"not-a-real-bearer-shape"}`
+			if err := guardCredentialResponse(cmdDef(c.command), []byte(body)); err == nil {
+				t.Fatal("expected a refusal for a non-bearer-shaped value in the issuing field, got nil")
+			}
+		})
+	}
+}
+
+// A legitimate issuance must still pass for every one of the seven
+// operations (the "add a test that a legitimate request still passes"
+// rule for a new guard).
+func TestGuardCredentialResponse_GarbageIssuingValueGuard_LegitimateStillPasses(t *testing.T) {
+	cases := []struct {
+		command, field, secret string
+	}{
+		{"account/api-keys/add", "token", fakeLegacyPAT},
+		{"account/notify-keys/add", "keyValue", fakeNotifyKey},
+		{"account/personal-access-tokens/add", "secret", fakeTypedPAT},
+		{"account/account-api-keys/add", "secret", fakeTypedKey},
+	}
+	for _, c := range cases {
+		body := `{"id":"k1","` + c.field + `":"` + c.secret + `"}`
+		if err := guardCredentialResponse(cmdDef(c.command), []byte(body)); err != nil {
+			t.Fatalf("%s: expected a legitimate issuance to pass, got: %v", c.command, err)
+		}
 	}
 }
