@@ -42,6 +42,24 @@ func TestRefuseStoredSecretRefusesBothSecretShapes(t *testing.T) {
 	}
 }
 
+// Finding 1107: RUNOS_API_KEY overrides a stored secret, so the env-key
+// remedy must say to unset it; a stored secret has no such override and
+// must not be told to.
+func TestRefuseStoredSecretRemedyMatchesTheSource(t *testing.T) {
+	envMsg := (&Client{kind: auth.CredentialEnvKey}).RefuseStoredSecret("release a Procedure kill switch").Error()
+	if !strings.Contains(envMsg, "Unset RUNOS_API_KEY") {
+		t.Errorf("env-sourced secret: expected the remedy to say to unset RUNOS_API_KEY, got:\n%s", envMsg)
+	}
+
+	storedMsg := (&Client{kind: auth.CredentialStoredKey}).RefuseStoredSecret("release a Procedure kill switch").Error()
+	if strings.Contains(storedMsg, "RUNOS_API_KEY") {
+		t.Errorf("stored secret: remedy must not mention RUNOS_API_KEY, a different source, got:\n%s", storedMsg)
+	}
+	if !strings.Contains(storedMsg, "runos login --api-key") {
+		t.Errorf("stored secret: expected the refusal to name where it is stored, got:\n%s", storedMsg)
+	}
+}
+
 // The other half of the same rule: an interactive session must NOT be
 // refused. A refusal that fired on everything would pass the test above
 // and make the whole surface unusable.

@@ -61,6 +61,11 @@ var CLIStatus = Contract{
 	{"sessionExpired", Bool, false, DesktopOptional},
 	{"sessionExpiresAt", Time, false, DesktopIgnored},
 	{"authMethod", String, false, DesktopIgnored},
+	// Story 343 / FCR2030: present only for a secret-sourced credential (env or stored), always
+	// "unknown" today -- see internal/auth.CredentialType and cmd/status_credential.go's
+	// statusCredentialType. No endpoint this command calls verifies whether the secret is a
+	// Personal Access Token or an Account API Key.
+	{"credentialType", String, false, DesktopIgnored},
 	{"signedInAt", String, false, DesktopIgnored},
 	{"environment", String, false, DesktopIgnored},
 	{"apiUrl", String, false, DesktopIgnored},

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/runos-official/cli/internal/api"
+	"github.com/runos-official/cli/internal/auth"
 )
 
 // formatAuthError checks whether err is an *APIError carrying a 401
@@ -23,16 +24,27 @@ import (
 // "revoked at <ts>" vs "token doesn't parse" without the user having to
 // dig.
 //
-// usingSecretCredential is the SOURCE question only (auth.Kind(cfg).
-// IsSecretCredential()), never a semantic-type claim: conductor's 401
-// body carries no verified credentialType today (FPL421/story 331 adds
-// that classification only to the api-keys list/get responses, not to
-// the auth-refusal path), so this function must not call the secret a
-// Personal Access Token. Story 343 / FCR2030: a prior version printed a
-// PAT-specific checklist for every secret credential, including an
-// Account API Key, which is the exact defect this signature exists to
-// prevent. Recovery stays generic until a trusted response names a type.
-func formatAuthError(err error, usingSecretCredential bool) (string, bool) {
+// credential is the SOURCE question only (auth.Kind(cfg)), never a
+// semantic-type claim: conductor's 401 body carries no verified
+// credentialType today (FPL421/story 331 adds that classification only
+// to the api-keys list/get responses, not to the auth-refusal path), so
+// this function must not call the secret a Personal Access Token. Story
+// 343 / FCR2030: a prior version printed a PAT-specific checklist for
+// every secret credential, including an Account API Key, which is the
+// exact defect this signature exists to prevent. Recovery stays generic
+// until a trusted response names a type.
+//
+// Review finding 1107: the source still has to be told apart between
+// CredentialEnvKey and CredentialStoredKey, not just collapsed into "a
+// secret credential", because RUNOS_API_KEY OVERRIDES any stored
+// credential (auth.ResolveToken's priority order). Telling an env-key
+// holder to "mint a new one" without saying the env var must be updated
+// too sends them to retry with the exact same bearer. The checklist also
+// no longer names `account api-keys add/list` as THE fix: those are the
+// legacy Conductor commands only, and pointing a typed-key holder at
+// them would mint an unrelated legacy credential that does nothing for
+// the one that is actually broken.
+func formatAuthError(err error, credential auth.CredentialKind) (string, bool) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
 		return "", false
@@ -87,11 +99,11 @@ func formatAuthError(err error, usingSecretCredential bool) (string, bool) {
 	}
 	sb.WriteString("\n")
 	/*
-	 THE CHECKLIST HAS TO MATCH THE CREDENTIAL IN USE, AND MUST NOT NAME A TYPE THAT WAS NEVER
-	 VERIFIED.
+	 THE CHECKLIST HAS TO MATCH THE CREDENTIAL IN USE, MUST NOT NAME A TYPE THAT WAS NEVER
+	 VERIFIED, AND MUST NOT SEND A RETRY BACK TO THE SAME BEARER.
 
-	 These three lines are about a secret credential (a Personal Access Token OR an Account API
-	 Key; conductor's 401 body does not say which), and they were printed for every 401 regardless.
+	 These lines are about a secret credential (a Personal Access Token OR an Account API Key;
+	 conductor's 401 body does not say which), and they were printed for every 401 regardless.
 	 Measured on a live machine 2026-08-31: an operator on a browser sign-in, pointed at a conductor
 	 that would not accept their token, was told to audit `RUNOS_API_KEY` and `runos account
 	 api-keys list`. They had no secret credential. Every line of advice was for a credential they
@@ -99,19 +111,32 @@ func formatAuthError(err error, usingSecretCredential bool) (string, bool) {
 
 	 Story 343 / FCR2030 fixes a second instance of the same defect: the checklist used to call the
 	 secret a "PAT" unconditionally, which is itself wrong advice for an Account API Key (a machine
-	 credential that never signs in with a browser and has no "PAT" to mint). Nothing on this path
-	 has a trusted credentialType, so the wording stays type-neutral; it must not guess from a
-	 prefix.
+	 credential that never signs in with a browser and has no "PAT" to mint), and it named
+	 `account api-keys add`/`list` -- the LEGACY Conductor commands only -- as THE fix, which mints
+	 an unrelated legacy credential and does nothing for a typed key that is actually broken.
+	 Nothing on this path has a trusted credentialType, so the wording stays type-neutral; it must
+	 not guess from a prefix.
+
+	 Review finding 1107, a THIRD defect in the same checklist: RUNOS_API_KEY overrides any stored
+	 credential (auth.ResolveToken's priority order), so telling an env-key holder only to "mint a
+	 new one" sends their very next command to retry with the exact same stale bearer, because the
+	 env var is still set. The env-key and stored-key branches now say so explicitly and name the
+	 different remedy each source actually needs.
 
 	 A browser sign-in has exactly one remedy and one common cause, so it gets two lines rather than
 	 three borrowed ones.
 	*/
 	sb.WriteString("Check:\n")
-	if usingSecretCredential {
-		sb.WriteString("  - is RUNOS_API_KEY (or the stored credential) still current? `runos account api-keys list`\n")
+	switch credential {
+	case auth.CredentialEnvKey:
+		sb.WriteString("  - RUNOS_API_KEY overrides every other credential: a replacement must be set there, or the next command retries this exact bearer\n")
 		sb.WriteString("  - is RUNOS_API_URL pointing at the same environment this credential was issued on?\n")
-		sb.WriteString("  - was it revoked or rotated? mint a new one via `runos account api-keys add`")
-	} else {
+		sb.WriteString("  - was it revoked, rotated or expired? If it is a legacy key, `runos account api-keys list` shows its state; otherwise obtain a replacement the way this one was issued")
+	case auth.CredentialStoredKey:
+		sb.WriteString("  - is the credential stored by `runos login --api-key` still current? `runos logout` clears it, or `runos login --api-key <new> --account-id <id>` replaces it\n")
+		sb.WriteString("  - is RUNOS_API_URL pointing at the same environment this credential was issued on?\n")
+		sb.WriteString("  - was it revoked, rotated or expired? If it is a legacy key, `runos account api-keys list` shows its state; otherwise obtain a replacement the way this one was issued")
+	default:
 		sb.WriteString("  - sign in again: `runos login`\n")
 		sb.WriteString("  - are you signed in to the environment you are talking to? `runos status` shows both")
 	}

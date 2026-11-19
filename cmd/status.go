@@ -291,7 +291,19 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Printf("  Signed in:  Unknown (logged in before CLI update)\n")
 		}
-		fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		// Finding 1109: measured against an invalid RUNOS_API_KEY, this line
+		// unconditionally said "Expires: Never" beside "Authentication: ✓
+		// Logged in" above, which together read as a verified, healthy
+		// session. For a secret credential this command never contacts the
+		// server to verify (by design: status must work offline), so the
+		// honest claim is about LOCAL storage only -- this CLI does not
+		// locally expire a stored or env-sourced secret -- never a claim
+		// about whether the server still accepts it.
+		if isSecretMethod(authMethod(method)) {
+			fmt.Printf("  Expires:    not tracked locally (the CLI does not verify a stored credential's validity; run 'runos logout' to clear it)\n")
+		} else {
+			fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		}
 	}
 
 	return nil

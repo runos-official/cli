@@ -411,6 +411,16 @@ func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
 			t.Errorf("%s: the sign-in must come first, got %q", kind, got)
 		}
 	}
+
+	// Finding 1107: RUNOS_API_KEY overrides a sign-in, so its next step must
+	// say to unset it first, or 'runos login' would run and change nothing.
+	// A stored secret has no such override to mention.
+	if got := sessionNextStep(auth.CredentialEnvKey); !strings.Contains(got, "unset RUNOS_API_KEY") {
+		t.Errorf("env-sourced secret: must say to unset RUNOS_API_KEY, got %q", got)
+	}
+	if got := sessionNextStep(auth.CredentialStoredKey); strings.Contains(got, "RUNOS_API_KEY") {
+		t.Errorf("stored secret: must not mention RUNOS_API_KEY, a different source, got %q", got)
+	}
 }
 
 /*

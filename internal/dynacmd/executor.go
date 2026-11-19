@@ -368,7 +368,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// / etc), not their RUNOS PAT. The conductor's APIError body already
 		// carries the provider message; let it through verbatim.
 		if !is401UpstreamProxyCommand(cmdDef) {
-			if msg, ok := formatAuthError(err, auth.Kind(cfg).IsSecretCredential()); ok {
+			if msg, ok := formatAuthError(err, auth.Kind(cfg)); ok {
 				err = fmt.Errorf("%s", msg)
 			}
 		}
@@ -381,6 +381,18 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if jsonOutput {
 			return emitJSONErrorAndSilence(cmd, err)
 		}
+		return err
+	}
+
+	// Story 343 / FCR2030: for a credential command family only (see
+	// guardCredentialResponse), refuse to let a secret-shaped bearer value
+	// reach the terminal or a --json consumer from anywhere other than
+	// the one-shot issuance field, BEFORE any other handling of a
+	// successful response: the account-leave config write, the raw-DDL
+	// cache warning, and the advisory-warnings print below all touch or
+	// emit parts of respBody, and finding 1105 asks that none of them run
+	// ahead of this check on a credential response.
+	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
 		return err
 	}
 
@@ -507,14 +519,6 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 			}
 			return nil
 		}
-	}
-
-	// Story 343 / FCR2030: refuse to render a response carrying a
-	// bearer-secret-shaped value anywhere other than the one-shot
-	// issuance field, before EITHER rendering path runs. See
-	// guardCredentialResponse for why this is not keyed on cmdDef.Command.
-	if err := guardCredentialResponse(respBody); err != nil {
-		return err
 	}
 
 	formatter := output.NewFormatter(jsonOutput)
@@ -1045,7 +1049,7 @@ func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 // ignored: the caller got progress text on stdout and nothing to parse.
 // Regression target: goal 19 A3 / goal 21 B11.
 func renderFollowResponse(cmdDef manifest.Command, respBody []byte, jsonOutput bool) error {
-	if err := guardCredentialResponse(respBody); err != nil {
+	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
 		return err
 	}
 	return output.NewFormatter(jsonOutput).Format(respBody, cmdDef.Output)

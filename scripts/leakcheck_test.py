@@ -50,16 +50,27 @@ SECOND_BOX = "ftb" + "2"
 RENTED_BOX = "fttb" + "3"
 ACCOUNT_ID = "rj" + "wrn"
 
-# 1.2.0: RunOS's OWN token shape, assembled so this file does not carry a
-# matchable literal. The prefix is split exactly like the machine names above.
+# 1.2.0: RunOS's OWN legacy token shape, assembled so this file does not
+# carry a matchable literal. The prefix is split exactly like the machine
+# names above. The legacy shape needs EXACTLY 10, then EXACTLY 32,
+# characters from the unambiguous charset (no 0, 1, i, l, o, I, O) --
+# Conductor's own KEY_ID_LENGTH/SECRET_LENGTH/UNAMBIGUOUS_CHARS
+# (apiKeys.ts) and Roid's legacyChars (secretshape.go) agree on this exact
+# set, which 1.4.0 (finding 1106) made this checker's own requirement too.
 RUNOS_TOKEN_PREFIX = "runos" + "_pat_"
 RUNOS_TOKEN = RUNOS_TOKEN_PREFIX + "AbCdEfGhJk.MnPqRsTuVwXyZ23456789AbCdEfGhJkMn"
-RUNOS_TOKEN_2 = RUNOS_TOKEN_PREFIX + "Zz9Yy8Xx7W.QqWwEeRrTtYyUuIiOoPpAaSsDdFfGg"
-# Story 343 / FCR2030: runos_key_ is the prefix a newly issued Account API
-# Key uses, distinct from runos_pat_ (a Personal Access Token). Same
-# id-dot-secret shape; the gate must catch it identically.
+RUNOS_TOKEN_2 = RUNOS_TOKEN_PREFIX + "Zz9Yy8Xx7W.QqWwEeRrTtYyUuJjPpAaSsDdFfGgHhKkMmNn"
+# 1.3.0/1.4.0 (Story 343 / FCR2030, finding 1106): runos_key_ exists only in
+# the NEW TYPED shape -- there is no legacy runos_key_, only the new typed
+# one, which pairs a canonical lowercase UUID with a 43-char unpadded
+# base64url secret (FPL411, contract 1.0.1), never the legacy id/secret
+# charset. The id below is a synthetic, non-identifying UUID shape.
 RUNOS_KEY_PREFIX = "runos" + "_key_"
-RUNOS_KEY_TOKEN = RUNOS_KEY_PREFIX + "Qq7Rr8Ss9T.UuVvWwXxYyZz0123456789AbCdEfGhJk"
+RUNOS_KEY_TOKEN = RUNOS_KEY_PREFIX + "12345678-90ab-cdef-1234-567890abcdef." + "A" * 43
+# Roid's OWN legacy personal-key secret, still minted today
+# (roid/internal/server/personalkeys.go, accounts.go): rk_<43-char unpadded
+# base64url>, no dot, no id half. 1.4.0 adds this shape (finding 1106).
+RUNOS_RK_TOKEN = "rk_" + "B" * 43
 
 # The SHAPE of the pasted terminal output that shipped in
 # cmd/preflight/tls_failure_kind_test.go: a private source address dialling a
@@ -241,11 +252,20 @@ def main() -> int:
         "export RUNOS_API_KEY=%s\n" % RUNOS_TOKEN_2,
         RUNOS_TOKEN_2[:22],
     )
-    # 1.3.0: the new Account API Key prefix, additive to runos_pat_ above.
+    # 1.3.0/1.4.0: the new typed Account API Key shape, additive to the legacy
+    # runos_pat_ shape above.
     expect_catch(
-        "RunOS account API key",
+        "RunOS account API key (typed shape)",
         "export RUNOS_API_KEY=%s\n" % RUNOS_KEY_TOKEN,
         RUNOS_KEY_TOKEN[:22],
+    )
+    # 1.4.0 (finding 1106): Roid's own legacy personal-key secret, rk_, a
+    # format this checker never covered before even though Roid still mints
+    # it today.
+    expect_catch(
+        "Roid legacy personal-key secret (rk_)",
+        "export RUNOS_API_KEY=%s\n" % RUNOS_RK_TOKEN,
+        RUNOS_RK_TOKEN,
     )
     # The already-shipped pasted output, both addresses in one line.
     expect_catch("pasted source address in a shipped test comment", '// "the secure handshake FAILED: %s",\n' % PASTED_ERROR, PASTED_SRC)

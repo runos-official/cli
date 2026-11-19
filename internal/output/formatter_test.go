@@ -450,6 +450,59 @@ func TestFormatArray_TruncatesOversizedCellsAndPreservesAlignment(t *testing.T) 
 	}
 }
 
+// Story 343 / FCR2030, review findings 1099/1108: formatObject's I24-D
+// forward-compat (TestFormatObject_ForwardCompatAppendsUnknownFields above)
+// had no array sibling, so `runos account api-keys list` -- whose manifest
+// declares a fixed column set -- dropped every additive credential field
+// Conductor's apiKeys.ts serialize() added (story 331, commit 054a50ce):
+// credentialType, legacyClassification, permissionSource, and either
+// custodialAccountId or authorityAccountId depending on the row. --json is
+// unaffected (Format pretty-prints the raw body); this is the text-mode
+// regression.
+func TestFormatArray_ForwardCompatAppendsUnknownFields(t *testing.T) {
+	body := []byte(`[
+		{"id":"k1","name":"ci-deploy","accountRole":"limited","personal":false,"credentialId":"k1",
+		 "credentialType":"account_api_key","legacyClassification":"conductor_account_role",
+		 "permissionSource":"stored_account_role","custodialAccountId":"acct1","status":"active"},
+		{"id":"k2","name":"alice-personal","accountRole":"admin","personal":true,"credentialId":"k2",
+		 "credentialType":"legacy_personal","legacyClassification":"conductor_personal",
+		 "permissionSource":"current_user_authority","authorityAccountId":"acct1","status":"active"}
+	]`)
+	f := NewFormatter(false)
+	// Mirrors the manifest's actual declared columns for account/api-keys/list
+	// (id, name, accountRole, status, ...): a short, fixed set that does not
+	// include the additive credential fields.
+	def := &manifest.Output{Type: "array", Fields: []manifest.OutputField{
+		{Name: "id"}, {Name: "name"}, {Name: "accountRole"}, {Name: "status"},
+	}}
+	out := captureStdout(t, func() {
+		if err := f.Format(body, def); err != nil {
+			t.Fatalf("format: %v", err)
+		}
+	})
+	for _, want := range []string{"id", "name", "accountRole", "status"} {
+		if !strings.Contains(out, strings.ToUpper(want)) {
+			t.Errorf("declared column %q missing from output:\n%s", want, out)
+		}
+	}
+	// Every additive field must surface as its own column, even the two
+	// (custodialAccountId, authorityAccountId) that only one row each
+	// carries.
+	for _, want := range []string{
+		"CREDENTIALTYPE", "LEGACYCLASSIFICATION", "PERMISSIONSOURCE",
+		"CUSTODIALACCOUNTID", "AUTHORITYACCOUNTID",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("forward-compat column %q missing from output:\n%s", want, out)
+		}
+	}
+	for _, want := range []string{"account_api_key", "legacy_personal", "conductor_account_role", "stored_account_role", "acct1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("forward-compat value %q missing from output:\n%s", want, out)
+		}
+	}
+}
+
 // --json output bypasses the truncation path so machine consumers get
 // the full untruncated value. Asserts the contract called out in the
 // fix: text mode truncates, JSON preserves.

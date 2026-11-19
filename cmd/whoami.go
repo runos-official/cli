@@ -28,7 +28,10 @@ func init() {
 }
 
 func whoamiNotSignedIn() error {
-	return fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <pat>') or set %s", auth.ErrNotAuthenticated, auth.APIKeyEnvVar)
+	// Story 343 / FCR2030, finding 1107: "<pat>" named one credential type
+	// only (an Account API Key reaches this exact message too), and the
+	// example omitted --account-id, which --api-key requires.
+	return fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <credential> --account-id <id>') or set %s", auth.ErrNotAuthenticated, auth.APIKeyEnvVar)
 }
 
 // whoamiReport builds the answer. It names credentials by source only

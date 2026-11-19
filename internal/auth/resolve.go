@@ -164,7 +164,7 @@ func ResolveToken(cfg *config.Config) (string, error) {
 	case CredentialInteractive:
 		return GetIDToken(cfg.RefreshToken, cfg.Firebase.APIKey)
 	default:
-		return "", fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <credential>') or set %s", ErrNotAuthenticated, APIKeyEnvVar)
+		return "", fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <credential> --account-id <id>') or set %s", ErrNotAuthenticated, APIKeyEnvVar)
 	}
 }
 

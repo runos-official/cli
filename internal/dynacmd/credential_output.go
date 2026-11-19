@@ -6,52 +6,137 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
+
+	"github.com/runos-official/cli/internal/manifest"
 )
 
-// runosSecretPattern matches a RunOS bearer secret of any currently
-// supported shape: runos_pat_<id>.<secret> (a Personal Access Token,
-// and every legacy account-scoped key minted through the existing
-// /account/api-keys routes) and runos_key_<id>.<secret> (a newly
-// issued Account API Key). Mirrors the credential shape
-// scripts/leakcheck.py and scripts/release.sh enforce on repository
-// text; this copy runs against a LIVE RESPONSE BODY instead.
-var runosSecretPattern = regexp.MustCompile(`\brunos_(?:pat|key)_[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,}\b`)
+// runosSecretPattern matches every currently supported RunOS/Roid bearer
+// secret shape. Ported from Roid's own authoritative definition
+// (roid/internal/secretshape/secretshape.go, commit da5fdcbd97c4, the
+// head of Roid story 365) rather than re-derived, so this gate and the
+// producer's own redaction never drift apart:
+//
+//   - typed:  runos_(pat|key)_<canonical-lowercase-uuid>.<43-char unpadded base64url>
+//     (a Personal Access Token or an Account API Key minted through the
+//     new typed Roid routes; FPL411's bearer format, contract 1.0.1).
+//   - legacy: runos_pat_<10-char unambiguous>.<32-char unambiguous>
+//     (Conductor's existing /:aid/account/api-keys routes, apiKeys.ts;
+//     same unambiguous charset as KEY_ID_LENGTH/SECRET_LENGTH there).
+//   - roid:   rk_<43-char unpadded base64url> (Roid's own legacy
+//     personal-key secret, still minted by
+//     roid/internal/server/personalkeys.go and accounts.go).
+//
+// Roid's secretshape.go also recognises a family of short-prefixed
+// internal bearer shapes (at_, rt_, mcp_, oat_, xat_, prq_, prd_, prr_,
+// rrt_), Roid's own session/exchange/approval tokens that a CLI user
+// never presents as a RunOS credential. Deliberately NOT ported here:
+// measured against this repo's own tree, those 2-4 character prefixes
+// false-positive inside ordinary long Go identifiers (a test named
+// ...Report_Local... contains "rt_"; ...Format_JSON... contains "at_"),
+// each immediately followed by 43+ further identifier characters that
+// happen to satisfy the base64url class. rk_ is kept because it is the
+// one roid-internal shape finding 1106 confirmed still reaches a RunOS
+// credential a person could hold, and it carries lower collision risk
+// than the two-letter prefixes.
+//
+// No trailing word-boundary assertion: a base64url secret can end in `-`
+// or `_`, which is not a `\b` transition in Go's RE2 engine, and missing
+// the true end of a secret there would be a false NEGATIVE. Over-matching
+// a few extra characters only makes this gate stricter, which is the safe
+// direction for a leak-prevention check.
+var runosSecretPattern = regexp.MustCompile(
+	`runos_(?:pat|key)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}` +
+		`|runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}` +
+		`|rk_[A-Za-z0-9_-]{43}`,
+)
 
-// oneShotSecretFields are the only field names a response may
-// legitimately carry a bearer secret under: the one-time issuance
-// envelope for `account/api-keys/add`-style commands (`token`) and for
-// `account/notify-keys/add` (`keyValue`). FPL435's design keeps "the
-// one-shot bearer visible only in the successful issuance response",
-// so every future typed personal-access-tokens/account-api-keys
-// creation and rotation command is expected to reuse one of these two
-// names; until this file is extended to recognise a new name, a
-// response carrying its secret elsewhere is refused, which is the
-// correct fail-closed default.
-var oneShotSecretFields = map[string]bool{"token": true, "keyValue": true}
+// credentialFamily names the one JSON field a credential command family's
+// issuing operations may carry a bearer secret under, and which verbs
+// (the manifest command's final path segment) are issuing operations.
+// Every other verb in the family is pure inventory: no secret-shaped
+// value is permitted anywhere in its response.
+type credentialFamily struct {
+	secretField   string
+	issuanceVerbs map[string]bool
+}
+
+// credentialCommandFamilies is the exhaustive, central list of command
+// families this guard scopes itself to. A command whose path does not
+// start with one of these prefixes is not scanned at all: review finding
+// 1097 measured that an earlier, unscoped version of this guard refused
+// unrelated commands (app logs, env reads, exec-sql results) whenever
+// their output happened to contain a credential-shaped string, which
+// turns a defensive check into a denial of service on the user's own
+// data. Scoping to named families, rather than scattering command
+// literals through the executor, keeps that list in one place.
+//
+// "account/personal-access-tokens" and "account/account-api-keys" are
+// not published in the CLI manifest yet (Story 342 / FPL434 is still in
+// progress), so no live command reaches this guard under those prefixes
+// today. Their field name and verbs are taken from Roid's actual shipped
+// response shape (writePATWithSecret / writeAccountKeyWithSecret,
+// roid/internal/server/personalaccesstokens.go and accountapikeys.go,
+// commit da5fdcbd97c4), which Conductor's relay forwards unchanged
+// (story 382, FPL520): both write `m["secret"] = secret` on create and
+// rotate only. If Story 342 ships different sub-command spellings,
+// update issuanceVerbs here; the prefixes themselves match the family
+// names FPL434 already documents.
+var credentialCommandFamilies = map[string]credentialFamily{
+	"account/api-keys": {
+		secretField:   "token",
+		issuanceVerbs: map[string]bool{"add": true, "personal": true},
+	},
+	"account/notify-keys": {
+		secretField:   "keyValue",
+		issuanceVerbs: map[string]bool{"add": true},
+	},
+	"account/personal-access-tokens": {
+		secretField:   "secret",
+		issuanceVerbs: map[string]bool{"add": true, "rotate": true},
+	},
+	"account/account-api-keys": {
+		secretField:   "secret",
+		issuanceVerbs: map[string]bool{"add": true, "rotate": true},
+	},
+}
+
+// credentialFamilyFor splits a manifest command path into its family
+// (every segment but the last) and verb (the last segment), and reports
+// whether that family is a registered credential family. A command
+// outside this registry reports ok=false, and guardCredentialResponse
+// does not scan it at all.
+func credentialFamilyFor(command string) (family credentialFamily, verb string, ok bool) {
+	idx := strings.LastIndex(command, "/")
+	if idx < 0 {
+		return credentialFamily{}, "", false
+	}
+	prefix, verb := command[:idx], command[idx+1:]
+	family, ok = credentialCommandFamilies[prefix]
+	return family, verb, ok
+}
 
 // guardCredentialResponse refuses to let a secret-shaped bearer value
-// reach the terminal or a --json consumer from anywhere other than the
-// one-shot issuance field on a single JSON object.
+// reach the terminal or a --json consumer from a credential command
+// family's response, except through the exact one-shot field its own
+// issuing operation documents.
 //
-// It is deliberately NOT keyed on the command name. Story 342 (FPL434)
-// has not yet settled the public command spellings for the new typed
-// personal-access-tokens/account-api-keys commands, and keying this
-// guard on today's provisional names would either miss the eventual
-// commands silently or need to be re-landed the moment they are
-// renamed. Keying on the response's own shape instead makes the guard
-// correct for every current and future credential command without
-// modification: a bearer secret may appear ONLY as a scalar `token` or
-// `keyValue` field on a single JSON object, never inside an array
-// element (an inventory listing, by construction, is never a single-
-// credential issuance) and never under any other field name (a secret
-// repeated under a second key, or nested inside an object, is exactly
-// the case FPL435 means by "a response that contains a bearer-secret
-// field which the inventory contract forbids").
-//
-// Returns nil (nothing to guard) for a body that is not a JSON object
-// at all: a non-object top level is never a one-shot issuance envelope,
-// so it is scanned with no exemption.
-func guardCredentialResponse(respBody []byte) error {
+// Scoped to credentialCommandFamilies ONLY (see its doc for why): a
+// command outside that registry returns nil immediately and is never
+// scanned, so this guard has no effect on any other command's output
+// (finding 1097). Within a registered family, an inventory verb (list,
+// show, update, revoke, ...) permits no secret-shaped value anywhere; an
+// issuing verb (add, rotate) permits it ONLY as the family's own named
+// top-level field, and refuses it anywhere else, including a second
+// occurrence under a different key or nested inside an object or array
+// (finding 1105: field name alone was previously sufficient to exempt a
+// value anywhere in the body, which is not what "the one-shot field"
+// means).
+func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
+	family, verb, ok := credentialFamilyFor(cmdDef.Command)
+	if !ok {
+		return nil
+	}
 	trimmed := bytes.TrimSpace(respBody)
 	if len(trimmed) == 0 {
 		return nil
@@ -67,10 +152,14 @@ func guardCredentialResponse(respBody []byte) error {
 		}
 		return nil
 	}
+	allowedField := ""
+	if family.issuanceVerbs[verb] {
+		allowedField = family.secretField
+	}
 	for key, value := range obj {
-		if oneShotSecretFields[key] {
+		if allowedField != "" && key == allowedField {
 			if s, ok := value.(string); ok && runosSecretPattern.MatchString(s) {
-				continue // the one legitimate carrier of a one-shot secret
+				continue // the one legitimate carrier, on the one operation documented to return it
 			}
 		}
 		if found := findSecretValue(value, key); found != "" {

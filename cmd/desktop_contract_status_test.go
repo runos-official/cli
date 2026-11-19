@@ -94,6 +94,17 @@ func TestDesktopContractStatusJSONMatchesTheDesktopContract(t *testing.T) {
 			auth.SetEndpointsForTest(t, dead.URL, dead.URL)
 			writeConfig(t, profileConductor(t, http.StatusOK, `{}`, "").URL, "aaaaa", true)
 		}, vpn.Status{}},
+		// Finding 1098: no case reached the authEnvKey/authStoredKey branch, so
+		// the undeclared credentialType key never hit desktopcontract.Check and
+		// the gate stayed green despite the contract being wrong for this
+		// shape. A secret-sourced credential, stored or env, has no verified
+		// type, so credentialType must come back "unknown".
+		{"signed in via a stored secret credential, no verified type", func(t *testing.T) {
+			writeStoredSecretConfig(t, profileConductor(t, http.StatusOK, `{}`, "").URL, "aaaaa")
+		}, vpn.Status{}},
+		{"signed in via RUNOS_API_KEY, no verified type", func(t *testing.T) {
+			writeEnvSecretConfig(t, profileConductor(t, http.StatusOK, `{}`, "").URL, "aaaaa")
+		}, vpn.Status{}},
 	}
 	seen := map[string]bool{}
 	for _, tc := range cases {
@@ -116,9 +127,57 @@ func TestDesktopContractStatusJSONMatchesTheDesktopContract(t *testing.T) {
 	}
 	// The cases above must between them reach the keys Desktop branches on, or they prove nothing.
 	for _, key := range []string{"authenticated", "accountId", "companyName", "vpnAccountId", "vpnAccountMismatch",
-		"vpnRunning", "authError", "authErrorKind", "sessionExpired", "sessionExpiresAt"} {
+		"vpnRunning", "authError", "authErrorKind", "sessionExpired", "sessionExpiresAt", "authMethod", "credentialType"} {
 		if !seen[key] {
 			t.Errorf("no case produced %q: the table row for it is untested", key)
 		}
 	}
+}
+
+// writeStoredSecretConfig puts a config on disk carrying a stored secret credential (api_key, set
+// by `runos login --api-key`), so `runos status` takes the authStoredKey path: a secret credential
+// with no verified semantic type, which must surface as credentialType: "unknown", never as an
+// assumed Personal Access Token.
+func writeStoredSecretConfig(t *testing.T, apiURL, accountID string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("RUNOS_API_KEY", "")
+	if err := os.MkdirAll(filepath.Join(home, ".runos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]any{
+		"conductor_url": apiURL,
+		"console_url":   apiURL,
+		"env":           "custom",
+		"account_id":    accountID,
+		"api_key":       "stored-secret-for-test",
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(home, ".runos", "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeEnvSecretConfig is writeStoredSecretConfig's RUNOS_API_KEY sibling: the env var wins over
+// any stored credential, so `runos status` takes the authEnvKey path, the OTHER secret-sourced,
+// unverified-type branch.
+func writeEnvSecretConfig(t *testing.T, apiURL, accountID string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".runos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]any{
+		"conductor_url": apiURL,
+		"console_url":   apiURL,
+		"env":           "custom",
+		"account_id":    accountID,
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(filepath.Join(home, ".runos", "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RUNOS_API_KEY", "env-secret-for-test")
 }

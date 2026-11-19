@@ -95,10 +95,18 @@ func vpnSocketClient(cmd *cobra.Command) *vpn.Client {
 // present. Reads/other commands are unaffected; only up/connect need a
 // person.
 func refuseVPNWithStoredSecret(cfg *config.Config) error {
-	if auth.Kind(cfg).IsSecretCredential() {
+	switch auth.Kind(cfg) {
+	case auth.CredentialEnvKey:
+		// Finding 1107: RUNOS_API_KEY overrides any interactive sign-in
+		// (auth.ResolveToken's priority order), so telling the holder only
+		// to run 'runos login' leaves every subsequent command, including
+		// the retried 'runos vpn up', still resolving the env var.
+		return fmt.Errorf("a stored credential cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nRUNOS_API_KEY overrides a sign-in, so unset it first; then sign in interactively with 'runos login' and run 'runos vpn up'")
+	case auth.CredentialStoredKey:
 		return fmt.Errorf("a stored credential cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login', then run 'runos vpn up'")
+	default:
+		return nil
 	}
-	return nil
 }
 
 /*

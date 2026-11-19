@@ -30,11 +30,46 @@ func (f *Formatter) formatArray(data []byte, fields []string) error {
 		return nil
 	}
 
+	// I24-D's array sibling (Story 343 / FCR2030, review findings 1099/1108):
+	// formatObject already appends a key the manifest did not declare instead
+	// of silently dropping it; this had no equivalent, so a server that adds
+	// a column to a LIST response (Conductor's additive credentialType,
+	// custodialAccountId, authorityAccountId, permissionSource and
+	// legacyClassification on account/api-keys/list, story 331) rendered the
+	// declared columns only and dropped every new one, in text mode. --json
+	// is unaffected: Format pretty-prints the raw body regardless.
+	//
+	// Scanned across every row, not just the first: different rows can carry
+	// different additive keys (Conductor's serialize() sets
+	// authorityAccountId on a personal key and custodialAccountId on an
+	// account-role key, never both), and a key only the second row has must
+	// still get a column.
 	if len(fields) == 0 {
 		for k := range items[0] {
 			fields = append(fields, k)
 		}
 		sort.Strings(fields)
+	} else {
+		declared := make(map[string]bool, len(fields))
+		for _, f := range fields {
+			declared[strings.SplitN(f, ".", 2)[0]] = true
+		}
+		unknownSet := make(map[string]bool)
+		for _, item := range items {
+			for k := range item {
+				if !declared[k] {
+					unknownSet[k] = true
+				}
+			}
+		}
+		if len(unknownSet) > 0 {
+			unknown := make([]string, 0, len(unknownSet))
+			for k := range unknownSet {
+				unknown = append(unknown, k)
+			}
+			sort.Strings(unknown)
+			fields = append(fields, unknown...)
+		}
 	}
 
 	widths := make([]int, len(fields))
