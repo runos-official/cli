@@ -181,6 +181,74 @@ func credentialFamilyFor(command string) (family credentialFamily, verb string, 
 	return credentialFamily{}, "", false
 }
 
+// hasDuplicateObjectKeys reports whether data, read as a JSON token
+// stream, contains any object with the same key appearing more than
+// once, at any nesting depth (inside a nested object, or inside an
+// object that is itself an array element). Returns false for malformed
+// input: the trailing-data and decode-failure checks elsewhere already
+// handle that case, and this function only needs to add a signal for
+// otherwise well-formed JSON.
+//
+// Finding 1265 (instance 3): decoding the same duplicate key into a
+// map[string]any (this guard's own scan) and into a fixed struct
+// (formatAuthError and friends) can disagree about which occurrence
+// survives -- a later JSON `null` is a no-op against an already-set
+// string-typed struct field, but overwrites a map entry outright. No
+// pattern-matching scan over either representation alone can be
+// trusted when this is possible, so detecting the ambiguity itself,
+// independent of what either occurrence's value looks like, is the
+// only check that closes it.
+func hasDuplicateObjectKeys(data []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	type frame struct {
+		isObject  bool
+		expectKey bool
+		seen      map[string]bool
+	}
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{':
+				stack = append(stack, &frame{isObject: true, expectKey: true, seen: map[string]bool{}})
+			case '[':
+				stack = append(stack, &frame{})
+			case '}', ']':
+				if len(stack) == 0 {
+					return false
+				}
+				stack = stack[:len(stack)-1]
+				if n := len(stack); n > 0 && stack[n-1].isObject {
+					stack[n-1].expectKey = true
+				}
+			}
+			continue
+		}
+		n := len(stack)
+		if n == 0 {
+			continue
+		}
+		top := stack[n-1]
+		if !top.isObject {
+			continue
+		}
+		if top.expectKey {
+			key, _ := tok.(string)
+			if top.seen[key] {
+				return true
+			}
+			top.seen[key] = true
+			top.expectKey = false
+		} else {
+			top.expectKey = true
+		}
+	}
+}
+
 // guardCredentialResponse refuses to let a secret-shaped bearer value
 // reach the terminal or a --json consumer from a credential command
 // family's response, except through the exact one-shot field its own
@@ -251,60 +319,60 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	if derr := decoder.Decode(&trailing); derr != io.EOF {
 		return fmt.Errorf("refusing to render response: the response body carries unexpected trailing data after its JSON value, which the inventory contract forbids for a credential command")
 	}
-	obj, isObject := probe.(map[string]any)
-	if !isObject {
-		if found := findSecretValue(probe, "response"); found != "" {
-			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in %s, which the inventory contract forbids", found)
-		}
-		return nil
+	// Finding 1265 (instance 3): a duplicate key at ANY nesting depth is
+	// ambiguous. Go's decoder keeps the LAST value for a duplicate key in
+	// a map, but a later `null` is a no-op against a string-typed STRUCT
+	// field (it leaves an earlier string value in place) -- so a map
+	// decode and a struct decode of the SAME bytes can disagree about
+	// what a field holds, and no pattern-matching scan over either
+	// representation alone can be trusted. Roid/Conductor never emit a
+	// duplicate key; refuse outright rather than guess which occurrence
+	// some downstream renderer will show.
+	if hasDuplicateObjectKeys(trimmed) {
+		return fmt.Errorf("refusing to render response: the response body carries a duplicate JSON key, which the inventory contract forbids for a credential command")
 	}
 	allowedField := ""
 	if family.issuanceVerbs[verb] {
 		allowedField = family.secretField
 	}
-	for key, value := range obj {
-		if runosSecretPattern.MatchString(key) {
-			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a property name, which the inventory contract forbids")
-		}
-		if allowedField != "" && key == allowedField {
-			// Finding 1215 (G3): a value in the issuing field that matches
-			// NEITHER this family's own shape NOR any OTHER recognised
-			// shape used to fall through to findSecretValue below, which
-			// found nothing to object to and let it render -- the banners
-			// print any non-empty string, so a malformed or garbage
-			// "token" was presented to the user as a valid one-shot
-			// secret. The issuing field must hold EXACTLY the shape its
-			// own producer mints, or the response is refused outright.
-			s, isString := value.(string)
-			if isString && family.secretPattern != nil && family.secretPattern.MatchString(s) {
-				continue // the one legitimate carrier, on the one operation documented to return it, holding exactly the shape that operation's own producer mints
-			}
-			return fmt.Errorf("refusing to render response: the issuing field %q did not hold the exact bearer shape this operation's own producer mints, which the inventory contract forbids", key)
-		}
-		if found := findSecretValue(value, key); found != "" {
-			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in field %q, which the inventory contract forbids", found)
-		}
-	}
-	// Finding 1246 (repeat of 1215's G1, 5th occurrence of 1105/1150/
-	// 1193's root defect): the scan above examines the DECODED structure
-	// only. Two things can carry a secret in the RAW bytes that the
-	// decoded structure does not account for: a JSON object with a
-	// duplicate key, where Go's decoder keeps only the LAST value and the
-	// scan above never sees an earlier, shadowed occurrence; and (for
-	// internal/output/formatter.go's text-mode fallback specifically,
-	// which prints `data` verbatim when a command declares no Output)
-	// any raw text the decoded value's own re-rendering would not
-	// reproduce. Comparing a raw match COUNT against the exactly one
-	// occurrence the one-shot exemption accounts for (zero for every
-	// other verb) catches both without re-litigating the exemption
-	// itself: an authorized issuance's own single, legitimate secret
-	// never exceeds its own count.
+	obj, isObject := probe.(map[string]any)
 	allowed := 0
-	if allowedField != "" {
-		if s, ok := obj[allowedField].(string); ok && family.secretPattern != nil && family.secretPattern.MatchString(s) {
-			allowed = 1
+	if isObject {
+		for key, value := range obj {
+			if runosSecretPattern.MatchString(key) {
+				return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a property name, which the inventory contract forbids")
+			}
+			if allowedField != "" && key == allowedField {
+				// Finding 1215 (G3): a value in the issuing field that matches
+				// NEITHER this family's own shape NOR any OTHER recognised
+				// shape used to fall through to findSecretValue below, which
+				// found nothing to object to and let it render -- the banners
+				// print any non-empty string, so a malformed or garbage
+				// "token" was presented to the user as a valid one-shot
+				// secret. The issuing field must hold EXACTLY the shape its
+				// own producer mints, or the response is refused outright.
+				s, isString := value.(string)
+				if isString && family.secretPattern != nil && family.secretPattern.MatchString(s) {
+					allowed = 1
+					continue // the one legitimate carrier, on the one operation documented to return it, holding exactly the shape that operation's own producer mints
+				}
+				return fmt.Errorf("refusing to render response: the issuing field %q did not hold the exact bearer shape this operation's own producer mints, which the inventory contract forbids", key)
+			}
+			if found := findSecretValue(value, key); found != "" {
+				return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in field %q, which the inventory contract forbids", found)
+			}
 		}
+	} else if found := findSecretValue(probe, "response"); found != "" {
+		return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in %s, which the inventory contract forbids", found)
 	}
+	// Finding 1264 (repeat of 1246/1215 G1): this raw-byte check used to
+	// sit inside the isObject branch only, so a credential-family body
+	// that decodes to a JSON ARRAY (account/api-keys/list's own shape)
+	// never had its raw bytes compared against the decoded structure at
+	// all. Hoisted above (and now covering both branches of) the
+	// isObject split: it runs for every decoded shape, with allowed
+	// staying 0 for anything that is not an authorized issuance's own
+	// object field.
 	if rawMatches := len(runosSecretPattern.FindAll(trimmed, -1)); rawMatches > allowed {
 		return fmt.Errorf("refusing to render response: the raw response body carries more bearer-secret-shaped occurrences than its one authorized field accounts for, which the inventory contract forbids")
 	}
@@ -354,6 +422,18 @@ func responseContainsSecret(raw []byte) bool {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return false
+	}
+	// Finding 1265 (instance 3): a duplicate key is ambiguous between a
+	// map decode (this function) and a struct decode (formatAuthError,
+	// formatDependentsError, formatModuleNotEnabledError, the envelope
+	// struct in describeAPIError): a later `null` overwrites a map
+	// entry but is a no-op against a string-typed struct field, so a
+	// secret an earlier occurrence carried can survive into a struct's
+	// rendering while this map-based scan sees only the null. Treat any
+	// duplicate key as carrying a secret, unconditionally: an error body
+	// never has a legitimate reason to repeat a key.
+	if hasDuplicateObjectKeys(trimmed) {
+		return true
 	}
 	var probe any
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))

@@ -191,6 +191,48 @@ func TestExecute_CredentialFamily_ETagHeaderSurfacedInResponseBody(t *testing.T)
 	}
 }
 
+// Finding 1265 (instance 1): injectETagIntoCredentialResponse decodes
+// one JSON value and RE-ENCODES it to splice the etag field in, which
+// silently drops any data trailing that one value. Running it BEFORE
+// guardCredentialResponse (as cycle 3 did) meant the guard only ever
+// saw this laundered, re-encoded body, so an ordinary ETag header made
+// an otherwise-forbidden trailing-data response look clean. The guard
+// now runs first, against the ORIGINAL bytes.
+func TestExecute_TrailingDataWithOrdinaryETagIsStillRefused(t *testing.T) {
+	showCmd := manifest.Command{
+		Command:  "account/personal-access-tokens/show",
+		Method:   http.MethodGet,
+		Endpoint: "/:aid/account/personal-access-tokens/:credential",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "credential", Type: "string", Required: true, Positional: true},
+		}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"abc123"`)
+		w.WriteHeader(http.StatusOK)
+		// A decodable first value followed by trailing garbage: the
+		// trailing-data rule must refuse this regardless of the
+		// ordinary, non-secret-shaped ETag header also being present.
+		_, _ = w.Write([]byte(`{"credential_id":"c1"}` + fakeLegacyPAT))
+	}))
+	t.Cleanup(srv.Close)
+	warnEnv(t, localhostURL(srv.URL))
+
+	cmd := warnCmd(t, showCmd, false, false)
+	exec := NewExecutor(localhostURL(srv.URL))
+
+	read := captureSplit(t)
+	err := exec.Execute(cmd, []string{"c1"}, showCmd)
+	stdout, stderr := read()
+	if err == nil {
+		t.Fatal("expected a refusal for trailing data, got nil")
+	}
+	if strings.Contains(stdout, fakeLegacyPAT) || strings.Contains(stderr, fakeLegacyPAT) {
+		t.Errorf("secret reached output, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
 // Finding 1193: injectETagIntoCredentialResponse used to run AFTER
 // guardCredentialResponse, so a secret-shaped ETag header value reached
 // stdout with nothing having scanned it. Server-controlled data (the

@@ -387,6 +387,61 @@ func TestGuardCredentialErrorBody(t *testing.T) {
 	}
 }
 
+// Finding 1265 (instance 3): a duplicate key whose later occurrence is
+// JSON `null` is a no-op against formatAuthError's string-typed struct
+// field (the earlier value survives), but OVERWRITES the same key in
+// responseContainsSecret's map[string]any scan (the earlier string is
+// replaced by nil, and the nil fails the string type-switch). Without
+// detecting the duplicate itself, neither the raw-byte check (the value
+// may be escaped) nor the decoded-map check sees the secret, yet
+// formatAuthError's struct decode renders it.
+func TestGuardCredentialErrorBody_DuplicateKeyWithLaterNullIsRefused(t *testing.T) {
+	body := `{"error":"` + fakeLegacyPAT + `","error":null}`
+	credErr := &APIError{StatusCode: 401, Body: []byte(body)}
+	got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
+	if got == credErr {
+		t.Fatal("expected the error to be replaced")
+	}
+	if strings.Contains(got.Error(), fakeLegacyPAT) {
+		t.Fatalf("the replacement error must not carry the secret, got: %v", got)
+	}
+	// Ground the mechanism itself: formatAuthError's struct decode of
+	// the SAME raw body, if it were ever reached, would still render
+	// the secret from the first occurrence.
+	var probe struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.Error != fakeLegacyPAT {
+		t.Fatalf("expected the struct decode to retain the first occurrence (demonstrating the divergence this test guards against), got: %q", probe.Error)
+	}
+}
+
+func TestHasDuplicateObjectKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no duplicate", `{"id":"k1","name":"ci"}`, false},
+		{"top-level duplicate", `{"token":"a","token":"b"}`, true},
+		{"duplicate inside nested object", `{"id":"k1","nested":{"a":1,"a":2}}`, true},
+		{"no duplicate across sibling nested objects", `{"a":{"x":1},"b":{"x":1}}`, false},
+		{"duplicate inside an array element", `[{"token":"a","token":"b"}]`, true},
+		{"array with no duplicates", `[{"id":"k1"},{"id":"k2"}]`, false},
+		{"malformed JSON reports no duplicate", `{"id":`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasDuplicateObjectKeys([]byte(c.body)); got != c.want {
+				t.Errorf("hasDuplicateObjectKeys(%q) = %v, want %v", c.body, got, c.want)
+			}
+		})
+	}
+}
+
 func TestPrintApiKeyTokenBannerStillWorksFromItsNewFile(t *testing.T) {
 	var out bytes.Buffer
 	printApiKeyTokenBanner(&out, []byte(`{"token":"`+fakeTypedKey+`","warning":"keep it safe"}`))

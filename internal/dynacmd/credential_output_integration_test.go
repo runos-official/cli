@@ -214,6 +214,51 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 		}
 	})
 
+	// Finding 1264 (repeat of 1246/1215 G1): the exact rows the finding
+	// named. A credential-family body that decodes to a top-level ARRAY
+	// (account/api-keys/list's own shape) must get the same raw-byte
+	// scrutiny an object body gets; before this cycle, guardCredentialResponse
+	// returned before ever comparing the raw bytes for a non-object body.
+	arrayDuplicateKeyBody := `[{"token":"` + fakeLegacyPAT + `","token":"redacted"}]`
+	t.Run("success guard refuses duplicate key inside an array element", func(t *testing.T) {
+		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(arrayDuplicateKeyBody)); err == nil {
+			t.Error("expected a refusal, got nil")
+		}
+	})
+	t.Run("Execute refuses an array-shaped duplicate-key inventory response and prints nothing", func(t *testing.T) {
+		srv := warnStub(t, http.StatusOK, arrayDuplicateKeyBody)
+		warnEnv(t, localhostURL(srv.URL))
+		cmd := warnCmd(t, credListCmd, false, false)
+		exec := NewExecutor(localhostURL(srv.URL))
+
+		read := captureSplit(t)
+		err := exec.Execute(cmd, []string{}, credListCmd)
+		stdout, _ := read()
+		if err == nil {
+			t.Fatal("expected a refusal, got nil")
+		}
+		if strings.Count(stdout, fakeLegacyPAT) != 0 {
+			t.Errorf("secret reached stdout: %q", stdout)
+		}
+	})
+	t.Run("a clean inventory array with no secret still renders in full", func(t *testing.T) {
+		body := `[{"id":"k1","name":"ci"}]`
+		srv := warnStub(t, http.StatusOK, body)
+		warnEnv(t, localhostURL(srv.URL))
+		cmd := warnCmd(t, credListCmd, false, false)
+		exec := NewExecutor(localhostURL(srv.URL))
+
+		read := captureSplit(t)
+		if err := exec.Execute(cmd, []string{}, credListCmd); err != nil {
+			read()
+			t.Fatalf("a clean inventory array must not be refused, got: %v", err)
+		}
+		stdout, _ := read()
+		if !strings.Contains(stdout, "k1") {
+			t.Errorf("expected the clean array to render, stdout = %q", stdout)
+		}
+	})
+
 	// No-regression rows.
 	t.Run("an authorized issuance still passes and renders exactly once", func(t *testing.T) {
 		body := `{"id":"c1","token":"` + fakeLegacyPAT + `"}`
