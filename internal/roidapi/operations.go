@@ -37,4 +37,5 @@ var operations = map[string]operation{
 	"revokeGrant":        {method: "DELETE", path: grantItem, etagFrom: "getGrant"},
 	"getGrantAudit":      {method: "GET", path: grantItem + "/audit"},
 	"getEffectiveAccess": {method: "GET", path: accessBase + "/effective"},
+	"explainCredential":  {method: "POST", path: accessBase + "/explain"},
 }

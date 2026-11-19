@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.25.0
+
+### Added
+
+- `runos access explain` now also explains a Personal Access Token or an Account API Key by its public id (`--credential pat_...` or `key_...`), not just a person with `--person`. It shows the credential's current authority, restrictions, lifecycle, expiry, and policy freshness, evaluated through the same decision engine as a real request: never a synthetic session, and never a guess from the id's prefix. A conditional result, a not-yet-determined one, or a legacy compatibility result that would usually allow the action never prints as an unconditional allow; only a real, current permit does. Explaining a credential always needs an explicit `--account` and `--action` (its authority or grants can differ by account, so the CLI never assumes the active one); a value shaped like a secret is refused before anything is sent, and the refusal never repeats it back. `--json` still prints the server's answer unchanged.
+
 ## v1.24.1
 
 ### Fixed
