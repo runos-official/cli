@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -144,12 +145,7 @@ func renderExplainCredential(w io.Writer, r explainCredentialResponse) {
 	if r.Reason != "" {
 		fmt.Fprintf(w, "Reason: %s\n", r.Reason)
 	}
-	if len(r.Conditions) > 0 {
-		fmt.Fprintln(w, "Missing or unmet:")
-		for _, cond := range r.Conditions {
-			fmt.Fprintf(w, "  - %s\n", cond)
-		}
-	}
+	writeConditionGroups(w, r.Conditions)
 	ps := r.PermissionSource
 	fmt.Fprintf(w, "Permission source: %s\n", ps.Kind)
 	if len(ps.RoleIDs) > 0 {
@@ -163,4 +159,82 @@ func renderExplainCredential(w io.Writer, r explainCredentialResponse) {
 	}
 	fmt.Fprintf(w, "Policy: version %d, %s\n", r.PolicyVersion, r.PolicyFreshness)
 	fmt.Fprintf(w, "Evaluated at: %s\n", r.EvaluatedAt)
+}
+
+// conditionGroup buckets one condition tag by the producer's own
+// vocabulary (roid/internal/server/credentialexplain.go at commit
+// 5acd44af): a tag ending ":satisfied" already passed; a tag starting
+// "needs:" or the literal "risk:unassessed" is an unmet requirement;
+// everything else (credential:*, grant:<id>, grant:source_range:*,
+// reason:*, account:*:satisfied is covered above) is restriction or
+// decision evidence the server reports regardless of outcome, neither
+// satisfied nor missing. Review finding 1080: the renderer used to put
+// every tag under "Missing or unmet", which misreported a satisfied
+// condition (for example "grant:window:satisfied") on an authoritative
+// permit.
+func conditionGroup(tag string) string {
+	switch {
+	case strings.HasSuffix(tag, ":satisfied"):
+		return "satisfied"
+	case strings.HasPrefix(tag, "needs:"), tag == "risk:unassessed":
+		return "unmet"
+	default:
+		return "evidence"
+	}
+}
+
+// writeConditionGroups renders the server's condition tags under the
+// label their own vocabulary implies, instead of one undifferentiated
+// list.
+func writeConditionGroups(w io.Writer, conditions []string) {
+	var unmet, satisfied, evidence []string
+	for _, c := range conditions {
+		switch conditionGroup(c) {
+		case "unmet":
+			unmet = append(unmet, c)
+		case "satisfied":
+			satisfied = append(satisfied, c)
+		default:
+			evidence = append(evidence, c)
+		}
+	}
+	writeConditionList(w, "Missing or unmet:", unmet)
+	writeConditionList(w, "Satisfied:", satisfied)
+	writeConditionList(w, "Other evidence:", evidence)
+}
+
+func writeConditionList(w io.Writer, label string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintln(w, label)
+	for _, c := range items {
+		fmt.Fprintf(w, "  - %s\n", c)
+	}
+}
+
+// renderExplainCredentialTo writes either the human explanation or the
+// server's own response (pretty-printed, byte-for-byte faithful to
+// rawBody), matching --json. Both the command and its tests call this one
+// function, so a test can assert the exact text either mode produces
+// (review finding 1083: the prior tests never exercised the command's
+// real --json output path).
+func renderExplainCredentialTo(w io.Writer, jsonOut bool, resp explainCredentialResponse, rawBody []byte) error {
+	if !jsonOut {
+		renderExplainCredential(w, resp)
+		return nil
+	}
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(rawBody))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		_, err := w.Write(rawBody)
+		return err
+	}
+	pretty, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(pretty))
+	return err
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/runos-official/cli/internal/roidapi"
@@ -25,18 +26,19 @@ account's access configuration.
 
 --credential explains one exact action and scope for a Personal Access
 Token or Account API Key, using its current public id (pat_... or
-key_...), never its secret: a value shaped like a secret is refused
-before anything is sent. It always needs an explicit --account (a
-credential's authority or grants can differ by account, so the CLI never
-assumes the active one) and an explicit --action. The answer is the real,
-current decision: a conditional, not-yet-determined, or legacy
-compatibility result never prints as an unconditional allow.`,
+key_...), never its secret: a value that is not a valid public id is
+refused before anything is sent. It always needs an explicit, non-empty
+--account (a credential's authority or grants can differ by account, so
+the CLI never assumes the active one) and an explicit --action. The
+answer is the real, current decision: a conditional, not-yet-determined,
+or legacy compatibility result never prints as an unconditional allow.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		person, _ := cmd.Flags().GetString("person")
 		credential, _ := cmd.Flags().GetString("credential")
 		action, _ := cmd.Flags().GetString("action")
-		if err := validateExplainSelector(person, credential, action, cmd.Flags().Changed("account")); err != nil {
+		account, _ := cmd.Flags().GetString("account")
+		if err := validateExplainSelector(person, credential, action, account); err != nil {
 			return err
 		}
 		t, err := accessSession(cmd)
@@ -53,11 +55,7 @@ compatibility result never prints as an unconditional allow.`,
 			if err != nil {
 				return err
 			}
-			if t.json {
-				return t.print(res, nil)
-			}
-			renderExplainCredential(os.Stdout, *resp)
-			return nil
+			return renderExplainCredentialTo(os.Stdout, t.json, *resp, res.Body)
 		}
 		q := url.Values{"person": {person}, "scope": {scope}}
 		if action != "" {
@@ -95,12 +93,14 @@ func init() {
 
 // validateExplainSelector checks the local input for 'access explain' before
 // any request is built: exactly one subject (a person or a credential), a
-// credential that is a public id rather than a secret, an explicit
+// credential that is a real public id rather than a secret, a non-empty
 // --account for a credential (its authority or grants can differ by
 // account, so the CLI never assumes the active one, unlike the person
-// path), and an action to evaluate (the credential request requires one;
-// the person path may ask about every applicable action).
-func validateExplainSelector(person, credential, action string, accountGiven bool) error {
+// path, and an empty flag value is treated the same as an omitted one,
+// never as "use the active account"), and an action to evaluate (the
+// credential request requires one; the person path may ask about every
+// applicable action).
+func validateExplainSelector(person, credential, action, account string) error {
 	switch {
 	case person != "" && credential != "":
 		return errors.New("give --person or --credential, not both")
@@ -110,11 +110,11 @@ func validateExplainSelector(person, credential, action string, accountGiven boo
 	if credential == "" {
 		return nil
 	}
-	if err := rejectSecretShapedCredential(credential); err != nil {
+	if err := validatePublicCredentialID(credential); err != nil {
 		return err
 	}
-	if !accountGiven {
-		return errors.New("explaining a credential needs --account: its authority or grants can differ by account, so the CLI never assumes the active one")
+	if account == "" {
+		return errors.New("explaining a credential needs a non-empty --account: its authority or grants can differ by account, so the CLI never assumes the active one")
 	}
 	if action == "" {
 		return errors.New("explaining a credential needs --action: one exact action to evaluate")
@@ -122,18 +122,29 @@ func validateExplainSelector(person, credential, action string, accountGiven boo
 	return nil
 }
 
-// secretShapedCredentialPrefixes are the shapes of an actual bearer secret,
-// never a public credential id (docs/api/scoped-credentials.yaml in the
-// roid repo: the PublicId schema excludes exactly these). Catching this
-// before a request is built keeps a pasted secret out of the request and
-// out of any error about it.
-var secretShapedCredentialPrefixes = []string{"runos_pat_", "runos_key_", "rk_"}
+// publicCredentialIDPattern is the published PublicId grammar
+// (docs/api/scoped-credentials.yaml in the roid repo): 1 to 128
+// characters, starting with a letter or digit, from a fixed charset.
+var publicCredentialIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]*$`)
 
-func rejectSecretShapedCredential(v string) error {
-	for _, p := range secretShapedCredentialPrefixes {
-		if strings.HasPrefix(v, p) {
-			return errors.New("--credential takes a public id (pat_... or key_...), never a secret: use the id the identity service shows for it, not the token itself")
-		}
+var errNotAPublicCredentialID = errors.New("--credential takes a public id (pat_... or key_...), never a secret: use the id the identity service shows for it, not the token itself")
+
+// validatePublicCredentialID enforces the exact published PublicId grammar
+// before a selector ever reaches a request, rather than a narrower
+// hand-rolled prefix check: the schema's own "not" pattern excludes
+// runos_pat_ and runos_key_ ANYWHERE in the value (unanchored), and rk_
+// only at the start (anchored) - a public id may contain "rk_" elsewhere,
+// for example as part of a scope segment. Matching the charset also
+// catches a pasted secret wrapped in anything the grammar forbids (a
+// leading "Bearer ", surrounding quotes, whitespace): none of that is in
+// the allowed character set, so the whole value is refused, and the
+// refusal never echoes it.
+func validatePublicCredentialID(v string) error {
+	if len(v) < 1 || len(v) > 128 || !publicCredentialIDPattern.MatchString(v) {
+		return errNotAPublicCredentialID
+	}
+	if strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") || strings.HasPrefix(v, "rk_") {
+		return errNotAPublicCredentialID
 	}
 	return nil
 }
