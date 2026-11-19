@@ -60,7 +60,7 @@ import re
 import subprocess
 import sys
 
-LEAKCHECK_VERSION = "1.2.1"
+LEAKCHECK_VERSION = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # Credential shapes. Kept in step with CREDENTIAL in scripts/release.sh.
@@ -76,11 +76,18 @@ LEAKCHECK_VERSION = "1.2.1"
 # id-dot-secret shape, so a doc placeholder like `runos_pat_<id>.<secret>` does
 # not trip it. No public repo contained the string at all when this was added,
 # so it introduced no false positive.
+#
+# 1.3.0 (Story 343 / FCR2030): added `runos_key_<id>.<secret>`, the prefix
+# newly issued Account API Keys use, so they do not share a name with a
+# Personal Access Token. Same id-dot-secret shape and the same reasoning as
+# `runos_pat_` above; a placeholder like `runos_key_<id>.<secret>` still does
+# not trip it. This is additive: every existing `runos_pat_` match keeps
+# matching exactly as before.
 # ---------------------------------------------------------------------------
 CREDENTIAL_RE = re.compile(
     r"(gh[pousr]_[A-Za-z0-9]{20,})"
     r"|(github_pat_[A-Za-z0-9_]{20,})"
-    r"|(runos_pat_[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,})"
+    r"|(runos_(?:pat|key)_[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,})"
     r"|(xox[baprs]-[A-Za-z0-9-]{10,})"
     r"|(AKIA[0-9A-Z]{16})"
     r"|(-----BEGIN [A-Z ]*PRIVATE KEY-----)"

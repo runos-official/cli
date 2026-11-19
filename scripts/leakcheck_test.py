@@ -55,6 +55,11 @@ ACCOUNT_ID = "rj" + "wrn"
 RUNOS_TOKEN_PREFIX = "runos" + "_pat_"
 RUNOS_TOKEN = RUNOS_TOKEN_PREFIX + "AbCdEfGhJk.MnPqRsTuVwXyZ23456789AbCdEfGhJkMn"
 RUNOS_TOKEN_2 = RUNOS_TOKEN_PREFIX + "Zz9Yy8Xx7W.QqWwEeRrTtYyUuIiOoPpAaSsDdFfGg"
+# Story 343 / FCR2030: runos_key_ is the prefix a newly issued Account API
+# Key uses, distinct from runos_pat_ (a Personal Access Token). Same
+# id-dot-secret shape; the gate must catch it identically.
+RUNOS_KEY_PREFIX = "runos" + "_key_"
+RUNOS_KEY_TOKEN = RUNOS_KEY_PREFIX + "Qq7Rr8Ss9T.UuVvWwXxYyZz0123456789AbCdEfGhJk"
 
 # The SHAPE of the pasted terminal output that shipped in
 # cmd/preflight/tls_failure_kind_test.go: a private source address dialling a
@@ -236,6 +241,12 @@ def main() -> int:
         "export RUNOS_API_KEY=%s\n" % RUNOS_TOKEN_2,
         RUNOS_TOKEN_2[:22],
     )
+    # 1.3.0: the new Account API Key prefix, additive to runos_pat_ above.
+    expect_catch(
+        "RunOS account API key",
+        "export RUNOS_API_KEY=%s\n" % RUNOS_KEY_TOKEN,
+        RUNOS_KEY_TOKEN[:22],
+    )
     # The already-shipped pasted output, both addresses in one line.
     expect_catch("pasted source address in a shipped test comment", '// "the secure handshake FAILED: %s",\n' % PASTED_ERROR, PASTED_SRC)
     expect_catch("pasted destination address in the same line", '// "the secure handshake FAILED: %s",\n' % PASTED_ERROR, PASTED_DST)
@@ -321,6 +332,10 @@ def main() -> int:
     expect_clean(
         "RunOS token placeholder in documentation",
         "runos login --api-key %s<id>.<secret>\n" % RUNOS_TOKEN_PREFIX,
+    )
+    expect_clean(
+        "RunOS account API key placeholder in documentation",
+        "runos login --api-key %s<id>.<secret>\n" % RUNOS_KEY_PREFIX,
     )
     expect_clean("RFC 5737 TEST-NET-1", "gateway %s\n" % dotted(192, 0, 2, 1))
     expect_clean("RFC 5737 TEST-NET-2", "peer %s\n" % dotted(198, 51, 100, 7))

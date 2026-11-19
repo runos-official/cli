@@ -17,11 +17,22 @@ import (
 //
 // Conductor 14.9.0 added a `reason: 'revoked' | 'expired'` field plus
 // the matching `revokedAt` / `expiredAt` timestamp when conductor has
-// the data AND the bearer parses as a known PAT. The `error: "Invalid
-// token"` string stays for backwards compatibility. We render the
-// reason + timestamp distinctly so CI logs spell out "revoked at <ts>"
-// vs "token doesn't parse" without the user having to dig.
-func formatAuthError(err error, usingPAT bool) (string, bool) {
+// the data AND the bearer parses as a known secret credential. The
+// `error: "Invalid token"` string stays for backwards compatibility. We
+// render the reason + timestamp distinctly so CI logs spell out
+// "revoked at <ts>" vs "token doesn't parse" without the user having to
+// dig.
+//
+// usingSecretCredential is the SOURCE question only (auth.Kind(cfg).
+// IsSecretCredential()), never a semantic-type claim: conductor's 401
+// body carries no verified credentialType today (FPL421/story 331 adds
+// that classification only to the api-keys list/get responses, not to
+// the auth-refusal path), so this function must not call the secret a
+// Personal Access Token. Story 343 / FCR2030: a prior version printed a
+// PAT-specific checklist for every secret credential, including an
+// Account API Key, which is the exact defect this signature exists to
+// prevent. Recovery stays generic until a trusted response names a type.
+func formatAuthError(err error, usingSecretCredential bool) (string, bool) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != http.StatusUnauthorized {
 		return "", false
@@ -76,22 +87,30 @@ func formatAuthError(err error, usingPAT bool) (string, bool) {
 	}
 	sb.WriteString("\n")
 	/*
-	 THE CHECKLIST HAS TO MATCH THE CREDENTIAL IN USE.
+	 THE CHECKLIST HAS TO MATCH THE CREDENTIAL IN USE, AND MUST NOT NAME A TYPE THAT WAS NEVER
+	 VERIFIED.
 
-	 These three lines are about personal access tokens, and they were printed for every 401
-	 regardless. Measured on a live machine 2026-08-31: an operator on a browser sign-in, pointed at
-	 a conductor that would not accept their token, was told to audit `RUNOS_API_KEY` and
-	 `runos account api-keys list`. They had no PAT. Every line of advice was for a credential they
+	 These three lines are about a secret credential (a Personal Access Token OR an Account API
+	 Key; conductor's 401 body does not say which), and they were printed for every 401 regardless.
+	 Measured on a live machine 2026-08-31: an operator on a browser sign-in, pointed at a conductor
+	 that would not accept their token, was told to audit `RUNOS_API_KEY` and `runos account
+	 api-keys list`. They had no secret credential. Every line of advice was for a credential they
 	 were not using, and none of them named the thing that would have fixed it.
+
+	 Story 343 / FCR2030 fixes a second instance of the same defect: the checklist used to call the
+	 secret a "PAT" unconditionally, which is itself wrong advice for an Account API Key (a machine
+	 credential that never signs in with a browser and has no "PAT" to mint). Nothing on this path
+	 has a trusted credentialType, so the wording stays type-neutral; it must not guess from a
+	 prefix.
 
 	 A browser sign-in has exactly one remedy and one common cause, so it gets two lines rather than
 	 three borrowed ones.
 	*/
 	sb.WriteString("Check:\n")
-	if usingPAT {
-		sb.WriteString("  - is RUNOS_API_KEY pointing at a current PAT? `runos account api-keys list`\n")
-		sb.WriteString("  - is RUNOS_API_URL pointing at the same environment the PAT was minted on?\n")
-		sb.WriteString("  - was the PAT revoked or rotated? mint a new one via `runos account api-keys add`")
+	if usingSecretCredential {
+		sb.WriteString("  - is RUNOS_API_KEY (or the stored credential) still current? `runos account api-keys list`\n")
+		sb.WriteString("  - is RUNOS_API_URL pointing at the same environment this credential was issued on?\n")
+		sb.WriteString("  - was it revoked or rotated? mint a new one via `runos account api-keys add`")
 	} else {
 		sb.WriteString("  - sign in again: `runos login`\n")
 		sb.WriteString("  - are you signed in to the environment you are talking to? `runos status` shows both")

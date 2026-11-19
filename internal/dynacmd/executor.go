@@ -368,7 +368,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// / etc), not their RUNOS PAT. The conductor's APIError body already
 		// carries the provider message; let it through verbatim.
 		if !is401UpstreamProxyCommand(cmdDef) {
-			if msg, ok := formatAuthError(err, auth.Kind(cfg).IsPAT()); ok {
+			if msg, ok := formatAuthError(err, auth.Kind(cfg).IsSecretCredential()); ok {
 				err = fmt.Errorf("%s", msg)
 			}
 		}
@@ -509,6 +509,14 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
+	// Story 343 / FCR2030: refuse to render a response carrying a
+	// bearer-secret-shaped value anywhere other than the one-shot
+	// issuance field, before EITHER rendering path runs. See
+	// guardCredentialResponse for why this is not keyed on cmdDef.Command.
+	if err := guardCredentialResponse(respBody); err != nil {
+		return err
+	}
+
 	formatter := output.NewFormatter(jsonOutput)
 
 	err = formatter.Format(respBody, cmdDef.Output)
@@ -612,65 +620,6 @@ func jobsCancelExitGate(respBody []byte) error {
 		return fmt.Errorf("jobs cancel: job is in terminal status %q and was not cancelled", resp.Status)
 	}
 	return fmt.Errorf("jobs cancel: job was not cancelled")
-}
-
-// printApiKeyTokenBanner prints an ASCII-framed reminder under the
-// formatter's table output for `account api-keys add`. Surfaces the
-// one-shot token + warning so terminal users don't miss them in a busy
-// session. Silently no-ops when the response body lacks a token (e.g.
-// when the conductor returned a partial response shape) to avoid
-// blowing up the call site. Regression target: I11-F.
-func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
-		return
-	}
-	token, _ := item["token"].(string)
-	if token == "" {
-		return
-	}
-	warning, _ := item["warning"].(string)
-	if warning == "" {
-		warning = "This token will not be shown again. Store it in a secret manager."
-	}
-	const bar = "============================================================"
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT TOKEN - save it now, it cannot be retrieved")
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+token)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+warning)
-	fmt.Fprintln(w, bar)
-}
-
-// printNotifyKeyBanner prints the same banner shape as
-// printApiKeyTokenBanner for `account notify-keys add`. Notify keys are
-// the symmetric notification-webhook credential and have the same
-// store-the-hash, return-the-secret-once contract. Silently no-ops
-// when the response body lacks `keyValue` so a partial conductor shape
-// can't blow up the call site. Regression target: I12-H (mirror of
-// I11-F for PATs).
-func printNotifyKeyBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
-		return
-	}
-	keyValue, _ := item["keyValue"].(string)
-	if keyValue == "" {
-		return
-	}
-	const bar = "============================================================"
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT NOTIFY KEY - save it now, it cannot be retrieved")
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+keyValue)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  This key will not be shown again. Store it in a secret manager.")
-	fmt.Fprintln(w, bar)
 }
 
 // extractLogsDiagnostic recognises the conductor's synthetic
@@ -1096,6 +1045,9 @@ func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 // ignored: the caller got progress text on stdout and nothing to parse.
 // Regression target: goal 19 A3 / goal 21 B11.
 func renderFollowResponse(cmdDef manifest.Command, respBody []byte, jsonOutput bool) error {
+	if err := guardCredentialResponse(respBody); err != nil {
+		return err
+	}
 	return output.NewFormatter(jsonOutput).Format(respBody, cmdDef.Output)
 }
 

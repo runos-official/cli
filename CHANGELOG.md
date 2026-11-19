@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.24.2
+
+### Fixed
+
+- `runos status`, `runos whoami`, 401 recovery advice, VPN/Kubernetes-access refusals and the Procedure kill-switch help no longer call every stored or `RUNOS_API_KEY`-sourced credential a "personal access token (PAT)". None of those surfaces can tell a Personal Access Token from an Account API Key without a trusted server response, and labelling an Account API Key as a PAT sent its holder to the wrong recovery steps (auditing `runos account api-keys list` for a "PAT" that was never one). The wording is now credential-neutral ("a stored credential", "an API credential") until a verified type is available; `runos status --json` and `runos whoami --json` now carry an explicit `credentialType: "unknown"` for a secret-sourced credential instead of a type nobody checked.
+- `runos account api-keys add` (and the manifest-driven credential commands generally) now refuse to render a response if a bearer secret appears anywhere other than the one-shot issuance field (`token` / `keyValue`), both in text and `--json` output. This closes the gap where a future server change could leak a credential into a list or show response and have it render anyway.
+
+### Added
+
+- `scripts/leakcheck.py` and the release gate's sensitivity scan now also catch `runos_key_<id>.<secret>`, the prefix reserved for newly issued Account API Keys, with the same precision as the existing `runos_pat_` check. `runos vpn diagnose` and other daemon-report redaction now mask the whole credential (prefix and id included), not only the trailing secret half.
+
 ## v1.24.1
 
 ### Fixed

@@ -51,11 +51,18 @@ var (
 	// token printed bare. WireGuard keys, UUIDs and hostnames do not match (see looksLikeSecret).
 	opaqueTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{32,}`)
 	uuidPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	// A whole RunOS bearer secret, prefix and public id included: runos_pat_<id>.<secret> (a
+	// Personal Access Token, and every legacy account-scoped key) or runos_key_<id>.<secret> (an
+	// Account API Key). Matched and masked as ONE unit, before opaqueTokenPattern above would
+	// otherwise mask only the trailing secret and leave "runos_pat_<id>." in the report. Mirrors
+	// the shape scripts/leakcheck.py and internal/dynacmd's credential-response guard enforce.
+	runosCredentialPattern = regexp.MustCompile(`\brunos_(?:pat|key)_[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,}\b`)
 )
 
 const redacted = "<redacted>"
 
 func redactText(s string) string {
+	s = runosCredentialPattern.ReplaceAllString(s, redacted)
 	s = urlQueryPattern.ReplaceAllString(s, "${1}?"+redacted)
 	s = urlUserinfoPattern.ReplaceAllString(s, "${1}"+redacted+"@")
 	s = authSchemePattern.ReplaceAllString(s, "${1}"+redacted)

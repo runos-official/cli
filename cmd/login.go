@@ -32,16 +32,16 @@ var loginCmd = &cobra.Command{
 	Short: "Authenticate with RunOS",
 	Long: `Opens a browser to authenticate with RunOS using your existing account.
 
-For headless / CI use, pass --api-key to store a personal access token
-(PAT) instead of the browser flow:
+For headless / CI use, pass --api-key to store a credential (a personal
+access token or an account API key) instead of the browser flow:
 
-  runos login --api-key <pat> --account-id <id>
+  runos login --api-key <credential> --account-id <id>
 
---account-id is required with --api-key: a PAT is scoped to one account,
-so it must be paired with the matching account id explicitly (no fallback
-to any account already in config).
+--account-id is required with --api-key: the credential is scoped to one
+account, so it must be paired with the matching account id explicitly (no
+fallback to any account already in config).
 
-The stored PAT is used for all subsequent commands and cleared by
+The stored credential is used for all subsequent commands and cleared by
 'runos logout'. The RUNOS_API_KEY environment variable still takes
 precedence over a stored key.`,
 	RunE: runLogin,
@@ -50,16 +50,17 @@ precedence over a stored key.`,
 func init() {
 	loginCmd.Flags().BoolP("json", "j", false, "Report the browser sign-in as a stream of JSON events, one per line (device_code, pending, authorized, error)")
 	loginCmd.Flags().Bool("no-browser", false, "Print the sign-in link instead of opening a browser; the caller opens it. Use when a UI shows the device code and opens the link on a click")
-	loginCmd.Flags().String("api-key", "", "Authenticate with a personal access token (PAT) instead of the browser flow; pair with --account-id")
-	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the PAT is account-scoped)")
+	loginCmd.Flags().String("api-key", "", "Authenticate with a credential (a personal access token or an account API key) instead of the browser flow; pair with --account-id")
+	loginCmd.Flags().String("account-id", "", "Account ID to store with --api-key (required with --api-key; the credential is account-scoped)")
 	// Signing in to another account takes that account's tunnel down, so this command dials the
 	// daemon and has to declare the override like every other command that does.
 	registerSocketFlag(loginCmd)
 }
 
 // resolveLoginAccountID validates the account id to persist for an
-// api-key login. --account-id is mandatory: a PAT is account-scoped, so
-// falling back to a stale config value would silently store the new PAT
+// api-key login. --account-id is mandatory: the credential (a personal
+// access token or an account API key) is account-scoped, so falling
+// back to a stale config value would silently store the new credential
 // against the wrong tenant (auth succeeds by token, every /:aid/...
 // request targets the wrong account). An empty flag is therefore a hard
 // error, never a fallback. The CI env path (RUNOS_API_KEY +
@@ -67,7 +68,7 @@ func init() {
 func resolveLoginAccountID(flagAID string) (string, error) {
 	aid := strings.TrimSpace(flagAID)
 	if aid == "" {
-		return "", fmt.Errorf("--api-key requires --account-id <id> (the PAT is account-scoped; find the id in the console)")
+		return "", fmt.Errorf("--api-key requires --account-id <id> (the credential is account-scoped; find the id in the console)")
 	}
 	if !accountIDCharset.MatchString(aid) {
 		return "", fmt.Errorf("account id %q is not a valid shape (expected alphanumeric, 1-64 chars)", aid)
@@ -289,10 +290,12 @@ func browserAuthenticateReporting(
 	return browserSession{}, fmt.Errorf("authorization timed out - please try again")
 }
 
-// loginWithAPIKey persists a PAT to ~/.runos/config.json (0600) and
-// switches the active credential to it, clearing any Firebase
-// refresh-token state so exactly one credential is live and 'runos
-// logout' has a single thing to clear. The token is never echoed back.
+// loginWithAPIKey persists a credential (a personal access token or an
+// account API key; the CLI does not infer which) to
+// ~/.runos/config.json (0600) and switches the active credential to it,
+// clearing any Firebase refresh-token state so exactly one credential is
+// live and 'runos logout' has a single thing to clear. The token is
+// never echoed back.
 func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	cmd.SilenceUsage = true
 
@@ -316,7 +319,7 @@ func loginWithAPIKey(cmd *cobra.Command, apiKey string) error {
 	reportVPNAccountChange(cmd, previousAccountID, aid)
 
 	fmt.Printf("Stored API key for account %s.\n", aid)
-	fmt.Println("The CLI will use this PAT for authentication. Run 'runos logout' to clear it.")
+	fmt.Println("The CLI will use this credential for authentication. Run 'runos logout' to clear it.")
 	fmt.Printf("Note: the %s environment variable, when set, still takes precedence over the stored key.\n", auth.APIKeyEnvVar)
 	warmManifestCache(cfg)
 	return nil

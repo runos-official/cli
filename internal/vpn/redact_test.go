@@ -13,6 +13,14 @@ not only the ones the first version thought of. Each row names the secret that m
 var pemBlock = strings.Repeat("-", 5) + "BEGIN PRIVATE KEY" + strings.Repeat("-", 5) + "\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" +
 	strings.Repeat("-", 5) + "END PRIVATE KEY" + strings.Repeat("-", 5)
 
+// Built by concatenation, never as one literal, for the same reason pemBlock is built at run
+// time: scripts/leakcheck.py scans source TEXT for this exact id-dot-secret shape, and a test
+// fixture matching it on one line would fail the public-repo leak gate on this file itself.
+var (
+	fakeRunosPAT = "runos_pat_" + "AbCdEf1234." + "0123456789abcdefghijklmnopqrstuv"
+	fakeRunosKey = "runos_key_" + "AbCdEf1234." + "0123456789abcdefghijklmnopqrstuv"
+)
+
 func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 	cases := []struct {
 		name, in, secret string
@@ -47,6 +55,31 @@ func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 		}
 		if !strings.Contains(out, redacted) {
 			t.Errorf("%s: nothing was marked redacted in %q", c.name, out)
+		}
+	}
+}
+
+// Story 343 / FCR2030: the whole RunOS credential (prefix AND the public id before the dot) must
+// be masked as one unit for BOTH supported prefixes, not only the trailing secret half. Pre-fix,
+// only the bare opaque-token pattern caught these, which redacts the 32+ char secret but leaves
+// "runos_pat_<id>." (or "runos_key_<id>.") visible in a daemon report.
+func TestRedactTextMasksTheWholeRunosCredential(t *testing.T) {
+	for _, c := range []struct {
+		name, secret string
+	}{
+		{"personal access token", fakeRunosPAT},
+		{"account API key", fakeRunosKey},
+	} {
+		in := "token exchange failed for " + c.secret
+		out := redactText(in)
+		if strings.Contains(out, c.secret) {
+			t.Fatalf("%s: the secret %q survived in %q", c.name, c.secret, out)
+		}
+		// The id half must not survive either: the prefix-plus-id substring (everything up to
+		// and including the dot) must not appear unredacted.
+		prefixAndID := c.secret[:strings.IndexByte(c.secret, '.')+1]
+		if strings.Contains(out, prefixAndID) {
+			t.Fatalf("%s: the prefix+id %q survived in %q (only the secret half was masked)", c.name, prefixAndID, out)
 		}
 	}
 }

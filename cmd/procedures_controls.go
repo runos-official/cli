@@ -33,9 +33,10 @@ var proceduresKillSwitchesCmd = &cobra.Command{
 Conductor checks kill switches before it claims an operation and before every
 mutating stage.
 
-Engaging is the safe direction and works under a personal access token, because
-an incident is exactly when a script needs to be able to stop things. Releasing
-restores the ability to mutate and refuses a PAT.`,
+Engaging is the safe direction and works under a stored credential (a personal
+access token or an account API key), because an incident is exactly when a
+script needs to be able to stop things. Releasing restores the ability to
+mutate and refuses a stored credential.`,
 }
 
 var proceduresKillSwitchesListCmd = &cobra.Command{

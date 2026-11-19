@@ -9,17 +9,19 @@ import (
 )
 
 // Q&A 131 narrowed this to the two control RELEASES; approving no longer
-// refuses a PAT. What the test still pins is that BOTH PAT shapes are
-// caught (env and on-disk, the drift this whole predicate exists to
-// prevent) and that the refusal does not read as a role problem, since
-// no role turns a stored secret into a person.
-func TestRefuseStoredSecretRefusesBothPATShapes(t *testing.T) {
-	for _, kind := range []auth.CredentialKind{auth.CredentialEnvPAT, auth.CredentialStoredPAT} {
+// refuses a stored secret. What the test still pins is that BOTH secret
+// shapes are caught (env and on-disk, the drift this whole predicate
+// exists to prevent) and that the refusal does not read as a role
+// problem, since no role turns a stored secret into a person. Neither
+// shape is assumed to be a Personal Access Token: an Account API Key
+// must refuse identically.
+func TestRefuseStoredSecretRefusesBothSecretShapes(t *testing.T) {
+	for _, kind := range []auth.CredentialKind{auth.CredentialEnvKey, auth.CredentialStoredKey} {
 		t.Run(string(kind), func(t *testing.T) {
 			client := &Client{kind: kind}
 			err := client.RefuseStoredSecret("release a Procedure kill switch")
 			if err == nil {
-				t.Fatal("a PAT was not refused")
+				t.Fatal("a stored credential was not refused")
 			}
 			message := err.Error()
 			if !strings.Contains(message, "runos login") {
@@ -31,9 +33,9 @@ func TestRefuseStoredSecretRefusesBothPATShapes(t *testing.T) {
 			if strings.Contains(strings.ToLower(message), "role not authorized") {
 				t.Error("the refusal reads as a role error and sends the user to fix the wrong thing")
 			}
-			// A PAT keeps every other act on this surface, and the
-			// refusal says so rather than implying a blanket ban.
-			if !strings.Contains(message, "stay available under a PAT") {
+			// A stored credential keeps every other act on this surface,
+			// and the refusal says so rather than implying a blanket ban.
+			if !strings.Contains(message, "stay available under a stored credential") {
 				t.Error("the refusal does not tell the user which acts remain open to them")
 			}
 		})

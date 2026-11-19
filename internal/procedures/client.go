@@ -64,20 +64,20 @@ func (c *Client) Kind() auth.CredentialKind { return c.kind }
 // no role makes a stored secret into a person. The recovery is a
 // different credential, so that is what this says.
 func (c *Client) RefuseStoredSecret(act string) error {
-	if !c.kind.IsPAT() {
+	if !c.kind.IsSecretCredential() {
 		return nil
 	}
 	where := "the RUNOS_API_KEY environment variable"
-	if c.kind == auth.CredentialStoredPAT {
-		where = "a personal access token stored by 'runos login --api-key'"
+	if c.kind == auth.CredentialStoredKey {
+		where = "a credential stored by 'runos login --api-key'"
 	}
 	return fmt.Errorf(
-		"a personal access token cannot %s.\n\n"+
+		"a stored credential cannot %s.\n\n"+
 			"This session authenticates with %s. A stored secret is evidence of possession, never of a\n"+
 			"person being present, and releasing a control is the direction that restores the ability\n"+
 			"to mutate, so it is the half a stored secret does not reach.\n\n"+
 			"This is not a permission problem. Sign in interactively with 'runos login' and retry.\n"+
-			"(Approving, rejecting, revoking and invoking all stay available under a PAT.)",
+			"(Approving, rejecting, revoking and invoking all stay available under a stored credential.)",
 		act, where)
 }
 

@@ -29,11 +29,12 @@ network call to render itself.
 */
 func sessionNextStep(credential auth.CredentialKind) string {
 	switch {
-	// A PAT can never mint a VPN session: a tunnel is a person's 24-hour sign-in and a stored
-	// secret is evidence of possession, so `vpn up` refuses it as its first act. Naming that
-	// command here is the same defect this line was rewritten to remove, left standing for the one
-	// credential that can never satisfy it, and on a PAT-only machine it was the permanent answer.
-	case credential.IsPAT():
+	// A stored secret (a Personal Access Token OR an Account API Key) can never mint a VPN
+	// session: a tunnel is a person's 24-hour sign-in and a stored secret is evidence of
+	// possession, so `vpn up` refuses it as its first act. Naming that command here is the same
+	// defect this line was rewritten to remove, left standing for the one credential that can
+	// never satisfy it, and on a secret-only machine it was the permanent answer.
+	case credential.IsSecretCredential():
 		return "run 'runos login' to sign in as a person, then 'runos vpn up'"
 	case credential == auth.CredentialInteractive:
 		return "run 'runos vpn up'"

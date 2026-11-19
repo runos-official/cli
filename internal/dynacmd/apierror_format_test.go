@@ -18,7 +18,7 @@ func TestFormatAuthError(t *testing.T) {
 			t.Error("expected false for non-APIError")
 		}
 	})
-	t.Run("401 on a PAT surfaces the PAT hints", func(t *testing.T) {
+	t.Run("401 on a secret credential surfaces the generic credential hints", func(t *testing.T) {
 		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, true)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
@@ -28,14 +28,21 @@ func TestFormatAuthError(t *testing.T) {
 				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
 			}
 		}
+		// Story 343 / FCR2030: conductor's 401 body carries no verified
+		// credentialType, so the checklist must never claim this secret
+		// is specifically a Personal Access Token. An Account API Key
+		// hits this exact path and must get the same, type-neutral advice.
+		if contains(msg, "PAT") {
+			t.Errorf("a secret credential with no verified type must not be called a PAT, got:\n%s", msg)
+		}
 	})
 	/*
 	 MEASURED ON A LIVE MACHINE, 2026-08-31. An operator on a browser sign-in, pointed at a conductor
 	 that would not accept their token, was told to audit `RUNOS_API_KEY` and to run
-	 `runos account api-keys list`. They had no PAT. All three lines were about a credential they
-	 were not using, and the one command that would have helped was not among them.
+	 `runos account api-keys list`. They had no secret credential. All three lines were about a
+	 credential they were not using, and the one command that would have helped was not among them.
 	*/
-	t.Run("401 on a browser sign-in never mentions a PAT", func(t *testing.T) {
+	t.Run("401 on a browser sign-in never mentions a secret credential", func(t *testing.T) {
 		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, false)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
