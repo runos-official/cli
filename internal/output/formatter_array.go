@@ -1,20 +1,35 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 )
 
+// decodeArrayOfObjects decodes data the same way Format's --json branch
+// and formatObject do (finding 1250 point 2): a streaming decoder with
+// UseNumber, never json.Unmarshal, so a number outside float64's range
+// cannot make only this decode fail while the other renderers for the
+// same bytes succeed.
+func decodeArrayOfObjects(data []byte) ([]map[string]any, error) {
+	var items []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	err := decoder.Decode(&items)
+	return items, err
+}
+
 func (f *Formatter) formatArray(data []byte, fields []string) error {
 	// I26-U follow-up: conductor 16.0.0 wrapped list-style endpoints in
 	// envelope objects while the manifest still declared an array.
 	data = unwrapArrayEnvelope(data)
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
+	items, err := decodeArrayOfObjects(data)
+	if err != nil {
 		data = pickArrayFromMultiKeyEnvelope(data, fields)
-		if err2 := json.Unmarshal(data, &items); err2 != nil {
+		items, err = decodeArrayOfObjects(data)
+		if err != nil {
 			fmt.Println(string(data))
 			return nil
 		}

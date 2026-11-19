@@ -427,6 +427,31 @@ func findSecretValue(v any, path string) string {
 	return ""
 }
 
+// decodeCredentialObject decodes data into a string-keyed map the same
+// way guardCredentialResponse and internal/output's formatters do
+// (finding 1250, point 2): a streaming decoder with UseNumber, never
+// json.Unmarshal. Every caller in this file that needs to read or
+// strip a named field from a credential response -- sanitizeForTable
+// Render, injectETagIntoCredentialResponse, and the three print*Banner
+// helpers -- used plain json.Unmarshal, which fails with ErrRange on a
+// number outside float64's range even though the guard (UseNumber)
+// and the renderer (also UseNumber, after this same finding's fix to
+// internal/output) both decode the SAME legitimate response
+// successfully. That divergence silently dropped a valid ETag, left
+// the one-shot secret field unstripped from the table body, and
+// suppressed the one-shot banner entirely for a response the guard had
+// already authorized -- exactly the result a renderer-matching rule
+// exists to prevent.
+func decodeCredentialObject(data []byte) (map[string]any, error) {
+	var item map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 // sanitizeForTableRender removes a credential family's one-shot secret
 // field from a successful issuance response before it reaches the
 // generic table/object formatter in TEXT mode, so the secret appears
@@ -443,8 +468,8 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 	if !ok || !family.issuanceVerbs[verb] {
 		return respBody
 	}
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
+	item, err := decodeCredentialObject(respBody)
+	if err != nil {
 		return respBody
 	}
 	if _, present := item[family.secretField]; !present {
@@ -509,8 +534,8 @@ func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, 
 	if runosSecretPattern.MatchString(etag) {
 		return nil, fmt.Errorf("refusing to render response: the response's ETag header was a bearer-secret-shaped value, which the inventory contract forbids")
 	}
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil || item == nil {
+	item, err := decodeCredentialObject(respBody)
+	if err != nil || item == nil {
 		return respBody, nil
 	}
 	item["etag"] = etag
@@ -551,8 +576,8 @@ func printOneShotBanner(w io.Writer, cmdDef manifest.Command, respBody []byte) {
 // a token (e.g. when the conductor returned a partial response shape)
 // to avoid blowing up the call site. Regression target: I11-F.
 func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
+	item, err := decodeCredentialObject(respBody)
+	if err != nil {
 		return
 	}
 	token, _ := item["token"].(string)
@@ -574,8 +599,8 @@ func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
 // can't blow up the call site. Regression target: I12-H (mirror of
 // I11-F for PATs).
 func printNotifyKeyBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
+	item, err := decodeCredentialObject(respBody)
+	if err != nil {
 		return
 	}
 	keyValue, _ := item["keyValue"].(string)
@@ -594,8 +619,8 @@ func printNotifyKeyBanner(w io.Writer, respBody []byte) {
 // printOneShotBanner needs no further change once Conductor publishes
 // add/rotate.
 func printTypedCredentialSecretBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
+	item, err := decodeCredentialObject(respBody)
+	if err != nil {
 		return
 	}
 	secret, _ := item["secret"].(string)

@@ -98,13 +98,37 @@ func TestExecute_IssuanceRegistryTableComplete(t *testing.T) {
 					t.Errorf("a refusal must print no copy of any secret, stdout = %q", stdout)
 				}
 			})
+
+			// Finding 1250 point 2: a legitimate issuance carrying an
+			// unrelated number outside float64's range must still pass
+			// AND still render exactly one copy, through every function
+			// in the pipeline (guard, sanitizeForTableRender, the
+			// banner), not just the guard that cycle 4's UseNumber fix
+			// touched.
+			t.Run(command+"/authorized-with-large-number/"+mode, func(t *testing.T) {
+				huge := strings.Repeat("9", 400)
+				body := `{"id":"c1","quota":` + huge + `,"` + fx.secretField + `":"` + fx.validSecret + `"}`
+				err, stdout := runIssuanceExecute(t, command, body, jsonOutput)
+				if err != nil {
+					t.Fatalf("Execute: %v", err)
+				}
+				if got := strings.Count(stdout, fx.validSecret); got != 1 {
+					t.Errorf("expected exactly one copy of the secret, got %d, stdout = %q", got, stdout)
+				}
+				if !jsonOutput && !strings.Contains(stdout, "ONE-SHOT") {
+					t.Errorf("expected the one-shot banner to still print in text mode, stdout = %q", stdout)
+				}
+			})
 		}
 	}
 }
 
-// Finding 1215's remaining two cases: a malformed inventory body with a
-// decodable first value, and a credential-shaped ETag. Both must refuse
-// and print no copy of the secret.
+// Finding 1215's remaining two cases, now run in BOTH output modes
+// (finding 1250: "the current table ... omits malformed inventory and
+// ETags. Separate tests exercise those two cases in only one mode
+// each."): a malformed inventory body with a decodable first value,
+// and a credential-shaped ETag. Both must refuse and print no copy of
+// the secret, in text and in --json.
 func TestExecute_MalformedInventoryWithDecodableFirstValueIsRefused(t *testing.T) {
 	listCmd := manifest.Command{
 		Command:  "account/api-keys/list",
@@ -116,19 +140,27 @@ func TestExecute_MalformedInventoryWithDecodableFirstValueIsRefused(t *testing.T
 	// containing one: internal/output's formatter would render only the
 	// first value, discarding the trailing text silently.
 	body := `{"id":"k1"}` + fakeLegacyPAT
-	srv := warnStub(t, http.StatusOK, body)
-	warnEnv(t, localhostURL(srv.URL))
-	cmd := warnCmd(t, listCmd, false, false)
-	exec := NewExecutor(localhostURL(srv.URL))
+	for _, jsonOutput := range []bool{false, true} {
+		mode := "text"
+		if jsonOutput {
+			mode = "json"
+		}
+		t.Run(mode, func(t *testing.T) {
+			srv := warnStub(t, http.StatusOK, body)
+			warnEnv(t, localhostURL(srv.URL))
+			cmd := warnCmd(t, listCmd, jsonOutput, false)
+			exec := NewExecutor(localhostURL(srv.URL))
 
-	read := captureSplit(t)
-	err := exec.Execute(cmd, nil, listCmd)
-	stdout, _ := read()
-	if err == nil {
-		t.Fatal("expected a refusal for trailing data after a decodable first value, got nil")
-	}
-	if strings.Contains(stdout, fakeLegacyPAT) {
-		t.Errorf("a refusal must print no copy of the secret, stdout = %q", stdout)
+			read := captureSplit(t)
+			err := exec.Execute(cmd, nil, listCmd)
+			stdout, stderr := read()
+			if err == nil {
+				t.Fatal("expected a refusal for trailing data after a decodable first value, got nil")
+			}
+			if strings.Contains(stdout, fakeLegacyPAT) || strings.Contains(stderr, fakeLegacyPAT) {
+				t.Errorf("a refusal must print no copy of the secret, stdout=%q stderr=%q", stdout, stderr)
+			}
+		})
 	}
 }
 
@@ -141,34 +173,44 @@ func TestExecute_CredentialShapedETagIsRefused_JSONEnvelope(t *testing.T) {
 			{Name: "credential", Type: "string", Required: true, Positional: true},
 		}},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", fakeTypedPAT)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"credential_id":"c1"}`))
-	}))
-	t.Cleanup(srv.Close)
-	warnEnv(t, localhostURL(srv.URL))
+	for _, jsonOutput := range []bool{false, true} {
+		mode := "text"
+		if jsonOutput {
+			mode = "json"
+		}
+		t.Run(mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("ETag", fakeTypedPAT)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"credential_id":"c1"}`))
+			}))
+			t.Cleanup(srv.Close)
+			warnEnv(t, localhostURL(srv.URL))
 
-	cmd := warnCmd(t, showCmd, true, false)
-	exec := NewExecutor(localhostURL(srv.URL))
+			cmd := warnCmd(t, showCmd, jsonOutput, false)
+			exec := NewExecutor(localhostURL(srv.URL))
 
-	read := captureSplit(t)
-	err := exec.Execute(cmd, []string{"c1"}, showCmd)
-	stdout, stderr := read()
-	if err == nil {
-		t.Fatal("expected a refusal for a secret-shaped ETag, got nil")
-	}
-	// I4-G parity: under --json, the refusal is the structured error
-	// envelope, not a bare stderr line.
-	var envelope map[string]any
-	if jsonErr := json.Unmarshal([]byte(stdout), &envelope); jsonErr != nil {
-		t.Fatalf("stdout is not a JSON error envelope: %v\nstdout=%q stderr=%q", jsonErr, stdout, stderr)
-	}
-	if _, ok := envelope["error"]; !ok {
-		t.Errorf("expected an \"error\" key in the envelope, got: %v", envelope)
-	}
-	if strings.Contains(stdout, fakeTypedPAT) || strings.Contains(stderr, fakeTypedPAT) {
-		t.Errorf("the secret-shaped ETag must never reach output, stdout=%q stderr=%q", stdout, stderr)
+			read := captureSplit(t)
+			err := exec.Execute(cmd, []string{"c1"}, showCmd)
+			stdout, stderr := read()
+			if err == nil {
+				t.Fatal("expected a refusal for a secret-shaped ETag, got nil")
+			}
+			if jsonOutput {
+				// I4-G parity: under --json, the refusal is the structured
+				// error envelope, not a bare stderr line.
+				var envelope map[string]any
+				if jsonErr := json.Unmarshal([]byte(stdout), &envelope); jsonErr != nil {
+					t.Fatalf("stdout is not a JSON error envelope: %v\nstdout=%q stderr=%q", jsonErr, stdout, stderr)
+				}
+				if _, ok := envelope["error"]; !ok {
+					t.Errorf("expected an \"error\" key in the envelope, got: %v", envelope)
+				}
+			}
+			if strings.Contains(stdout, fakeTypedPAT) || strings.Contains(stderr, fakeTypedPAT) {
+				t.Errorf("the secret-shaped ETag must never reach output, stdout=%q stderr=%q", stdout, stderr)
+			}
+		})
 	}
 }
