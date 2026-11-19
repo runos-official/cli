@@ -285,6 +285,29 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in field %q, which the inventory contract forbids", found)
 		}
 	}
+	// Finding 1246 (repeat of 1215's G1, 5th occurrence of 1105/1150/
+	// 1193's root defect): the scan above examines the DECODED structure
+	// only. Two things can carry a secret in the RAW bytes that the
+	// decoded structure does not account for: a JSON object with a
+	// duplicate key, where Go's decoder keeps only the LAST value and the
+	// scan above never sees an earlier, shadowed occurrence; and (for
+	// internal/output/formatter.go's text-mode fallback specifically,
+	// which prints `data` verbatim when a command declares no Output)
+	// any raw text the decoded value's own re-rendering would not
+	// reproduce. Comparing a raw match COUNT against the exactly one
+	// occurrence the one-shot exemption accounts for (zero for every
+	// other verb) catches both without re-litigating the exemption
+	// itself: an authorized issuance's own single, legitimate secret
+	// never exceeds its own count.
+	allowed := 0
+	if allowedField != "" {
+		if s, ok := obj[allowedField].(string); ok && family.secretPattern != nil && family.secretPattern.MatchString(s) {
+			allowed = 1
+		}
+	}
+	if rawMatches := len(runosSecretPattern.FindAll(trimmed, -1)); rawMatches > allowed {
+		return fmt.Errorf("refusing to render response: the raw response body carries more bearer-secret-shaped occurrences than its one authorized field accounts for, which the inventory contract forbids")
+	}
 	return nil
 }
 
@@ -337,6 +360,19 @@ func responseContainsSecret(raw []byte) bool {
 	decoder.UseNumber()
 	if err := decoder.Decode(&probe); err != nil {
 		return runosSecretPattern.Match(trimmed)
+	}
+	// Finding 1246: an error body never has a legitimate secret anywhere
+	// (no one-shot exemption exists on this path, unlike
+	// guardCredentialResponse), so a raw-byte match is an unconditional
+	// leak regardless of whether the decoded structure also sees it.
+	// describeAPIError prints the RAW body verbatim whenever the decoded
+	// envelope's own "error" field is empty or missing; trailing data
+	// after the one decoded value, or an earlier occurrence of a
+	// duplicate key that Go's decoder discards in favour of the last
+	// one, both reach that raw-print path unexamined by
+	// valueContainsSecret(probe) alone.
+	if runosSecretPattern.Match(trimmed) {
+		return true
 	}
 	return valueContainsSecret(probe)
 }

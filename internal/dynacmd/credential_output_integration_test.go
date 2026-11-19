@@ -157,6 +157,104 @@ func TestExecute_CredentialFamily_ErrorResponseStillFormatsNormally(t *testing.T
 	}
 }
 
+// Finding 1246 (repeat of 1215's G1, 5th occurrence of 1105/1150/1193's
+// root defect): the ONE test the finding names, table-driven, with the
+// two representation-divergence shapes (trailing data, duplicate key)
+// on both guards, one Execute-boundary row, and two no-regression rows
+// (finding 1097's non-credential pass-through, and an authorized
+// issuance still rendering exactly once).
+func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T) {
+	trailingDataBody := `{"detail":"x"} ` + fakeLegacyPAT
+	duplicateKeyBody := `{"detail":"` + fakeLegacyPAT + `","detail":"safe"}`
+
+	t.Run("error guard refuses trailing data, never prints the secret", func(t *testing.T) {
+		err := guardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(trailingDataBody)})
+		if err == nil {
+			t.Fatal("expected a refusal, got nil")
+		}
+		if strings.Count(err.Error(), fakeLegacyPAT) != 0 {
+			t.Errorf("secret reached the error message: %v", err)
+		}
+	})
+	t.Run("error guard refuses duplicate key, never prints the secret", func(t *testing.T) {
+		err := guardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(duplicateKeyBody)})
+		if err == nil {
+			t.Fatal("expected a refusal, got nil")
+		}
+		if strings.Count(err.Error(), fakeLegacyPAT) != 0 {
+			t.Errorf("secret reached the error message: %v", err)
+		}
+	})
+	t.Run("success guard refuses trailing data on an inventory command", func(t *testing.T) {
+		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(trailingDataBody)); err == nil {
+			t.Error("expected a refusal, got nil")
+		}
+	})
+	t.Run("success guard refuses duplicate key on an inventory command", func(t *testing.T) {
+		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(duplicateKeyBody)); err == nil {
+			t.Error("expected a refusal, got nil")
+		}
+	})
+
+	t.Run("Execute refuses a duplicate-key inventory response and prints nothing", func(t *testing.T) {
+		body := `{"token":"` + fakeLegacyPAT + `","token":"redacted"}`
+		srv := warnStub(t, http.StatusOK, body)
+		warnEnv(t, localhostURL(srv.URL))
+		cmd := warnCmd(t, credListCmd, false, false)
+		exec := NewExecutor(localhostURL(srv.URL))
+
+		read := captureSplit(t)
+		err := exec.Execute(cmd, []string{}, credListCmd)
+		stdout, _ := read()
+		if err == nil {
+			t.Fatal("expected a refusal, got nil")
+		}
+		if strings.Count(stdout, fakeLegacyPAT) != 0 {
+			t.Errorf("secret reached stdout: %q", stdout)
+		}
+	})
+
+	// No-regression rows.
+	t.Run("an authorized issuance still passes and renders exactly once", func(t *testing.T) {
+		body := `{"id":"c1","token":"` + fakeLegacyPAT + `"}`
+		if err := guardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
+			t.Fatalf("expected the authorized issuance to pass, got: %v", err)
+		}
+		srv := warnStub(t, http.StatusOK, body)
+		warnEnv(t, localhostURL(srv.URL))
+		cmd := warnCmd(t, credAddCmd, false, false)
+		_ = cmd.Flags().Set(flagNameFor("name"), "ci")
+		exec := NewExecutor(localhostURL(srv.URL))
+
+		read := captureSplit(t)
+		if err := exec.Execute(cmd, []string{}, credAddCmd); err != nil {
+			read()
+			t.Fatalf("Execute: %v", err)
+		}
+		stdout, _ := read()
+		if got := strings.Count(stdout, fakeLegacyPAT); got != 1 {
+			t.Errorf("expected exactly one copy of the secret, got %d, stdout = %q", got, stdout)
+		}
+	})
+	t.Run("finding 1097: a non-credential command still renders in full", func(t *testing.T) {
+		body := `[{"message":"using key ` + fakeLegacyPAT + `"},{"message":"ready"}]`
+		srv := warnStub(t, http.StatusOK, body)
+		warnEnv(t, localhostURL(srv.URL))
+		cmd := warnCmd(t, logsReadCmd, false, false)
+		exec := NewExecutor(localhostURL(srv.URL))
+
+		read := captureSplit(t)
+		if err := exec.Execute(cmd, []string{}, logsReadCmd); err != nil {
+			read()
+			t.Fatalf("a non-credential command must never be refused, got: %v", err)
+		}
+		stdout, _ := read()
+		if !strings.Contains(stdout, fakeLegacyPAT) {
+			t.Errorf("the log line was dropped instead of rendered: stdout = %q", stdout)
+		}
+	})
+}
+
 func TestExecute_CredentialFamily_JSONModeAlsoGated(t *testing.T) {
 	body := `{"id":"k1","secretCopy":"` + fakeLegacyPAT + `"}`
 	srv := warnStub(t, http.StatusOK, body)
