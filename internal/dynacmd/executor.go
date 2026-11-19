@@ -340,8 +340,15 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
-	respBody, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
+	respBody, respHeaders, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
 	if err != nil {
+		// Story 343 / FCR2030, finding 1150: a credential command's ERROR
+		// response can carry a secret-shaped canary too (an auxiliary field,
+		// an embedded validation detail), and the success-path guard below
+		// never ran for it. Scan and, if needed, replace err with a generic
+		// refusal BEFORE any of the error-specific formatters below (or the
+		// --json error envelope) touch its body.
+		err = guardCredentialErrorBody(cmdDef, err)
 		// Conductor's services delete returns 409 with a structured
 		// dependents list when other apps/services reference the
 		// target. Render it as a multi-line message so the user
@@ -395,6 +402,11 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
 		return err
 	}
+	// Review finding 1151: surface the response's ETag (Roid's If-Match
+	// precondition value for a later update/rotate/revoke) on a typed
+	// credential's single-object response. No-op for every other command
+	// and for a list response (no per-item ETag exists).
+	respBody = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
 
 	// `account leave` ended this login's membership. The local config follows before anything is
 	// rendered, so no early return below can skip it.
@@ -523,7 +535,13 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 
 	formatter := output.NewFormatter(jsonOutput)
 
-	err = formatter.Format(respBody, cmdDef.Output)
+	// Finding 1150: a credential issuance command's one-shot secret field
+	// used to render twice in text mode -- once as an ordinary table/
+	// object row from the generic formatter, again from the banner below.
+	// sanitizeForTableRender strips the field from what the FORMATTER
+	// sees only; the banner call further down still reads the original,
+	// unmodified respBody.
+	err = formatter.Format(sanitizeForTableRender(cmdDef, respBody, jsonOutput), cmdDef.Output)
 	if err != nil {
 		return err
 	}
@@ -542,23 +560,20 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
-	// `account api-keys add` returns a one-shot bearer token that can
-	// never be retrieved again. The default key:value formatter rendered
-	// the token and warning as just two more aligned lines, easy to scan
-	// past in a busy terminal. Print an ASCII-framed banner under the
-	// table so the user sees the warning visually before they exit the
-	// shell. JSON consumers already get a structured field. Regression
-	// target: I11-F.
-	if cmdDef.Command == "account/api-keys/add" && !jsonOutput {
-		printApiKeyTokenBanner(cmd.OutOrStdout(), respBody)
-	}
-
-	// `account notify-keys add` mirrors api-keys/add: the keyValue is
-	// shown once and the server stores only a hash. Same banner so
-	// terminal users don't miss it. JSON consumers already get a
-	// structured `keyValue` field. Regression target: I12-H.
-	if cmdDef.Command == "account/notify-keys/add" && !jsonOutput {
-		printNotifyKeyBanner(cmd.OutOrStdout(), respBody)
+	// A credential issuance command (account/api-keys/add and
+	// add-personal, account/notify-keys/add, and the typed families once
+	// published) returns a one-shot bearer secret that can never be
+	// retrieved again. The default key:value formatter rendered it and
+	// the warning as just two more aligned lines, easy to scan past in a
+	// busy terminal; sanitizeForTableRender above now removes that row
+	// entirely, so this banner is the ONLY place it renders in text mode.
+	// JSON consumers already get the structured field untouched.
+	// Regression target: I11-F, I12-H. Driven by the same
+	// credentialCommandFamilies registry the guard reads (finding 1150:
+	// hardcoding "account/api-keys/add" alone left "add-personal" with no
+	// banner once its row was suppressed).
+	if !jsonOutput {
+		printOneShotBanner(cmd.OutOrStdout(), cmdDef, respBody)
 	}
 
 	// Print footer note for clusters/list (only in plain text mode to a terminal)
@@ -880,7 +895,7 @@ func (e *Executor) followPodLogs(cmd *cobra.Command, cmdDef manifest.Command, ar
 		case <-ticker.C:
 		}
 
-		respBody, err := e.dispatch(cmdDef, args, pollBody, cid, cfg, token)
+		respBody, _, err := e.dispatch(cmdDef, args, pollBody, cid, cfg, token)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: follow poll failed: %v\n", err)
 			continue

@@ -60,7 +60,7 @@ import re
 import subprocess
 import sys
 
-LEAKCHECK_VERSION = "1.4.0"
+LEAKCHECK_VERSION = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Credential shapes. Kept in step with CREDENTIAL in scripts/release.sh.
@@ -94,7 +94,16 @@ LEAKCHECK_VERSION = "1.4.0"
 #     (roid/internal/server/personalkeys.go, accounts.go), is
 #     `rk_<43-char unpadded base64url>`, a different prefix and shape this
 #     checker never covered.
-# All three shapes are ported verbatim from Roid's own authoritative
+#
+# 1.5.0 (review finding 1150): added the Notify API key shape,
+# `runos_ntk_<10-char unambiguous>.<32-char unambiguous>`, 53 characters
+# total (handbook article 220, create-notify-key: "keyValue is a token of
+# the form runos_ntk_<id>.<secret>, 53 characters long"). A notify key is
+# not a RunOS auth credential, but it is a bearer secret this CLI's own
+# commands mint and display (account/notify-keys/add), so it belongs in
+# the same floor.
+#
+# These shapes are ported verbatim from Roid's own authoritative
 # definition (roid/internal/secretshape/secretshape.go, commit
 # da5fdcbd97c4) rather than re-derived, so this checker and the producer's
 # own redaction never drift apart. Roid's secretshape.go also recognises a
@@ -115,6 +124,7 @@ CREDENTIAL_RE = re.compile(
     r"|(github_pat_[A-Za-z0-9_]{20,})"
     r"|(runos_(?:pat|key)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43})"
     r"|(runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32})"
+    r"|(runos_ntk_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32})"
     r"|(rk_[A-Za-z0-9_-]{43})"
     r"|(xox[baprs]-[A-Za-z0-9-]{10,})"
     r"|(AKIA[0-9A-Z]{16})"

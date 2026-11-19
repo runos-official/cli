@@ -30,6 +30,9 @@ var (
 	// Roid's own legacy personal-key secret, rk_<43-char unpadded base64url> (still minted by
 	// roid/internal/server/personalkeys.go and accounts.go). No dot, no id half to mask.
 	fakeRunosRK = "rk_" + "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	// Notify API key, same id/secret shape as the legacy PAT with a different prefix (handbook
+	// article 220: "runos_ntk_<id>.<secret>, 53 characters long"). Review finding 1150.
+	fakeNotifyKey = "runos_ntk_" + "AbCdEfGhJk." + "AbCdAbCdAbCdAbCdAbCdAbCdAbCdAbCd"
 )
 
 func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
@@ -81,6 +84,7 @@ func TestRedactTextMasksTheWholeRunosCredential(t *testing.T) {
 		{"legacy personal access token", fakeRunosPAT, "runos_pat_AbCdEfGhJk."},
 		{"typed account API key", fakeRunosKey, "runos_key_11111111-2222-3333-4444-555555555555."},
 		{"roid legacy rk_ secret", fakeRunosRK, "rk_"},
+		{"notify API key", fakeNotifyKey, "runos_ntk_AbCdEfGhJk."},
 	} {
 		in := "token exchange failed for " + c.secret
 		out := redactText(in)

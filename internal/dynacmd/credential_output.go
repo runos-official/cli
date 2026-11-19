@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -23,6 +24,13 @@ import (
 //   - legacy: runos_pat_<10-char unambiguous>.<32-char unambiguous>
 //     (Conductor's existing /:aid/account/api-keys routes, apiKeys.ts;
 //     same unambiguous charset as KEY_ID_LENGTH/SECRET_LENGTH there).
+//   - notify: runos_ntk_<10-char unambiguous>.<32-char unambiguous>, 53
+//     characters total (handbook article 220, create-notify-key: "The
+//     keyValue is a token of the form runos_ntk_<id>.<secret>, 53
+//     characters long"; the 10/32 split matches that total exactly and
+//     mirrors apiKeys.ts's own generator, which account/notify-keys
+//     shares). Review finding 1150: a notify-key leak into an inventory
+//     response went uncaught because this pattern had no notify shape.
 //   - roid:   rk_<43-char unpadded base64url> (Roid's own legacy
 //     personal-key secret, still minted by
 //     roid/internal/server/personalkeys.go and accounts.go).
@@ -48,14 +56,26 @@ import (
 var runosSecretPattern = regexp.MustCompile(
 	`runos_(?:pat|key)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}` +
 		`|runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}` +
+		`|runos_ntk_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}` +
 		`|rk_[A-Za-z0-9_-]{43}`,
 )
 
-// credentialFamily names the one JSON field a credential command family's
-// issuing operations may carry a bearer secret under, and which verbs
-// (the manifest command's final path segment) are issuing operations.
-// Every other verb in the family is pure inventory: no secret-shaped
-// value is permitted anywhere in its response.
+// isExactSecretMatch reports whether s is ENTIRELY one secret-shaped
+// token: the match spans the whole string, nothing before or after.
+// Review finding 1150: matching ANYWHERE inside the field (the previous
+// check) let an issuance field carrying two concatenated bearers render
+// both, since the field name alone was treated as sufficient license for
+// its whole value.
+func isExactSecretMatch(s string) bool {
+	loc := runosSecretPattern.FindStringIndex(s)
+	return loc != nil && loc[0] == 0 && loc[1] == len(s)
+}
+
+// credentialFamily names the one JSON field a credential command
+// family's issuing operations may carry a bearer secret under, and
+// which verbs are issuing operations. Every other verb in the family is
+// pure inventory: no secret-shaped value is permitted anywhere in its
+// response.
 type credentialFamily struct {
 	secretField   string
 	issuanceVerbs map[string]bool
@@ -71,21 +91,37 @@ type credentialFamily struct {
 // data. Scoping to named families, rather than scattering command
 // literals through the executor, keeps that list in one place.
 //
+// Verbs are the PUBLISHED manifest command spellings, verified directly
+// against Conductor's source (review finding 1155): "account/api-keys"
+// mints TWO issuing commands, `add` (admin, account-role key) and
+// `add-personal` (self-serve personal key) -- src/util/cliManifest/
+// apiKeys.manifest.ts, commit c469a241 -- both returning the bearer
+// under `token`. An earlier revision wrote the verb as "personal", which
+// matches no published command, so `add-personal`'s own token was
+// refused as a leak (its only copy, then unrecoverable). "account/
+// notify-keys" mints one issuing command, `add`, under `keyValue" --
+// src/util/cliManifest/account.manifest.ts.
+//
 // "account/personal-access-tokens" and "account/account-api-keys" are
-// not published in the CLI manifest yet (Story 342 / FPL434 is still in
-// progress), so no live command reaches this guard under those prefixes
-// today. Their field name and verbs are taken from Roid's actual shipped
-// response shape (writePATWithSecret / writeAccountKeyWithSecret,
-// roid/internal/server/personalaccesstokens.go and accountapikeys.go,
+// published for preview/list/show only; their add/update/rotate/revoke
+// commands are deliberately held back by Conductor itself
+// (HEADER_TRANSPORT_SUPPORTED = false, src/util/cliManifest/
+// credentialHeaderFields.ts, commit 4a7af046) until the CLI can route
+// `idempotencyKey`/`ifMatch` as real HTTP headers (review finding 1151;
+// see internal/manifest's Field.Location and executor_request.go's
+// header-field transport). Their verbs and field name ("secret") are
+// taken from Roid's actual shipped response shape
+// (writePATWithSecret/writeAccountKeyWithSecret,
+// roid/internal/server/personalaccesstokens.go,accountapikeys.go,
 // commit da5fdcbd97c4), which Conductor's relay forwards unchanged
-// (story 382, FPL520): both write `m["secret"] = secret` on create and
-// rotate only. If Story 342 ships different sub-command spellings,
-// update issuanceVerbs here; the prefixes themselves match the family
-// names FPL434 already documents.
+// (story 382, FPL520) and which Conductor's own manifest source
+// (personalAccessTokens.manifest.ts, accountApiKeys.manifest.ts,
+// commit 4a7af046) confirms verbatim. Re-check against the manifest
+// again once Conductor flips the gate and these commands go live.
 var credentialCommandFamilies = map[string]credentialFamily{
 	"account/api-keys": {
 		secretField:   "token",
-		issuanceVerbs: map[string]bool{"add": true, "personal": true},
+		issuanceVerbs: map[string]bool{"add": true, "add-personal": true},
 	},
 	"account/notify-keys": {
 		secretField:   "keyValue",
@@ -101,19 +137,26 @@ var credentialCommandFamilies = map[string]credentialFamily{
 	},
 }
 
-// credentialFamilyFor splits a manifest command path into its family
-// (every segment but the last) and verb (the last segment), and reports
-// whether that family is a registered credential family. A command
-// outside this registry reports ok=false, and guardCredentialResponse
-// does not scan it at all.
+// credentialFamilyFor reports whether command belongs to a registered
+// credential family, and its verb (everything after "<family>/").
+//
+// Matches by registered PREFIX rather than "everything before the last
+// slash" (review finding 1155's second instance): a command spelled
+// with an embedded path segment after the family (for example a
+// hypothetical "account/notify-keys/{id}/delete") would otherwise split
+// into a family key ("account/notify-keys/{id}") that is not registered,
+// dropping the WHOLE family out of the guard unscanned, rather than
+// just failing to recognise one unusual verb. Prefix matching keeps the
+// family recognised (and therefore still scanned in full) regardless of
+// how many segments follow it; only the one-shot exemption needs an
+// exact verb match.
 func credentialFamilyFor(command string) (family credentialFamily, verb string, ok bool) {
-	idx := strings.LastIndex(command, "/")
-	if idx < 0 {
-		return credentialFamily{}, "", false
+	for prefix, f := range credentialCommandFamilies {
+		if rest, found := strings.CutPrefix(command, prefix+"/"); found {
+			return f, rest, true
+		}
 	}
-	prefix, verb := command[:idx], command[idx+1:]
-	family, ok = credentialCommandFamilies[prefix]
-	return family, verb, ok
+	return credentialFamily{}, "", false
 }
 
 // guardCredentialResponse refuses to let a secret-shaped bearer value
@@ -127,11 +170,17 @@ func credentialFamilyFor(command string) (family credentialFamily, verb string, 
 // (finding 1097). Within a registered family, an inventory verb (list,
 // show, update, revoke, ...) permits no secret-shaped value anywhere; an
 // issuing verb (add, rotate) permits it ONLY as the family's own named
-// top-level field, and refuses it anywhere else, including a second
-// occurrence under a different key or nested inside an object or array
-// (finding 1105: field name alone was previously sufficient to exempt a
-// value anywhere in the body, which is not what "the one-shot field"
-// means).
+// top-level field, and ONLY when that field's value is nothing but the
+// one bearer (isExactSecretMatch) -- not merely contains one (finding
+// 1150: a value with two concatenated bearers rendered both under the
+// old substring check). Every other occurrence is refused, including a
+// second copy under a different key, one nested inside an object or
+// array, or one used as a PROPERTY NAME rather than a value.
+//
+// A malformed or non-JSON body is scanned as raw text instead of being
+// passed through unchecked (finding 1150: the previous version returned
+// nil on any unmarshal failure, and internal/output/formatter.go prints
+// an unparsed body verbatim in text mode).
 func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	family, verb, ok := credentialFamilyFor(cmdDef.Command)
 	if !ok {
@@ -143,7 +192,10 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	}
 	var probe any
 	if err := json.Unmarshal(trimmed, &probe); err != nil {
-		return nil // not JSON; nothing this guard can check
+		if runosSecretPattern.Match(trimmed) {
+			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a non-JSON or malformed response body, which the inventory contract forbids")
+		}
+		return nil
 	}
 	obj, isObject := probe.(map[string]any)
 	if !isObject {
@@ -157,9 +209,12 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 		allowedField = family.secretField
 	}
 	for key, value := range obj {
+		if runosSecretPattern.MatchString(key) {
+			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a property name, which the inventory contract forbids")
+		}
 		if allowedField != "" && key == allowedField {
-			if s, ok := value.(string); ok && runosSecretPattern.MatchString(s) {
-				continue // the one legitimate carrier, on the one operation documented to return it
+			if s, ok := value.(string); ok && isExactSecretMatch(s) {
+				continue // the one legitimate carrier, on the one operation documented to return it, and nothing else in the value
 			}
 		}
 		if found := findSecretValue(value, key); found != "" {
@@ -169,9 +224,76 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	return nil
 }
 
+// guardCredentialErrorBody scans a credential-family command's error
+// response (any status, any shape) for a secret-shaped value and, if
+// found, replaces err with a generic refusal that carries none of the
+// original body text. Finding 1150: the success-path guard ran only
+// after dispatch returned without error, so a 401/422 (or any other)
+// error body carrying a canary in an auxiliary field reached the normal
+// error formatters (formatAuthError, the --json error envelope, the
+// plain error return) unexamined. An error body never has a legitimate
+// reason to carry a real secret, so there is no one-shot exemption here:
+// any match anywhere (key or value, decoded or raw-fallback) refuses.
+//
+// Returns the ORIGINAL err unchanged when cmdDef is not a registered
+// credential family, or when no secret-shaped value is found, so every
+// other command's error formatting (dependents, module-not-enabled,
+// auth hints) is unaffected.
+func guardCredentialErrorBody(cmdDef manifest.Command, err error) error {
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		return err
+	}
+	if _, _, ok := credentialFamilyFor(cmdDef.Command); !ok {
+		return err
+	}
+	if !responseContainsSecret(apiErr.Body) {
+		return err
+	}
+	return fmt.Errorf("refusing to render error response (HTTP %d): a bearer-secret-shaped value was found, which the inventory contract forbids", apiErr.StatusCode)
+}
+
+// responseContainsSecret reports whether raw contains a secret-shaped
+// value anywhere: decoded JSON keys and values when raw parses as JSON,
+// the raw bytes directly as a fallback when it does not (a malformed or
+// non-JSON error body must not get a pass just because it didn't parse).
+func responseContainsSecret(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	var probe any
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return runosSecretPattern.Match(trimmed)
+	}
+	return valueContainsSecret(probe)
+}
+
+func valueContainsSecret(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return runosSecretPattern.MatchString(t)
+	case map[string]any:
+		for k, nested := range t {
+			if runosSecretPattern.MatchString(k) || valueContainsSecret(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range t {
+			if valueContainsSecret(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // findSecretValue walks v looking for a string matching
-// runosSecretPattern. path names the current field for the error
-// message.
+// runosSecretPattern, in both property NAMES and values. path names the
+// current field for the error message; a property name that itself
+// matches is reported as "<redacted-key>" rather than echoing the
+// secret-shaped name back into a message a person reads.
 func findSecretValue(v any, path string) string {
 	switch t := v.(type) {
 	case string:
@@ -180,6 +302,9 @@ func findSecretValue(v any, path string) string {
 		}
 	case map[string]any:
 		for k, nested := range t {
+			if runosSecretPattern.MatchString(k) {
+				return path + ".<redacted-key>"
+			}
 			if found := findSecretValue(nested, path+"."+k); found != "" {
 				return found
 			}
@@ -194,12 +319,100 @@ func findSecretValue(v any, path string) string {
 	return ""
 }
 
+// sanitizeForTableRender removes a credential family's one-shot secret
+// field from a successful issuance response before it reaches the
+// generic table/object formatter in TEXT mode, so the secret appears
+// exactly once (in the dedicated banner printOneShotBanner prints),
+// never twice (finding 1150: the generic formatter row and the banner
+// each printed the same bearer). --json and every non-issuing response
+// are returned unchanged: --json has no banner to duplicate against,
+// and an inventory response never carries the field in the first place.
+func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput bool) []byte {
+	if jsonOutput {
+		return respBody
+	}
+	family, verb, ok := credentialFamilyFor(cmdDef.Command)
+	if !ok || !family.issuanceVerbs[verb] {
+		return respBody
+	}
+	var item map[string]any
+	if err := json.Unmarshal(respBody, &item); err != nil {
+		return respBody
+	}
+	if _, present := item[family.secretField]; !present {
+		return respBody
+	}
+	delete(item, family.secretField)
+	sanitized, err := json.Marshal(item)
+	if err != nil {
+		return respBody
+	}
+	return sanitized
+}
+
+// injectETagIntoCredentialResponse adds the response's ETag HEADER as a
+// top-level "etag" field on a credential-family response, so a later
+// update/rotate/revoke's If-Match (the manifest's Location:"header"
+// ifMatch field) has something to present. Review finding 1151:
+// Conductor's personalAccessTokens.manifest.ts and
+// accountApiKeys.manifest.ts state explicitly that Roid computes
+// If-Match as a digest of the response body and returns it ONLY as the
+// ETag response header, never a body field, and that a list response
+// carries no per-item ETag. json.Unmarshal into a map naturally excludes
+// a list (array) response without a separate type check: an array fails
+// to unmarshal into map[string]any and this returns respBody unchanged.
+//
+// No-op for any command outside credentialCommandFamilies, and for a
+// response with no ETag header.
+func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) []byte {
+	if _, _, ok := credentialFamilyFor(cmdDef.Command); !ok {
+		return respBody
+	}
+	etag := strings.TrimSpace(headers.Get("ETag"))
+	if etag == "" {
+		return respBody
+	}
+	var item map[string]any
+	if err := json.Unmarshal(respBody, &item); err != nil {
+		return respBody
+	}
+	item["etag"] = etag
+	sanitized, err := json.Marshal(item)
+	if err != nil {
+		return respBody
+	}
+	return sanitized
+}
+
+// printOneShotBanner prints the one-shot-secret banner for a successful
+// issuance response, chosen by the command's registered family, or does
+// nothing for an inventory command or a command outside
+// credentialCommandFamilies. Replaces two hardcoded command-literal
+// checks in executor.go (finding 1150's `add-personal` instance: the old
+// checks named only "account/api-keys/add", so the personal-key issuance
+// command got no banner at all once its field stopped being suppressed
+// from the table).
+func printOneShotBanner(w io.Writer, cmdDef manifest.Command, respBody []byte) {
+	family, verb, ok := credentialFamilyFor(cmdDef.Command)
+	if !ok || !family.issuanceVerbs[verb] {
+		return
+	}
+	switch family.secretField {
+	case "token":
+		printApiKeyTokenBanner(w, respBody)
+	case "keyValue":
+		printNotifyKeyBanner(w, respBody)
+	case "secret":
+		printTypedCredentialSecretBanner(w, respBody)
+	}
+}
+
 // printApiKeyTokenBanner prints an ASCII-framed reminder under the
-// formatter's table output for `account api-keys add`. Surfaces the
-// one-shot token + warning so terminal users don't miss them in a busy
-// session. Silently no-ops when the response body lacks a token (e.g.
-// when the conductor returned a partial response shape) to avoid
-// blowing up the call site. Regression target: I11-F.
+// formatter's table output for `account api-keys add`/`add-personal`.
+// Surfaces the one-shot token + warning so terminal users don't miss
+// them in a busy session. Silently no-ops when the response body lacks
+// a token (e.g. when the conductor returned a partial response shape)
+// to avoid blowing up the call site. Regression target: I11-F.
 func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
 	var item map[string]any
 	if err := json.Unmarshal(respBody, &item); err != nil {
@@ -213,16 +426,7 @@ func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
 	if warning == "" {
 		warning = "This token will not be shown again. Store it in a secret manager."
 	}
-	const bar = "============================================================"
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT TOKEN - save it now, it cannot be retrieved")
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+token)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+warning)
-	fmt.Fprintln(w, bar)
+	printOneShotSecretBanner(w, "ONE-SHOT TOKEN - save it now, it cannot be retrieved", token, warning)
 }
 
 // printNotifyKeyBanner prints the same banner shape as
@@ -241,14 +445,41 @@ func printNotifyKeyBanner(w io.Writer, respBody []byte) {
 	if keyValue == "" {
 		return
 	}
+	printOneShotSecretBanner(w, "ONE-SHOT NOTIFY KEY - save it now, it cannot be retrieved", keyValue,
+		"This key will not be shown again. Store it in a secret manager.")
+}
+
+// printTypedCredentialSecretBanner mirrors printApiKeyTokenBanner for
+// the typed personal-access-tokens/account-api-keys families' `secret`
+// field (Roid's writePATWithSecret/writeAccountKeyWithSecret shape). Not
+// reachable through any published command yet (see
+// credentialCommandFamilies), but kept alongside its siblings so
+// printOneShotBanner needs no further change once Conductor publishes
+// add/rotate.
+func printTypedCredentialSecretBanner(w io.Writer, respBody []byte) {
+	var item map[string]any
+	if err := json.Unmarshal(respBody, &item); err != nil {
+		return
+	}
+	secret, _ := item["secret"].(string)
+	if secret == "" {
+		return
+	}
+	printOneShotSecretBanner(w, "ONE-SHOT SECRET - save it now, it cannot be retrieved", secret,
+		"This secret will not be shown again. Store it in a secret manager.")
+}
+
+// printOneShotSecretBanner is the shared ASCII-framed rendering all
+// three one-shot banners use.
+func printOneShotSecretBanner(w io.Writer, title, secret, warning string) {
 	const bar = "============================================================"
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT NOTIFY KEY - save it now, it cannot be retrieved")
+	fmt.Fprintln(w, "  "+title)
 	fmt.Fprintln(w, bar)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+keyValue)
+	fmt.Fprintln(w, "  "+secret)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  This key will not be shown again. Store it in a secret manager.")
+	fmt.Fprintln(w, "  "+warning)
 	fmt.Fprintln(w, bar)
 }

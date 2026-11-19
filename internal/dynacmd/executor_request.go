@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/runos-official/cli/internal/manifest"
 )
@@ -88,9 +89,86 @@ type requestOptions struct {
 	includeEmptyJSONObject bool
 }
 
+// headerFieldNames returns the names of cmdDef's input fields declared
+// with Location "header", as a set.
+func headerFieldNames(cmdDef manifest.Command) map[string]bool {
+	if cmdDef.Input == nil {
+		return nil
+	}
+	var names map[string]bool
+	for _, f := range cmdDef.Input.Fields {
+		if f.Location == "header" {
+			if names == nil {
+				names = make(map[string]bool)
+			}
+			names[f.Name] = true
+		}
+	}
+	return names
+}
+
+// splitHeaderFields moves every field cmdDef declares with Location
+// "header" (review finding 1151: Conductor's typed credential-lifecycle
+// commands mark idempotencyKey/ifMatch this way) out of body and into a
+// real http.Header, keyed by the field's canonical HTTP header name
+// (headerNameFromFieldName). body is returned with those keys removed;
+// callers that go on to unflatten/JSON-encode body never see them.
+// Returns (body, nil) unchanged when cmdDef declares no header field, so
+// every existing command is unaffected.
+func splitHeaderFields(body map[string]any, cmdDef manifest.Command) (map[string]any, http.Header) {
+	names := headerFieldNames(cmdDef)
+	if len(names) == 0 {
+		return body, nil
+	}
+	remaining := make(map[string]any, len(body))
+	headers := http.Header{}
+	for k, v := range body {
+		if names[k] {
+			if s, ok := v.(string); ok && s != "" {
+				headers.Set(headerNameFromFieldName(k), s)
+			}
+			continue
+		}
+		remaining[k] = v
+	}
+	return remaining, headers
+}
+
+// headerNameFromFieldName converts a manifest camelCase field name
+// (idempotencyKey, ifMatch) into its canonical HTTP header name
+// (Idempotency-Key, If-Match): split at each lowercase-to-uppercase
+// transition, capitalize each resulting word, join with hyphens. This
+// is a general, testable transform, not a lookup table of the two field
+// names known today, so a future header-located field needs no code
+// change here -- only a manifest entry with Location: "header".
+func headerNameFromFieldName(name string) string {
+	var words []string
+	var cur []rune
+	for _, r := range name {
+		if unicode.IsUpper(r) && len(cur) > 0 {
+			words = append(words, string(cur))
+			cur = nil
+		}
+		cur = append(cur, r)
+	}
+	if len(cur) > 0 {
+		words = append(words, string(cur))
+	}
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, "-")
+}
+
 // doRequest issues one authenticated request under ctx's deadline. ctx
-// must stay live until the caller has read the response body.
-func (e *Executor) doRequest(ctx context.Context, method, url string, body map[string]any, token string, options requestOptions) (*http.Response, error) {
+// must stay live until the caller has read the response body. headers
+// carries any Location:"header" field values (splitHeaderFields); nil
+// or empty is the common case and adds nothing beyond Authorization/
+// Content-Type.
+func (e *Executor) doRequest(ctx context.Context, method, url string, body map[string]any, headers http.Header, token string, options requestOptions) (*http.Response, error) {
 	var bodyReader io.Reader
 
 	writeJSON := (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) &&
@@ -113,6 +191,11 @@ func (e *Executor) doRequest(ctx context.Context, method, url string, body map[s
 	req.Header.Set("Authorization", "Bearer "+token)
 	if bodyReader != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, values := range headers {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
 	}
 
 	return e.httpClient.Do(req)

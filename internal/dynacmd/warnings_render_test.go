@@ -478,16 +478,15 @@ func TestExecute_ErrorResponse_EmitsNoWarningLine(t *testing.T) {
 
 // `account api-keys add` returns a one-shot token and a SINGULAR
 // `warning` string, which printApiKeyTokenBanner already renders under
-// the table. The generic PLURAL renderer must not touch it, so this
-// command's output is byte-identical to what it was before story 211.
+// the table. The generic PLURAL renderer must not touch `warning`.
 //
-// The story's criterion 5 phrased the check as "exactly one occurrence
-// of its warning text". That premise does not hold in either build: the
-// banner deliberately repeats the text under the table row, so today's
-// output carries it twice. Byte-identity against the pre-change build is
-// the load-bearing half of the criterion, and it is what is asserted
-// here; the literal below was captured by running this same test against
-// the executor with the story-211 hunk reverted.
+// Story 343 / FCR2030, review finding 1150: the TOKEN itself no longer
+// renders twice. sanitizeForTableRender strips the one-shot secret field
+// from what the generic table formatter sees, so the banner below is now
+// the ONLY place `placeholder-token` appears; `warning` is not the
+// secret field and still renders as an ordinary table row (its repeat
+// under the banner is deliberate, inherited from story 211, and
+// unrelated to the secret-duplication defect this story fixes).
 func TestExecute_SingularWarning_NotReprinted(t *testing.T) {
 	const bannerText = "This token is shown once and cannot be retrieved again."
 	apiKeysAdd := manifest.Command{
@@ -518,7 +517,6 @@ func TestExecute_SingularWarning_NotReprinted(t *testing.T) {
 
 	wantOut := "id     : key1\n" +
 		"name   : ci\n" +
-		"token  : placeholder-token\n" +
 		"warning: " + bannerText + "\n" +
 		"\n" +
 		"============================================================\n" +
