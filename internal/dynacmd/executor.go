@@ -391,6 +391,17 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		return err
 	}
 
+	// Review finding 1151: surface the response's ETag (Roid's If-Match
+	// precondition value for a later update/rotate/revoke) on a typed
+	// credential's single-object response. No-op for every other command
+	// and for a list response (no per-item ETag exists).
+	//
+	// Runs BEFORE the guard below, not after (finding 1193): the ETag
+	// header is server-controlled data the CLI has not examined, and
+	// injecting it after the guard already ran would let a malicious or
+	// malformed ETag value reach printable output unscanned.
+	respBody = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
+
 	// Story 343 / FCR2030: for a credential command family only (see
 	// guardCredentialResponse), refuse to let a secret-shaped bearer value
 	// reach the terminal or a --json consumer from anywhere other than
@@ -398,15 +409,19 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// successful response: the account-leave config write, the raw-DDL
 	// cache warning, and the advisory-warnings print below all touch or
 	// emit parts of respBody, and finding 1105 asks that none of them run
-	// ahead of this check on a credential response.
+	// ahead of this check on a credential response. Validates the
+	// COMPLETE representation, ETag included, since it now runs last.
 	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
+		// I4-G parity: a guard refusal is a failure like any other on the
+		// --json path. Finding 1193: this used to `return err` directly,
+		// bypassing emitJSONErrorAndSilence, so a --json caller got a
+		// plain-text "Error: ..." line instead of the structured envelope
+		// every other failure in this function produces.
+		if jsonOutput {
+			return emitJSONErrorAndSilence(cmd, err)
+		}
 		return err
 	}
-	// Review finding 1151: surface the response's ETag (Roid's If-Match
-	// precondition value for a later update/rotate/revoke) on a typed
-	// credential's single-object response. No-op for every other command
-	// and for a list response (no per-item ETag exists).
-	respBody = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
 
 	// `account leave` ended this login's membership. The local config follows before anything is
 	// rendered, so no early return below can skip it.

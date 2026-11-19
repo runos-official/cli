@@ -23,14 +23,23 @@ import (
 // Exported because internal/mcp builds the same query for the same
 // commands. Two builders disagreed once already (S4: the MCP surface
 // returned 0 topics for a keyword the CLI found), and one function is the
-// only way they cannot disagree again.
+// only way they cannot disagree again. That sharing is also why this is
+// the one place review findings 1194 and 1196 both need fixed: a field
+// the manifest marks Location:"header" (Conductor's typed
+// credential-lifecycle idempotencyKey/ifMatch) must never reach the
+// query string, on EITHER caller. buildEndpoint builds the query string
+// here before executor_dispatch.go's splitHeaderFields runs (it operates
+// on the request body, never the already-built URL), so without this
+// check a header-located field on a GET/DELETE command landed in the
+// query string in addition to the header -- never removed from the
+// query string, since nothing downstream of buildEndpoint re-touches it.
 func QueryParams(cmdDef manifest.Command, values map[string]any) url.Values {
 	queryParams := url.Values{}
 	if cmdDef.Input == nil {
 		return queryParams
 	}
 	for _, field := range cmdDef.Input.Fields {
-		if field.Positional {
+		if field.Positional || field.Location == "header" {
 			continue
 		}
 		if val, ok := values[field.Name]; ok {

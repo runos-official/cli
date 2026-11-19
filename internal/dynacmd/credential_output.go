@@ -60,24 +60,42 @@ var runosSecretPattern = regexp.MustCompile(
 		`|rk_[A-Za-z0-9_-]{43}`,
 )
 
-// isExactSecretMatch reports whether s is ENTIRELY one secret-shaped
-// token: the match spans the whole string, nothing before or after.
-// Review finding 1150: matching ANYWHERE inside the field (the previous
-// check) let an issuance field carrying two concatenated bearers render
-// both, since the field name alone was treated as sufficient license for
-// its whole value.
-func isExactSecretMatch(s string) bool {
-	loc := runosSecretPattern.FindStringIndex(s)
-	return loc != nil && loc[0] == 0 && loc[1] == len(s)
-}
+// Review finding 1193 (third occurrence of 1105/1150's root defect): the
+// one-shot exemption used to accept ANY of runosSecretPattern's
+// alternatives for ANY family's issuing field, so a family that only
+// ever mints ONE specific bearer shape would silently exempt a
+// DIFFERENT shape too -- e.g. the legacy account/api-keys/add route
+// returning a typed runos_key_ bearer (a server-side regression
+// substituting the wrong credential family) sailed through unexamined
+// because it still matched the shared union pattern. Each family's own
+// producer mints exactly one shape; the exemption must check for THAT
+// shape only; a secret of any other recognised shape is RENDERED
+// UNSAFE -- i.e. refused -- the same as any value with no license at
+// all would be.
+var (
+	legacyAPIKeyTokenPattern = regexp.MustCompile(
+		`^runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}$`,
+	)
+	legacyNotifyKeyPattern = regexp.MustCompile(
+		`^runos_ntk_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}$`,
+	)
+	typedPersonalAccessTokenSecretPattern = regexp.MustCompile(
+		`^runos_pat_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$`,
+	)
+	typedAccountAPIKeySecretPattern = regexp.MustCompile(
+		`^runos_key_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$`,
+	)
+)
 
 // credentialFamily names the one JSON field a credential command
-// family's issuing operations may carry a bearer secret under, and
-// which verbs are issuing operations. Every other verb in the family is
-// pure inventory: no secret-shaped value is permitted anywhere in its
-// response.
+// family's issuing operations may carry a bearer secret under, which
+// verbs are issuing operations, and the EXACT bearer shape (anchored,
+// whole-string) that family's own producer mints for that field. Every
+// other verb in the family is pure inventory: no secret-shaped value is
+// permitted anywhere in its response.
 type credentialFamily struct {
 	secretField   string
+	secretPattern *regexp.Regexp
 	issuanceVerbs map[string]bool
 }
 
@@ -121,18 +139,22 @@ type credentialFamily struct {
 var credentialCommandFamilies = map[string]credentialFamily{
 	"account/api-keys": {
 		secretField:   "token",
+		secretPattern: legacyAPIKeyTokenPattern,
 		issuanceVerbs: map[string]bool{"add": true, "add-personal": true},
 	},
 	"account/notify-keys": {
 		secretField:   "keyValue",
+		secretPattern: legacyNotifyKeyPattern,
 		issuanceVerbs: map[string]bool{"add": true},
 	},
 	"account/personal-access-tokens": {
 		secretField:   "secret",
+		secretPattern: typedPersonalAccessTokenSecretPattern,
 		issuanceVerbs: map[string]bool{"add": true, "rotate": true},
 	},
 	"account/account-api-keys": {
 		secretField:   "secret",
+		secretPattern: typedAccountAPIKeySecretPattern,
 		issuanceVerbs: map[string]bool{"add": true, "rotate": true},
 	},
 }
@@ -181,6 +203,22 @@ func credentialFamilyFor(command string) (family credentialFamily, verb string, 
 // passed through unchecked (finding 1150: the previous version returned
 // nil on any unmarshal failure, and internal/output/formatter.go prints
 // an unparsed body verbatim in text mode).
+//
+// Decodes with a STREAMING json.Decoder reading exactly one value,
+// never json.Unmarshal, to match internal/output's JSON formatter byte
+// for byte (formatter.go's pretty-print path: a Decoder that decodes
+// the first value and silently ignores anything after it). Finding
+// 1193: a body carrying one valid JSON value followed by trailing
+// non-whitespace data made json.Unmarshal fail here (it requires the
+// WHOLE input to be one value), diverting this guard onto the raw-byte
+// fallback -- a different, weaker check than the structured per-field
+// scan the decoded value would have gotten -- while the formatter
+// rendered the decoded first value exactly as if it were the whole
+// response. Using the same decode semantics here means this guard
+// always examines precisely what the formatter is about to render, and
+// a credential-family response with ANY trailing data after its one
+// JSON value is refused outright: Roid/Conductor never emit that shape,
+// so the safe assumption is that something is wrong with it.
 func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	family, verb, ok := credentialFamilyFor(cmdDef.Command)
 	if !ok {
@@ -191,11 +229,16 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 		return nil
 	}
 	var probe any
-	if err := json.Unmarshal(trimmed, &probe); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	if err := decoder.Decode(&probe); err != nil {
 		if runosSecretPattern.Match(trimmed) {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a non-JSON or malformed response body, which the inventory contract forbids")
 		}
 		return nil
+	}
+	var trailing json.RawMessage
+	if derr := decoder.Decode(&trailing); derr != io.EOF {
+		return fmt.Errorf("refusing to render response: the response body carries unexpected trailing data after its JSON value, which the inventory contract forbids for a credential command")
 	}
 	obj, isObject := probe.(map[string]any)
 	if !isObject {
@@ -213,8 +256,8 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a property name, which the inventory contract forbids")
 		}
 		if allowedField != "" && key == allowedField {
-			if s, ok := value.(string); ok && isExactSecretMatch(s) {
-				continue // the one legitimate carrier, on the one operation documented to return it, and nothing else in the value
+			if s, ok := value.(string); ok && family.secretPattern != nil && family.secretPattern.MatchString(s) {
+				continue // the one legitimate carrier, on the one operation documented to return it, holding exactly the shape that operation's own producer mints
 			}
 		}
 		if found := findSecretValue(value, key); found != "" {
@@ -364,6 +407,16 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 //
 // No-op for any command outside credentialCommandFamilies, and for a
 // response with no ETag header.
+//
+// CALL ORDER, deliberately: executor.go runs this BEFORE
+// guardCredentialResponse, not after. Finding 1193: a response's ETag
+// header is server-controlled data the CLI has not examined at all; the
+// previous order ran the guard first and spliced the ETag in
+// afterwards, so a secret-shaped (or otherwise malicious) ETag value
+// reached printable output with no scan ever looking at it. Injecting
+// first means the guard's structured scan sees the "etag" key like any
+// other field and refuses it the same way it would refuse that same
+// text anywhere else in the body.
 func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) []byte {
 	if _, _, ok := credentialFamilyFor(cmdDef.Command); !ok {
 		return respBody

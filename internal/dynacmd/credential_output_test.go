@@ -275,21 +275,45 @@ func TestRunosSecretPatternMatchesEveryPublishedShape(t *testing.T) {
 	}
 }
 
-// isExactSecretMatch backs the one-shot field exemption (finding 1150):
-// the exemption must require the WHOLE value to be the secret, not just
-// contain it.
-func TestIsExactSecretMatch(t *testing.T) {
-	if !isExactSecretMatch(fakeLegacyPAT) {
-		t.Error("a bare secret must be an exact match")
+// Finding 1193: the one-shot exemption must require the EXACT bearer
+// shape that command family's own producer mints, not merely any
+// recognised RunOS/Roid shape. A wrong-family substitution (e.g. the
+// legacy account/api-keys/add route somehow returning a typed
+// runos_key_ bearer) must be refused, the same as an entirely
+// unexpected value would be.
+func TestGuardCredentialResponse_WrongFamilyBearerShapeIsRefused(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		body    string
+	}{
+		{
+			name:    "legacy api-keys add returning a typed key bearer",
+			command: "account/api-keys/add",
+			body:    `{"id":"k1","token":"` + fakeTypedKey + `"}`,
+		},
+		{
+			name:    "legacy notify-keys add returning a legacy PAT bearer",
+			command: "account/notify-keys/add",
+			body:    `{"id":"k1","keyValue":"` + fakeLegacyPAT + `"}`,
+		},
+		{
+			name:    "typed personal-access-tokens add returning the typed account-api-key shape",
+			command: "account/personal-access-tokens/add",
+			body:    `{"credential_id":"c1","secret":"` + fakeTypedKey + `"}`,
+		},
+		{
+			name:    "typed account-api-keys add returning a legacy PAT bearer",
+			command: "account/account-api-keys/add",
+			body:    `{"credential_id":"c1","secret":"` + fakeLegacyPAT + `"}`,
+		},
 	}
-	if isExactSecretMatch(fakeLegacyPAT + " " + fakeLegacyPAT2) {
-		t.Error("two concatenated bearers must not be an exact match")
-	}
-	if isExactSecretMatch("prefix " + fakeLegacyPAT) {
-		t.Error("a secret with leading text must not be an exact match")
-	}
-	if isExactSecretMatch(fakeLegacyPAT + " suffix") {
-		t.Error("a secret with trailing text must not be an exact match")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := guardCredentialResponse(cmdDef(c.command), []byte(c.body)); err == nil {
+				t.Fatal("expected a refusal: the one-shot field held a different family's bearer shape")
+			}
+		})
 	}
 }
 
@@ -306,6 +330,18 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 		{name: "malformed JSON with no secret passes", body: "not-json{"},
 		{name: "malformed JSON carrying a secret is refused", body: "not-json{" + fakeLegacyPAT, wantErr: true},
 		{name: "plain text carrying a secret is refused", body: "error, try " + fakeLegacyPAT + " again", wantErr: true},
+		// Finding 1193: a body with a VALID, decodable first JSON value
+		// followed by trailing garbage used to make json.Unmarshal fail
+		// here, diverting this guard onto the raw-byte fallback while
+		// internal/output's formatter (a streaming decoder) would
+		// happily render the decoded first value alone. Any trailing
+		// data after the one JSON value is refused outright now,
+		// regardless of whether the decoded value or the trailing data
+		// carries a secret: Roid/Conductor never emit this shape for a
+		// credential response.
+		{name: "decodable value with trailing garbage and no secret is refused", body: `{"id":"k1"}` + "trailing-garbage", wantErr: true},
+		{name: "decodable value with a secret in the trailing garbage is refused", body: `{"id":"k1"}` + fakeLegacyPAT, wantErr: true},
+		{name: "decodable value with a secret in the decoded value itself is refused", body: `{"id":"k1","leaked":"` + fakeLegacyPAT + `"}` + "trailing-garbage", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

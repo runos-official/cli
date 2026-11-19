@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/runos-official/cli/internal/config"
@@ -187,5 +188,83 @@ func TestExecute_CredentialFamily_ETagHeaderSurfacedInResponseBody(t *testing.T)
 	}
 	if got["credential_id"] != "c1" {
 		t.Errorf("original fields must survive, got: %v", got)
+	}
+}
+
+// Finding 1193: injectETagIntoCredentialResponse used to run AFTER
+// guardCredentialResponse, so a secret-shaped ETag header value reached
+// stdout with nothing having scanned it. Server-controlled data (the
+// ETag header) carrying a bearer-shaped value is exactly as untrusted as
+// any other field in the body; Execute must refuse it the same way.
+func TestExecute_CredentialFamily_SecretShapedETagIsRefused(t *testing.T) {
+	showCmd := manifest.Command{
+		Command:  "account/personal-access-tokens/show",
+		Method:   http.MethodGet,
+		Endpoint: "/:aid/account/personal-access-tokens/:credential",
+		Input: &manifest.Input{Fields: []manifest.Field{
+			{Name: "credential", Type: "string", Required: true, Positional: true},
+		}},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", fakeTypedPAT)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"credential_id":"c1","type":"personal_pat"}`))
+	}))
+	t.Cleanup(srv.Close)
+	warnEnv(t, localhostURL(srv.URL))
+
+	cmd := warnCmd(t, showCmd, false, false)
+	exec := NewExecutor(localhostURL(srv.URL))
+
+	read := captureSplit(t)
+	err := exec.Execute(cmd, []string{"c1"}, showCmd)
+	stdout, stderr := read()
+	if err == nil {
+		t.Fatal("expected a refusal, got nil")
+	}
+	if strings.Contains(stdout, fakeTypedPAT) || strings.Contains(stderr, fakeTypedPAT) || strings.Contains(err.Error(), fakeTypedPAT) {
+		t.Fatalf("the secret-shaped ETag must never reach output, stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+}
+
+// Finding 1194: a header-located field on a GET/DELETE command used to
+// land in the query string (built by buildEndpoint, via QueryParams,
+// before splitHeaderFields ever runs) in addition to the real header,
+// because QueryParams had no Location check. The rotate fixture above
+// uses POST, whose body-based routing never exercises buildEndpoint's
+// GET/DELETE query-string branch; this synthetic GET fixture does.
+var personalAccessTokenShowWithIfMatchFixture = manifest.Command{
+	Command:  "account/personal-access-tokens/show-with-if-match",
+	Method:   http.MethodGet,
+	Endpoint: "/:aid/account/personal-access-tokens/:credential",
+	Input: &manifest.Input{Fields: []manifest.Field{
+		{Name: "credential", Type: "string", Required: true, Positional: true},
+		{Name: "ifMatch", Type: "string", Required: true, Location: "header"},
+	}},
+}
+
+func TestDispatch_HeaderLocatedFieldOnGETNeverReachesQueryString(t *testing.T) {
+	var gotHeaders http.Header
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"credential_id":"c1"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{AccountID: "acct1"}
+	input := map[string]any{"credential": "c1", "ifMatch": `"etag-value-0"`}
+	_, _, err := NewExecutor(srv.URL).dispatch(personalAccessTokenShowWithIfMatchFixture, []string{"c1"}, input, "", cfg, "test-token")
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := gotHeaders.Get("If-Match"); got != `"etag-value-0"` {
+		t.Errorf("If-Match header = %q, want %q", got, `"etag-value-0"`)
+	}
+	if gotQuery != "" {
+		t.Errorf("ifMatch must never reach the query string, got: %q", gotQuery)
 	}
 }
