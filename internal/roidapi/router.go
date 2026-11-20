@@ -119,11 +119,30 @@ func (r *Router) SendFor(req api.Request, headerFor HeaderFor) (*api.Result, err
 		firstURL, secondURL = r.issuer, r.gateway
 	}
 	res, err := attempt(first, firstURL)
-	if err != nil || res.StatusCode != http.StatusNotFound {
-		if err == nil && res.StatusCode < 500 {
+	if err != nil {
+		return res, err
+	}
+	// Finding 1335: a 404 alone does not mean "not served here", and a
+	// MUTATION (unlike a read) must never be sent to a second host just
+	// to double-check a decision the first host already made. An ETag
+	// read earlier in the same flow can make the identity service
+	// "preferred", so a later DELETE reaches it first; when it answers
+	// its own canonical 404 (a grant that truly does not exist, not the
+	// deliberate not_on_this_host "ask the other host" signal), that is
+	// final -- retrying the DELETE on the gateway both repeats a
+	// mutating request on a second host and risks the gateway's
+	// unrelated, generic "no such route" 404 (which does not match
+	// not_on_this_host's exact shape either) silently replacing the
+	// producer's real answer. A read keeps retrying any 404 as before:
+	// it has no side effects wherever it lands, and the existing
+	// tie-break below already discards a wrong answer correctly.
+	retryWorthy := res.StatusCode == http.StatusNotFound &&
+		(methodAlwaysRetriesOn404(req.Method) || !isCanonicalRefusal(res))
+	if !retryWorthy {
+		if res.StatusCode < 500 {
 			preferred.Store(r.key(), firstIsIssuer)
 		}
-		return res, err
+		return res, nil
 	}
 	res2, err2 := attempt(second, secondURL)
 	if err2 != nil {
@@ -151,4 +170,35 @@ func isNotOnThisHost(res *api.Result) bool {
 		} `json:"error"`
 	}
 	return json.Unmarshal(res.Body, &b) == nil && b.Error.Reason == "not_on_this_host"
+}
+
+// methodAlwaysRetriesOn404 reports whether method has no side effects
+// wherever it lands, so probing both hosts on any 404 (as this Router
+// always has) stays safe: the tie-break below already discards whichever
+// answer turns out wrong. A mutating method is not safe to repeat on a
+// second host (finding 1335), so it retries only when the first host's
+// 404 was not already a canonical refusal (see isCanonicalRefusal).
+func methodAlwaysRetriesOn404(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+// isCanonicalRefusal reports whether res is a host's own structured
+// domain answer (any non-empty error.code), rather than a generic "no
+// such route" 404 from a server that does not even recognise this
+// endpoint. A host that answers with a real error code has executed the
+// request and given its final, authoritative decision, which must never
+// be replaced by retrying the other host (finding 1335) -- the one
+// exception is not_on_this_host, the deliberate signal a route split
+// across two hosts uses to mean "ask the other one", which is never a
+// canonical refusal even though it is itself a structured error body.
+func isCanonicalRefusal(res *api.Result) bool {
+	if isNotOnThisHost(res) {
+		return false
+	}
+	var b struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(res.Body, &b) == nil && b.Error.Code != ""
 }
