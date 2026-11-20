@@ -65,7 +65,7 @@ func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]an
 	// deadline from, so it takes the ordinary one.
 	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.Default)
 	defer cancel()
-	resp, err := e.doRequestWithCID(ctx, method, url, body, token, cid)
+	resp, err := e.doRequestWithCID(ctx, method, url, body, nil, token, cid)
 	if err != nil {
 		return "", requestFailed(err)
 	}
@@ -119,6 +119,18 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 
 	if cmdDef == nil {
 		return "", fmt.Errorf("unknown command: %s", toolName)
+	}
+
+	// Story 347 M6 (finding 1440): refuse a bearer-secret-shaped grant
+	// subject before the endpoint or the body is built, over the raw
+	// args. internal/mcp builds its own request body (buildBody) and
+	// query string (queryParamsFor) and shares no dispatch with
+	// internal/dynacmd, so the guard dynacmd's dispatch applies for the
+	// cobra path (story 344, finding 1431) cannot reach this surface on
+	// its own; call the same exported entry point here rather than write
+	// a second pattern. No request is sent and the value is never echoed.
+	if err := dynacmd.RefuseBearerSecretInGrantSubject(*cmdDef, args); err != nil {
+		return "", err
 	}
 
 	// Destructive parity with the CLI's --yes (A14). `confirm` is a
@@ -191,11 +203,21 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	// Build request body (for POST/PUT/PATCH) - exclude cid from body
 	body := e.buildBody(args, cmdDef)
 
+	// Story 347 M1 (finding 1196): a manifest field declared
+	// Location:"header" (idempotencyKey, ifMatch) must never reach the
+	// JSON body -- Roid's handlers decode a strict body schema and
+	// refuse an unknown member. buildBody above has no Location check of
+	// its own, so pull those fields out here, the same way dynacmd's
+	// dispatch does (splitHeaderFields), rather than duplicate the
+	// transform. headers is nil for every command that declares no
+	// header-located field, which is unaffected.
+	body, headers := dynacmd.SplitHeaderFields(body, *cmdDef)
+
 	// Make request under a deadline derived from this command. The cancel
 	// stays live until the body has been read below (A4).
 	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(*cmdDef, body))
 	defer cancel()
-	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, body, token)
+	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, body, headers, token)
 	if err != nil {
 		return "", requestFailed(err)
 	}
@@ -207,9 +229,32 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Check for errors
+	// Check for errors. apiErrorEnvelope applies the credential
+	// error-body guard (story 347 M5) before the body is embedded.
 	if resp.StatusCode >= 400 {
-		return "", apiErrorEnvelope(resp.StatusCode, respBody)
+		return "", apiErrorEnvelope(*cmdDef, resp.StatusCode, respBody)
+	}
+
+	// Story 347 M4 (finding 1196): apply the same credential output
+	// guard the cobra path runs (story 343) before any other handling of
+	// a successful response -- an inventory response with a
+	// secret-shaped value anywhere outside the one-shot issuance field is
+	// refused, and an issuance's one-shot field must hold exactly the
+	// shape its own producer mints. Runs BEFORE the ETag read-back below,
+	// for the same reason executor.go orders them this way: the ETag
+	// splice re-encodes the body, which would launder a trailing-data
+	// defect out from under this guard's raw-byte check.
+	if err := dynacmd.GuardCredentialResponse(*cmdDef, respBody); err != nil {
+		return "", err
+	}
+
+	// Story 347 M4: surface a credential response's ETag (Roid's
+	// If-Match precondition for a later update/rotate/revoke) the same
+	// way the cobra path does. No-op for every command outside a
+	// registered credential family and for a list response.
+	respBody, err = dynacmd.InjectETagIntoCredentialResponse(*cmdDef, respBody, resp.Header)
+	if err != nil {
+		return "", err
 	}
 
 	// Empty-body 2xx (typical for DELETE and other no-content endpoints,
@@ -479,9 +524,12 @@ func (e *CommandExecutor) buildBody(args map[string]any, cmdDef *manifest.Comman
 }
 
 // doRequest issues one authenticated request under ctx's deadline. ctx
-// must stay live until the caller has read the response body.
-func (e *CommandExecutor) doRequest(ctx context.Context, method, url string, body map[string]any, token string) (*http.Response, error) {
-	return e.doRequestWithCID(ctx, method, url, body, token, "")
+// must stay live until the caller has read the response body. headers
+// carries any Location:"header" field values (story 347 M2,
+// dynacmd.SplitHeaderFields); nil is the common case and adds nothing
+// beyond Authorization/Content-Type.
+func (e *CommandExecutor) doRequest(ctx context.Context, method, url string, body map[string]any, headers http.Header, token string) (*http.Response, error) {
+	return e.doRequestWithCID(ctx, method, url, body, headers, token, "")
 }
 
 // unflattenBody converts dot-notation keys into nested objects.
@@ -519,7 +567,7 @@ func unflattenBody(body map[string]any) map[string]any {
 	return result
 }
 
-func (e *CommandExecutor) doRequestWithCID(ctx context.Context, method, url string, body map[string]any, token, cid string) (*http.Response, error) {
+func (e *CommandExecutor) doRequestWithCID(ctx context.Context, method, url string, body map[string]any, headers http.Header, token, cid string) (*http.Response, error) {
 	var bodyReader io.Reader
 
 	if len(body) > 0 {
@@ -543,6 +591,15 @@ func (e *CommandExecutor) doRequestWithCID(ctx context.Context, method, url stri
 	}
 	if bodyReader != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// Story 347 M2 (finding 1196): send any Location:"header" field
+	// (idempotencyKey -> Idempotency-Key, ifMatch -> If-Match) as a real
+	// HTTP header, beside Authorization, X-CID and Content-Type, the
+	// same way dynacmd's doRequest does.
+	for name, values := range headers {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
 	}
 
 	return e.httpClient.Do(req)

@@ -15,7 +15,7 @@ import (
 // guarded credential secrets on the RESPONSE side only. This proves the
 // REQUEST side for account/access/grants add and list -- the only two
 // manifest commands of this family that carry a human-supplied subject
-// value (grantSubjectInputFields). accountAccessGrantsListFixture mirrors
+// value (GrantSubjectInputFields). accountAccessGrantsListFixture mirrors
 // Conductor's real accountAccessGrants.manifest.ts list command (commit
 // fd3a3631: GET /:aid/account/access/grants, fields limit/cursor/subject);
 // accountAccessGrantsAddFixture is the one account_access_grants_transport_test.go
@@ -34,7 +34,7 @@ var accountAccessGrantsListFixture = manifest.Command{
 }
 
 // grantSubjectInputCases is keyed by manifest command, one row per entry
-// in grantSubjectInputFields. Driven by that same map below, so a
+// in GrantSubjectInputFields. Driven by that same map below, so a
 // subject-carrying command added there with no case here fails this test
 // immediately instead of shipping unscanned.
 var grantSubjectInputCases = map[string]struct {
@@ -79,12 +79,12 @@ func dispatchGrantSubjectCase(t *testing.T, cmdDef manifest.Command, baseBody ma
 }
 
 func TestRefuseBearerSecretInGrantSubject_EveryFamilyInputIsScanned(t *testing.T) {
-	for command := range grantSubjectInputFields {
+	for command := range GrantSubjectInputFields {
 		if _, ok := grantSubjectInputCases[command]; !ok {
-			t.Fatalf("manifest command %q (from grantSubjectInputFields) has no case in grantSubjectInputCases", command)
+			t.Fatalf("manifest command %q (from GrantSubjectInputFields) has no case in grantSubjectInputCases", command)
 		}
 	}
-	for command, fields := range grantSubjectInputFields {
+	for command, fields := range GrantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
 		for _, field := range fields {
 			for _, canary := range []string{fakeTypedKey, fakeLegacyPAT, fakeRoidRK} {
@@ -119,7 +119,7 @@ func TestRefuseBearerSecretInGrantSubject_LegitimateValueStillReachesServer(t *t
 			"subject": "account_api_key:key_abc",
 		},
 	}
-	for command, fields := range grantSubjectInputFields {
+	for command, fields := range GrantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
 		for _, field := range fields {
 			t.Run(command+"/"+field, func(t *testing.T) {

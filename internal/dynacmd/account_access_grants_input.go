@@ -6,7 +6,7 @@ import (
 	"github.com/runos-official/cli/internal/manifest"
 )
 
-// grantSubjectInputFields names the account/access/grants manifest
+// GrantSubjectInputFields names the account/access/grants manifest
 // commands that can carry a human-supplied grant subject value, and the
 // SET of body fields that carry it: add's nested subject.id and
 // subject.kind (dotted fields, unflattened into the JSON body only
@@ -35,7 +35,7 @@ import (
 // 1097's rationale for GuardCredentialResponse applies identically
 // here): RefuseBearerSecretInGrantSubject returns nil immediately for
 // any other command.
-var grantSubjectInputFields = map[string][]string{
+var GrantSubjectInputFields = map[string][]string{
 	"account/access/grants/add":  {"subject.id", "subject.kind"},
 	"account/access/grants/list": {"subject"},
 }
@@ -57,7 +57,7 @@ var grantSubjectInputFields = map[string][]string{
 // package, so it calls this same entry point directly rather than a
 // second copy of the pattern.
 func RefuseBearerSecretInGrantSubject(cmdDef manifest.Command, body map[string]any) error {
-	fields, ok := grantSubjectInputFields[cmdDef.Command]
+	fields, ok := GrantSubjectInputFields[cmdDef.Command]
 	if !ok {
 		return nil
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/dynacmd"
+	"github.com/runos-official/cli/internal/manifest"
 )
 
 // requestFailed turns a transport failure into the error an MCP call returns. The version gate's
@@ -37,8 +38,19 @@ func requestFailed(err error) error {
 // The envelope is built by dynacmd.BuildAPIErrorEnvelope so the two
 // surfaces cannot drift. A body that will not marshal falls back to the
 // old text shape rather than losing the response.
-func apiErrorEnvelope(statusCode int, body []byte) error {
-	envelope := dynacmd.BuildAPIErrorEnvelope(&dynacmd.APIError{StatusCode: statusCode, Body: body})
+//
+// Story 347 M5 (finding 1196): before the body is embedded, apply the
+// same credential error-body guard the cobra path runs (story 343,
+// dynacmd.GuardCredentialErrorBody) for cmdDef's family. A secret-shaped
+// value anywhere in a credential-family error body is replaced by a
+// generic refusal that carries none of the original text, rather than
+// letting the embedded error envelope repeat it back to the caller.
+func apiErrorEnvelope(cmdDef manifest.Command, statusCode int, body []byte) error {
+	apiErr := &dynacmd.APIError{StatusCode: statusCode, Body: body}
+	if guarded := dynacmd.GuardCredentialErrorBody(cmdDef, apiErr); guarded != error(apiErr) {
+		return guarded
+	}
+	envelope := dynacmd.BuildAPIErrorEnvelope(apiErr)
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return fmt.Errorf("API error (%d): %s", statusCode, string(body))
