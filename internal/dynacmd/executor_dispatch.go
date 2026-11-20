@@ -40,6 +40,12 @@ func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[str
 }
 
 func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string, options requestOptions) ([]byte, http.Header, error) {
+	// Finding 1431: checked first, before buildEndpoint, so a GET's
+	// query string is never even constructed with a bearer-shaped grant
+	// subject in it, and no request of any kind reaches the network.
+	if err := refuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
+		return nil, nil, err
+	}
 	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
 	if err != nil {
 		return nil, nil, err
