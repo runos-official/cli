@@ -350,6 +350,17 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 		// strip it before the end-of-input check ever saw it, letting
 		// trailing data after the JSON value pass unnoticed.
 		{name: "decodable value with a trimSpace-only trailing byte is refused", body: "{\"id\":\"k1\"}\v", wantErr: true},
+		// Finding 1323/1349: decoding respBody directly (instead of
+		// trimmed) fixed the trailing case above but broke the LEADING
+		// one in the wrong direction -- a leading trimSpace-only byte
+		// made the original-bytes decode fail, diverting the guard onto
+		// the raw-byte fallback for a body internal/output's envelope
+		// helpers still render structurally (they TrimSpace too).
+		{name: "decodable value with a trimSpace-only leading byte is refused", body: "\v{\"id\":\"k1\"}", wantErr: true},
+		// Legitimate JSON whitespace (space, tab, CR, LF; RFC 8259) at
+		// either end must keep passing -- the new boundary check must
+		// not refuse ordinary formatting.
+		{name: "legitimate JSON whitespace at both ends still passes", body: " \t{\"id\":\"k1\"}\r\n", wantErr: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

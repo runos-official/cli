@@ -306,21 +306,43 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	if len(trimmed) == 0 {
 		return nil
 	}
+	// Findings 1323/1349 (rework of instance D2): decoding respBody
+	// directly, instead of trimmed, fixed the TRAILING case (finding
+	// 1292/1295) but broke the LEADING one in the wrong direction. A
+	// leading byte bytes.TrimSpace strips but JSON's own whitespace
+	// grammar rejects (RFC 8259 allows only space, tab, CR, LF; TrimSpace
+	// via unicode.IsSpace also strips \v, \f, NEL, NBSP, every Unicode
+	// space) made THAT decode fail, diverting the guard onto the
+	// raw-byte-pattern fallback below -- which cannot see an escaped
+	// secret or a duplicate key -- for a body internal/output's own
+	// envelope helpers (formatter.go's unwrapArrayEnvelope,
+	// pickArrayFromMultiKeyEnvelope) still render structurally, since
+	// they TrimSpace before unmarshalling too. bytes.Index is safe here
+	// because trimmed's first byte is never a whitespace rune (TrimSpace
+	// already removed every one), so trimmed cannot occur as a substring
+	// inside the whitespace-only region that precedes it.
+	boundaryStart := bytes.Index(respBody, trimmed)
+	leadingBytes := respBody[:boundaryStart]
+	trailingBytes := respBody[boundaryStart+len(trimmed):]
+	isJSONWhitespace := func(b byte) bool {
+		return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+	}
+	for _, b := range leadingBytes {
+		if !isJSONWhitespace(b) {
+			return fmt.Errorf("refusing to render response: the response body carries leading data outside JSON's whitespace grammar, which the inventory contract forbids for a credential command")
+		}
+	}
+	for _, b := range trailingBytes {
+		if !isJSONWhitespace(b) {
+			return fmt.Errorf("refusing to render response: the response body carries trailing data outside JSON's whitespace grammar, which the inventory contract forbids for a credential command")
+		}
+	}
 	var probe any
-	// Finding 1292/1295 (instance D2): decode, and enforce end of input,
-	// against the ORIGINAL respBody, never the whitespace-trimmed copy.
-	// bytes.TrimSpace strips every byte unicode.IsSpace treats as a
-	// space, a wider set than the four bytes JSON's own whitespace
-	// grammar allows (space, tab, CR, LF; RFC 8259). A byte TrimSpace
-	// removes but JSON does not accept as whitespace (for example a
-	// trailing U+000B vertical tab) is trailing data this guard must
-	// still refuse, and checking the trimmed copy let that byte vanish
-	// before the end-of-input check ever saw it. Legitimate JSON
-	// whitespace is still skipped by the decoder's own second Decode
-	// call below, so ordinary trailing whitespace keeps passing; trimmed
-	// is used only for the empty-body check and the byte-level scans
-	// after this decode, both unaffected by this defect.
-	decoder := json.NewDecoder(bytes.NewReader(respBody))
+	// Decode trimmed, matching what internal/output's envelope helpers
+	// actually parse (they TrimSpace first too); the boundary check just
+	// above already refused any respBody the trim would otherwise hide
+	// data behind.
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
 	// internal/output/formatter.go's JSON renderer calls UseNumber before
 	// decoding; this guard did not, so a body carrying a number outside
