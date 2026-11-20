@@ -255,7 +255,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if uidProvided(args, cmdDef, body, "uid") {
 			// User-supplied; honour it verbatim and let conductor's
 			// docId-or-uid lookup handle the resolution.
-		} else if extracted := auth.ExtractFirebaseUID(token); extracted != "" {
+		} else if extracted := auth.PersonID(cfg, token); extracted != "" {
 			body["uid"] = extracted
 		}
 	}

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.24.4
+
+### Fixed
+
+- `runos shell` now opens your workspace after `runos login`. Before, a person who signed in through the RunOS identity service got `runos shell needs a browser sign-in ... an API key cannot open one`, although no API key was in use: the shell looked for the person's id in a place that only the earlier sign-in filled. An API key is still refused, with the same message.
+- `runos user permissions` with no id now shows your own permissions after the same sign-in. Before, it did not fill in your id.
+
 ## v1.24.3
 
 ### Added
