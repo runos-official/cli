@@ -64,23 +64,91 @@ func TestAccessSubjectRefusesEveryPublishedBearerShape(t *testing.T) {
 	}
 }
 
-// Finding 1410 (repeat of 1383): the legacy Roid rk_ shape is caught by
-// an anchored prefix check (deliberately anchored so a legitimate public
-// id containing "rk_" mid-string is not false-flagged), and that anchor
-// must still land on the secret, not on whatever whitespace a pasted
-// value carries around it -- bare with leading whitespace, and with
-// whitespace right after the kind: separator.
-func TestAccessSubjectRefusesARoidBearerWithSurroundingWhitespace(t *testing.T) {
-	for _, form := range []string{" " + canaryRoidRK, canaryRoidRK + " ", "key: " + canaryRoidRK, "person: " + canaryRoidRK + " "} {
-		t.Run(form, func(t *testing.T) {
-			_, err := accessSubject(form)
-			if err == nil {
-				t.Fatalf("%q: a whitespace-padded bearer secret was accepted as a subject", form)
-			}
-			if strings.Contains(err.Error(), canaryRoidRK) {
-				t.Fatalf("error echoed the secret: %v", err)
-			}
-		})
+// Finding 1428 (repeat of 1383, 1410): the legacy Roid rk_ shape is
+// caught by an anchored prefix check (deliberately anchored so a
+// legitimate public id containing "rk_" mid-string is not
+// false-flagged, e.g. "pat_work_rk_1" below), and that anchor must land
+// on the secret regardless of how much text sits in front of it --
+// whitespace (1410), a second kind prefix, a "Bearer " label, or any
+// other stray word (1428). The fix tokenizes on ':' and whitespace and
+// anchors each token, so this is the exhaustive cross product of both
+// commands that read a subject value (accessSubject for create,
+// validateListSubjectFilter for list), the three published bearer
+// shapes, and every wrapper shape named above. A kind with no ':' or
+// whitespace in it (a real public id) stays one token and is never
+// affected.
+func TestBearerSecretIsRefusedWhateverWrapsIt(t *testing.T) {
+	const kind = "key"
+	wrappers := []struct {
+		name string
+		wrap func(c string) string
+	}{
+		{"bare", func(c string) string { return c }},
+		{"kind_colon", func(c string) string { return kind + ":" + c }},
+		{"kind_colon_space", func(c string) string { return kind + ": " + c }},
+		{"leading_space", func(c string) string { return " " + c }},
+		{"trailing_space", func(c string) string { return c + " " }},
+		{"double_kind_prefix", func(c string) string { return kind + ":" + kind + ":" + c }},
+		{"bearer_label", func(c string) string { return kind + ":Bearer " + c }},
+		{"stray_word", func(c string) string { return kind + ":x " + c }},
+	}
+	for _, canary := range bearerSecretCanaries {
+		for _, w := range wrappers {
+			form := w.wrap(canary)
+			t.Run("create/"+w.name, func(t *testing.T) {
+				_, err := accessSubject(form)
+				if err == nil {
+					t.Fatalf("%q: a bearer secret was accepted by accessSubject", form)
+				}
+				if strings.Contains(err.Error(), canary) {
+					t.Fatalf("error echoed the secret: %v", err)
+				}
+			})
+			t.Run("list/"+w.name, func(t *testing.T) {
+				err := validateListSubjectFilter(form)
+				if err == nil {
+					t.Fatalf("%q: a bearer secret passed validateListSubjectFilter", form)
+				}
+				if strings.Contains(err.Error(), canary) {
+					t.Fatalf("error echoed the secret: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// A legitimate public id containing "rk_" mid-string (not as its own
+// token) must still be accepted by both commands: the anchor exists
+// precisely so this case is not false-flagged.
+func TestPublicIDContainingRKMidStringStaysAccepted(t *testing.T) {
+	const legit = "key:pat_work_rk_1"
+	if _, err := accessSubject(legit); err != nil {
+		t.Errorf("%q: legitimate id refused: %v", legit, err)
+	}
+	if err := validateListSubjectFilter(legit); err != nil {
+		t.Errorf("%q: legitimate filter refused: %v", legit, err)
+	}
+}
+
+// Finding 1428's "zero requests" proof for the create path: the
+// refusal happens inside grantSubject/grantBody, before accessTarget.do
+// ever reaches the network, for every wrapped bearer shape too, not
+// only the bare/single-colon cases findings 1383/1410 already covered.
+func TestGrantCreateWithWrappedBearerSecretSendsNoRequest(t *testing.T) {
+	store := &grantStore{byAccount: map[string]map[string]bool{"a1": {}}}
+	newGrantServer(t, store)
+
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	f := grantFlags{subject: "key:key:" + canaryRoidRK, actions: []string{"apps.deploy"}}
+	if _, err := grantBody("a1", f, now); err == nil {
+		t.Fatal("a double-wrapped bearer secret in --subject reached grantBody without refusal")
+	}
+
+	store.mu.Lock()
+	calls := len(store.calls)
+	store.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("calls = %d, want 0: the refusal must happen before any request", calls)
 	}
 }
 
@@ -126,18 +194,6 @@ func TestValidateListSubjectFilterRefusesABearerSecret(t *testing.T) {
 	for _, in := range []string{"person:p_1", "account_api_key:key_abc123"} {
 		if err := validateListSubjectFilter(in); err != nil {
 			t.Errorf("%q: legitimate filter refused: %v", in, err)
-		}
-	}
-}
-
-// Finding 1410's list-filter half: the same whitespace-padded Roid
-// bearer must be refused on the 'grants list --subject' path too.
-func TestValidateListSubjectFilterRefusesARoidBearerWithSurroundingWhitespace(t *testing.T) {
-	for _, form := range []string{" " + canaryRoidRK, "account_api_key: " + canaryRoidRK} {
-		if err := validateListSubjectFilter(form); err == nil {
-			t.Errorf("%q: a whitespace-padded bearer secret passed the list filter check", form)
-		} else if strings.Contains(err.Error(), canaryRoidRK) {
-			t.Fatalf("error echoed the secret: %v", err)
 		}
 	}
 }

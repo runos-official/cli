@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // containsABearerSecretShape reports whether v contains or matches any
@@ -18,35 +19,33 @@ import (
 // could become a grant subject id, selector, or list filter must still
 // clear, whatever kind it claims to be.
 //
-// The rk_ check runs against the TRIMMED value (finding 1410): a pasted
-// legacy Roid bearer carrying leading or trailing whitespace is still
-// exactly that bearer, and the anchor exists to avoid false-flagging a
-// public id that legitimately contains "rk_" mid-string, not to let
-// whitespace defeat the anchor. The Contains-based checks need no
-// trimming: they already match wherever the shape sits in the string.
+// Findings 1410 and 1428 (same cause, twice): the rk_ check is anchored
+// to avoid false-flagging a public id that legitimately contains "rk_"
+// mid-string (validatePublicCredentialID's own accepted "pat_work_rk_1"
+// case), but anchoring to the raw string's start is defeated by ANY
+// text in front of the secret -- whitespace (1410), then a second kind
+// prefix, a "Bearer " label, or any other token (1428). Normalizing one
+// wrapper shape at a time (TrimSpace, then a single ':' split) just
+// reopens the same hole for the next wrapper. The fix is a grammar, not
+// another wrapper: split v on every ':' and every run of Unicode
+// whitespace -- the two separators a kind:id subject or a list filter
+// can legitimately use -- and anchor the rk_ check to each resulting
+// TOKEN instead of to the whole string. A legitimate public id with no
+// ':' or whitespace in it is exactly one token, so "pat_work_rk_1"
+// still isn't anchored on "rk_" (it starts with "pat_"); any wrapping
+// text around a real rk_... secret becomes its own token, leaving the
+// secret as a token that DOES start with "rk_", however many layers of
+// "kind:", "Bearer " or stray words surround it.
 func containsABearerSecretShape(v string) bool {
 	if strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") {
 		return true
 	}
-	return strings.HasPrefix(strings.TrimSpace(v), "rk_")
-}
-
-// containsABearerSecretShapeInSubject is containsABearerSecretShape for
-// a kind:id (or bare) subject value. The runos_pat_/runos_key_ shapes
-// never contain ':', so checking the whole value already catches them
-// wherever they sit; the rk_ check is deliberately ANCHORED to the
-// START of a value (validatePublicCredentialID's own public ids may
-// legitimately contain "rk_" mid-string, e.g. as part of a scope-like
-// segment), so a BARE rk_... value matches containsABearerSecretShape
-// directly, but "key:rk_..." or "person:rk_..." does not: the anchor
-// lands on "key"/"person", not on the secret after the colon. Checking
-// the part after a ':', if any, too is what catches that case.
-func containsABearerSecretShapeInSubject(v string) bool {
-	if containsABearerSecretShape(v) {
-		return true
-	}
-	if _, id, ok := strings.Cut(v, ":"); ok {
-		return containsABearerSecretShape(id)
+	for _, token := range strings.FieldsFunc(v, func(r rune) bool {
+		return r == ':' || unicode.IsSpace(r)
+	}) {
+		if strings.HasPrefix(token, "rk_") {
+			return true
+		}
 	}
 	return false
 }
@@ -60,7 +59,7 @@ var errSubjectIsABearerSecret = errors.New("subject: takes a public id, never a 
 // list to validate against, unlike create's --subject kind:id), so
 // this is the one check every value must still clear.
 func validateListSubjectFilter(v string) error {
-	if containsABearerSecretShapeInSubject(v) {
+	if containsABearerSecretShape(v) {
 		return errSubjectIsABearerSecret
 	}
 	return nil
@@ -80,7 +79,7 @@ func validateListSubjectFilter(v string) error {
 // query filter.
 func accessSubject(s string) (map[string]string, error) {
 	kind, id, ok := strings.Cut(s, ":")
-	if containsABearerSecretShapeInSubject(s) {
+	if containsABearerSecretShape(s) {
 		return nil, errSubjectIsABearerSecret
 	}
 	if !ok || id == "" || (kind != "person" && kind != "group" && kind != "key") {
