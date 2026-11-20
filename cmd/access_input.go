@@ -17,8 +17,18 @@ import (
 // --key's public-id grammar), so this is the one floor every value that
 // could become a grant subject id, selector, or list filter must still
 // clear, whatever kind it claims to be.
+//
+// The rk_ check runs against the TRIMMED value (finding 1410): a pasted
+// legacy Roid bearer carrying leading or trailing whitespace is still
+// exactly that bearer, and the anchor exists to avoid false-flagging a
+// public id that legitimately contains "rk_" mid-string, not to let
+// whitespace defeat the anchor. The Contains-based checks need no
+// trimming: they already match wherever the shape sits in the string.
 func containsABearerSecretShape(v string) bool {
-	return strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") || strings.HasPrefix(v, "rk_")
+	if strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(v), "rk_")
 }
 
 // containsABearerSecretShapeInSubject is containsABearerSecretShape for
@@ -194,11 +204,21 @@ type grantFlags struct {
 	expiresIn                   time.Duration
 }
 
+// errAccountAPIKeyTakesActionsNotRole is criterion 8 (finding 1387, FCR
+// 2628): an Account API Key is an exact-action-only machine principal
+// (criterion 2), so --key with --role is refused locally, before any
+// request, rather than sent for Roid to refuse. Checked in grantBody,
+// which runs before accessTarget.do, so no request is ever sent.
+var errAccountAPIKeyTakesActionsNotRole = errors.New("an Account API Key receives explicit actions, never a role: give --action, not --role")
+
 // grantBody builds a grant request from the flags.
 func grantBody(acct string, f grantFlags, now time.Time) (map[string]any, error) {
 	subject, err := grantSubject(f)
 	if err != nil {
 		return nil, err
+	}
+	if f.keyID != "" && f.role != "" {
+		return nil, errAccountAPIKeyTakesActionsNotRole
 	}
 	if (f.role == "") == (len(f.actions) == 0) {
 		return nil, errors.New("give --role or --action, not both and not neither")

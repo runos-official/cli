@@ -189,3 +189,39 @@ func TestRefusal_EveryKindRendersEveryFieldInText(t *testing.T) {
 		})
 	}
 }
+
+// Criterion 6 F3 / findings 1412 and 1415: when the producer sets
+// Message equal to Reason (Roid's own common shape), the shared value
+// must appear exactly once in text, for every refusal kind, not twice.
+// Driven from the same kind list as the exhaustive test above, so a
+// kind added there with no case here fails this test too.
+const sharedMessageReasonFixtureBody = `{"error":{` +
+	`"code":"c1","reason":"shared-value","detail":"d1","action":"a1","scope":"s1",` +
+	`"requirement":"step_up","decision_id":"dec1","message":"shared-value","policies":["p1"],` +
+	`"step_up_id":"su_1","step_up_url":"https://id.example.com/stepup/su_1"}}`
+
+func TestRefusal_MessageEqualToReasonAppearsExactlyOnce(t *testing.T) {
+	for _, kind := range refusalKindsNeedingExhaustiveFieldCoverage {
+		tc, ok := exhaustiveRefusalCases[kind]
+		if !ok {
+			t.Fatalf("refusal kind %q has no exhaustive-field-coverage case", kind)
+		}
+		t.Run(kind, func(t *testing.T) {
+			err := refusal(&api.Result{StatusCode: tc.status, Body: []byte(sharedMessageReasonFixtureBody)})
+			if err == nil {
+				t.Fatal("refusal returned nil for a non-2xx result")
+			}
+			tc.check(t, err)
+			text := err.Error()
+			if n := strings.Count(text, "shared-value"); n != 1 {
+				t.Errorf("%s: Error() = %q, the shared reason/message value appears %d times, want 1", kind, text, n)
+			}
+			// The other eight fields must still each appear.
+			for _, want := range []string{"c1", "d1", "a1", "s1", "step_up", "dec1", "p1"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s: Error() = %q, missing field value %q", kind, text, want)
+				}
+			}
+		})
+	}
+}

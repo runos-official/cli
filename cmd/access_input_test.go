@@ -64,6 +64,26 @@ func TestAccessSubjectRefusesEveryPublishedBearerShape(t *testing.T) {
 	}
 }
 
+// Finding 1410 (repeat of 1383): the legacy Roid rk_ shape is caught by
+// an anchored prefix check (deliberately anchored so a legitimate public
+// id containing "rk_" mid-string is not false-flagged), and that anchor
+// must still land on the secret, not on whatever whitespace a pasted
+// value carries around it -- bare with leading whitespace, and with
+// whitespace right after the kind: separator.
+func TestAccessSubjectRefusesARoidBearerWithSurroundingWhitespace(t *testing.T) {
+	for _, form := range []string{" " + canaryRoidRK, canaryRoidRK + " ", "key: " + canaryRoidRK, "person: " + canaryRoidRK + " "} {
+		t.Run(form, func(t *testing.T) {
+			_, err := accessSubject(form)
+			if err == nil {
+				t.Fatalf("%q: a whitespace-padded bearer secret was accepted as a subject", form)
+			}
+			if strings.Contains(err.Error(), canaryRoidRK) {
+				t.Fatalf("error echoed the secret: %v", err)
+			}
+		})
+	}
+}
+
 // A legitimate request must still pass: the new check must not refuse
 // an ordinary, non-secret-shaped subject (regression guard per the
 // rework instruction that every new refusal gets a passing-case test).
@@ -106,6 +126,18 @@ func TestValidateListSubjectFilterRefusesABearerSecret(t *testing.T) {
 	for _, in := range []string{"person:p_1", "account_api_key:key_abc123"} {
 		if err := validateListSubjectFilter(in); err != nil {
 			t.Errorf("%q: legitimate filter refused: %v", in, err)
+		}
+	}
+}
+
+// Finding 1410's list-filter half: the same whitespace-padded Roid
+// bearer must be refused on the 'grants list --subject' path too.
+func TestValidateListSubjectFilterRefusesARoidBearerWithSurroundingWhitespace(t *testing.T) {
+	for _, form := range []string{" " + canaryRoidRK, "account_api_key: " + canaryRoidRK} {
+		if err := validateListSubjectFilter(form); err == nil {
+			t.Errorf("%q: a whitespace-padded bearer secret passed the list filter check", form)
+		} else if strings.Contains(err.Error(), canaryRoidRK) {
+			t.Fatalf("error echoed the secret: %v", err)
 		}
 	}
 }
@@ -293,12 +325,14 @@ func TestGrantBodyBuildsAccountAPIKeySubjectFromKeyFlag(t *testing.T) {
 		t.Fatalf("scope = %v", body["scope"])
 	}
 
-	// A role with --key is not blocked client-side: the CLI sends it and
-	// lets Roid's own delegation/policy decision refuse it.
+	// Criterion 8 (finding 1387, FCR 2628): --key with --role is refused
+	// locally, before any request -- an Account API Key receives only
+	// explicit actions. (Superseded the earlier behaviour of sending the
+	// role and letting Roid's own delegation/policy decision refuse it.)
 	f = grantFlags{keyID: "key_abc123", role: "viewer"}
-	body, err = grantBody("a1", f, now)
-	if err != nil || body["role"] != "viewer" {
-		t.Fatalf("role grant to a key: %v, %v", body, err)
+	_, err = grantBody("a1", f, now)
+	if !errors.Is(err, errAccountAPIKeyTakesActionsNotRole) {
+		t.Fatalf("role grant to a key: got err %v, want errAccountAPIKeyTakesActionsNotRole", err)
 	}
 }
 

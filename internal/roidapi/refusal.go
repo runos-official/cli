@@ -53,7 +53,11 @@ type RefusalFields struct {
 // code, the step-up id, the "changed since read" sentence); every other
 // fact the producer supplied comes only from this function, so there is
 // no second place left where a field could go missing for one kind and
-// not another.
+// not another. Findings 1412/1415 (criterion 6 F3): printing Reason
+// unconditionally (F2) without keeping the original Message-equals-
+// Reason de-duplication meant the shared value printed twice; the
+// de-duplication is restored below, in this one place, so it applies
+// uniformly rather than needing to be remembered per kind again.
 func (f RefusalFields) describe() string {
 	var b strings.Builder
 	add := func(label, value string) {
@@ -69,7 +73,15 @@ func (f RefusalFields) describe() string {
 	add("scope", f.Scope)
 	add("needs", f.Requirement)
 	add("decision", f.DecisionID)
-	add("message", f.Message)
+	// Finding 1412/1415 (criterion 6 F3): Message is Roid's own echo of
+	// Reason often enough that printing both prints the same value
+	// twice. The de-duplication is only correct once Reason itself is
+	// always printed (F2, above) -- it is, now -- so skip Message only
+	// when it exactly repeats Reason; a Message that differs still
+	// prints.
+	if f.Message != f.Reason {
+		add("message", f.Message)
+	}
 	if len(f.Policies) > 0 {
 		add("policies", string(f.Policies))
 	}

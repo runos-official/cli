@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/roidapi"
@@ -52,6 +54,27 @@ func newGrantServer(t *testing.T, store *grantStore) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// Finding 1414's "zero requests" proof (criterion 8, FCR 2628): --key
+// with --role is refused inside grantBody, which runs before
+// accessTarget.do ever gets a chance to reach the network, so a fake
+// server backing the same account records no call at all.
+func TestGrantCreateWithKeyAndRoleSendsNoRequest(t *testing.T) {
+	store := &grantStore{byAccount: map[string]map[string]bool{"a1": {}}}
+	newGrantServer(t, store)
+
+	f := grantFlags{keyID: "key_abc123", role: "viewer"}
+	if _, err := grantBody("a1", f, time.Now()); !errors.Is(err, errAccountAPIKeyTakesActionsNotRole) {
+		t.Fatalf("got %v, want errAccountAPIKeyTakesActionsNotRole", err)
+	}
+
+	store.mu.Lock()
+	calls := len(store.calls)
+	store.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("calls = %d, want 0: the refusal must happen before any request", calls)
+	}
 }
 
 // Finding 1333's integration half: one key granted in two accounts,
