@@ -306,6 +306,35 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	if len(trimmed) == 0 {
 		return nil
 	}
+	var probe any
+	// Decode trimmed, matching what internal/output's envelope helpers
+	// actually parse (they TrimSpace first too).
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
+	// internal/output/formatter.go's JSON renderer calls UseNumber before
+	// decoding; this guard did not, so a body carrying a number outside
+	// float64's exact range (decoded into `any` without UseNumber,
+	// strconv.ParseFloat returns ErrRange) made THIS decode fail while
+	// the formatter's decode of the SAME bytes succeeded, diverting this
+	// guard onto the weaker raw-byte fallback for a body the formatter
+	// renders structurally. UseNumber here matches the formatter's mode
+	// exactly, so this guard fails to decode only when the formatter
+	// would also fail to decode.
+	decoder.UseNumber()
+	if err := decoder.Decode(&probe); err != nil {
+		// Finding 1357 (repeat of 1323): a body that does not decode as
+		// JSON even after trimming is genuine plain or malformed text,
+		// not a credential object with suspicious framing. The boundary
+		// check below must never run for this branch, or a harmless
+		// plain-text response with an ordinary non-breaking space (or
+		// any other non-JSON whitespace rune) at either end would be
+		// refused instead of scanned under this existing raw-pattern
+		// policy.
+		if runosSecretPattern.Match(trimmed) {
+			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a non-JSON or malformed response body, which the inventory contract forbids")
+		}
+		return nil
+	}
 	// Findings 1323/1349 (rework of instance D2): decoding respBody
 	// directly, instead of trimmed, fixed the TRAILING case (finding
 	// 1292/1295) but broke the LEADING one in the wrong direction. A
@@ -313,14 +342,16 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	// grammar rejects (RFC 8259 allows only space, tab, CR, LF; TrimSpace
 	// via unicode.IsSpace also strips \v, \f, NEL, NBSP, every Unicode
 	// space) made THAT decode fail, diverting the guard onto the
-	// raw-byte-pattern fallback below -- which cannot see an escaped
+	// raw-byte-pattern fallback above -- which cannot see an escaped
 	// secret or a duplicate key -- for a body internal/output's own
 	// envelope helpers (formatter.go's unwrapArrayEnvelope,
 	// pickArrayFromMultiKeyEnvelope) still render structurally, since
-	// they TrimSpace before unmarshalling too. bytes.Index is safe here
-	// because trimmed's first byte is never a whitespace rune (TrimSpace
-	// already removed every one), so trimmed cannot occur as a substring
-	// inside the whitespace-only region that precedes it.
+	// they TrimSpace before unmarshalling too. Finding 1357: this check
+	// only runs here, AFTER trimmed is confirmed to decode as JSON, so a
+	// body that is not JSON at all never reaches it. bytes.Index is safe
+	// here because trimmed's first byte is never a whitespace rune
+	// (TrimSpace already removed every one), so trimmed cannot occur as
+	// a substring inside the whitespace-only region that precedes it.
 	boundaryStart := bytes.Index(respBody, trimmed)
 	leadingBytes := respBody[:boundaryStart]
 	trailingBytes := respBody[boundaryStart+len(trimmed):]
@@ -336,29 +367,6 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 		if !isJSONWhitespace(b) {
 			return fmt.Errorf("refusing to render response: the response body carries trailing data outside JSON's whitespace grammar, which the inventory contract forbids for a credential command")
 		}
-	}
-	var probe any
-	// Decode trimmed, matching what internal/output's envelope helpers
-	// actually parse (they TrimSpace first too); the boundary check just
-	// above already refused any respBody the trim would otherwise hide
-	// data behind.
-	decoder := json.NewDecoder(bytes.NewReader(trimmed))
-	// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
-	// internal/output/formatter.go's JSON renderer calls UseNumber before
-	// decoding; this guard did not, so a body carrying a number outside
-	// float64's exact range (decoded into `any` without UseNumber,
-	// strconv.ParseFloat returns ErrRange) made THIS decode fail while
-	// the formatter's decode of the SAME bytes succeeded, diverting this
-	// guard onto the weaker raw-byte fallback for a body the formatter
-	// renders structurally. UseNumber here matches the formatter's mode
-	// exactly, so this guard fails to decode only when the formatter
-	// would also fail to decode.
-	decoder.UseNumber()
-	if err := decoder.Decode(&probe); err != nil {
-		if runosSecretPattern.Match(trimmed) {
-			return fmt.Errorf("refusing to render response: a bearer-secret-shaped value was found in a non-JSON or malformed response body, which the inventory contract forbids")
-		}
-		return nil
 	}
 	var trailing json.RawMessage
 	if derr := decoder.Decode(&trailing); derr != io.EOF {

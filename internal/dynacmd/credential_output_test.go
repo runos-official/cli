@@ -361,6 +361,14 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 		// either end must keep passing -- the new boundary check must
 		// not refuse ordinary formatting.
 		{name: "legitimate JSON whitespace at both ends still passes", body: " \t{\"id\":\"k1\"}\r\n", wantErr: false},
+		// Finding 1357 (repeat of 1323): the boundary check from the
+		// previous cycle ran before the guard ever tried to decode the
+		// body, so a genuine PLAIN-TEXT response (not JSON at all) with
+		// a non-breaking space at either end was refused instead of
+		// reaching the existing raw-pattern policy finding 1323 and this
+		// same table's "ordinary plain text passes" row require.
+		{name: "plain text with non-breaking-space boundary and no secret still passes", body: " credential inventory ready ", wantErr: false},
+		{name: "plain text with non-breaking-space boundary carrying a secret is still refused", body: " credential inventory ready " + fakeLegacyPAT + " ", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
