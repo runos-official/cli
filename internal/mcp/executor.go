@@ -45,61 +45,6 @@ func NewCommandExecutor(m *manifest.Manifest, baseURL string) *CommandExecutor {
 	}
 }
 
-// ExecuteRaw makes an arbitrary authenticated API request with the given method, endpoint, body, and cluster ID.
-func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]any, cid string) (string, error) {
-	// Get auth token
-	cfg, err := config.Load()
-	if err != nil {
-		return "", fmt.Errorf("failed to load config: %w", err)
-	}
-
-	token, err := e.getAuthToken(cfg)
-	if err != nil {
-		return "", fmt.Errorf("authentication required: run 'runos login' first")
-	}
-
-	// Build full URL
-	url := e.baseURL + endpoint
-
-	// Make request. ExecuteRaw has no manifest command to derive a
-	// deadline from, so it takes the ordinary one.
-	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.Default)
-	defer cancel()
-	resp, err := e.doRequestWithCID(ctx, method, url, body, nil, token, cid)
-	if err != nil {
-		return "", requestFailed(err)
-	}
-	defer resp.Body.Close()
-
-	// Read response (limit to 10 MB)
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Build result with status info
-	result := map[string]any{
-		"status":      resp.StatusCode,
-		"status_text": resp.Status,
-	}
-
-	// Try to parse response as JSON
-	jsonResp, decodeErr := decodeJSONPreservingNumbers(respBody)
-	if decodeErr != nil {
-		result["body"] = string(respBody)
-	} else {
-		result["body"] = jsonResp
-	}
-
-	// Pretty print
-	pretty, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return string(respBody), nil
-	}
-
-	return string(pretty), nil
-}
-
 // Execute runs a tool by name, mapping it to the corresponding manifest command and making the API request.
 func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string, error) {
 	// Convert tool name back to command path

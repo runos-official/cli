@@ -324,10 +324,15 @@ func (s *Server) SetDefaultClusterID(cid string) {
 	s.defaultClusterID = cid
 }
 
-// ToolExecutor defines the interface for executing MCP tools against the API.
+// ToolExecutor defines the interface for executing MCP tools against the
+// API. Story 347 (plan: "Remove the raw bypass shape"): ExecuteRaw, an
+// arbitrary method/endpoint dispatcher, was removed from this interface
+// and from CommandExecutor: a repo-wide grep found no production caller,
+// only test doubles, and an uncapped method/endpoint dispatcher is
+// exactly the kind of bypass that could let a caller route around the
+// manifest's own field/credential/output guards.
 type ToolExecutor interface {
 	Execute(toolName string, args map[string]any) (string, error)
-	ExecuteRaw(method, endpoint string, body map[string]any, cid string) (string, error)
 }
 
 // NewServer creates a new MCP server with the given manifest, executor, version, and category.
