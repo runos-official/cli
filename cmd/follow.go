@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -50,13 +51,16 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	}
 
 	jsonOutput, _ := cmd.Flags().GetBool("json")
-	if !jsonOutput {
-		return jobs.FollowJob(jobID)
-	}
 
-	// --json: human progress on stderr, final JobStatus as a single JSON
-	// document on stdout. Mirrors the post-#93 deploy --follow --json
-	// contract so CI consumers can pipe stdout into jq. Issue 99.
+	// Standalone follow carries only a job id, with no context about
+	// how the job was created. FollowAnyJobToWriterResult tries the
+	// sanitized deployment-progress endpoint first (so a scoped machine
+	// key following its own deploy job never needs broader job-read
+	// authority, story 346 D3) and falls back to the general
+	// job/work-item/log follow only when that very first read refuses
+	// (D4's "no fallback" rule applies to the deploy-dispatched
+	// --follow paths, not to this generic entry point: see
+	// FollowAnyJobToWriterResult's doc comment).
 	svc, err := jobs.NewService()
 	if err != nil {
 		return err
@@ -64,14 +68,31 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	final, followErr := jobs.FollowJobWithServiceToWriterResult(ctx, svc, jobID, os.Stderr)
+	followWriter := io.Writer(os.Stdout)
+	if jsonOutput {
+		followWriter = os.Stderr
+	}
+	result, followErr := jobs.FollowAnyJobToWriterResult(ctx, svc, jobID, followWriter)
 
-	// Emit the terminal response captured by the poll that ended follow.
-	// Unknown fields remain available without an extra status read.
-	if final == nil {
+	if !jsonOutput {
 		return followErr
 	}
-	out, mErr := json.MarshalIndent(final, "", "  ")
+
+	// --json: human progress already went to stderr above; the terminal
+	// response -- whichever shape actually served the follow -- emits
+	// as a single JSON document on stdout. Mirrors the post-#93 deploy
+	// --follow --json contract so CI consumers can pipe stdout into jq.
+	// Issue 99.
+	var terminal any
+	switch {
+	case result != nil && result.Progress != nil:
+		terminal = result.Progress
+	case result != nil && result.Job != nil:
+		terminal = result.Job
+	default:
+		return followErr
+	}
+	out, mErr := json.MarshalIndent(terminal, "", "  ")
 	if mErr != nil {
 		if followErr != nil {
 			return followErr

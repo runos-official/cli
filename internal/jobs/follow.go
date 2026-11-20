@@ -8,22 +8,18 @@ import (
 	"time"
 )
 
-const (
-	pollInterval = 1 * time.Second
-)
+// pollInterval is the delay between follow polls. A var (not a const)
+// so tests can shorten it instead of sleeping for real; production
+// code never reassigns it.
+var pollInterval = 1 * time.Second
 
-// FollowJob polls a job until completion, emitting one line per state
-// change to os.Stdout. Suitable for CI and LLM consumers; no terminal
-// escape codes, no spinners, no repaints.
-func FollowJob(jobID string) error {
-	return FollowJobToWriter(jobID, os.Stdout)
-}
-
-// FollowJobToWriter is like FollowJob but routes the per-state-change
-// progress lines to w instead of os.Stdout. Callers that want job
+// FollowJobToWriter polls a job until completion, emitting one line per
+// state change to w instead of os.Stdout. Callers that want job
 // progress on stderr (typical: --json mode, where stdout is reserved
 // for the final JSON envelope) pass os.Stderr here. The terminal state
-// line is still emitted to w before the function returns.
+// line is still emitted to w before the function returns. Suitable for
+// CI and LLM consumers; no terminal escape codes, no spinners, no
+// repaints.
 func FollowJobToWriter(jobID string, w io.Writer) error {
 	svc, err := NewService()
 	if err != nil {

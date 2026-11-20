@@ -62,6 +62,19 @@ type PrepareResponse struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// Redacted returns a copy of resp with the single-use upload bearer
+// cleared. By the time a caller prints this response (cmd/deploy.go's
+// --json envelope, printed only after UploadTarball has already
+// consumed Token), the secret has done its one job; the plan's upload
+// section is explicit that it must never reach an error, log, JSON
+// response, or persisted file after that. Every other field is kept
+// verbatim: ids, timings and warnings are not secrets.
+func (resp *PrepareResponse) Redacted() PrepareResponse {
+	out := *resp
+	out.Token = ""
+	return out
+}
+
 // ProvisionedService represents a service that will be provisioned for an app dependency
 type ProvisionedService struct {
 	Alias string `json:"alias"`
@@ -89,11 +102,23 @@ func (s *Service) CID() string { return s.cid }
 // AID returns the account ID this Service is bound to.
 func (s *Service) AID() string { return s.aid }
 
-// PrepareDeployment calls the prepare-cli-deployment endpoint to get an upload token
+// PrepareDeployment calls the broad, cluster-scoped prepare-cli-deployment
+// endpoint. This route can create a brand-new app, so it stays the only
+// path for a first-time CLI deploy (deployConfig.ID == ""). For a
+// deployConfig that already names an app, callers should prefer
+// PrepareExistingAppDeployment: see that method's doc for why (story
+// 346, D1).
 func (s *Service) PrepareDeployment(config *DeployConfig) (*PrepareResponse, error) {
 	// Endpoint: /:aid/:cid/prepare-cli-deployment (camelCase alias still works)
 	reqURL := fmt.Sprintf("%s/%s/%s/prepare-cli-deployment", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid))
+	return s.postPrepareDeployment(reqURL, config)
+}
 
+// postPrepareDeployment is the shared POST + decode for both
+// prepare-cli-deployment routes (broad cluster-scoped and app-scoped):
+// identical runos.yaml-shaped request body and PrepareResponse shape,
+// differing only in URL.
+func (s *Service) postPrepareDeployment(reqURL string, config *DeployConfig) (*PrepareResponse, error) {
 	jsonBody, err := json.Marshal(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config: %w", err)
@@ -119,7 +144,7 @@ func (s *Service) PrepareDeployment(config *DeployConfig) (*PrepareResponse, err
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	var result PrepareResponse
@@ -130,8 +155,18 @@ func (s *Service) PrepareDeployment(config *DeployConfig) (*PrepareResponse, err
 	return &result, nil
 }
 
-// UploadTarball uploads the gzipped tarball to the cluster agent
+// UploadTarball uploads the gzipped tarball to the cluster agent.
+//
+// Finding 225: uploadURL is validated before any request is made (no
+// protocol downgrade below the conductor's own scheme, http(s)-only,
+// well-formed), and the request is sent with redirects disabled. The
+// upload bearer is single-use and scoped to this exact URL; following
+// a 3xx would resend it to a URL the conductor never issued it for.
 func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Reader) error {
+	if err := validateUploadURL(s.baseURL, uploadURL); err != nil {
+		return fmt.Errorf("refusing upload: %w", err)
+	}
+
 	// If uploadURL is relative, prepend the base URL
 	fullURL := uploadURL
 	if len(uploadURL) > 0 && uploadURL[0] == '/' {
@@ -146,7 +181,13 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 	req.Header.Set("Content-Type", "application/gzip")
 	req.Header.Set("Authorization", "Bearer "+uploadToken)
 
-	resp, err := s.httpClient.Do(req)
+	client := &http.Client{
+		Timeout: s.httpClient.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("upload request failed: %w", err)
 	}
@@ -155,6 +196,10 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return fmt.Errorf("failed to read upload response: %w", err)
+	}
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("upload refused a redirect (%d); the single-use upload bearer was not resent to another URL", resp.StatusCode)
 	}
 
 	if resp.StatusCode >= 400 {

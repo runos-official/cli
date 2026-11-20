@@ -544,9 +544,21 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		deployConfig.BuildArgsCli = buildArgsCli
 	}
 
-	// Prepare deployment
+	// Prepare deployment. An app ID already on disk means this is a
+	// redeploy of an EXISTING app: use the app-scoped preparation route
+	// (story 337/346, D1), which a minimal apps.deploy grant on this app
+	// authorizes, and never the broad cluster-scoped route. The broad
+	// route stays reachable only for a brand-new app, which the
+	// app-scoped route structurally cannot create. A refusal from the
+	// app-scoped route is final: this call never falls back to the
+	// broad route (D4).
 	progress("Preparing deployment...\n")
-	prepResp, err := svc.PrepareDeployment(deployConfig)
+	var prepResp *deploy.PrepareResponse
+	if deployConfig.ID != "" {
+		prepResp, err = svc.PrepareExistingAppDeployment(deployConfig.ID, deployConfig)
+	} else {
+		prepResp, err = svc.PrepareDeployment(deployConfig)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to prepare deployment: %w", err)
 	}
@@ -626,9 +638,13 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// the build fails.
 	sourceRecord := recordDeploySource(configDir, cid, deployConfig.ID, sourceVersionFromPrepare(prepResp), sourceFingerprint)
 
-	// Output response (jsonOutput is captured at the top of runDeploy)
+	// Output response (jsonOutput is captured at the top of runDeploy).
+	// Redacted: Token is the single-use upload bearer UploadTarball
+	// already consumed above; it must never reach a JSON response
+	// (plan "CLI upload" section / story 346).
 	if jsonOutput {
-		output, err := json.MarshalIndent(prepResp, "", "  ")
+		redacted := prepResp.Redacted()
+		output, err := json.MarshalIndent(redacted, "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal response: %w", err)
 		}
@@ -681,7 +697,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if jsonOutput {
 			followWriter = os.Stderr
 		}
-		if err := jobs.FollowJobToWriter(prepResp.JobID, followWriter); err != nil {
+		if err := jobs.FollowDeploymentJobToWriter(prepResp.JobID, followWriter); err != nil {
 			sourceRecord.rollback()
 			return fmt.Errorf("deployment failed: %w", err)
 		}

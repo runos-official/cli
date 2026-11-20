@@ -216,7 +216,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	} else {
 		fmt.Fprintln(human, "\nFollowing job progress...")
 	}
-	jobErr := jobs.FollowJobToWriter(resp.JobID, human)
+	jobErr := jobs.FollowDeploymentJobToWriter(resp.JobID, human)
 	if inGitHubActions {
 		fmt.Fprintln(human, "::endgroup::")
 	}
