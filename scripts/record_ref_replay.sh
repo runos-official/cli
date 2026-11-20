@@ -359,6 +359,9 @@ in_host record v1.0.0-rc.1 dev dev deployed >"$F/out" 2>"$F/err"; rc=$?
 check "the candidate record succeeds" "$rc" "0"
 check "main is untouched" "$(osha main)" "$C1"
 check "no main fact is printed" "$(fact main_before)" ""
+check "the candidate reports its record branch" "$(fact record_branch)" "deployed"
+check "the candidate reports the exact recorded commit" "$(fact record_after)" "$C2"
+check "the candidate verifies the recorded source" "$(fact record_matches_source)" "true"
 refuses "a candidate may not record on main" "must not record on main" record v1.0.0-rc.1 dev dev main
 
 case_hdr "Case 13, record: a final on prod fast-forwards main, only ever forward"
@@ -371,6 +374,9 @@ check "deployed is at the final's commit" "$(osha deployed)" "$C2"
 check "main_before is what main held" "$(fact main_before)" "$C1"
 check "main_after is the final's commit" "$(fact main_after)" "$C2"
 check "main_equals_final" "$(fact main_equals_final)" "true"
+check "the final also reports its candidate record branch" "$(fact record_branch)" "deployed"
+check "the final reports the exact recorded commit" "$(fact record_after)" "$C2"
+check "the final verifies the recorded source" "$(fact record_matches_source)" "true"
 in_host record v1.0.0 prod dev main >"$F/out" 2>"$F/err"; rc=$?
 check "running it again is a no-op" "$rc" "0"
 check "the second run still says main_equals_final" "$(fact main_equals_final)" "true"

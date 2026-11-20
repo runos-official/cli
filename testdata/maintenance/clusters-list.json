@@ -1,0 +1,6 @@
+{
+  "clusters": [
+    { "cid": "ca001", "name": "cluster-one", "status": "running", "nodeCount": 4 },
+    { "cid": "cb002", "name": "cluster-two", "status": "running", "nodeCount": 1 }
+  ]
+}
