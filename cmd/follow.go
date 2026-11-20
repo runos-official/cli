@@ -57,10 +57,11 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	// sanitized deployment-progress endpoint first (so a scoped machine
 	// key following its own deploy job never needs broader job-read
 	// authority, story 346 D3) and falls back to the general
-	// job/work-item/log follow only when that very first read refuses
-	// (D4's "no fallback" rule applies to the deploy-dispatched
-	// --follow paths, not to this generic entry point: see
-	// FollowAnyJobToWriterResult's doc comment).
+	// job/work-item/log follow ONLY when that very first read answers
+	// the one documented ambiguous refusal (404: not found / no scoped
+	// binding / legacy job). Any other refusal (403, 503, a transport
+	// error) is final, exactly as it is for `deploy --follow`: see
+	// FollowAnyJobToWriterResult's doc comment for the full rule.
 	svc, err := jobs.NewService()
 	if err != nil {
 		return err
@@ -78,15 +79,19 @@ func runFollow(cmd *cobra.Command, args []string) error {
 		return followErr
 	}
 
-	// --json: human progress already went to stderr above; the terminal
-	// response -- whichever shape actually served the follow -- emits
-	// as a single JSON document on stdout. Mirrors the post-#93 deploy
-	// --follow --json contract so CI consumers can pipe stdout into jq.
-	// Issue 99.
-	var terminal any
+	// --json: human progress already went to stderr above; the final
+	// JobStatus shape (id/type/status/progress/currentStep/error) still
+	// emits as a single JSON document on stdout, exactly as before
+	// (finding 1351: switching the underlying read to the sanitized
+	// progress endpoint must not change the published --json contract).
+	// jobs.ProgressToJobStatus maps a progress-served follow into that
+	// same shape; the raw DeploymentProgress fields are never emitted
+	// here. Mirrors the post-#93 deploy --follow --json contract so CI
+	// consumers can pipe stdout into jq. Issue 99.
+	var terminal *jobs.JobStatus
 	switch {
 	case result != nil && result.Progress != nil:
-		terminal = result.Progress
+		terminal = jobs.ProgressToJobStatus(result.Progress)
 	case result != nil && result.Job != nil:
 		terminal = result.Job
 	default:

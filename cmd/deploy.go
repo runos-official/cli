@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
@@ -195,18 +197,16 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			return fmt.Errorf("cluster ID required when using --app: pass --cid or set default with 'runos config set cid <cluster-id>'")
 		}
 		svc := deploy.NewService(cfg.GetAPIURL(), token, cid, cfg.AccountID)
-		// Verify deployType server-side so we don't try to VCS-deploy a
-		// CLI-deploy app.
-		app, err := svc.GetApp(flagApp)
-		if err != nil {
-			return fmt.Errorf("failed to look up app %s: %w", flagApp, err)
-		}
-		if app == nil {
-			return fmt.Errorf("app %s not found on cluster %s", flagApp, cid)
-		}
-		if app.DeployType != "vcs" {
-			return fmt.Errorf("--app is only valid for VCS-deployed apps; %s has deployType=%q", flagApp, app.DeployType)
-		}
+		// `--app` IS the pinned VCS intent (its own help text: "VCS-only:
+		// app ID to deploy"); dispatch straight to the VCS route under
+		// apps.deploy rather than spending a separate app-detail read to
+		// re-confirm it first. Story 346, finding 1327: that extra GET
+		// /apps/:id read needs its own authorization outside the deploy
+		// grant this story scopes CLI dispatch to, and the VCS deploy
+		// endpoint already validates the target itself (handbook 992's
+		// shared target-refusal guard). A caller who passes --app against
+		// a CLI-deploy app now gets the server's own refusal instead of
+		// this command's bespoke message.
 		cmd.SilenceUsage = true
 		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
 		// Conductor falls back to whatever the AppDocument has stored
@@ -279,7 +279,17 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// `apps pull` or a previous deploy); otherwise fall back to the server.
 	deployType := deployConfig.DeployType
 	if deployType == "" && deployConfig.ID != "" {
-		if app, err := svc.GetApp(deployConfig.ID); err == nil && app != nil {
+		// Finding 1327: a denied or failed lookup here must not fall
+		// through as "assume cli-deploy" -- for a VCS app that would
+		// silently misroute into the upload path. Refuse with guidance
+		// instead of guessing; a yaml that already carries deployType
+		// (the common case: written by `apps pull` or any prior deploy)
+		// never reaches this lookup at all.
+		app, getErr := svc.GetApp(deployConfig.ID)
+		if getErr != nil {
+			return fmt.Errorf("could not determine deployType for app %s: %w (add `deployType: cli` or `deployType: vcs` to %s to skip this lookup)", deployConfig.ID, getErr, configPath)
+		}
+		if app != nil {
 			deployType = app.DeployType
 		}
 	}
@@ -544,21 +554,9 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		deployConfig.BuildArgsCli = buildArgsCli
 	}
 
-	// Prepare deployment. An app ID already on disk means this is a
-	// redeploy of an EXISTING app: use the app-scoped preparation route
-	// (story 337/346, D1), which a minimal apps.deploy grant on this app
-	// authorizes, and never the broad cluster-scoped route. The broad
-	// route stays reachable only for a brand-new app, which the
-	// app-scoped route structurally cannot create. A refusal from the
-	// app-scoped route is final: this call never falls back to the
-	// broad route (D4).
+	// Prepare deployment.
 	progress("Preparing deployment...\n")
-	var prepResp *deploy.PrepareResponse
-	if deployConfig.ID != "" {
-		prepResp, err = svc.PrepareExistingAppDeployment(deployConfig.ID, deployConfig)
-	} else {
-		prepResp, err = svc.PrepareDeployment(deployConfig)
-	}
+	prepResp, err := prepareDeployment(svc, deployConfig)
 	if err != nil {
 		return fmt.Errorf("failed to prepare deployment: %w", err)
 	}
@@ -638,18 +636,16 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// the build fails.
 	sourceRecord := recordDeploySource(configDir, cid, deployConfig.ID, sourceVersionFromPrepare(prepResp), sourceFingerprint)
 
-	// Output response (jsonOutput is captured at the top of runDeploy).
-	// Redacted: Token is the single-use upload bearer UploadTarball
-	// already consumed above; it must never reach a JSON response
-	// (plan "CLI upload" section / story 346).
-	if jsonOutput {
-		redacted := prepResp.Redacted()
-		output, err := json.MarshalIndent(redacted, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal response: %w", err)
-		}
-		fmt.Println(string(output))
-	} else {
+	// Finding 1356: whether the eventual follow actually used the
+	// sanitized progress endpoint. A minimal apps.deploy grant may be
+	// all this credential holds, so every read beyond the follow
+	// itself must be skipped in that case; stays false in fire-and-
+	// forget mode (nothing followed at all, so the question doesn't
+	// arise) and for a legacy/human job that fell back to the general
+	// follow (where the existing broader reads remain appropriate).
+	viaScopedProgress := false
+
+	printHumanDeploySummary := func() {
 		fmt.Printf("\nDeployment initiated:\n")
 		fmt.Printf("  Job ID: %s\n", prepResp.JobID)
 		fmt.Printf("  App ID: %s\n", prepResp.AppID)
@@ -682,6 +678,37 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		}
 	}
 
+	// printJSONDeploySummary redacts (prepResp.Redacted(): Token, the
+	// single-use upload bearer, and UploadURL, which can itself carry
+	// a secret -- findings about story 346's upload hardening) before
+	// marshaling, so neither reaches the printed response.
+	printJSONDeploySummary := func() error {
+		redacted := prepResp.Redacted()
+		output, err := json.MarshalIndent(redacted, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal response: %w", err)
+		}
+		fmt.Println(string(output))
+		return nil
+	}
+
+	// Output response. Finding 1329: under --json with --follow, the
+	// success envelope must not print before the follow outcome is
+	// known -- a later follow failure would otherwise leave two JSON
+	// documents on stdout (this one, then emitJSONError's). Fire-and-
+	// forget mode is unaffected: there is nothing to wait for, so the
+	// envelope still prints immediately. The human-readable summary
+	// carries no such risk and always prints immediately, as before.
+	if jsonOutput {
+		if !flagFollow {
+			if err := printJSONDeploySummary(); err != nil {
+				return err
+			}
+		}
+	} else {
+		printHumanDeploySummary()
+	}
+
 	// Follow job if --follow was passed. Default is fire-and-forget so the
 	// user has predictable, opt-in control: the CLI never blocks unless
 	// asked. CI workflows that want exit codes to gate downstream steps
@@ -697,37 +724,57 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if jsonOutput {
 			followWriter = os.Stderr
 		}
-		if err := jobs.FollowDeploymentJobToWriter(prepResp.JobID, followWriter); err != nil {
+		followSvc, err := jobs.NewService()
+		if err != nil {
+			return err
+		}
+		followCtx, followCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		followResult, followErr := jobs.FollowAnyJobToWriterResult(followCtx, followSvc, prepResp.JobID, followWriter)
+		followCancel()
+		if followErr != nil {
 			sourceRecord.rollback()
-			return fmt.Errorf("deployment failed: %w", err)
+			return fmt.Errorf("deployment failed: %w", followErr)
 		}
 		fmt.Fprintln(humanOut, "\nDeployment completed successfully!")
+		viaScopedProgress = followResult != nil && followResult.Progress != nil
 
 		// Retry any service yaml writes that 404'd at prepare-time
 		// because the conductor's service-create work was still async.
 		// By the time --follow returns success the resources have
-		// settled, so the show endpoint should be 200.
+		// settled, so the show endpoint should be 200. Always a no-op
+		// when the app-scoped preparation route was used, since that
+		// route never creates a service inline.
 		retryDeferredServiceYAMLs(cfg, configDir, cid, freshSvcResult.deferred, humanOut)
 
-		// I2-1d: AppDocument is settled now, so it's safe to fetch the
-		// synthesized RRC and stamp it on the local yaml without
-		// racing the deploy job's writes.
-		stampSynthesizedResources(svc, deployConfig, configPath, humanOut)
+		if !viaScopedProgress {
+			// I2-1d: AppDocument is settled now, so it's safe to fetch
+			// the synthesized RRC and stamp it on the local yaml
+			// without racing the deploy job's writes. Finding 1356:
+			// skipped when the sanitized progress endpoint served the
+			// follow -- a minimal apps.deploy grant may not hold the
+			// app-detail-read authority this needs, and the plan
+			// reserves this tail for the credential shapes that keep
+			// their full, pre-existing authority.
+			stampSynthesizedResources(svc, deployConfig, configPath, humanOut)
 
-		// Extract app ID for network access lookup
-		appID := prepResp.AppID
-		if appID == "" {
-			appID = prepResp.OSID
+			appID := prepResp.AppID
+			if appID == "" {
+				appID = prepResp.OSID
+			}
+			networkAccess, err := svc.GetNetworkAccess(appID)
+			if err == nil {
+				for _, access := range networkAccess {
+					if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
+						fmt.Fprintf(humanOut, "\nApp available at: %s\n", access.Link)
+						break
+					}
+				}
+			}
 		}
 
-		// Fetch and display public URL
-		networkAccess, err := svc.GetNetworkAccess(appID)
-		if err == nil {
-			for _, access := range networkAccess {
-				if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
-					fmt.Fprintf(humanOut, "\nApp available at: %s\n", access.Link)
-					break
-				}
+		if jsonOutput {
+			if err := printJSONDeploySummary(); err != nil {
+				return err
 			}
 		}
 	}
@@ -739,9 +786,14 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// conductor PATCH/build orchestration is async and a GET issued
 	// here would race the server-side write. Users who want the
 	// server-applied defaults (clusterDomainId, requires.config,
-	// requires.env) on disk should run apps_pull.
-	if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: post-deploy sync failed: %v\n", err)
+	// requires.env) on disk should run apps_pull. Finding 1356: skipped
+	// when the sanitized progress endpoint served the follow, for the
+	// same minimal-grant reason as the tail above -- GetAppSecretEnvVars
+	// is the widest of the reads this sync performs.
+	if !viaScopedProgress {
+		if _, err := syncAppState(svc, deployConfig, configPath, cid); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: post-deploy sync failed: %v\n", err)
+		}
 	}
 
 	// I2-1d: stamp the synthesised resource class on the local yaml.
@@ -784,6 +836,50 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	}
 
 	return nil
+}
+
+// prepareDeployment calls the app-scoped or broad preparation route
+// and validates the response's target and expiry before returning it.
+//
+// Route selection (story 337/346, D1, finding 1352): an app ID already
+// on disk, with every requires entry already linked (no inline
+// service creation needed), means this redeploy fits the app-scoped
+// preparation route: a minimal apps.deploy grant on this app
+// authorizes it, and it is used in preference to the broad
+// cluster-scoped route. The app-scoped route structurally cannot
+// create a new app OR link/create a service inline (handbook 992), so
+// either condition falls back to the broad route -- for every
+// credential, not only a scoped one: this is a request-shape
+// decision, never a guess at credential type. A refusal from the
+// app-scoped route is final: this function never retries through the
+// broad route (D4); it only annotates the error with
+// deploy.ExplainAppScopedPrepareRefusal's recognized-code hint.
+//
+// Target validation (findings 1328/1354): refuses before any local
+// state is written, the archive is read, or anything is uploaded,
+// when the response names a different app than this request's own
+// target or is already past its own expiry. The server is
+// authoritative for request-side conflicts (handbook 992's 403
+// authz.conflicting_target); this is the response-side half the plan's
+// "Immutable target" section separately requires.
+func prepareDeployment(svc *deploy.Service, deployConfig *deploy.DeployConfig) (*deploy.PrepareResponse, error) {
+	var prepResp *deploy.PrepareResponse
+	var err error
+	if deployConfig.ID != "" && !deployConfig.NeedsBroadPreparation() {
+		prepResp, err = svc.PrepareExistingAppDeployment(deployConfig.ID, deployConfig)
+		if err != nil {
+			return nil, deploy.ExplainAppScopedPrepareRefusal(err)
+		}
+	} else {
+		prepResp, err = svc.PrepareDeployment(deployConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := deploy.ValidatePreparedTarget(deployConfig.ID, prepResp); err != nil {
+		return nil, err
+	}
+	return prepResp, nil
 }
 
 // syncConfigFromPrepareResponse persists the IDs the prepare response

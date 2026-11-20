@@ -71,12 +71,12 @@ func isLegacyJobRoute(path string) bool {
 	return false
 }
 
-// TestFollowDeploymentJobToWriter_UsesProgressEndpointOnly covers the
-// "capability open" half of criterion 6: once admitted, a deploy-only
-// credential follows its own job through the job-only endpoint alone,
-// and the request log contains no broad preparation, job, or log
-// request.
-func TestFollowDeploymentJobToWriter_UsesProgressEndpointOnly(t *testing.T) {
+// TestFollowDeploymentProgressToWriterResult_UsesProgressEndpointOnly
+// covers the "capability open" half of criterion 6: once admitted, a
+// deploy-only credential follows its own job through the job-only
+// endpoint alone, and the request log contains no broad preparation,
+// job, or log request.
+func TestFollowDeploymentProgressToWriterResult_UsesProgressEndpointOnly(t *testing.T) {
 	log := &pathLog{}
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,13 +117,13 @@ func TestFollowDeploymentJobToWriter_UsesProgressEndpointOnly(t *testing.T) {
 	}
 }
 
-// TestFollowDeploymentJobToWriter_ScopedRefusalIsFinal covers the
-// "capability closed" half of criterion 6: a 503 from the progress
-// endpoint (the stage-recheck capability still closed, or any other
-// scoped denial) is refused immediately, with exactly one request and
-// zero legacy fallback requests -- never a retry through a broader
-// route, never advice to use another credential.
-func TestFollowDeploymentJobToWriter_ScopedRefusalIsFinal(t *testing.T) {
+// TestFollowDeploymentProgressToWriterResult_ScopedRefusalIsFinal
+// covers the "capability closed" half of criterion 6: a 503 from the
+// progress endpoint (the stage-recheck capability still closed, or
+// any other scoped denial) is refused immediately, with exactly one
+// request and zero legacy fallback requests -- never a retry through
+// a broader route, never advice to use another credential.
+func TestFollowDeploymentProgressToWriterResult_ScopedRefusalIsFinal(t *testing.T) {
 	log := &pathLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.record(r.URL.Path)
@@ -188,6 +188,94 @@ func TestFollowAnyJobToWriterResult_FallsBackOnlyOnFirstRefusal(t *testing.T) {
 	if got := log.count("/jobs/" + testJobID + "/deployment-progress"); got != 1 {
 		t.Errorf("progress probe count = %d, want exactly 1 (no retry of the refused endpoint)", got)
 	}
+}
+
+// TestFollowAnyJobToWriterResult_FallbackGatedOn404Only is the table
+// test findings 1325/1350 ask for: FollowAnyJobToWriterResult's
+// fallback to the general job follow must fire for a 404 on the FIRST
+// progress read, and must NEVER fire for any other first-read
+// failure -- a 403 (revoked, expired, or a credential that does not
+// own this job), a 503 (the stage-recheck capability still closed, or
+// any other scoped denial), or a transport error. Each "final" row
+// asserts that isLegacyJobRoute is never hit: the general job,
+// work-item, raw-log, and job-list routes stay completely untouched.
+func TestFollowAnyJobToWriterResult_FallbackGatedOn404Only(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       int
+		closeConn    bool
+		wantFallback bool
+	}{
+		{name: "404 falls back", status: http.StatusNotFound, wantFallback: true},
+		{name: "403 is final", status: http.StatusForbidden, wantFallback: false},
+		{name: "503 is final", status: http.StatusServiceUnavailable, wantFallback: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &pathLog{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				log.record(r.URL.Path)
+				switch {
+				case r.URL.Path == "/jobs/"+testJobID+"/deployment-progress":
+					w.WriteHeader(tc.status)
+					w.Write([]byte(`{"error":"refused"}`))
+				case r.URL.Path == "/jobs/"+testJobID:
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"id":"` + testJobID + `","status":"completed"}`))
+				case r.URL.Path == "/jobs/"+testJobID+"/workitems":
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`{"jobId":"` + testJobID + `","workItems":[]}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			svc := &Service{baseURL: srv.URL, httpClient: srv.Client(), token: "t"}
+			var out bytes.Buffer
+			result, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
+
+			if tc.wantFallback {
+				if err != nil {
+					t.Fatalf("expected the fallback to succeed, got error: %v", err)
+				}
+				if result == nil || result.Job == nil || result.Progress != nil {
+					t.Fatalf("expected a Job-shaped fallback result, got %#v", result)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected the refusal to be final, got nil error")
+			}
+			var progressErr *ProgressError
+			if !errors.As(err, &progressErr) || progressErr.StatusCode != tc.status {
+				t.Fatalf("error = %v, want a *ProgressError with status %d", err, tc.status)
+			}
+			if log.any(isLegacyJobRoute) {
+				t.Errorf("a %d refusal must never fall back to a legacy route; paths = %v", tc.status, log.paths)
+			}
+		})
+	}
+
+	// Transport error (connection refused, not an HTTP status at all)
+	// must also be final, with the same zero-fallback guarantee.
+	t.Run("transport error is final", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		listenURL := srv.URL
+		srv.Close() // closed before use: every request now hits a refused connection
+
+		svc := &Service{baseURL: listenURL, httpClient: srv.Client(), token: "t"}
+		var out bytes.Buffer
+		_, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
+		if err == nil {
+			t.Fatal("expected a transport error, got nil")
+		}
+		var progressErr *ProgressError
+		if errors.As(err, &progressErr) {
+			t.Fatalf("expected an unwrapped transport error, got a *ProgressError: %v", err)
+		}
+	})
 }
 
 // TestFollowAnyJobToWriterResult_NeverFallsBackAfterProgressAdmits

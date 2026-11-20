@@ -2,8 +2,10 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -60,14 +62,13 @@ func progressTerminalErr(p *DeploymentProgress) error {
 // FollowDeploymentProgressToWriterResult polls GET
 // /jobs/:jobId/deployment-progress exclusively until the job reaches a
 // terminal state. It never calls a general job, work-item, raw-log,
-// application-log, or account/cluster job-list endpoint: a scoped
-// Account API Key or Personal Access Token that can start a deploy
-// but holds no broader job-read authority must be able to follow its
-// OWN job to completion through this endpoint alone (story 346,
-// D3/D4). Any error -- on the first call or a later poll -- is
-// returned immediately with no retry: a mid-flight revocation or a
-// stage-recheck refusal is final, never silently retried through a
-// broader route.
+// application-log, or account/cluster job-list endpoint, and it never
+// falls back on ANY error, including the first read: callers that need
+// the documented 404-is-ambiguous exception use
+// FollowAnyJobToWriterResult instead. This is the strict primitive a
+// caller reaches for only once it already knows -- from its own
+// dispatch, not from this call's result -- that the job must have a
+// scoped binding.
 func FollowDeploymentProgressToWriterResult(ctx context.Context, svc *Service, jobID string, w io.Writer) (*DeploymentProgress, error) {
 	first, err := svc.GetDeploymentProgress(jobID)
 	if err != nil {
@@ -79,7 +80,10 @@ func FollowDeploymentProgressToWriterResult(ctx context.Context, svc *Service, j
 // followProgressFrom runs the progress poll loop starting from an
 // already-fetched snapshot, so a caller that had to probe the
 // endpoint first (FollowAnyJobToWriterResult) doesn't re-request the
-// same snapshot twice.
+// same snapshot twice. Any error from a later poll -- after the first
+// read already admitted the caller -- is returned immediately with no
+// retry: a mid-flight revocation or a stage-recheck refusal is final,
+// never silently retried through a broader route (story 346, D4).
 func followProgressFrom(ctx context.Context, svc *Service, jobID string, w io.Writer, first *DeploymentProgress) (*DeploymentProgress, error) {
 	state := NewProgressFollowState()
 	last := first
@@ -103,56 +107,87 @@ func followProgressFrom(ctx context.Context, svc *Service, jobID string, w io.Wr
 	return last, progressTerminalErr(last)
 }
 
-// FollowDeploymentJobToWriter is the entry point `runos deploy
-// --follow` and VCS deploy `--follow` use (cmd/deploy.go,
-// cmd/deploy_vcs.go). It builds its own Service and a 30-minute
-// timeout, mirroring FollowJobToWriter, and follows jobID through the
-// sanitized progress endpoint only -- see
-// FollowDeploymentProgressToWriterResult.
-func FollowDeploymentJobToWriter(jobID string, w io.Writer) error {
-	svc, err := NewService()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	_, err = FollowDeploymentProgressToWriterResult(ctx, svc, jobID, w)
-	return err
-}
-
-// FollowResult carries whichever response shape a standalone follow
-// actually used, so a JSON caller can marshal the real terminal
-// response instead of synthesizing one.
+// FollowResult carries whichever response shape a follow actually
+// used. ProgressToJobStatus maps Progress into the stable JobStatus
+// document shape a caller's own --json contract already promises
+// (story 346, finding 1351), so callers do not need to branch on which
+// field is set merely to produce stable output.
 type FollowResult struct {
 	// Progress is set when the sanitized deployment-progress endpoint
 	// served the whole follow.
 	Progress *DeploymentProgress
 	// Job is set when the general job/work-item/log follow served the
-	// whole follow (progress refused the very first read).
+	// whole follow (progress refused the very first read with the one
+	// documented ambiguous code, 404).
 	Job *JobStatus
 }
 
-// FollowAnyJobToWriterResult backs the standalone `runos follow` /
-// `runos jobs follow <jobId>` commands, which take only a job id with
-// no context about how the job was created or what kind of job it is
-// (story 346, D3). It tries the sanitized deployment-progress endpoint
-// first, so a scoped machine key following its own deploy job never
-// needs broader job-read authority. If that very FIRST read fails --
-// the job predates scoped authority, isn't a deploy job, or its
-// binding is legacy/absent, all of which the endpoint deliberately
-// answers with the same refusal as "not found" -- it falls back to
-// the general job/work-item/log follow, which carries its OWN
-// independent authorization and refuses on its own terms for a caller
-// that truly lacks access. A failure on a LATER poll, after progress
-// already admitted the caller, is never retried through the general
-// route (same rule as FollowDeploymentProgressToWriterResult): a
-// definitive scoped refusal stays final.
+// FollowAnyJobToWriterResult is the one fallback-aware follow
+// dispatcher in this package. It backs every native follow entry
+// point story 346 names: the standalone `runos follow` / `runos jobs
+// follow <jobId>` commands (which take only a job id, with no context
+// about how the job was created), AND `runos deploy --follow` /
+// VCS deploy `--follow` (cmd/deploy.go, cmd/deploy_vcs.go), which know
+// they just dispatched the job but must still tolerate a LEGACY or
+// human-authored job: those never carry a scoped binding and the
+// progress endpoint answers them with the same 404 "not found" it
+// uses for a genuine stranger (handbook article
+// conductor-api/jobs/get-deployment-progress's Refusals section).
+//
+// It tries the sanitized deployment-progress endpoint first, so a
+// scoped machine key following its own deploy job never needs broader
+// job-read authority. The fallback to the general job/work-item/log
+// follow fires ONLY when that very first read fails with a
+// *ProgressError whose StatusCode is 404 -- the one status the
+// endpoint article documents as indistinguishable from "not a scoped
+// deploy job". Every other first-read failure (403, 503, a transport
+// error, a decode error) is a definitive refusal and is returned
+// immediately: D4 requires that "a scoped refusal ... is final: no
+// retry on a legacy or broader route", and nothing about a 403, a 503,
+// or a broken connection is ambiguous the way a 404 is (finding 1325,
+// 1350). A failure on a LATER poll, after progress already admitted
+// the caller, is likewise never retried through the general route
+// (see followProgressFrom): that admission makes the job's scoped
+// status certain, so there is no residual ambiguity left to resolve
+// by falling back.
 func FollowAnyJobToWriterResult(ctx context.Context, svc *Service, jobID string, w io.Writer) (*FollowResult, error) {
-	if first, err := svc.GetDeploymentProgress(jobID); err == nil {
+	first, err := svc.GetDeploymentProgress(jobID)
+	if err == nil {
 		p, ferr := followProgressFrom(ctx, svc, jobID, w, first)
 		return &FollowResult{Progress: p}, ferr
 	}
 
-	job, err := FollowJobWithServiceToWriterResult(ctx, svc, jobID, w)
-	return &FollowResult{Job: job}, err
+	var progressErr *ProgressError
+	if !errors.As(err, &progressErr) || progressErr.StatusCode != http.StatusNotFound {
+		return nil, err
+	}
+
+	job, jerr := FollowJobWithServiceToWriterResult(ctx, svc, jobID, w)
+	return &FollowResult{Job: job}, jerr
+}
+
+// ProgressToJobStatus maps a DeploymentProgress snapshot into the
+// stable JobStatus shape (id/type/status/progress/currentStep/error)
+// that `runos follow --json` / `runos jobs follow --json` have always
+// published, so switching the underlying read to the sanitized
+// endpoint does not change the document shape a CI consumer parses
+// (story 346, finding 1351). The mapping is necessarily lossy -- there
+// is no work-item list, no per-item log, no teardown block, because
+// the sanitized endpoint carries none of that by design -- but every
+// field this shape already promised keeps the same name and meaning.
+func ProgressToJobStatus(p *DeploymentProgress) *JobStatus {
+	js := &JobStatus{
+		ID:     p.JobID,
+		Type:   "deploy",
+		Status: p.State,
+	}
+	if n := len(p.Stages); n > 0 {
+		last := p.Stages[n-1]
+		js.CurrentStep = last.ID
+		js.Progress = last.Message
+	}
+	if p.State == "failed" || p.State == "cancelled" || p.State == "timed_out" {
+		js.Error = fmt.Sprintf("deployment %s", p.State)
+	}
+	return js
 }

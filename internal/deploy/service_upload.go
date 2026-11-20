@@ -1,9 +1,12 @@
 package deploy
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // PrepareExistingAppDeployment calls the app-scoped CLI-deployment
@@ -25,6 +28,79 @@ import (
 func (s *Service) PrepareExistingAppDeployment(appID string, config *DeployConfig) (*PrepareResponse, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/prepare-cli-deployment", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 	return s.postPrepareDeployment(reqURL, config)
+}
+
+// NeedsBroadPreparation reports whether cfg's requires block asks the
+// preparation call to do something the app-scoped route (handbook
+// article conductor-api/apps-management/post-apps-prepare-cli-deployment)
+// structurally cannot: create a new service from a requires.<alias>
+// entry that has no existing id yet. That route "never creates a
+// service and never links a previously-unrelated one" -- true for
+// every credential, not only a scoped one, so this is a request-shape
+// decision, never a guess at credential type (story 346, finding
+// 1352). The caller uses the broad, cluster-scoped route instead,
+// exactly as it already does for a brand-new app.
+func (cfg *DeployConfig) NeedsBroadPreparation() bool {
+	for _, req := range cfg.Requires {
+		if req.ID == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ExplainAppScopedPrepareRefusal recognizes the app-scoped
+// preparation route's own documented refusal codes (handbook 992) and
+// appends an actionable hint naming WHY this narrower route refused
+// something the broad route used to allow, instead of leaving the
+// caller with only a bare API error (story 346, finding 1352). Any
+// other error, or a body this function cannot parse, passes through
+// unchanged.
+func ExplainAppScopedPrepareRefusal(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if jsonErr := json.Unmarshal(apiErr.Body, &body); jsonErr != nil {
+		return err
+	}
+	switch body.Code {
+	case "authz.cannot_provision", "authz.not_a_dependency":
+		return fmt.Errorf("%w (an app-scoped deploy grant can only redeploy existing linked services; add the service through the console or its own create command first, then re-add its id to runos.yaml's requires block)", err)
+	case "authz.cannot_reconfigure":
+		return fmt.Errorf("%w (an app-scoped deploy grant cannot resize or reconfigure an existing linked service's class or config)", err)
+	case "authz.conflicting_target":
+		return fmt.Errorf("%w (the request named a different account, cluster or app than the one this credential is deploying)", err)
+	default:
+		return err
+	}
+}
+
+// ValidatePreparedTarget refuses a preparation response that does not
+// match the target this request named, or that is already past its
+// own expiry, BEFORE any local state is written or the archive is
+// touched (FPL441 "Immutable target" / "CLI upload"; story 346,
+// findings 1328 and 1354). wantAppID is the app id the CLI already
+// knows locally (deployConfig.ID); empty means this was a new-app
+// request, which has no prior target to compare against and skips
+// that half of the check.
+func ValidatePreparedTarget(wantAppID string, resp *PrepareResponse) error {
+	if resp == nil {
+		return fmt.Errorf("preparation returned no response")
+	}
+	if wantAppID != "" && resp.AppID != "" && resp.AppID != wantAppID {
+		return fmt.Errorf("preparation response named app %q, this deploy requested app %q", resp.AppID, wantAppID)
+	}
+	if resp.ExpiresAt != "" {
+		expiresAt, err := time.Parse(time.RFC3339, resp.ExpiresAt)
+		if err == nil && !time.Now().Before(expiresAt) {
+			return fmt.Errorf("preparation response already expired at %s", resp.ExpiresAt)
+		}
+	}
+	return nil
 }
 
 // validateUploadURL rejects an upload URL that would downgrade the

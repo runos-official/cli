@@ -16,6 +16,7 @@ import (
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/dynacmd"
 	"github.com/runos-official/cli/internal/git"
+	"github.com/runos-official/cli/internal/jobs"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/services"
 
@@ -1578,14 +1579,19 @@ func emitJSONError(cmd *cobra.Command, err error) error {
 	envelope := dynacmd.BuildAPIErrorEnvelope(err)
 	if _, has := envelope["statusCode"]; !has {
 		var deployErr *deploy.APIError
-		if errors.As(err, &deployErr) {
+		var progressErr *jobs.ProgressError
+		switch {
+		case errors.As(err, &deployErr):
 			envelope["statusCode"] = deployErr.StatusCode
-			var inner map[string]any
-			if jErr := json.Unmarshal(deployErr.Body, &inner); jErr == nil {
-				if msg, ok := inner["error"].(string); ok && msg != "" {
-					envelope["error"] = msg
-				}
-			}
+			mergeAPIErrorBody(envelope, deployErr.Body)
+		case errors.As(err, &progressErr):
+			// Story 346, finding 1329: a deployment-progress refusal
+			// (e.g. 503 deploy.upload_token_unavailable while the
+			// stage-recheck capability is closed) previously reached
+			// here only as an untyped "job failed"/wrapped string, so
+			// its machine-readable `code` never survived to --json.
+			envelope["statusCode"] = progressErr.StatusCode
+			mergeAPIErrorBody(envelope, progressErr.Body)
 		}
 	}
 	out, mErr := json.MarshalIndent(envelope, "", "  ")
@@ -1600,6 +1606,30 @@ func emitJSONError(cmd *cobra.Command, err error) error {
 	}
 	fmt.Println(string(out))
 	return err
+}
+
+// mergeAPIErrorBody forwards every field of a decoded error body into
+// envelope except `error` and `statusCode` (the latter already comes
+// from the typed error's HTTP status, which is authoritative over
+// anything the body claims). Mirrors dynacmd.BuildAPIErrorEnvelope's
+// own forwarding loop so every typed API error -- dynacmd.APIError,
+// deploy.APIError, jobs.ProgressError -- preserves a machine-readable
+// `code` (and any other conductor-supplied field) through to --json,
+// not only the human `error` string (story 346, finding 1329).
+func mergeAPIErrorBody(envelope map[string]any, body []byte) {
+	var inner map[string]any
+	if err := json.Unmarshal(body, &inner); err != nil {
+		return
+	}
+	for k, v := range inner {
+		if k == "error" || k == "statusCode" {
+			continue
+		}
+		envelope[k] = v
+	}
+	if msg, ok := inner["error"].(string); ok && msg != "" {
+		envelope["error"] = msg
+	}
 }
 
 // vcsRepoRelPath returns the repo-relative form of a filesystem path,

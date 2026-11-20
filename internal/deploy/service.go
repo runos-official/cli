@@ -63,15 +63,20 @@ type PrepareResponse struct {
 }
 
 // Redacted returns a copy of resp with the single-use upload bearer
-// cleared. By the time a caller prints this response (cmd/deploy.go's
-// --json envelope, printed only after UploadTarball has already
-// consumed Token), the secret has done its one job; the plan's upload
-// section is explicit that it must never reach an error, log, JSON
-// response, or persisted file after that. Every other field is kept
-// verbatim: ids, timings and warnings are not secrets.
+// and the signed upload URL cleared. By the time a caller prints this
+// response (cmd/deploy.go's --json envelope, printed only after
+// UploadTarball has already consumed both), neither has any further
+// legitimate use; the plan's upload section is explicit that the
+// bearer must never reach an error, log, JSON response, or persisted
+// file after that, and finding 1330 established that a signed upload
+// URL can itself carry a secret (a presigned object-storage query
+// string, or a path-embedded single-use id) and must be held to the
+// same rule. Every other field is kept verbatim: ids, timings and
+// warnings are not secrets.
 func (resp *PrepareResponse) Redacted() PrepareResponse {
 	out := *resp
 	out.Token = ""
+	out.UploadURL = ""
 	return out
 }
 
@@ -175,7 +180,7 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 
 	req, err := http.NewRequest(http.MethodPost, fullURL, data)
 	if err != nil {
-		return fmt.Errorf("failed to create upload request: %w", err)
+		return fmt.Errorf("failed to create upload request: %s", redactUploadURL(err.Error(), fullURL))
 	}
 
 	req.Header.Set("Content-Type", "application/gzip")
@@ -189,7 +194,12 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("upload request failed: %w", err)
+		// Finding 1330: *url.Error (what http.Client returns on a
+		// transport failure) formats as `Post "<url>": <cause>`, and a
+		// signed upload URL can itself carry a secret in its query
+		// string. Strip the exact URL this request used before it
+		// reaches a log, an error chain, or --json output.
+		return fmt.Errorf("upload request failed: %s", redactUploadURL(err.Error(), fullURL))
 	}
 	defer resp.Body.Close()
 
@@ -203,10 +213,26 @@ func (s *Service) UploadTarball(uploadURL string, uploadToken string, data io.Re
 	}
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("upload failed (%d): %s", resp.StatusCode, string(body))
+		// Finding 1329: typed, not a bare string, so --json (via
+		// emitJSONError's deploy.APIError branch) preserves the
+		// conductor's machine-readable `code` instead of dropping it
+		// into a human sentence.
+		return &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	return nil
+}
+
+// redactUploadURL removes every occurrence of uploadURL from msg. Used
+// on the two UploadTarball transport error paths, whose underlying
+// *url.Error / net errors format the exact request URL verbatim into
+// their message, which a signed, single-use upload URL must never
+// reach (finding 1330).
+func redactUploadURL(msg, uploadURL string) string {
+	if uploadURL == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, uploadURL, "<upload-url-redacted>")
 }
 
 // NetworkAccess represents a network access entry for an app
