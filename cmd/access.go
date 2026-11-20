@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 
 	"github.com/runos-official/cli/internal/api"
@@ -53,6 +55,7 @@ type accessTarget struct {
 	client *roidapi.Client
 	acct   string
 	json   bool
+	cmd    *cobra.Command
 }
 
 func accessSession(cmd *cobra.Command) (*accessTarget, error) {
@@ -77,7 +80,7 @@ func accessSession(cmd *cobra.Command) (*accessTarget, error) {
 		return nil, errors.New("no account selected: pass --account or run 'runos account switch'")
 	}
 	jsonOut, _ := cmd.Flags().GetBool("json")
-	return &accessTarget{client: client, acct: acct, json: jsonOut}, nil
+	return &accessTarget{client: client, acct: acct, json: jsonOut, cmd: cmd}, nil
 }
 
 // accessClient is the client for the access API of this environment. The access routes are rapi routes:
@@ -94,17 +97,24 @@ func accessClient(cfg *config.Config, token func() (string, error)) (*roidapi.Cl
 }
 
 // do sends one call for this account and turns a refusal into an error a
-// person can act on.
+// person can act on. Under --json it also prints a structured error
+// envelope and silences cobra's plain-text print, so a --json caller
+// never has to parse the same free text a terminal reads (finding 1334:
+// previously both output modes got the identical unstructured message).
 func (t *accessTarget) do(call roidapi.Call) (*api.Result, error) {
 	if call.Params == nil {
 		call.Params = map[string]string{}
 	}
 	call.Params["acct"] = t.acct
 	res, err := t.client.DoConfirmed(call, stepUpPrompt(os.Stderr, openBrowser), roidapi.DefaultStepUpWait())
-	if err != nil {
-		return nil, accessRefusal(err)
+	if err == nil {
+		return res, nil
 	}
-	return res, nil
+	refusal := accessRefusal(err)
+	if t.json && t.cmd != nil {
+		return nil, accessEmitJSONErrorAndSilence(t.cmd, refusal)
+	}
+	return nil, refusal
 }
 
 // stepUpPrompt tells the person to confirm a change with their security
@@ -144,6 +154,77 @@ func accessRefusal(err error) error {
 		}
 		return fmt.Errorf("%w. Confirm it with your security key in the RunOS Console, then repeat the same command with --step-up %s", err, su.ID)
 	}
+	return err
+}
+
+// accessJSONErrorEnvelope builds the machine-readable shape for a
+// refusal under --json: the identity service's own code, reason, detail,
+// and the refused action/scope when it gave them, never only the human
+// sentence accessRefusal composes (finding 1334). Field names mirror the
+// producer's own error envelope so a --json caller can treat this like
+// the raw server response.
+func accessJSONErrorEnvelope(err error) map[string]any {
+	envelope := map[string]any{"error": err.Error()}
+	var apiErr *roidapi.APIError
+	if errors.As(err, &apiErr) {
+		envelope["status"] = apiErr.Status
+		envelope["code"] = apiErr.Code
+		if apiErr.Reason != "" {
+			envelope["reason"] = apiErr.Reason
+		}
+		if apiErr.Detail != "" {
+			envelope["detail"] = apiErr.Detail
+		}
+		if apiErr.Action != "" {
+			envelope["action"] = apiErr.Action
+		}
+		if apiErr.Scope != "" {
+			envelope["scope"] = apiErr.Scope
+		}
+		return envelope
+	}
+	var stepUp *roidapi.StepUpRequiredError
+	if errors.As(err, &stepUp) {
+		envelope["status"] = http.StatusForbidden
+		envelope["requirement"] = "step_up"
+		envelope["step_up_id"] = stepUp.ID
+		if stepUp.Action != "" {
+			envelope["action"] = stepUp.Action
+		}
+		if stepUp.URL != "" {
+			envelope["step_up_url"] = stepUp.URL
+		}
+		return envelope
+	}
+	var stale *roidapi.StaleError
+	if errors.As(err, &stale) {
+		envelope["status"] = http.StatusPreconditionFailed
+		if stale.Code != "" {
+			envelope["code"] = stale.Code
+		}
+		if stale.Reason != "" {
+			envelope["reason"] = stale.Reason
+		}
+		if stale.Detail != "" {
+			envelope["detail"] = stale.Detail
+		}
+		return envelope
+	}
+	return envelope
+}
+
+// accessEmitJSONErrorAndSilence prints the structured envelope to stdout
+// and silences cobra's own plain-text "Error: ..." print, the same
+// pattern internal/dynacmd uses for the manifest-driven path. Returns
+// the original error so the command still exits non-zero.
+func accessEmitJSONErrorAndSilence(cmd *cobra.Command, err error) error {
+	cmd.SilenceErrors = true
+	out, mErr := json.MarshalIndent(accessJSONErrorEnvelope(err), "", "  ")
+	if mErr != nil {
+		fmt.Printf("{\"error\":%q}\n", err.Error())
+		return err
+	}
+	fmt.Println(string(out))
 	return err
 }
 

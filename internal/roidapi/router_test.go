@@ -214,6 +214,43 @@ func TestAGenuineNotFoundComesFromTheIssuerOnDev(t *testing.T) {
 	}
 }
 
+// Finding 1335: an ETag read earlier in the run can make the issuer
+// preferred (as a GET's retry-on-any-404 legitimately does here, on the
+// dev shape where the gateway never serves this route at all). A later
+// DELETE that reaches the preferred issuer and gets ITS OWN canonical
+// not_found (the grant genuinely does not exist) must never be retried
+// on the gateway: that would both resend the DELETE on a second host and
+// risk the gateway's unrelated, generic 404 (conductor404 has no
+// "error.code" at all) silently replacing the producer's real answer.
+func TestAProducerDELETERefusalAfterAnETagReadIsNeverRetried(t *testing.T) {
+	r, gateway, _, fake := splitDev(t)
+	fake.grants["g_1"] = &fakeVersioned{version: 1, body: map[string]any{"id": "g_1"}}
+	c := NewRouted(r, staticToken("at_test"))
+
+	// The ETag read: a GET that retries through the gateway's 404 onto
+	// the issuer and, because it succeeds there, makes the issuer
+	// preferred for the rest of the run (TestTheHostThatWorkedIsRememberedForTheRestOfTheRun's
+	// same mechanism).
+	if _, err := c.Do(Call{Op: "getGrant", Params: map[string]string{"acct": "a1", "grant": "g_1"}}); err != nil {
+		t.Fatalf("ETag read: %v", err)
+	}
+	if gateway.count() != 1 {
+		t.Fatalf("gateway calls after the ETag read = %d, want 1 (the one probe before the issuer took over)", gateway.count())
+	}
+
+	// The DELETE: a grant that does not exist. IfMatch is given explicitly
+	// so the client issues exactly one request (no internal ETag GET),
+	// isolating the DELETE itself for the gateway-call assertion below.
+	_, err := c.Do(Call{Op: "revokeGrant", Params: map[string]string{"acct": "a1", "grant": "nope"}, IfMatch: `"v1"`})
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != 404 || ae.Code != "not_found" {
+		t.Fatalf("err = %v, want the issuer's own not_found", err)
+	}
+	if gateway.count() != 1 {
+		t.Errorf("gateway calls after the DELETE = %d, want still 1: the DELETE must never reach the gateway", gateway.count())
+	}
+}
+
 // The second host comes from the configuration, never from an answer. A 404 that names another
 // address (a redirect, a body, a header) must not make the CLI send the bearer there.
 func TestA404CannotNameWhereTheCredentialsGo(t *testing.T) {

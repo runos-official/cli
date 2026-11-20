@@ -113,15 +113,25 @@ var accessGrantsWithdrawCmd = &cobra.Command{
 	Use:     "withdraw <grant>",
 	Aliases: []string{"revoke"},
 	Short:   "Withdraw a grant from this account (local only; never revokes the credential itself)",
-	Long: `Withdraw one grant from this account only.
+	Long: `Withdraw one grant from this account only. Always needs an explicit
+--account: the CLI never assumes the active account for a grant mutation.
 
-This is a LOCAL operation: it removes this account's own grant and leaves
-the credential, and any grants it holds in other accounts, unchanged. It
-never revokes an Account API Key or Personal Access Token globally; use
-the credential's own global revoke command (today, 'runos account
-api-keys revoke') to end it everywhere.`,
+This is a LOCAL operation: it removes this account's own grant. It does
+not change the credential's lifecycle state (expiry, global revocation)
+and does not touch its grants in any other account.
+
+To end a typed Account API Key or Personal Access Token everywhere, its
+own global revoke command is 'runos account account-api-keys revoke' or
+'runos account personal-access-tokens revoke' -- not yet published while
+Conductor holds the typed lifecycle commands back. 'runos account
+api-keys revoke' is the separate LEGACY command: it only reaches a
+pre-existing legacy row, never a typed credential.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		account, _ := cmd.Flags().GetString("account")
+		if err := requireExplicitAccount(account); err != nil {
+			return err
+		}
 		t, err := accessSession(cmd)
 		if err != nil {
 			return err
@@ -129,7 +139,7 @@ api-keys revoke') to end it everywhere.`,
 		if _, err := t.do(writeCall(cmd, roidapi.Call{Op: "revokeGrant", Params: map[string]string{"grant": args[0]}})); err != nil {
 			return err
 		}
-		return t.done(fmt.Sprintf("Withdrew grant %s from account %s. The credential remains active elsewhere.", args[0], t.acct))
+		return t.done(fmt.Sprintf("Withdrew grant %s from account %s. This does not change the credential's lifecycle state or its grants in any other account.", args[0], t.acct))
 	},
 }
 
@@ -150,7 +160,7 @@ var accessGrantsAuditCmd = &cobra.Command{
 
 func init() {
 	l := accessGrantsListCmd.Flags()
-	l.String("subject", "", "Only grants to this subject (person:<id>, group:<id> or key:<id>)")
+	l.String("subject", "", "Only grants to this subject (person:<id>, group:<id>, key:<id> or account_api_key:<public-id>)")
 	l.String("role", "", "Only grants of this role")
 	l.String("scope", "", "Only grants at exactly this scope")
 	l.String("under", "", "Grants at this scope and every scope below it")

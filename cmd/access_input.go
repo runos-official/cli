@@ -35,6 +35,33 @@ func requireExplicitAccountForAKey(keyID, account string) error {
 	return errors.New("granting an Account API Key needs an explicit --account: its grants can live in any account, so the CLI never assumes the active one")
 }
 
+// requireExplicitAccount refuses a grant mutation without an explicit,
+// non-blank --account: accessSession would otherwise fall back to the
+// active account before the request, so an omitted or empty flag could
+// act on a DIFFERENT account than the one the caller meant (finding
+// 1333, grant withdrawal). Unlike requireExplicitAccountForAKey, this
+// applies unconditionally: withdrawal names no subject to inspect, so
+// the resource account must always be explicit.
+func requireExplicitAccount(account string) error {
+	if account != "" {
+		return nil
+	}
+	return errors.New("this needs an explicit --account: the CLI never assumes the active account for a grant mutation")
+}
+
+// validatePublicCredentialIDForFlag is validatePublicCredentialID with an
+// error that names the flag the CALLER actually used, not --credential's
+// (finding 1338 instance 2): access_explain.go's validator has exactly
+// one error value, which always names --credential, so reusing it
+// directly for --key told a --key user about a flag that does not exist
+// on 'access grants create'.
+func validatePublicCredentialIDForFlag(flag, v string) error {
+	if err := validatePublicCredentialID(v); err != nil {
+		return fmt.Errorf("--%s takes a public id (pat_... or key_...), never a secret: use the id the identity service shows for it, not the token itself", flag)
+	}
+	return nil
+}
+
 // grantSubject resolves a grant's subject from the flags: --key selects an
 // Account API Key by its public credential id (the canonical account_api_key
 // principal kind; never inferred from a runos_pat_/runos_key_/legacy
@@ -46,7 +73,7 @@ func grantSubject(f grantFlags) (map[string]string, error) {
 	case f.subject != "" && f.keyID != "":
 		return nil, errors.New("give --subject or --key, not both")
 	case f.keyID != "":
-		if err := validatePublicCredentialID(f.keyID); err != nil {
+		if err := validatePublicCredentialIDForFlag("key", f.keyID); err != nil {
 			return nil, err
 		}
 		return map[string]string{"kind": "account_api_key", "id": f.keyID}, nil

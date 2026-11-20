@@ -59,11 +59,20 @@ func TestGrantSubjectRequiresSubjectOrKey(t *testing.T) {
 // Review finding 1082/1084's pattern (see TestValidatePublicCredentialIDMatchesThePublishedGrammarNotJustAPrefix):
 // --key must refuse a secret-shaped value with the same grammar check
 // --credential uses, never merely a prefix check, and never echo it back.
+// Finding 1338 instance 2: a malformed --key value must be told about
+// --key, never about --credential (a flag 'access grants create' does
+// not have).
 func TestGrantSubjectRefusesASecretShapedKeyBeforeAnythingElse(t *testing.T) {
 	const canary = "CANARY-SECRET-VALUE-DO-NOT-PRINT"
 	_, err := grantSubject(grantFlags{keyID: "runos_key_" + canary})
 	if err == nil || !strings.Contains(err.Error(), "public id") {
 		t.Fatalf("got %v, want a complaint naming a public id", err)
+	}
+	if !strings.Contains(err.Error(), "--key") {
+		t.Fatalf("got %v, want the error to name --key", err)
+	}
+	if strings.Contains(err.Error(), "--credential") {
+		t.Fatalf("got %v, named --credential, a flag this command does not have", err)
 	}
 	if strings.Contains(err.Error(), canary) {
 		t.Fatalf("error echoed the secret: %v", err)
@@ -95,6 +104,18 @@ func TestRequireExplicitAccountForAKey(t *testing.T) {
 	}
 	if err := requireExplicitAccountForAKey("", ""); err != nil {
 		t.Fatalf("a person/group grant (no --key) must not require --account: %v", err)
+	}
+}
+
+// Finding 1333: grant withdrawal must never fall back to the active
+// account, for ANY subject kind -- unlike create, withdrawal has no
+// subject to inspect, so this check is unconditional.
+func TestRequireExplicitAccount(t *testing.T) {
+	if err := requireExplicitAccount(""); err == nil || !strings.Contains(err.Error(), "--account") {
+		t.Fatalf("got %v, want a complaint naming --account", err)
+	}
+	if err := requireExplicitAccount("a1"); err != nil {
+		t.Fatalf("a real account was refused: %v", err)
 	}
 }
 
