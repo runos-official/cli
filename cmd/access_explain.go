@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 
 	"github.com/runos-official/cli/internal/roidapi"
 
@@ -143,7 +142,7 @@ func validatePublicCredentialID(v string) error {
 	if len(v) < 1 || len(v) > 128 || !publicCredentialIDPattern.MatchString(v) {
 		return errNotAPublicCredentialID
 	}
-	if strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") || strings.HasPrefix(v, "rk_") {
+	if containsABearerSecretShape(v) {
 		return errNotAPublicCredentialID
 	}
 	return nil
