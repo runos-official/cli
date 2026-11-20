@@ -198,8 +198,18 @@ func credentialFamilyFor(command string) (family credentialFamily, verb string, 
 // trusted when this is possible, so detecting the ambiguity itself,
 // independent of what either occurrence's value looks like, is the
 // only check that closes it.
+//
+// Finding 1292/1295 (instance D1): decodes with UseNumber, for the same
+// reason every other decoder in this file does (guardCredentialResponse,
+// responseContainsSecret, decodeCredentialObject). Without it, Token()
+// runs strconv.ParseFloat on every number literal and returns ErrRange
+// for one outside float64's exact range, aborting this scan with "no
+// duplicate" before it ever reaches a duplicate key later in the same
+// object -- while the guard's own decoder and the renderers, already on
+// UseNumber, decode that same body successfully.
 func hasDuplicateObjectKeys(data []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	type frame struct {
 		isObject  bool
 		expectKey bool
@@ -297,7 +307,20 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 		return nil
 	}
 	var probe any
-	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	// Finding 1292/1295 (instance D2): decode, and enforce end of input,
+	// against the ORIGINAL respBody, never the whitespace-trimmed copy.
+	// bytes.TrimSpace strips every byte unicode.IsSpace treats as a
+	// space, a wider set than the four bytes JSON's own whitespace
+	// grammar allows (space, tab, CR, LF; RFC 8259). A byte TrimSpace
+	// removes but JSON does not accept as whitespace (for example a
+	// trailing U+000B vertical tab) is trailing data this guard must
+	// still refuse, and checking the trimmed copy let that byte vanish
+	// before the end-of-input check ever saw it. Legitimate JSON
+	// whitespace is still skipped by the decoder's own second Decode
+	// call below, so ordinary trailing whitespace keeps passing; trimmed
+	// is used only for the empty-body check and the byte-level scans
+	// after this decode, both unaffected by this defect.
+	decoder := json.NewDecoder(bytes.NewReader(respBody))
 	// Finding 1215 (G1, 4th occurrence of 1105/1150/1193's root defect):
 	// internal/output/formatter.go's JSON renderer calls UseNumber before
 	// decoding; this guard did not, so a body carrying a number outside
@@ -578,21 +601,18 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 // No-op for any command outside credentialCommandFamilies, and for a
 // response with no ETag header.
 //
-// CALL ORDER, deliberately: executor.go runs this BEFORE
-// guardCredentialResponse, not after. Finding 1193: a response's ETag
-// header is server-controlled data the CLI has not examined at all; the
-// previous order ran the guard first and spliced the ETag in
-// afterwards, so a secret-shaped (or otherwise malicious) ETag value
-// reached printable output with no scan ever looking at it. Injecting
-// first means the guard's structured scan sees the "etag" key like any
-// other field and refuses it the same way it would refuse that same
-// text anywhere else in the body.
+// CALL ORDER: executor.go runs guardCredentialResponse FIRST, against
+// the original response bytes, then this function afterward (finding
+// 1265, instance 1: injecting the ETag before the guard ran let a
+// re-encoded body launder trailing data or a duplicate key past the
+// guard's own checks on the original bytes). The guard therefore never
+// sees the injected "etag" key at all.
 //
 // Returns an error, and never respBody, for a secret-shaped ETag
 // (finding 1215, G2): this function validates the value it is about to
-// insert on its own, rather than relying solely on the guard running
-// afterward, so this contract holds even if a future caller changes
-// that order.
+// insert on its own. With the guard now running before this function,
+// not after, that self-validation is the ONLY check the ETag value
+// ever gets.
 //
 // Finding 1215 (G2): json.Unmarshal of a body that is the literal JSON
 // value `null` succeeds with item left nil (Go's documented behaviour

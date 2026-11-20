@@ -344,6 +344,12 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 		{name: "decodable value with trailing garbage and no secret is refused", body: `{"id":"k1"}` + "trailing-garbage", wantErr: true},
 		{name: "decodable value with a secret in the trailing garbage is refused", body: `{"id":"k1"}` + fakeLegacyPAT, wantErr: true},
 		{name: "decodable value with a secret in the decoded value itself is refused", body: `{"id":"k1","leaked":"` + fakeLegacyPAT + `"}` + "trailing-garbage", wantErr: true},
+		// Finding 1292/1295 (D2): a trailing vertical tab (0x0B) is not
+		// JSON whitespace (RFC 8259 allows only space, tab, CR, LF), but
+		// unicode.IsSpace treats it as one, so bytes.TrimSpace used to
+		// strip it before the end-of-input check ever saw it, letting
+		// trailing data after the JSON value pass unnoticed.
+		{name: "decodable value with a trimSpace-only trailing byte is refused", body: "{\"id\":\"k1\"}\v", wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -419,6 +425,41 @@ func TestGuardCredentialErrorBody_DuplicateKeyWithLaterNullIsRefused(t *testing.
 	}
 }
 
+// Finding 1292/1295 (D1), end-to-end on the error path: an out-of-range
+// number ahead of the duplicate key must not let hasDuplicateObjectKeys
+// (via responseContainsSecret, called from guardCredentialErrorBody) miss
+// the duplicate and let the bearer's first occurrence reach formatAuthError
+// unexamined, the same way TestGuardCredentialErrorBody_
+// DuplicateKeyWithLaterNullIsRefused proves for the plain duplicate-key
+// shape above. The secret's first byte is written as a JSON unicode
+// escape for "r", as finding 1295's own probe does, so the raw-byte
+// fallback the other two checks share is blind to it and cannot mask
+// the D1 defect itself.
+func TestGuardCredentialErrorBody_DuplicateKeyAfterOutOfRangeNumberIsRefused(t *testing.T) {
+	escapedSecret := `\` + `u0072` + fakeLegacyPAT[1:]
+	body := `{"detail":1e400,"error":"` + escapedSecret + `","error":null}`
+	credErr := &APIError{StatusCode: 401, Body: []byte(body)}
+	got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
+	if got == credErr {
+		t.Fatal("expected the error to be replaced")
+	}
+	if strings.Contains(got.Error(), fakeLegacyPAT) {
+		t.Fatalf("the replacement error must not carry the secret, got: %v", got)
+	}
+	// Ground the mechanism: a struct decode of the SAME raw body, if it
+	// were ever reached, still retains the first "error" occurrence, with
+	// the escape resolved back to the plain bearer.
+	var probe struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.Error != fakeLegacyPAT {
+		t.Fatalf("expected the struct decode to retain the first occurrence (demonstrating the divergence this test guards against), got: %q", probe.Error)
+	}
+}
+
 func TestHasDuplicateObjectKeys(t *testing.T) {
 	cases := []struct {
 		name string
@@ -432,6 +473,11 @@ func TestHasDuplicateObjectKeys(t *testing.T) {
 		{"duplicate inside an array element", `[{"token":"a","token":"b"}]`, true},
 		{"array with no duplicates", `[{"id":"k1"},{"id":"k2"}]`, false},
 		{"malformed JSON reports no duplicate", `{"id":`, false},
+		// Finding 1292/1295 (D1): without UseNumber, Token() runs
+		// strconv.ParseFloat on every number and returns ErrRange for one
+		// outside float64's exact range, aborting the scan before it ever
+		// reaches the duplicate key that follows.
+		{"number outside float64 range before a duplicate key", `{"detail":1e400,"token":"a","token":"b"}`, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
