@@ -15,7 +15,7 @@ import (
 // matches it on one line would fail the public-repo leak gate on this
 // file itself. Splitting the id from the secret (as the gate's own test
 // suite does for the same reason, scripts/leakcheck_test.py) keeps the
-// runtime value real-shaped for guardCredentialResponse to catch while
+// runtime value real-shaped for GuardCredentialResponse to catch while
 // no source line carries the whole secret contiguously.
 const (
 	// The legacy shape requires EXACTLY 10, then EXACTLY 32, characters
@@ -74,7 +74,7 @@ func TestGuardCredentialResponse_ScopedToCredentialFamilies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if err := guardCredentialResponse(cmdDef(c.command), []byte(c.body)); err != nil {
+			if err := GuardCredentialResponse(cmdDef(c.command), []byte(c.body)); err != nil {
 				t.Fatalf("a non-credential command must never be refused by this guard, got: %v", err)
 			}
 		})
@@ -143,7 +143,7 @@ func TestGuardCredentialResponse_LegacyApiKeys(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := guardCredentialResponse(cmdDef(c.command), []byte(c.body))
+			err := GuardCredentialResponse(cmdDef(c.command), []byte(c.body))
 			if c.wantErr && err == nil {
 				t.Fatalf("expected a refusal, got nil")
 			}
@@ -155,17 +155,17 @@ func TestGuardCredentialResponse_LegacyApiKeys(t *testing.T) {
 }
 
 func TestGuardCredentialResponse_NotifyKeys(t *testing.T) {
-	if err := guardCredentialResponse(cmdDef("account/notify-keys/add"), []byte(`{"id":"k1","keyValue":"`+fakeNotifyKey+`"}`)); err != nil {
+	if err := GuardCredentialResponse(cmdDef("account/notify-keys/add"), []byte(`{"id":"k1","keyValue":"`+fakeNotifyKey+`"}`)); err != nil {
 		t.Fatalf("expected the one-shot keyValue to be allowed, got: %v", err)
 	}
 	// Finding 1150: the existing test substituted a typed Roid key here,
 	// which matched the pattern anyway and masked the fact that the
 	// pattern had no runos_ntk_ shape at all. A real notify-key leak into
 	// an inventory response (list/set-system/update) must be caught.
-	if err := guardCredentialResponse(cmdDef("account/notify-keys/list"), []byte(`{"id":"k1","keyValue":"`+fakeNotifyKey+`"}`)); err == nil {
+	if err := GuardCredentialResponse(cmdDef("account/notify-keys/list"), []byte(`{"id":"k1","keyValue":"`+fakeNotifyKey+`"}`)); err == nil {
 		t.Fatal("a notify key secret on a non-issuing verb must be refused")
 	}
-	if err := guardCredentialResponse(cmdDef("account/notify-keys/update"), []byte(`{"id":"k1","totalEmailsSent":3,"leaked":"`+fakeNotifyKey+`"}`)); err == nil {
+	if err := GuardCredentialResponse(cmdDef("account/notify-keys/update"), []byte(`{"id":"k1","totalEmailsSent":3,"leaked":"`+fakeNotifyKey+`"}`)); err == nil {
 		t.Fatal("a notify key secret leaked into an update response must be refused")
 	}
 }
@@ -227,7 +227,7 @@ func TestGuardCredentialResponse_TypedFamilies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := guardCredentialResponse(cmdDef(c.command), []byte(c.body))
+			err := GuardCredentialResponse(cmdDef(c.command), []byte(c.body))
 			if c.wantErr && err == nil {
 				t.Fatalf("expected a refusal, got nil")
 			}
@@ -254,7 +254,7 @@ func TestCredentialFamilyFor_EmbeddedPathSegmentStillMatchesTheFamily(t *testing
 		t.Fatal("this verb must not be treated as an issuing operation")
 	}
 	// And the guard must actually scan it (not treat it as out of scope).
-	if err := guardCredentialResponse(cmdDef("account/notify-keys/{id}/delete"), []byte(`{"leaked":"`+fakeNotifyKey+`"}`)); err == nil {
+	if err := GuardCredentialResponse(cmdDef("account/notify-keys/{id}/delete"), []byte(`{"leaked":"`+fakeNotifyKey+`"}`)); err == nil {
 		t.Fatal("expected a refusal: the family must still be scanned for this spelling")
 	}
 }
@@ -312,7 +312,7 @@ func TestGuardCredentialResponse_WrongFamilyBearerShapeIsRefused(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if err := guardCredentialResponse(cmdDef(c.command), []byte(c.body)); err == nil {
+			if err := GuardCredentialResponse(cmdDef(c.command), []byte(c.body)); err == nil {
 				t.Fatal("expected a refusal: the one-shot field held a different family's bearer shape")
 			}
 		})
@@ -372,7 +372,7 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := guardCredentialResponse(cmdDef("account/api-keys/add"), []byte(c.body))
+			err := GuardCredentialResponse(cmdDef("account/api-keys/add"), []byte(c.body))
 			if c.wantErr && err == nil {
 				t.Fatalf("expected a refusal, got nil")
 			}
@@ -388,7 +388,7 @@ func TestGuardCredentialResponse_MalformedAndNonJSONBodies(t *testing.T) {
 // non-credential command is left alone.
 func TestGuardCredentialErrorBody(t *testing.T) {
 	credErr := &APIError{StatusCode: 422, Body: []byte(`{"error":"invalid","detail":"saw ` + fakeLegacyPAT + `"}`)}
-	got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
+	got := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
 	if got == credErr {
 		t.Fatal("expected the error to be replaced")
 	}
@@ -397,17 +397,17 @@ func TestGuardCredentialErrorBody(t *testing.T) {
 	}
 
 	cleanErr := &APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}
-	if got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), cleanErr); got != cleanErr {
+	if got := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), cleanErr); got != cleanErr {
 		t.Fatalf("a clean error must pass through unchanged, got: %v", got)
 	}
 
 	nonCredErr := &APIError{StatusCode: 422, Body: []byte(`{"error":"saw ` + fakeLegacyPAT + `"}`)}
-	if got := guardCredentialErrorBody(cmdDef("apps/logs"), nonCredErr); got != nonCredErr {
+	if got := GuardCredentialErrorBody(cmdDef("apps/logs"), nonCredErr); got != nonCredErr {
 		t.Fatalf("a non-credential command's error must pass through unchanged, got: %v", got)
 	}
 
 	plainErr := errString("transport: connection refused")
-	if got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), plainErr); got != plainErr {
+	if got := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), plainErr); got != plainErr {
 		t.Fatalf("a non-APIError must pass through unchanged, got: %v", got)
 	}
 }
@@ -423,7 +423,7 @@ func TestGuardCredentialErrorBody(t *testing.T) {
 func TestGuardCredentialErrorBody_DuplicateKeyWithLaterNullIsRefused(t *testing.T) {
 	body := `{"error":"` + fakeLegacyPAT + `","error":null}`
 	credErr := &APIError{StatusCode: 401, Body: []byte(body)}
-	got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
+	got := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
 	if got == credErr {
 		t.Fatal("expected the error to be replaced")
 	}
@@ -446,7 +446,7 @@ func TestGuardCredentialErrorBody_DuplicateKeyWithLaterNullIsRefused(t *testing.
 
 // Finding 1292/1295 (D1), end-to-end on the error path: an out-of-range
 // number ahead of the duplicate key must not let hasDuplicateObjectKeys
-// (via responseContainsSecret, called from guardCredentialErrorBody) miss
+// (via responseContainsSecret, called from GuardCredentialErrorBody) miss
 // the duplicate and let the bearer's first occurrence reach formatAuthError
 // unexamined, the same way TestGuardCredentialErrorBody_
 // DuplicateKeyWithLaterNullIsRefused proves for the plain duplicate-key
@@ -458,7 +458,7 @@ func TestGuardCredentialErrorBody_DuplicateKeyAfterOutOfRangeNumberIsRefused(t *
 	escapedSecret := `\` + `u0072` + fakeLegacyPAT[1:]
 	body := `{"detail":1e400,"error":"` + escapedSecret + `","error":null}`
 	credErr := &APIError{StatusCode: 401, Body: []byte(body)}
-	got := guardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
+	got := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), credErr)
 	if got == credErr {
 		t.Fatal("expected the error to be replaced")
 	}
@@ -585,7 +585,7 @@ func TestSanitizeForTableRender(t *testing.T) {
 func TestGuardCredentialResponse_HugeNumberFieldDoesNotForceRawFallback(t *testing.T) {
 	huge := strings.Repeat("9", 400)
 	body := `{"id":"k1","token":"` + fakeLegacyPAT + `","quota":` + huge + `}`
-	if err := guardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
+	if err := GuardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
 		t.Fatalf("a legitimate issuance with an oversized unrelated number must not be refused, got: %v", err)
 	}
 }
@@ -596,7 +596,7 @@ func TestGuardCredentialResponse_HugeNumberFieldDoesNotForceRawFallback(t *testi
 func TestInjectETagIntoCredentialResponse_NullBodyDoesNotPanic(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("ETag", `"etag-1"`)
-	got, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte("null"), headers)
+	got, err := InjectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte("null"), headers)
 	if err != nil {
 		t.Fatalf("expected no error for a null body, got: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestInjectETagIntoCredentialResponse_NullBodyDoesNotPanic(t *testing.T) {
 func TestInjectETagIntoCredentialResponse_SecretShapedETagIsRefused(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("ETag", fakeTypedPAT)
-	_, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
+	_, err := InjectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
 	if err == nil {
 		t.Fatal("expected a refusal for a secret-shaped ETag, got nil")
 	}
@@ -621,7 +621,7 @@ func TestInjectETagIntoCredentialResponse_SecretShapedETagIsRefused(t *testing.T
 func TestInjectETagIntoCredentialResponse_LegitimateETagStillWorks(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("ETag", `"abc123"`)
-	got, err := injectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
+	got, err := InjectETagIntoCredentialResponse(cmdDef("account/personal-access-tokens/show"), []byte(`{"credential_id":"c1"}`), headers)
 	if err != nil {
 		t.Fatalf("expected no error for an ordinary ETag, got: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestGuardCredentialResponse_GarbageIssuingValueIsRefused(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			body := `{"id":"k1","` + c.field + `":"not-a-real-bearer-shape"}`
-			if err := guardCredentialResponse(cmdDef(c.command), []byte(body)); err == nil {
+			if err := GuardCredentialResponse(cmdDef(c.command), []byte(body)); err == nil {
 				t.Fatal("expected a refusal for a non-bearer-shaped value in the issuing field, got nil")
 			}
 		})
@@ -677,7 +677,7 @@ func TestGuardCredentialResponse_GarbageIssuingValueGuard_LegitimateStillPasses(
 	}
 	for _, c := range cases {
 		body := `{"id":"k1","` + c.field + `":"` + c.secret + `"}`
-		if err := guardCredentialResponse(cmdDef(c.command), []byte(body)); err != nil {
+		if err := GuardCredentialResponse(cmdDef(c.command), []byte(body)); err != nil {
 			t.Fatalf("%s: expected a legitimate issuance to pass, got: %v", c.command, err)
 		}
 	}

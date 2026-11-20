@@ -164,7 +164,7 @@ func TestExecute_MalformedInventoryWithDecodableFirstValueIsRefused(t *testing.T
 	}
 }
 
-// Finding 1357 (repeat of 1323): guardCredentialResponse's boundary
+// Finding 1357 (repeat of 1323): GuardCredentialResponse's boundary
 // whitespace check (findings 1323/1349, rework cycle 1) ran before the
 // guard ever tried to decode the body, so it refused a genuine
 // PLAIN-TEXT response (not JSON at all) whenever a non-breaking space

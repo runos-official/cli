@@ -14,7 +14,7 @@ import (
 // held (code, reason, detail, action, scope, requirement, decision_id,
 // message, policies), in BOTH the structured fields a --json caller
 // reads AND the text Error() renders, regardless of which refusal TYPE
-// refusal() chose. Before this fix, each of APIError, StepUpRequiredError
+// Refusal() chose. Before this fix, each of APIError, StepUpRequiredError
 // and StaleError carried its OWN narrower subset of these fields, so
 // whichever field a given type's struct or Error() method omitted was
 // lost for every refusal of that type, not only the one case a prior
@@ -24,7 +24,7 @@ import (
 // must survive, in the struct (for --json) and in Error() (for text).
 func TestRefusal_StepUpChallenge_CarriesProducerCodeActionAndDecisionID(t *testing.T) {
 	body := `{"error":{"code":"authz.needs","requirement":"step_up","step_up_id":"su_1","step_up_url":"https://id.example.com/stepup/su_1","action":"apps.deploy","decision_id":"d_1"}}`
-	err := refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
+	err := Refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
 	var su *StepUpRequiredError
 	if !errors.As(err, &su) {
 		t.Fatalf("err = %v, want *StepUpRequiredError", err)
@@ -51,7 +51,7 @@ func TestRefusal_StepUpChallenge_CarriesProducerCodeActionAndDecisionID(t *testi
 // must survive there too, in the struct and in Error() text.
 func TestRefusal_FreshSignIn_CarriesRequirementAndDecisionID(t *testing.T) {
 	body := `{"error":{"code":"auth.needs_fresh_sign_in","requirement":"fresh_sign_in","decision_id":"d_2","reason":"sign_in_too_old"}}`
-	err := refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
+	err := Refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
 	var ae *APIError
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %v, want *APIError", err)
@@ -72,7 +72,7 @@ func TestRefusal_FreshSignIn_CarriesRequirementAndDecisionID(t *testing.T) {
 // Error() never printed it.
 func TestRefusal_Stale412_CarriesCodeInTextToo(t *testing.T) {
 	body := `{"error":{"code":"precondition_failed","reason":"etag"}}`
-	err := refusal(&api.Result{StatusCode: http.StatusPreconditionFailed, Body: []byte(body)})
+	err := Refusal(&api.Result{StatusCode: http.StatusPreconditionFailed, Body: []byte(body)})
 	var se *StaleError
 	if !errors.As(err, &se) {
 		t.Fatalf("err = %v, want *StaleError", err)
@@ -92,7 +92,7 @@ func TestRefusal_Stale412_CarriesCodeInTextToo(t *testing.T) {
 // only code/reason/detail/action/scope.
 func TestRefusal_OrdinaryDenial_CarriesMessageAndPolicies(t *testing.T) {
 	body := `{"error":{"code":"policy.denied","reason":"no_grant","message":"no grant covers this action","policies":["acct-policy-1","acct-policy-2"]}}`
-	err := refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
+	err := Refusal(&api.Result{StatusCode: http.StatusForbidden, Body: []byte(body)})
 	var ae *APIError
 	if !errors.As(err, &ae) {
 		t.Fatalf("err = %v, want *APIError", err)
@@ -113,7 +113,7 @@ func TestRefusal_OrdinaryDenial_CarriesMessageAndPolicies(t *testing.T) {
 
 // Finding 1385 (repeat of 1361, earlier 1334): one table, one shared
 // fixture body setting ALL NINE envelope fields, one row per refusal
-// kind refusal() can return. Asserts err.Error() names every one of the
+// kind Refusal() can return. Asserts err.Error() names every one of the
 // nine values for every kind, closing the exact gap the review measured
 // at a0b6de7: StepUpRequiredError.Error() printed no Reason at all, and
 // no kind's Error() printed Policies. refusalKindsNeedingExhaustiveFieldCoverage
@@ -175,7 +175,7 @@ func TestRefusal_EveryKindRendersEveryFieldInText(t *testing.T) {
 			t.Fatalf("refusal kind %q has no exhaustive-field-coverage case", kind)
 		}
 		t.Run(kind, func(t *testing.T) {
-			err := refusal(&api.Result{StatusCode: tc.status, Body: []byte(exhaustiveRefusalFixtureBody)})
+			err := Refusal(&api.Result{StatusCode: tc.status, Body: []byte(exhaustiveRefusalFixtureBody)})
 			if err == nil {
 				t.Fatal("refusal returned nil for a non-2xx result")
 			}
@@ -207,7 +207,7 @@ func TestRefusal_MessageEqualToReasonAppearsExactlyOnce(t *testing.T) {
 			t.Fatalf("refusal kind %q has no exhaustive-field-coverage case", kind)
 		}
 		t.Run(kind, func(t *testing.T) {
-			err := refusal(&api.Result{StatusCode: tc.status, Body: []byte(sharedMessageReasonFixtureBody)})
+			err := Refusal(&api.Result{StatusCode: tc.status, Body: []byte(sharedMessageReasonFixtureBody)})
 			if err == nil {
 				t.Fatal("refusal returned nil for a non-2xx result")
 			}

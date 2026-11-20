@@ -28,7 +28,7 @@ import (
 // the manifest marks Location:"header" (Conductor's typed
 // credential-lifecycle idempotencyKey/ifMatch) must never reach the
 // query string, on EITHER caller. buildEndpoint builds the query string
-// here before executor_dispatch.go's splitHeaderFields runs (it operates
+// here before executor_dispatch.go's SplitHeaderFields runs (it operates
 // on the request body, never the already-built URL), so without this
 // check a header-located field on a GET/DELETE command landed in the
 // query string in addition to the header -- never removed from the

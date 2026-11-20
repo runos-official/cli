@@ -49,7 +49,7 @@ func (c *Client) StepUpState(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := refusal(res); err != nil {
+	if err := Refusal(res); err != nil {
 		return "", err
 	}
 	var body struct {

@@ -15,7 +15,7 @@ import (
 // guarded credential secrets on the RESPONSE side only. This proves the
 // REQUEST side for account/access/grants add and list -- the only two
 // manifest commands of this family that carry a human-supplied subject
-// value (grantSubjectInputFields). accountAccessGrantsListFixture mirrors
+// value (GrantSubjectInputFields). accountAccessGrantsListFixture mirrors
 // Conductor's real accountAccessGrants.manifest.ts list command (commit
 // fd3a3631: GET /:aid/account/access/grants, fields limit/cursor/subject);
 // accountAccessGrantsAddFixture is the one account_access_grants_transport_test.go
@@ -34,7 +34,7 @@ var accountAccessGrantsListFixture = manifest.Command{
 }
 
 // grantSubjectInputCases is keyed by manifest command, one row per entry
-// in grantSubjectInputFields. Driven by that same map below, so a
+// in GrantSubjectInputFields. Driven by that same map below, so a
 // subject-carrying command added there with no case here fails this test
 // immediately instead of shipping unscanned.
 var grantSubjectInputCases = map[string]struct {
@@ -79,49 +79,59 @@ func dispatchGrantSubjectCase(t *testing.T, cmdDef manifest.Command, baseBody ma
 }
 
 func TestRefuseBearerSecretInGrantSubject_EveryFamilyInputIsScanned(t *testing.T) {
-	for command := range grantSubjectInputFields {
+	for command := range GrantSubjectInputFields {
 		if _, ok := grantSubjectInputCases[command]; !ok {
-			t.Fatalf("manifest command %q (from grantSubjectInputFields) has no case in grantSubjectInputCases", command)
+			t.Fatalf("manifest command %q (from GrantSubjectInputFields) has no case in grantSubjectInputCases", command)
 		}
 	}
-	for command, field := range grantSubjectInputFields {
+	for command, fields := range GrantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
-		for _, canary := range []string{fakeTypedKey, fakeLegacyPAT, fakeRoidRK} {
-			t.Run(command+"/"+field, func(t *testing.T) {
-				err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, canary)
-				if err == nil {
-					t.Fatalf("a bearer secret in %s was accepted", field)
-				}
-				if strings.Contains(err.Error(), canary) {
-					t.Fatalf("error echoed the secret: %v", err)
-				}
-				if reached {
-					t.Errorf("the server received a request; want zero for a refused subject")
-				}
-			})
+		for _, field := range fields {
+			for _, canary := range []string{fakeTypedKey, fakeLegacyPAT, fakeRoidRK} {
+				t.Run(command+"/"+field, func(t *testing.T) {
+					err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, canary)
+					if err == nil {
+						t.Fatalf("a bearer secret in %s was accepted", field)
+					}
+					if strings.Contains(err.Error(), canary) {
+						t.Fatalf("error echoed the secret: %v", err)
+					}
+					if reached {
+						t.Errorf("the server received a request; want zero for a refused subject")
+					}
+				})
+			}
 		}
 	}
 }
 
-// A legitimate public id (add's subject.id) or filter (list's subject)
-// must still reach the server: the new check must not refuse ordinary
-// input (rework instruction: every new refusal gets a passing-case test).
+// A legitimate public id/enum value (add's subject.id, subject.kind) or
+// filter (list's subject) must still reach the server: the new check
+// must not refuse ordinary input (rework instruction: every new refusal
+// gets a passing-case test).
 func TestRefuseBearerSecretInGrantSubject_LegitimateValueStillReachesServer(t *testing.T) {
-	legitimate := map[string]string{
-		"account/access/grants/add":  "key_abc123",
-		"account/access/grants/list": "account_api_key:key_abc",
+	legitimate := map[string]map[string]string{
+		"account/access/grants/add": {
+			"subject.id":   "key_abc123",
+			"subject.kind": "account_api_key",
+		},
+		"account/access/grants/list": {
+			"subject": "account_api_key:key_abc",
+		},
 	}
-	for command, field := range grantSubjectInputFields {
+	for command, fields := range GrantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
-		t.Run(command, func(t *testing.T) {
-			err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, legitimate[command])
-			if err != nil {
-				t.Fatalf("legitimate %s value refused: %v", field, err)
-			}
-			if !reached {
-				t.Errorf("the server received no request; want exactly one for a legitimate subject")
-			}
-		})
+		for _, field := range fields {
+			t.Run(command+"/"+field, func(t *testing.T) {
+				err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, legitimate[command][field])
+				if err != nil {
+					t.Fatalf("legitimate %s value refused: %v", field, err)
+				}
+				if !reached {
+					t.Errorf("the server received no request; want exactly one for a legitimate subject")
+				}
+			})
+		}
 	}
 }
 

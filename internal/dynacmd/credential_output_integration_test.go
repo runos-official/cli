@@ -168,7 +168,7 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 	duplicateKeyBody := `{"detail":"` + fakeLegacyPAT + `","detail":"safe"}`
 
 	t.Run("error guard refuses trailing data, never prints the secret", func(t *testing.T) {
-		err := guardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(trailingDataBody)})
+		err := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(trailingDataBody)})
 		if err == nil {
 			t.Fatal("expected a refusal, got nil")
 		}
@@ -177,7 +177,7 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 		}
 	})
 	t.Run("error guard refuses duplicate key, never prints the secret", func(t *testing.T) {
-		err := guardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(duplicateKeyBody)})
+		err := GuardCredentialErrorBody(cmdDef("account/api-keys/add"), &APIError{StatusCode: 422, Body: []byte(duplicateKeyBody)})
 		if err == nil {
 			t.Fatal("expected a refusal, got nil")
 		}
@@ -186,12 +186,12 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 		}
 	})
 	t.Run("success guard refuses trailing data on an inventory command", func(t *testing.T) {
-		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(trailingDataBody)); err == nil {
+		if err := GuardCredentialResponse(cmdDef("account/api-keys/list"), []byte(trailingDataBody)); err == nil {
 			t.Error("expected a refusal, got nil")
 		}
 	})
 	t.Run("success guard refuses duplicate key on an inventory command", func(t *testing.T) {
-		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(duplicateKeyBody)); err == nil {
+		if err := GuardCredentialResponse(cmdDef("account/api-keys/list"), []byte(duplicateKeyBody)); err == nil {
 			t.Error("expected a refusal, got nil")
 		}
 	})
@@ -217,11 +217,11 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 	// Finding 1264 (repeat of 1246/1215 G1): the exact rows the finding
 	// named. A credential-family body that decodes to a top-level ARRAY
 	// (account/api-keys/list's own shape) must get the same raw-byte
-	// scrutiny an object body gets; before this cycle, guardCredentialResponse
+	// scrutiny an object body gets; before this cycle, GuardCredentialResponse
 	// returned before ever comparing the raw bytes for a non-object body.
 	arrayDuplicateKeyBody := `[{"token":"` + fakeLegacyPAT + `","token":"redacted"}]`
 	t.Run("success guard refuses duplicate key inside an array element", func(t *testing.T) {
-		if err := guardCredentialResponse(cmdDef("account/api-keys/list"), []byte(arrayDuplicateKeyBody)); err == nil {
+		if err := GuardCredentialResponse(cmdDef("account/api-keys/list"), []byte(arrayDuplicateKeyBody)); err == nil {
 			t.Error("expected a refusal, got nil")
 		}
 	})
@@ -262,7 +262,7 @@ func TestCredentialGuards_RawRepresentationMatchesDecodedStructure(t *testing.T)
 	// No-regression rows.
 	t.Run("an authorized issuance still passes and renders exactly once", func(t *testing.T) {
 		body := `{"id":"c1","token":"` + fakeLegacyPAT + `"}`
-		if err := guardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
+		if err := GuardCredentialResponse(cmdDef("account/api-keys/add"), []byte(body)); err != nil {
 			t.Fatalf("expected the authorized issuance to pass, got: %v", err)
 		}
 		srv := warnStub(t, http.StatusOK, body)

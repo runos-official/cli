@@ -51,7 +51,7 @@ func TestSplitHeaderFields(t *testing.T) {
 		}},
 	}
 	body := map[string]any{"name": "ci", "idempotencyKey": "idem-1", "ifMatch": "etag-1"}
-	remaining, headers := splitHeaderFields(body, cmdWithHeaders)
+	remaining, headers := SplitHeaderFields(body, cmdWithHeaders)
 	if _, present := remaining["idempotencyKey"]; present {
 		t.Error("idempotencyKey must be removed from the body")
 	}
@@ -71,7 +71,7 @@ func TestSplitHeaderFields(t *testing.T) {
 	// A command with no header-located field is returned unchanged, with a nil header map.
 	plainCmd := manifest.Command{Input: &manifest.Input{Fields: []manifest.Field{{Name: "name", Type: "string"}}}}
 	plainBody := map[string]any{"name": "ci"}
-	remaining2, headers2 := splitHeaderFields(plainBody, plainCmd)
+	remaining2, headers2 := SplitHeaderFields(plainBody, plainCmd)
 	if len(remaining2) != 1 || remaining2["name"] != "ci" {
 		t.Errorf("body must be unchanged for a command with no header fields, got: %v", remaining2)
 	}
@@ -191,10 +191,10 @@ func TestExecute_CredentialFamily_ETagHeaderSurfacedInResponseBody(t *testing.T)
 	}
 }
 
-// Finding 1265 (instance 1): injectETagIntoCredentialResponse decodes
+// Finding 1265 (instance 1): InjectETagIntoCredentialResponse decodes
 // one JSON value and RE-ENCODES it to splice the etag field in, which
 // silently drops any data trailing that one value. Running it BEFORE
-// guardCredentialResponse (as cycle 3 did) meant the guard only ever
+// GuardCredentialResponse (as cycle 3 did) meant the guard only ever
 // saw this laundered, re-encoded body, so an ordinary ETag header made
 // an otherwise-forbidden trailing-data response look clean. The guard
 // now runs first, against the ORIGINAL bytes.
@@ -233,8 +233,8 @@ func TestExecute_TrailingDataWithOrdinaryETagIsStillRefused(t *testing.T) {
 	}
 }
 
-// Finding 1193: injectETagIntoCredentialResponse used to run AFTER
-// guardCredentialResponse, so a secret-shaped ETag header value reached
+// Finding 1193: InjectETagIntoCredentialResponse used to run AFTER
+// GuardCredentialResponse, so a secret-shaped ETag header value reached
 // stdout with nothing having scanned it. Server-controlled data (the
 // ETag header) carrying a bearer-shaped value is exactly as untrusted as
 // any other field in the body; Execute must refuse it the same way.
@@ -272,7 +272,7 @@ func TestExecute_CredentialFamily_SecretShapedETagIsRefused(t *testing.T) {
 
 // Finding 1194: a header-located field on a GET/DELETE command used to
 // land in the query string (built by buildEndpoint, via QueryParams,
-// before splitHeaderFields ever runs) in addition to the real header,
+// before SplitHeaderFields ever runs) in addition to the real header,
 // because QueryParams had no Location check. The rotate fixture above
 // uses POST, whose body-based routing never exercises buildEndpoint's
 // GET/DELETE query-string branch; this synthetic GET fixture does.

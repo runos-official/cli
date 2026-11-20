@@ -50,10 +50,6 @@ func (f *fakeModuleAPI) Execute(toolName string, args map[string]any) (string, e
 	return "ok", nil
 }
 
-func (f *fakeModuleAPI) ExecuteRaw(method, endpoint string, body map[string]any, cid string) (string, error) {
-	return "ok", nil
-}
-
 func (f *fakeModuleAPI) served() bool {
 	if f.frozen {
 		return !f.on

@@ -4,9 +4,9 @@ package dynacmd
 // mints no bearer of its own (add and show return a grant, never a
 // credential), so the zero-value credentialFamily registered below is
 // correct -- no secretField, no secretPattern, no issuanceVerbs, which
-// means guardCredentialResponse's one-shot exemption never applies and
+// means GuardCredentialResponse's one-shot exemption never applies and
 // printOneShotBanner never fires for this family. Registering it anyway
-// is what makes injectETagIntoCredentialResponse stop excluding show
+// is what makes InjectETagIntoCredentialResponse stop excluding show
 // and add's response ETag (Conductor's accountAccessGrants.manifest.ts:
 // the ETag response header, never a body field, is the documented
 // source of withdraw's ifMatch), and it puts every grant response under

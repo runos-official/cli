@@ -43,7 +43,7 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 	// Finding 1431: checked first, before buildEndpoint, so a GET's
 	// query string is never even constructed with a bearer-shaped grant
 	// subject in it, and no request of any kind reaches the network.
-	if err := refuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
+	if err := RefuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
 		return nil, nil, err
 	}
 	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
@@ -69,7 +69,7 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 	// and a DELETE route never reads a query string. Pulled out here,
 	// after path-param filtering, so it applies uniformly regardless of
 	// method.
-	requestBody, headers := splitHeaderFields(requestBody, cmdDef)
+	requestBody, headers := SplitHeaderFields(requestBody, cmdDef)
 	// The deadline covers the response read as well, so the cancel stays
 	// live until this function has drained the body (A4).
 	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, body))
@@ -84,7 +84,19 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, resp.Header, &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		apiErr := &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		// Story 347 S1 (finding 1194): Conductor documents request-bound
+		// step-up for the typed credential-lifecycle commands that
+		// stepUpEligibleCommands names. Only those commands ever reach
+		// the human confirmation flow; every other refusal, including a
+		// step-up-shaped one from an unlisted command, falls straight
+		// through unchanged.
+		if retryBody, retryHeaders, retryErr, handled := e.completeStepUpIfRequired(
+			cmdDef, endpoint, requestBody, headers, token, options, cfg, apiErr,
+		); handled {
+			return retryBody, retryHeaders, retryErr
+		}
+		return nil, resp.Header, apiErr
 	}
 	// Defensive: some conductor handlers wrap their own error in the 200
 	// response body instead of letting the framework's error middleware

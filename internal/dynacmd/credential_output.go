@@ -200,7 +200,7 @@ func credentialFamilyFor(command string) (family credentialFamily, verb string, 
 // only check that closes it.
 //
 // Finding 1292/1295 (instance D1): decodes with UseNumber, for the same
-// reason every other decoder in this file does (guardCredentialResponse,
+// reason every other decoder in this file does (GuardCredentialResponse,
 // responseContainsSecret, decodeCredentialObject). Without it, Token()
 // runs strconv.ParseFloat on every number literal and returns ErrRange
 // for one outside float64's exact range, aborting this scan with "no
@@ -259,7 +259,7 @@ func hasDuplicateObjectKeys(data []byte) bool {
 	}
 }
 
-// guardCredentialResponse refuses to let a secret-shaped bearer value
+// GuardCredentialResponse refuses to let a secret-shaped bearer value
 // reach the terminal or a --json consumer from a credential command
 // family's response, except through the exact one-shot field its own
 // issuing operation documents.
@@ -297,7 +297,7 @@ func hasDuplicateObjectKeys(data []byte) bool {
 // a credential-family response with ANY trailing data after its one
 // JSON value is refused outright: Roid/Conductor never emit that shape,
 // so the safe assumption is that something is wrong with it.
-func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
+func GuardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	family, verb, ok := credentialFamilyFor(cmdDef.Command)
 	if !ok {
 		return nil
@@ -432,7 +432,7 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 	return nil
 }
 
-// guardCredentialErrorBody scans a credential-family command's error
+// GuardCredentialErrorBody scans a credential-family command's error
 // response (any status, any shape) for a secret-shaped value and, if
 // found, replaces err with a generic refusal that carries none of the
 // original body text. Finding 1150: the success-path guard ran only
@@ -447,7 +447,7 @@ func guardCredentialResponse(cmdDef manifest.Command, respBody []byte) error {
 // credential family, or when no secret-shaped value is found, so every
 // other command's error formatting (dependents, module-not-enabled,
 // auth hints) is unaffected.
-func guardCredentialErrorBody(cmdDef manifest.Command, err error) error {
+func GuardCredentialErrorBody(cmdDef manifest.Command, err error) error {
 	apiErr, ok := err.(*APIError)
 	if !ok {
 		return err
@@ -468,7 +468,7 @@ func guardCredentialErrorBody(cmdDef manifest.Command, err error) error {
 //
 // Finding 1215 (G1): decodes with UseNumber, matching
 // describeAPIError's eventual rendering of the same bytes (and
-// guardCredentialResponse's success-path decode) exactly, so a number
+// GuardCredentialResponse's success-path decode) exactly, so a number
 // outside float64's range elsewhere in the body cannot make this decode
 // fail while a renderer downstream still succeeds on it.
 func responseContainsSecret(raw []byte) bool {
@@ -496,7 +496,7 @@ func responseContainsSecret(raw []byte) bool {
 	}
 	// Finding 1246: an error body never has a legitimate secret anywhere
 	// (no one-shot exemption exists on this path, unlike
-	// guardCredentialResponse), so a raw-byte match is an unconditional
+	// GuardCredentialResponse), so a raw-byte match is an unconditional
 	// leak regardless of whether the decoded structure also sees it.
 	// describeAPIError prints the RAW body verbatim whenever the decoded
 	// envelope's own "error" field is empty or missing; trailing data
@@ -561,11 +561,11 @@ func findSecretValue(v any, path string) string {
 }
 
 // decodeCredentialObject decodes data into a string-keyed map the same
-// way guardCredentialResponse and internal/output's formatters do
+// way GuardCredentialResponse and internal/output's formatters do
 // (finding 1250, point 2): a streaming decoder with UseNumber, never
 // json.Unmarshal. Every caller in this file that needs to read or
 // strip a named field from a credential response -- sanitizeForTable
-// Render, injectETagIntoCredentialResponse, and the three print*Banner
+// Render, InjectETagIntoCredentialResponse, and the three print*Banner
 // helpers -- used plain json.Unmarshal, which fails with ErrRange on a
 // number outside float64's range even though the guard (UseNumber)
 // and the renderer (also UseNumber, after this same finding's fix to
@@ -616,7 +616,7 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 	return sanitized
 }
 
-// injectETagIntoCredentialResponse adds the response's ETag HEADER as a
+// InjectETagIntoCredentialResponse adds the response's ETag HEADER as a
 // top-level "etag" field on a credential-family response, so a later
 // update/rotate/revoke's If-Match (the manifest's Location:"header"
 // ifMatch field) has something to present. Review finding 1151:
@@ -631,7 +631,7 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 // No-op for any command outside credentialCommandFamilies, and for a
 // response with no ETag header.
 //
-// CALL ORDER: executor.go runs guardCredentialResponse FIRST, against
+// CALL ORDER: executor.go runs GuardCredentialResponse FIRST, against
 // the original response bytes, then this function afterward (finding
 // 1265, instance 1: injecting the ETag before the guard ran let a
 // re-encoded body launder trailing data or a duplicate key past the
@@ -651,9 +651,9 @@ func sanitizeForTableRender(cmdDef manifest.Command, respBody []byte, jsonOutput
 // the guard or the --json error envelope ever ran. The nil check treats
 // `null` the same as every other non-object body (an array, a bare
 // string, a malformed body): nothing to inject an etag field into, so
-// respBody passes through unchanged for guardCredentialResponse to
+// respBody passes through unchanged for GuardCredentialResponse to
 // examine on its own terms.
-func injectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) ([]byte, error) {
+func InjectETagIntoCredentialResponse(cmdDef manifest.Command, respBody []byte, headers http.Header) ([]byte, error) {
 	if _, _, ok := credentialFamilyFor(cmdDef.Command); !ok {
 		return respBody, nil
 	}

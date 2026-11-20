@@ -490,7 +490,7 @@ func TestExecute_ErrorResponse_EmitsNoWarningLine(t *testing.T) {
 //
 // Finding 1215 (G3): the token fixture must be the EXACT legacy bearer
 // shape account/api-keys/add's own producer mints (fakeLegacyPAT, from
-// credential_output_test.go, same package); guardCredentialResponse now
+// credential_output_test.go, same package); GuardCredentialResponse now
 // refuses an issuing field whose value is anything else, and a literal
 // "placeholder-token" no longer passes.
 func TestExecute_SingularWarning_NotReprinted(t *testing.T) {

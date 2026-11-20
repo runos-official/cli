@@ -15,7 +15,7 @@ import (
 var ErrStale = errors.New("it changed since it was read: show it again and repeat the change")
 
 // RefusalFields is every field the identity service's error envelope
-// may carry, decoded unconditionally by refusal() and embedded in EVERY
+// may carry, decoded unconditionally by Refusal() and embedded in EVERY
 // refusal type below. Repeat finding 1361 (earlier: 1334): APIError,
 // StepUpRequiredError and StaleError used to each declare their OWN
 // narrower subset of these fields, so a field a given type's struct (or
@@ -133,7 +133,7 @@ func (e *APIError) Error() string {
 
 // refusal turns a non-2xx result into one of the errors above. It returns
 // nil for a success.
-func refusal(r *api.Result) error {
+func Refusal(r *api.Result) error {
 	if r.StatusCode >= 200 && r.StatusCode < 300 {
 		return nil
 	}
