@@ -84,7 +84,19 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, resp.Header, &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		apiErr := &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		// Story 347 S1 (finding 1194): Conductor documents request-bound
+		// step-up for the typed credential-lifecycle commands that
+		// stepUpEligibleCommands names. Only those commands ever reach
+		// the human confirmation flow; every other refusal, including a
+		// step-up-shaped one from an unlisted command, falls straight
+		// through unchanged.
+		if retryBody, retryHeaders, retryErr, handled := e.completeStepUpIfRequired(
+			ctx, cmdDef, endpoint, requestBody, headers, token, options, cfg, apiErr,
+		); handled {
+			return retryBody, retryHeaders, retryErr
+		}
+		return nil, resp.Header, apiErr
 	}
 	// Defensive: some conductor handlers wrap their own error in the 200
 	// response body instead of letting the framework's error middleware
