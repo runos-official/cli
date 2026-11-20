@@ -65,7 +65,10 @@ func TestReleasePipelineChecksAndRecordsThroughTheRecordScript(t *testing.T) {
 	if !strings.Contains(last.Run, "scripts/record_ref.sh record "+args) {
 		t.Fatalf("the last step must run record with the target values, got:\n%s", last.Run)
 	}
-	for _, fact := range []string{"main_before", "main_after", "main_equals_final"} {
+	// Every release records these three facts. A final on a prod target reports
+	// main_before, main_after and main_equals_final as well, but the step does not
+	// expect them, because a candidate does not produce them.
+	for _, fact := range []string{"record_branch", "record_after", "record_matches_source"} {
 		found := false
 		for _, e := range last.Expect {
 			found = found || e == fact
