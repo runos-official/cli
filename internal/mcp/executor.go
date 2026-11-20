@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -40,7 +41,7 @@ func NewCommandExecutor(m *manifest.Manifest, baseURL string) *CommandExecutor {
 	return &CommandExecutor{
 		manifest:   m,
 		baseURL:    baseURL,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: api.NewTransport()},
 	}
 }
 
@@ -66,7 +67,7 @@ func (e *CommandExecutor) ExecuteRaw(method, endpoint string, body map[string]an
 	defer cancel()
 	resp, err := e.doRequestWithCID(ctx, method, url, body, token, cid)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", requestFailed(err)
 	}
 	defer resp.Body.Close()
 
@@ -196,7 +197,7 @@ func (e *CommandExecutor) Execute(toolName string, args map[string]any) (string,
 	defer cancel()
 	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, body, token)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", requestFailed(err)
 	}
 	defer resp.Body.Close()
 

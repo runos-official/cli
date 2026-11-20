@@ -70,7 +70,8 @@ func NewManager() (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		HTTPClient: &http.Client{Timeout: 60 * time.Second}, HomeDir: home, ExecutablePath: executable,
+		HTTPClient: &http.Client{Timeout: 60 * time.Second}, // no CLI user agent: release downloads
+		HomeDir:    home, ExecutablePath: executable,
 		ReleaseBaseURL: releaseDownloadBaseURL, ReleasesAPIURL: releasesAPIURL, AttestationsURL: attestationsAPIURL,
 	}
 	m.VerifyAttestation = m.verifyGitHubAttestation

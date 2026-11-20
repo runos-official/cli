@@ -89,6 +89,13 @@ desktopcontract:
 replay-record-ref:
 	@bash scripts/record_ref_replay.sh
 
+# Replay the main-line hotfix recipe in scratch repos: the dry run, every refusal (main ancestry,
+# next patch, tag, changelog, tree, branch name), the sensitivity scan, the fast-forward of main and
+# the shape of .foreman/pipelines/hotfix-main.yml. Needs no network, no gh and no go.
+.PHONY: replay-hotfix
+replay-hotfix:
+	@bash scripts/hotfix_replay.sh
+
 # Fail on a tracked file leakcheck cannot READ. leakcheck reads UTF-8 text; a
 # file holding a NUL byte or other bytes is read best effort at most, and some
 # encodings escape it entirely (measured on checker 1.2.0: a token in a UTF-32

@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/runos-official/cli/internal/api"
 )
 
 // Network and response-size limits used across the apps service.
@@ -75,7 +77,8 @@ func NewService(baseURL, token, cid, aid string) *Service {
 	return &Service{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: defaultRequestTimeout,
+			Timeout:   defaultRequestTimeout,
+			Transport: api.NewTransport(),
 		},
 		token: token,
 		cid:   cid,
@@ -813,7 +816,8 @@ func (s *Service) DownloadCliArchive(ctx context.Context, downloadURL string) (i
 	// CheckRedirect is disabled so a 3xx response can't sneak the
 	// download off-host after we validated the original URL.
 	client := &http.Client{
-		Timeout: archiveDownloadTimeout,
+		Timeout:   archiveDownloadTimeout,
+		Transport: api.NewTransport(),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

@@ -16,6 +16,7 @@ var updateCmd = &cobra.Command{Use: "update", Short: "Update RunOS components", 
 func init() {
 	updateCmd.Flags().BoolP("check", "c", false, "Only check for updates, don't install")
 	updateCmd.Flags().BoolP("json", "j", false, "Output as JSON")
+	updateCmd.Flags().Bool("force", false, "Install the latest published release even over a development build or a newer build (a downgrade is named)")
 	// This command dials the daemon to read its build, so it needs the same hidden escape hatch
 	// every other daemon-dialling command has. Without the declaration `vpnSocketClient` silently
 	// falls back to the production socket, which is invisible because the lookup error is dropped.
@@ -47,6 +48,16 @@ type updateComponentResult struct {
 	Message        string `json:"message,omitempty"`
 }
 
+// cliUpdateResult is the CLI component's result: the shared shape plus what only `runos update
+// --force` reports. The Desktop component shares updateComponentResult and never carries these, so
+// an ordinary result keeps its old shape.
+type cliUpdateResult struct {
+	updateComponentResult
+	Force           bool   `json:"force,omitempty"`
+	PreviousVersion string `json:"previousVersion,omitempty"`
+	NewVersion      string `json:"newVersion,omitempty"`
+}
+
 /*
 Whether a desktop update is available, by the same rule the installer uses.
 
@@ -69,13 +80,14 @@ func desktopUpdateAvailable(installed, latest string) bool {
 
 type combinedUpdateResult struct {
 	SchemaVersion int                    `json:"schemaVersion"`
-	CLI           updateComponentResult  `json:"cli"`
+	CLI           cliUpdateResult        `json:"cli"`
 	Desktop       *updateComponentResult `json:"desktop,omitempty"`
 }
 
 func runUpdate(cmd *cobra.Command, _ []string) error {
 	checkOnly, _ := cmd.Flags().GetBool("check")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
+	force, _ := cmd.Flags().GetBool("force")
 	progress := cmd.OutOrStdout()
 	if jsonOutput {
 		progress = cmd.ErrOrStderr()
@@ -87,38 +99,14 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 	}
 	updater.SetProgress(progress)
 	currentVersion := updater.CurrentVersion()
-	result := combinedUpdateResult{SchemaVersion: 1, CLI: updateComponentResult{
+	result := combinedUpdateResult{SchemaVersion: 1, CLI: cliUpdateResult{updateComponentResult: updateComponentResult{
 		Version:        currentVersion,
 		CurrentVersion: currentVersion,
-	}}
+	}}}
 	fmt.Fprintf(progress, "Current CLI version: %s\n", currentVersion)
 
-	if update.IsDevBuild() {
-		result.CLI.Message = "Local CLI development build. The CLI update was skipped."
-		fmt.Fprintln(progress, result.CLI.Message)
-	} else {
-		latestVersion, fetchErr := updater.FetchLatestVersion()
-		if fetchErr != nil {
-			return fetchErr
-		}
-		result.CLI.Version = latestVersion
-		if !updater.NeedsUpdate(latestVersion) {
-			result.CLI.Message = "The CLI is already up to date."
-		} else if checkOnly {
-			result.CLI.UpdateAvailable = true
-			result.CLI.Message = "A CLI update is available."
-		} else {
-			if status := daemonStatus(cmd); status != nil {
-				fmt.Fprint(progress, vpnTunnelUpdateNotice(status.Running))
-			}
-			fmt.Fprintln(progress, "Downloading the CLI update…")
-			if err := updater.DownloadAndInstall(latestVersion); err != nil {
-				return err
-			}
-			result.CLI.Updated = true
-			result.CLI.Message = "The CLI update completed."
-		}
-		fmt.Fprintln(progress, result.CLI.Message)
+	if err := updateCLIComponent(cmd, updater, checkOnly, force, progress, &result); err != nil {
+		return err
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -184,7 +172,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 		if status != nil {
 			daemonVersion = status.Version
 		}
-		installed := installedCLIVersion(currentVersion, result.CLI)
+		installed := installedCLIVersion(currentVersion, result.CLI.updateComponentResult)
 		if vpnDaemonNeedsRestart(true, daemonVersion, installed) {
 			fmt.Fprint(progress, vpnRestartNotice(daemonVersion, installed, tunnelStateOf(status)))
 		}

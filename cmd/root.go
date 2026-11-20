@@ -256,8 +256,12 @@ func Execute() {
 	// Captured before cobra runs, because the raw line is what names the
 	// command the operator meant.
 	typed := os.Args[1:]
+	installGateObserver(rootCmd)
 	executed, err := rootCmd.ExecuteC()
 	if err != nil {
+		if printGateRefusal(executed, rootCmd, err, os.Stderr) {
+			os.Exit(1)
+		}
 		// The init-time manifest failure silences the root, so cobra
 		// swallows every error line. Print the suppressed line once,
 		// before the explainer helpers so today ordering survives.

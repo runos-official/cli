@@ -5,8 +5,23 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/dynacmd"
 )
+
+// requestFailed turns a transport failure into the error an MCP call returns. The version gate's
+// refusal becomes the same JSON envelope as any other conductor refusal (code, statusCode, one plain
+// sentence), so an agent reads the code instead of a request URL.
+func requestFailed(err error) error {
+	var gate *api.UpdateRequiredError
+	if errors.As(err, &gate) {
+		if encoded, mErr := json.MarshalIndent(gate.Envelope(), "", "  "); mErr == nil {
+			return errors.New(string(encoded))
+		}
+		return gate
+	}
+	return fmt.Errorf("request failed: %w", err)
+}
 
 // apiErrorEnvelope renders a non-2xx conductor response as the same JSON
 // envelope the CLI's `--json` mode emits: `{"error": ..., "statusCode":

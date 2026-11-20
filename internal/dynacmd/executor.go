@@ -49,7 +49,7 @@ type Executor struct {
 func NewExecutor(baseURL string) *Executor {
 	return &Executor{
 		baseURL:    baseURL,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: api.NewTransport()},
 	}
 }
 
@@ -90,6 +90,10 @@ func (e *APIError) Error() string {
 // cmd/apps_pull.go's emitJSONError so every --json failure path lands
 // on the same shape.
 func BuildAPIErrorEnvelope(err error) map[string]any {
+	var gate *api.UpdateRequiredError
+	if errors.As(err, &gate) {
+		return gate.Envelope()
+	}
 	envelope := map[string]any{"error": err.Error()}
 	var apiErr *APIError
 	for unwrapped := err; unwrapped != nil; {
@@ -251,7 +255,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if uidProvided(args, cmdDef, body, "uid") {
 			// User-supplied; honour it verbatim and let conductor's
 			// docId-or-uid lookup handle the resolution.
-		} else if extracted := auth.ExtractFirebaseUID(token); extracted != "" {
+		} else if extracted := auth.PersonID(cfg, token); extracted != "" {
 			body["uid"] = extracted
 		}
 	}
