@@ -50,11 +50,32 @@ SECOND_BOX = "ftb" + "2"
 RENTED_BOX = "fttb" + "3"
 ACCOUNT_ID = "rj" + "wrn"
 
-# 1.2.0: RunOS's OWN token shape, assembled so this file does not carry a
-# matchable literal. The prefix is split exactly like the machine names above.
+# 1.2.0: RunOS's OWN legacy token shape, assembled so this file does not
+# carry a matchable literal. The prefix is split exactly like the machine
+# names above. The legacy shape needs EXACTLY 10, then EXACTLY 32,
+# characters from the unambiguous charset (no 0, 1, i, l, o, I, O) --
+# Conductor's own KEY_ID_LENGTH/SECRET_LENGTH/UNAMBIGUOUS_CHARS
+# (apiKeys.ts) and Roid's legacyChars (secretshape.go) agree on this exact
+# set, which 1.4.0 (finding 1106) made this checker's own requirement too.
 RUNOS_TOKEN_PREFIX = "runos" + "_pat_"
 RUNOS_TOKEN = RUNOS_TOKEN_PREFIX + "AbCdEfGhJk.MnPqRsTuVwXyZ23456789AbCdEfGhJkMn"
-RUNOS_TOKEN_2 = RUNOS_TOKEN_PREFIX + "Zz9Yy8Xx7W.QqWwEeRrTtYyUuIiOoPpAaSsDdFfGg"
+RUNOS_TOKEN_2 = RUNOS_TOKEN_PREFIX + "Zz9Yy8Xx7W.QqWwEeRrTtYyUuJjPpAaSsDdFfGgHhKkMmNn"
+# 1.3.0/1.4.0 (Story 343 / FCR2030, finding 1106): runos_key_ exists only in
+# the NEW TYPED shape -- there is no legacy runos_key_, only the new typed
+# one, which pairs a canonical lowercase UUID with a 43-char unpadded
+# base64url secret (FPL411, contract 1.0.1), never the legacy id/secret
+# charset. The id below is a synthetic, non-identifying UUID shape.
+RUNOS_KEY_PREFIX = "runos" + "_key_"
+RUNOS_KEY_TOKEN = RUNOS_KEY_PREFIX + "12345678-90ab-cdef-1234-567890abcdef." + "A" * 43
+# Roid's OWN legacy personal-key secret, still minted today
+# (roid/internal/server/personalkeys.go, accounts.go): rk_<43-char unpadded
+# base64url>, no dot, no id half. 1.4.0 adds this shape (finding 1106).
+RUNOS_RK_TOKEN = "rk_" + "B" * 43
+# Notify API key: the legacy id/secret shape with a different prefix
+# (handbook article 220, create-notify-key: "runos_ntk_<id>.<secret>, 53
+# characters long"). 1.5.0 adds this shape (finding 1150).
+RUNOS_NTK_PREFIX = "runos" + "_ntk_"
+RUNOS_NTK_TOKEN = RUNOS_NTK_PREFIX + "AbCdEfGhJk.MnPqRsTuVwXyZ23456789AbCdEfGhJkMn"
 
 # The SHAPE of the pasted terminal output that shipped in
 # cmd/preflight/tls_failure_kind_test.go: a private source address dialling a
@@ -236,6 +257,28 @@ def main() -> int:
         "export RUNOS_API_KEY=%s\n" % RUNOS_TOKEN_2,
         RUNOS_TOKEN_2[:22],
     )
+    # 1.3.0/1.4.0: the new typed Account API Key shape, additive to the legacy
+    # runos_pat_ shape above.
+    expect_catch(
+        "RunOS account API key (typed shape)",
+        "export RUNOS_API_KEY=%s\n" % RUNOS_KEY_TOKEN,
+        RUNOS_KEY_TOKEN[:22],
+    )
+    # 1.4.0 (finding 1106): Roid's own legacy personal-key secret, rk_, a
+    # format this checker never covered before even though Roid still mints
+    # it today.
+    expect_catch(
+        "Roid legacy personal-key secret (rk_)",
+        "export RUNOS_API_KEY=%s\n" % RUNOS_RK_TOKEN,
+        RUNOS_RK_TOKEN,
+    )
+    # 1.5.0 (finding 1150): the Notify API key shape, a different prefix on
+    # the same legacy id/secret charset, never covered before.
+    expect_catch(
+        "Notify API key (runos_ntk_)",
+        "the account's notify key is %s\n" % RUNOS_NTK_TOKEN,
+        RUNOS_NTK_TOKEN[:22],
+    )
     # The already-shipped pasted output, both addresses in one line.
     expect_catch("pasted source address in a shipped test comment", '// "the secure handshake FAILED: %s",\n' % PASTED_ERROR, PASTED_SRC)
     expect_catch("pasted destination address in the same line", '// "the secure handshake FAILED: %s",\n' % PASTED_ERROR, PASTED_DST)
@@ -321,6 +364,14 @@ def main() -> int:
     expect_clean(
         "RunOS token placeholder in documentation",
         "runos login --api-key %s<id>.<secret>\n" % RUNOS_TOKEN_PREFIX,
+    )
+    expect_clean(
+        "RunOS account API key placeholder in documentation",
+        "runos login --api-key %s<id>.<secret>\n" % RUNOS_KEY_PREFIX,
+    )
+    expect_clean(
+        "Notify API key placeholder in documentation",
+        "keyValue is %s<id>.<secret>\n" % RUNOS_NTK_PREFIX,
     )
     expect_clean("RFC 5737 TEST-NET-1", "gateway %s\n" % dotted(192, 0, 2, 1))
     expect_clean("RFC 5737 TEST-NET-2", "peer %s\n" % dotted(198, 51, 100, 7))

@@ -68,6 +68,7 @@ strings differ, so a restart (a new service process from the new binary) makes t
 | `sessionExpired` | bool | no | optional |
 | `sessionExpiresAt` | time | no | ignored |
 | `authMethod` | string | no | ignored |
+| `credentialType` | string (always `"unknown"` today; only for a secret-sourced credential, env or stored) | no | ignored |
 | `signedInAt` | string | no | ignored |
 | `environment` | string | no | ignored |
 | `apiUrl` | string | no | ignored |

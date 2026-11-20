@@ -236,3 +236,50 @@ func TestStatusOnASignedOutMachineSaysSoWithoutAskingAnyone(t *testing.T) {
 		t.Error("a machine with no credentials must not ask conductor anything")
 	}
 }
+
+// statusText runs the real `runos status` (plain text) and returns stdout.
+func statusText(t *testing.T) string {
+	t.Helper()
+	var runErr error
+	out := captureStdout(t, func() {
+		cmd := &cobra.Command{Use: "status", RunE: runCLIStatus}
+		cmd.Flags().BoolP("json", "j", false, "")
+		cmd.Flags().String("socket", "", "")
+		cmd.SetArgs([]string{"--socket", "/nonexistent/runos-test.sock"})
+		runErr = cmd.Execute()
+	})
+	if runErr != nil {
+		t.Fatalf("status failed: %v\n%s", runErr, out)
+	}
+	return out
+}
+
+/*
+Finding 1109, MEASURED against an isolated config carrying an invalid (never verified) secret
+credential: the text output said "Authentication: ✓ Logged in" and, unconditionally, "Expires:
+Never", which together read as a confirmed, healthy, indefinite session for a credential nothing
+here ever checked. `runos status` makes no network call to verify a secret credential (by design,
+so it works offline); the Expires line must say so, never assert the credential is valid or will
+remain so.
+*/
+func TestStatusNeverClaimsAnUnverifiedSecretCredentialNeverExpires(t *testing.T) {
+	writeStoredSecretConfig(t, profileConductor(t, http.StatusOK, `{}`, "").URL, "aaaaa")
+	out := statusText(t)
+	if strings.Contains(out, "Expires:    Never") {
+		t.Errorf("an unverified stored secret must not be told it never expires:\n%s", out)
+	}
+	if !strings.Contains(out, "not tracked locally") {
+		t.Errorf("expected the qualified expiry line for a secret credential, got:\n%s", out)
+	}
+}
+
+// A verified Firebase session (the server actually answered) keeps the original, unqualified
+// line: that path DOES make a network call, so "Expires: Never" is not an unverified guess there.
+func TestStatusFirebaseSessionKeepsTheUnqualifiedExpiryLine(t *testing.T) {
+	fakeFirebase(t)
+	writeConfig(t, profileConductor(t, http.StatusOK, `{}`, "").URL, "aaaaa", true)
+	out := statusText(t)
+	if !strings.Contains(out, "Expires:    Never") {
+		t.Errorf("expected the unqualified Expires line for a verified Firebase session, got:\n%s", out)
+	}
+}

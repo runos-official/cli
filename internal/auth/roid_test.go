@@ -14,23 +14,23 @@ func roidConfig() *config.Config {
 	return c
 }
 
-func TestKindRanksTheRoidSignInBelowPATsAndAboveFirebase(t *testing.T) {
+func TestKindRanksTheRoidSignInBelowSecretsAndAboveFirebase(t *testing.T) {
 	t.Setenv(APIKeyEnvVar, "")
 	c := roidConfig()
-	if got := Kind(c); got != CredentialRoid || got.IsPAT() {
-		t.Fatalf("roid sign-in kind = %q (PAT %v), want %q and not a PAT", got, got.IsPAT(), CredentialRoid)
+	if got := Kind(c); got != CredentialRoid || got.IsSecretCredential() {
+		t.Fatalf("roid sign-in kind = %q (secret %v), want %q and not a secret", got, got.IsSecretCredential(), CredentialRoid)
 	}
 	c.Firebase = &config.FirebaseConfig{APIKey: "fb"}
 	if got := Kind(c); got != CredentialRoid {
 		t.Fatalf("with a Firebase config too, kind = %q", got)
 	}
-	c.APIKey = "pat"
-	if got := Kind(c); got != CredentialStoredPAT {
-		t.Fatalf("a stored PAT must win, kind = %q", got)
+	c.APIKey = "secret"
+	if got := Kind(c); got != CredentialStoredKey {
+		t.Fatalf("a stored secret must win, kind = %q", got)
 	}
-	t.Setenv(APIKeyEnvVar, "pat-env")
-	if got := Kind(c); got != CredentialEnvPAT {
-		t.Fatalf("the env PAT must win, kind = %q", got)
+	t.Setenv(APIKeyEnvVar, "secret-env")
+	if got := Kind(c); got != CredentialEnvKey {
+		t.Fatalf("the env secret must win, kind = %q", got)
 	}
 }
 

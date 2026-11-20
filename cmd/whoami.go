@@ -28,16 +28,30 @@ func init() {
 }
 
 func whoamiNotSignedIn() error {
-	return fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <pat>') or set %s", auth.ErrNotAuthenticated, auth.APIKeyEnvVar)
+	// Story 343 / FCR2030, finding 1107: "<pat>" named one credential type
+	// only (an Account API Key reaches this exact message too), and the
+	// example omitted --account-id, which --api-key requires.
+	return fmt.Errorf("%w: run 'runos login' (or 'runos login --api-key <credential> --account-id <id>') or set %s", auth.ErrNotAuthenticated, auth.APIKeyEnvVar)
 }
 
-// whoamiReport builds the answer. It names credentials by kind only and
-// never includes a token, key or PAT.
+// whoamiReport builds the answer. It names credentials by source only
+// and never includes a token, key or secret.
+//
+// "credential_type" is always "unknown" for a secret-sourced credential
+// (env or stored): no trusted server response reaches this command
+// today that could tell a Personal Access Token from an Account API
+// Key, and Story 343 / FCR2030 forbids guessing that from the source or
+// a prefix. The field still appears, honestly, rather than being left
+// to imply a certainty the CLI does not have.
 func whoamiReport(cfg *config.Config, kind auth.CredentialKind, id *roidauth.Identity) map[string]any {
+	desc := auth.DescribeSource(kind)
 	report := map[string]any{
 		"environment": cfg.GetEnv(),
 		"credential":  string(kind),
 		"account_id":  cfg.GetAccountID(),
+	}
+	if desc.IsSecretCredential() {
+		report["credential_type"] = string(desc.Type)
 	}
 	switch kind {
 	case auth.CredentialRoid:
@@ -51,7 +65,7 @@ func whoamiReport(cfg *config.Config, kind auth.CredentialKind, id *roidauth.Ide
 			report["assurance"] = id.Assurance
 			report["accounts"] = id.Accounts
 		}
-	case auth.CredentialInteractive, auth.CredentialStoredPAT:
+	case auth.CredentialInteractive, auth.CredentialStoredKey:
 		report["signed_in_at"] = cfg.SignedInAt
 	}
 	return report

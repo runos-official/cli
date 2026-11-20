@@ -88,14 +88,25 @@ func vpnSocketClient(cmd *cobra.Command) *vpn.Client {
 	return vpn.NewClient(path)
 }
 
-// refuseVPNWithPAT refuses to bring the VPN up under a stored secret. A tunnel is a person's
-// session (decision 2: a sign-in is the 2FA gate), and a PAT is evidence of possession, never of a
-// person being present. Reads/other commands are unaffected; only up/connect need a person.
-func refuseVPNWithPAT(cfg *config.Config) error {
-	if auth.Kind(cfg).IsPAT() {
-		return fmt.Errorf("a personal access token cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login', then run 'runos vpn up'")
+// refuseVPNWithStoredSecret refuses to bring the VPN up under a stored
+// secret. A tunnel is a person's session (decision 2: a sign-in is the
+// 2FA gate), and a stored secret (a Personal Access Token OR an
+// Account API Key) is evidence of possession, never of a person being
+// present. Reads/other commands are unaffected; only up/connect need a
+// person.
+func refuseVPNWithStoredSecret(cfg *config.Config) error {
+	switch auth.Kind(cfg) {
+	case auth.CredentialEnvKey:
+		// Finding 1107: RUNOS_API_KEY overrides any interactive sign-in
+		// (auth.ResolveToken's priority order), so telling the holder only
+		// to run 'runos login' leaves every subsequent command, including
+		// the retried 'runos vpn up', still resolving the env var.
+		return fmt.Errorf("a stored credential cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nRUNOS_API_KEY overrides a sign-in, so unset it first; then sign in interactively with 'runos login' and run 'runos vpn up'")
+	case auth.CredentialStoredKey:
+		return fmt.Errorf("a stored credential cannot bring the VPN up: a tunnel is a person's 24-hour session, not a stored secret.\nSign in interactively with 'runos login', then run 'runos vpn up'")
+	default:
+		return nil
 	}
-	return nil
 }
 
 /*
@@ -246,7 +257,7 @@ func runVPNUpSteps(cmd *cobra.Command, args []string) error {
 		upTrace.Fail("credential", err)
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	if err := refuseVPNWithPAT(cfg); err != nil {
+	if err := refuseVPNWithStoredSecret(cfg); err != nil {
 		upTrace.Fail("credential", err)
 		return err
 	}

@@ -51,11 +51,35 @@ var (
 	// token printed bare. WireGuard keys, UUIDs and hostnames do not match (see looksLikeSecret).
 	opaqueTokenPattern = regexp.MustCompile(`[A-Za-z0-9_-]{32,}`)
 	uuidPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	// A whole RunOS/Roid bearer secret, prefix and public id included, matched and masked as ONE
+	// unit before opaqueTokenPattern above would otherwise mask only the trailing secret and leave
+	// a prefix and id visible in the report. Ported from Roid's own authoritative definition
+	// (roid/internal/secretshape/secretshape.go, commit da5fdcbd97c4) rather than re-derived, so
+	// this and internal/dynacmd's credential-response guard never drift from the producer:
+	//   - typed:  runos_(pat|key)_<canonical lowercase uuid>.<43-char unpadded base64url> (FPL411).
+	//   - legacy: runos_pat_<10-char unambiguous>.<32-char unambiguous> (Conductor apiKeys.ts).
+	//   - notify: runos_ntk_<10-char unambiguous>.<32-char unambiguous>, 53 characters total
+	//     (handbook article 220, create-notify-key). Review finding 1150.
+	//   - roid:   rk_<43-char unpadded base64url> (Roid's own legacy personal-key secret, still
+	//     minted by personalkeys.go/accounts.go). Roid's other short-prefixed internal bearer
+	//     shapes (at_, rt_, mcp_, ...) are deliberately not ported: see the long comment on
+	//     runosSecretPattern in internal/dynacmd/credential_output.go for why (they false-positive
+	//     inside ordinary long identifiers) and why rk_ alone is kept.
+	// No trailing \b: a base64url secret can end in `-`/`_`, which is not a boundary in Go's RE2,
+	// and missing it there would be a false negative (see the mirror comment in
+	// internal/dynacmd/credential_output.go).
+	runosCredentialPattern = regexp.MustCompile(
+		`runos_(?:pat|key)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}` +
+			`|runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}` +
+			`|runos_ntk_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32}` +
+			`|rk_[A-Za-z0-9_-]{43}`,
+	)
 )
 
 const redacted = "<redacted>"
 
 func redactText(s string) string {
+	s = runosCredentialPattern.ReplaceAllString(s, redacted)
 	s = urlQueryPattern.ReplaceAllString(s, "${1}?"+redacted)
 	s = urlUserinfoPattern.ReplaceAllString(s, "${1}"+redacted+"@")
 	s = authSchemePattern.ReplaceAllString(s, "${1}"+redacted)

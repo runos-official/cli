@@ -110,10 +110,11 @@ func runProceduresDecide(cmd *cobra.Command, operationID, decision string) error
 		return err
 	}
 	// NO CREDENTIAL REFUSAL HERE, under Q&A 131, which supersedes Q&A 120.
-	// A PAT, an API key and an interactively signed-in session all decide
-	// alike; a developer running this CLI under a PAT is a person at a
-	// keyboard. The deliberate act is the confirmation below, not the
-	// credential. The role check is the server's and is unchanged.
+	// A Personal Access Token, an Account API Key and an interactively
+	// signed-in session all decide alike; a developer running this CLI
+	// under a stored credential is a person at a keyboard. The deliberate
+	// act is the confirmation below, not the credential. The role check
+	// is the server's and is unchanged.
 	cid, err := procedureCid()
 	if err != nil {
 		return err

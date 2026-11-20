@@ -391,15 +391,17 @@ func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
 	}
 
 	/*
-	 A PAT IS NOT A SIGN-IN, and this line was sending its holder to a command that refuses it.
+	 A STORED SECRET IS NOT A SIGN-IN, and this line was sending its holder to a command that
+	 refuses it -- for a Personal Access Token AND an Account API Key alike.
 
-	 `runos vpn up` calls `refuseVPNWithPAT` as its first act, because a tunnel is a person's
-	 24-hour session and a stored secret is evidence of possession, never of a person being there.
-	 So on a PAT-only machine "Session: none - run 'runos vpn up'" was the PERMANENT output, and
-	 the command it named could never work. It was decided from `HasCredentials`, which answers
-	 "is there a credential", when the question is "is there a PERSON".
+	 `runos vpn up` calls `refuseVPNWithStoredSecret` as its first act, because a tunnel is a
+	 person's 24-hour session and a stored secret is evidence of possession, never of a person
+	 being there. So on a secret-credential-only machine "Session: none - run 'runos vpn up'" was
+	 the PERMANENT output, and the command it named could never work. It was decided from
+	 `HasCredentials`, which answers "is there a credential", when the question is "is there a
+	 PERSON".
 	*/
-	for _, kind := range []auth.CredentialKind{auth.CredentialEnvPAT, auth.CredentialStoredPAT} {
+	for _, kind := range []auth.CredentialKind{auth.CredentialEnvKey, auth.CredentialStoredKey} {
 		got := sessionNextStep(kind)
 		if !strings.Contains(got, "runos login") {
 			t.Errorf("%s must be sent to sign in as a person, got %q", kind, got)
@@ -408,6 +410,16 @@ func TestTheSessionLineNamesTheStepThatCanActuallyWork(t *testing.T) {
 		if up >= 0 && login > up {
 			t.Errorf("%s: the sign-in must come first, got %q", kind, got)
 		}
+	}
+
+	// Finding 1107: RUNOS_API_KEY overrides a sign-in, so its next step must
+	// say to unset it first, or 'runos login' would run and change nothing.
+	// A stored secret has no such override to mention.
+	if got := sessionNextStep(auth.CredentialEnvKey); !strings.Contains(got, "unset RUNOS_API_KEY") {
+		t.Errorf("env-sourced secret: must say to unset RUNOS_API_KEY, got %q", got)
+	}
+	if got := sessionNextStep(auth.CredentialStoredKey); strings.Contains(got, "RUNOS_API_KEY") {
+		t.Errorf("stored secret: must not mention RUNOS_API_KEY, a different source, got %q", got)
 	}
 }
 

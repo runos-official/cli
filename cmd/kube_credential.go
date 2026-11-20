@@ -96,7 +96,7 @@ func credentialFetcher(cfg *config.Config, account, cluster string) (*kubeaccess
 	}
 	base, _ := roidapi.GatewayURL(cfg)
 	if !cfg.HasRoidSignIn() {
-		if auth.Kind(cfg).IsPAT() {
+		if auth.Kind(cfg).IsSecretCredential() {
 			return nil, errors.New("Kubernetes access needs a signed-in person. A personal access token or API key does not work. Run 'runos login' and sign in with your browser.")
 		}
 		return nil, errors.New("You are not signed in to RunOS. Run 'runos login', then try again.")

@@ -18,40 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// authMethod names the credential the CLI would use for outgoing
-// requests, in auth.ResolveToken's priority order. authNone means no
-// credential is present.
-type authMethod string
-
-const (
-	authNone      authMethod = "none"
-	authPATEnv    authMethod = "pat-env"    // RUNOS_API_KEY
-	authPATStored authMethod = "pat-stored" // cfg.APIKey, set by `runos login --api-key`
-	authRoid      authMethod = "roid"       // browser sign-in through roid
-	authFirebase  authMethod = "firebase"   // interactive refresh-token session
-)
-
-// resolveAuthMethod reports which credential the CLI would use, mirroring
-// auth.ResolveToken's priority (RUNOS_API_KEY -> stored PAT -> Firebase)
-// without any network round-trip, so `runos status` recognises a PAT as
-// authenticated instead of only honouring the Firebase fields. apiKeyEnv
-// is passed in (the RUNOS_API_KEY value) to keep the helper pure.
-func resolveAuthMethod(cfg *config.Config, apiKeyEnv string) authMethod {
-	if strings.TrimSpace(apiKeyEnv) != "" {
-		return authPATEnv
-	}
-	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
-		return authPATStored
-	}
-	if cfg.HasRoidSignIn() {
-		return authRoid
-	}
-	if cfg != nil && cfg.RefreshToken != "" && cfg.Firebase != nil {
-		return authFirebase
-	}
-	return authNone
-}
-
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show CLI status and authentication info",
@@ -114,14 +80,21 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		status["defaultClusterId"] = defaultCID
 	}
 
-	// Check authentication and get token info. A stored PAT or
-	// RUNOS_API_KEY counts as authenticated by presence (the same
+	// Check authentication and get token info. A stored secret credential
+	// or RUNOS_API_KEY counts as authenticated by presence (the same
 	// credential ordinary commands use via auth.ResolveToken); only the
 	// Firebase path needs a network refresh to confirm the session.
 	switch method := resolveAuthMethod(cfg, os.Getenv(auth.APIKeyEnvVar)); method {
-	case authPATEnv, authPATStored:
+	case authEnvKey, authStoredKey:
 		status["authenticated"] = true
 		status["authMethod"] = string(method)
+		// Story 343 / FCR2030: this command has no trusted response that
+		// verifies whether the secret is a Personal Access Token or an
+		// Account API Key, so it says exactly that instead of guessing
+		// from the source. See statusCredentialType.
+		if credType := statusCredentialType(method); credType != "" {
+			status["credentialType"] = string(credType)
+		}
 		if cfg.SignedInAt != "" {
 			status["signedInAt"] = cfg.SignedInAt
 		}
@@ -309,12 +282,28 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			} else {
 				fmt.Printf("  Signed in:  %s\n", t.Local().Format("2006-01-02 15:04:05"))
 			}
-		} else if method == string(authPATEnv) || method == string(authPATStored) {
-			fmt.Printf("  Signed in:  via personal access token\n")
+		} else if isSecretMethod(authMethod(method)) {
+			// Story 343 / FCR2030: this credential's semantic type is not
+			// verified here (see statusCredentialType), so the line must
+			// not claim "personal access token" for what may be an
+			// Account API Key.
+			fmt.Printf("  Signed in:  via a stored API credential\n")
 		} else {
 			fmt.Printf("  Signed in:  Unknown (logged in before CLI update)\n")
 		}
-		fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		// Finding 1109: measured against an invalid RUNOS_API_KEY, this line
+		// unconditionally said "Expires: Never" beside "Authentication: ✓
+		// Logged in" above, which together read as a verified, healthy
+		// session. For a secret credential this command never contacts the
+		// server to verify (by design: status must work offline), so the
+		// honest claim is about LOCAL storage only -- this CLI does not
+		// locally expire a stored or env-sourced secret -- never a claim
+		// about whether the server still accepts it.
+		if isSecretMethod(authMethod(method)) {
+			fmt.Printf("  Expires:    not tracked locally (the CLI does not verify a stored credential's validity; run 'runos logout' to clear it)\n")
+		} else {
+			fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		}
 	}
 
 	return nil
@@ -544,20 +533,4 @@ func fetchClusters(cfg *config.Config) ([]statusClusterRow, error) {
 		return nil, err
 	}
 	return envelope.Clusters, nil
-}
-
-// authMethodLabel renders the parenthetical credential hint for the
-// "Logged in" line. Empty for the legacy/unknown case so the line is
-// unchanged when no method was recorded.
-func authMethodLabel(v any) string {
-	switch v {
-	case string(authPATEnv):
-		return fmt.Sprintf(" (PAT via %s)", auth.APIKeyEnvVar)
-	case string(authPATStored):
-		return " (PAT)"
-	case string(authFirebase):
-		return ""
-	default:
-		return ""
-	}
 }

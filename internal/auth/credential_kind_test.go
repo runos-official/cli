@@ -13,51 +13,51 @@ import (
 // and the sending code answer "is this a PAT?" separately.
 func TestKindReportsEveryCredentialPath(t *testing.T) {
 	cases := []struct {
-		name   string
-		envPAT string
-		cfg    *config.Config
-		want   CredentialKind
-		isPAT  bool
+		name         string
+		envSecret    string
+		cfg          *config.Config
+		want         CredentialKind
+		isSecretCred bool
 	}{
 		{
-			name:   "env PAT wins over everything",
-			envPAT: "pat-from-env",
+			name:      "env secret wins over everything",
+			envSecret: "secret-from-env",
 			cfg: &config.Config{
-				APIKey:       "pat-on-disk",
+				APIKey:       "secret-on-disk",
 				RefreshToken: "refresh",
 				Firebase:     &config.FirebaseConfig{APIKey: "fb"},
 			},
-			want:  CredentialEnvPAT,
-			isPAT: true,
+			want:         CredentialEnvKey,
+			isSecretCred: true,
 		},
 		{
-			name: "a PAT stored on disk is still a PAT",
+			name: "a secret stored on disk is still a secret",
 			cfg: &config.Config{
-				APIKey:       "pat-on-disk",
+				APIKey:       "secret-on-disk",
 				RefreshToken: "refresh",
 				Firebase:     &config.FirebaseConfig{APIKey: "fb"},
 			},
-			want:  CredentialStoredPAT,
-			isPAT: true,
+			want:         CredentialStoredKey,
+			isSecretCred: true,
 		},
 		{
-			name: "a whitespace-only stored PAT is not a credential",
+			name: "a whitespace-only stored secret is not a credential",
 			cfg: &config.Config{
 				APIKey:       "   ",
 				RefreshToken: "refresh",
 				Firebase:     &config.FirebaseConfig{APIKey: "fb"},
 			},
-			want:  CredentialInteractive,
-			isPAT: false,
+			want:         CredentialInteractive,
+			isSecretCred: false,
 		},
 		{
-			name: "an interactive session is the only non-PAT kind",
+			name: "an interactive session is the only non-secret kind",
 			cfg: &config.Config{
 				RefreshToken: "refresh",
 				Firebase:     &config.FirebaseConfig{APIKey: "fb"},
 			},
-			want:  CredentialInteractive,
-			isPAT: false,
+			want:         CredentialInteractive,
+			isSecretCred: false,
 		},
 		{
 			name: "no credential at all",
@@ -73,16 +73,16 @@ func TestKindReportsEveryCredentialPath(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if testCase.envPAT != "" {
-				t.Setenv(APIKeyEnvVar, testCase.envPAT)
+			if testCase.envSecret != "" {
+				t.Setenv(APIKeyEnvVar, testCase.envSecret)
 			} else {
 				t.Setenv(APIKeyEnvVar, "")
 			}
 			if got := Kind(testCase.cfg); got != testCase.want {
 				t.Fatalf("Kind = %q, want %q", got, testCase.want)
 			}
-			if got := Kind(testCase.cfg).IsPAT(); got != testCase.isPAT {
-				t.Fatalf("IsPAT = %v, want %v", got, testCase.isPAT)
+			if got := Kind(testCase.cfg).IsSecretCredential(); got != testCase.isSecretCred {
+				t.Fatalf("IsSecretCredential = %v, want %v", got, testCase.isSecretCred)
 			}
 		})
 	}
@@ -93,38 +93,39 @@ func TestKindReportsEveryCredentialPath(t *testing.T) {
 // switches on Kind. Asserted by checking that every kind ResolveToken
 // reports a token for is the kind Kind named, on the same config.
 func TestResolveTokenSendsTheCredentialKindNames(t *testing.T) {
-	t.Run("env PAT", func(t *testing.T) {
-		t.Setenv(APIKeyEnvVar, "  pat-from-env  ")
-		cfg := &config.Config{APIKey: "pat-on-disk"}
-		if kind := Kind(cfg); kind != CredentialEnvPAT {
+	t.Run("env secret", func(t *testing.T) {
+		t.Setenv(APIKeyEnvVar, "  secret-from-env  ")
+		cfg := &config.Config{APIKey: "secret-on-disk"}
+		if kind := Kind(cfg); kind != CredentialEnvKey {
 			t.Fatalf("Kind = %q", kind)
 		}
 		token, err := ResolveToken(cfg)
 		if err != nil {
 			t.Fatalf("ResolveToken: %v", err)
 		}
-		if token != "pat-from-env" {
-			t.Fatalf("token = %q, want the trimmed env PAT", token)
+		if token != "secret-from-env" {
+			t.Fatalf("token = %q, want the trimmed env secret", token)
 		}
 	})
 
-	t.Run("stored PAT", func(t *testing.T) {
+	t.Run("stored secret", func(t *testing.T) {
 		t.Setenv(APIKeyEnvVar, "")
-		cfg := &config.Config{APIKey: "  pat-on-disk  ", Firebase: &config.FirebaseConfig{APIKey: "fb"}}
-		if kind := Kind(cfg); kind != CredentialStoredPAT {
+		cfg := &config.Config{APIKey: "  secret-on-disk  ", Firebase: &config.FirebaseConfig{APIKey: "fb"}}
+		if kind := Kind(cfg); kind != CredentialStoredKey {
 			t.Fatalf("Kind = %q", kind)
 		}
 		token, err := ResolveToken(cfg)
 		if err != nil {
 			t.Fatalf("ResolveToken: %v", err)
 		}
-		// The load-bearing assertion: a config carrying BOTH a stored PAT
-		// and Firebase settings sends the PAT. If this ever sent the
-		// Firebase token instead, Kind would be reporting a PAT while the
-		// request carried an interactive credential, and the approve
-		// command would refuse a session that could legitimately decide.
-		if token != "pat-on-disk" {
-			t.Fatalf("token = %q, want the stored PAT", token)
+		// The load-bearing assertion: a config carrying BOTH a stored
+		// secret and Firebase settings sends the stored secret. If this
+		// ever sent the Firebase token instead, Kind would be reporting a
+		// stored secret while the request carried an interactive
+		// credential, and the approve command would refuse a session that
+		// could legitimately decide.
+		if token != "secret-on-disk" {
+			t.Fatalf("token = %q, want the stored secret", token)
 		}
 	})
 
@@ -139,13 +140,13 @@ func TestResolveTokenSendsTheCredentialKindNames(t *testing.T) {
 // UsingAPIKey is deliberately narrower than Kind and this pins the gap,
 // so a future caller reaching for it to answer the credential-kind
 // question finds a test saying it is the wrong function.
-func TestUsingAPIKeyDoesNotSeeAStoredPAT(t *testing.T) {
+func TestUsingAPIKeyDoesNotSeeAStoredSecret(t *testing.T) {
 	t.Setenv(APIKeyEnvVar, "")
-	cfg := &config.Config{APIKey: "pat-on-disk"}
+	cfg := &config.Config{APIKey: "secret-on-disk"}
 	if UsingAPIKey() {
-		t.Fatal("UsingAPIKey reads the env var only and must not see a stored PAT")
+		t.Fatal("UsingAPIKey reads the env var only and must not see a stored secret")
 	}
-	if !Kind(cfg).IsPAT() {
-		t.Fatal("Kind must see a stored PAT; this is the difference between the two")
+	if !Kind(cfg).IsSecretCredential() {
+		t.Fatal("Kind must see a stored secret; this is the difference between the two")
 	}
 }

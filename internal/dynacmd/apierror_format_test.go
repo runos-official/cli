@@ -2,41 +2,73 @@ package dynacmd
 
 import (
 	"testing"
+
+	"github.com/runos-official/cli/internal/auth"
 )
 
 func TestFormatAuthError(t *testing.T) {
 	t.Parallel()
 	t.Run("non-401 returns false", func(t *testing.T) {
-		_, ok := formatAuthError(&APIError{StatusCode: 500, Body: []byte(`{"error":"boom"}`)}, true)
+		_, ok := formatAuthError(&APIError{StatusCode: 500, Body: []byte(`{"error":"boom"}`)}, auth.CredentialEnvKey)
 		if ok {
 			t.Error("expected false for non-401")
 		}
 	})
 	t.Run("non-APIError returns false", func(t *testing.T) {
-		_, ok := formatAuthError(errString("transport: connection refused"), true)
+		_, ok := formatAuthError(errString("transport: connection refused"), auth.CredentialEnvKey)
 		if ok {
 			t.Error("expected false for non-APIError")
 		}
 	})
-	t.Run("401 on a PAT surfaces the PAT hints", func(t *testing.T) {
-		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, true)
+	t.Run("401 on an env-sourced secret warns that RUNOS_API_KEY overrides a fix", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, auth.CredentialEnvKey)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
 		}
-		for _, want := range []string{"authentication refused", "Invalid token", "RUNOS_API_KEY", "RUNOS_API_URL", "api-keys list"} {
+		for _, want := range []string{"authentication refused", "Invalid token", "RUNOS_API_KEY overrides", "RUNOS_API_URL"} {
 			if !contains(msg, want) {
 				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
 			}
+		}
+		// Story 343 / FCR2030: conductor's 401 body carries no verified
+		// credentialType, so the checklist must never claim this secret
+		// is specifically a Personal Access Token. An Account API Key
+		// hits this exact path and must get the same, type-neutral advice.
+		if contains(msg, "PAT") {
+			t.Errorf("a secret credential with no verified type must not be called a PAT, got:\n%s", msg)
+		}
+		// Finding 1107: must not name `account api-keys add/list` as THE
+		// fix (those are legacy-only commands), only as one place a legacy
+		// key's state can be checked.
+		if contains(msg, "mint a new one via") {
+			t.Errorf("must not prescribe a legacy-only command as the fix for an unverified-type credential, got:\n%s", msg)
+		}
+	})
+	t.Run("401 on a stored secret points at login/logout, not the env var", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, auth.CredentialStoredKey)
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		for _, want := range []string{"runos login --api-key", "runos logout", "RUNOS_API_URL"} {
+			if !contains(msg, want) {
+				t.Errorf("expected %q in formatted message, got:\n%s", want, msg)
+			}
+		}
+		if contains(msg, "RUNOS_API_KEY overrides") {
+			t.Errorf("a stored-secret refusal must not warn about the env var, which is a different source, got:\n%s", msg)
+		}
+		if contains(msg, "PAT") {
+			t.Errorf("a secret credential with no verified type must not be called a PAT, got:\n%s", msg)
 		}
 	})
 	/*
 	 MEASURED ON A LIVE MACHINE, 2026-08-31. An operator on a browser sign-in, pointed at a conductor
 	 that would not accept their token, was told to audit `RUNOS_API_KEY` and to run
-	 `runos account api-keys list`. They had no PAT. All three lines were about a credential they
-	 were not using, and the one command that would have helped was not among them.
+	 `runos account api-keys list`. They had no secret credential. All three lines were about a
+	 credential they were not using, and the one command that would have helped was not among them.
 	*/
-	t.Run("401 on a browser sign-in never mentions a PAT", func(t *testing.T) {
-		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, false)
+	t.Run("401 on a browser sign-in never mentions a secret credential", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, auth.CredentialInteractive)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
 		}
@@ -55,7 +87,7 @@ func TestFormatAuthError(t *testing.T) {
 	})
 	t.Run("401 with reason=revoked surfaces the timestamp distinctly", func(t *testing.T) {
 		body := []byte(`{"error":"Invalid token","reason":"revoked","revokedAt":"2026-05-12T10:11:12Z"}`)
-		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body}, true)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body}, auth.CredentialEnvKey)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
 		}
@@ -67,7 +99,7 @@ func TestFormatAuthError(t *testing.T) {
 	})
 	t.Run("401 with reason=expired surfaces the timestamp distinctly", func(t *testing.T) {
 		body := []byte(`{"error":"Invalid token","reason":"expired","expiredAt":"2026-05-12T10:11:12Z"}`)
-		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body}, true)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body}, auth.CredentialEnvKey)
 		if !ok {
 			t.Fatal("expected ok=true on 401")
 		}
@@ -78,7 +110,7 @@ func TestFormatAuthError(t *testing.T) {
 		}
 	})
 	t.Run("401 with unparseable body still gets hints", func(t *testing.T) {
-		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`not-json`)}, true)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`not-json`)}, auth.CredentialEnvKey)
 		if !ok {
 			t.Fatal("expected ok=true on 401 even when body is not JSON")
 		}

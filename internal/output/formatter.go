@@ -186,8 +186,19 @@ func (f *Formatter) Format(data []byte, outputDef *manifest.Output) error {
 }
 
 func (f *Formatter) formatObject(data []byte, fields []string) error {
+	// Story 343 / FCR2030, finding 1250 point 2: decode with UseNumber,
+	// matching Format's own --json branch above. Without it, a number
+	// outside float64's exact range made ONLY this decode fail
+	// (strconv.ParseFloat ErrRange) even on an otherwise well-formed
+	// response, falling back to printing `data` raw and unformatted
+	// instead of rendering it through the normal per-field table path --
+	// a divergence a caller validating "will this decode the way the
+	// renderer renders it" (internal/dynacmd's credential guard) could
+	// not see from outside this package.
 	var item map[string]any
-	if err := json.Unmarshal(data, &item); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&item); err != nil {
 		fmt.Println(string(data))
 		return nil
 	}
@@ -614,6 +625,10 @@ func formatValueWithIndent(v any, indent int) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case json.Number:
+		// Decoded with UseNumber (formatObject, Format's --json branch):
+		// the exact original digit text, never rounded through float64.
+		return val.String()
 	case float64:
 		if val == float64(int(val)) {
 			return fmt.Sprintf("%d", int(val))

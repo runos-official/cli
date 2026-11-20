@@ -44,5 +44,6 @@ func (e *Executor) executeWithInput(cmdDef manifest.Command, positionalArgs []st
 	if cid == "" {
 		cid = cfg.GetDefaultClusterID()
 	}
-	return e.dispatchWithOptions(cmdDef, positionalArgs, input, cid, cfg, token, options)
+	respBody, _, err := e.dispatchWithOptions(cmdDef, positionalArgs, input, cid, cfg, token, options)
+	return respBody, err
 }
