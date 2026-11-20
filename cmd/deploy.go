@@ -218,7 +218,12 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if !scopedMode {
 			app, err := svc.GetApp(flagApp)
 			if err != nil {
-				return fmt.Errorf("failed to look up app %s: %w", flagApp, err)
+				// Finding 1447 (repeat of 1435): this read is outside
+				// the minimal deploy grant and this refusal is
+				// terminal -- no later gate runs -- so it is exactly
+				// where an app-scoped key needs the --scoped hint, not
+				// only the four sites finding 1435 originally named.
+				return fmt.Errorf("failed to look up app %s: %w", flagApp, hintScopedModeOn401Or403(err))
 			}
 			if app == nil {
 				return fmt.Errorf("app %s not found on cluster %s", flagApp, cid)
@@ -1229,7 +1234,9 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	deps, err := svc.GetAppDependencies(deployConfig.ID)
 	if err != nil {
 		if !isAPINotFound(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", err)
+			// Finding 1447: same fail-open shape as the other
+			// preflight-read warnings, so it gets the same hint.
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch dependencies: %v\n", hintScopedModeOn401Or403(err))
 		}
 	} else {
 		result.deps = deps
@@ -1256,7 +1263,7 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	// dependencies fetch above (I3-D).
 	if secretEnvVars, err := svc.GetAppSecretEnvVars(deployConfig.ID); err != nil {
 		if !isAPINotFound(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch secret env vars: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch secret env vars: %v\n", hintScopedModeOn401Or403(err))
 		}
 	} else {
 		result.secretEnvVars = secretEnvVars
@@ -1277,7 +1284,7 @@ func syncAppState(svc *deploy.Service, deployConfig *deploy.DeployConfig, config
 	// Plain side. Same 404 suppression (I3-D).
 	if envVars, err := svc.GetAppEnvVars(deployConfig.ID); err != nil {
 		if !isAPINotFound(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch env vars: %v\n", hintScopedModeOn401Or403(err))
 		}
 	} else {
 		result.envVars = envVars
@@ -1360,7 +1367,9 @@ func preDeployCodeDriftCheck(cfg *config.Config, token, cid, configPath string, 
 	status, err := apps.ComputeCodeVersionStatus(appsSvc, cid, localApp.ID, filepath.Dir(configPath))
 	if err != nil {
 		if force {
-			fmt.Fprintf(os.Stderr, "Warning: pre-deploy code drift check failed: %v\n", err)
+			// Finding 1447: --force makes this branch fail-open, the
+			// same shape as the other warning-only preflight reads.
+			fmt.Fprintf(os.Stderr, "Warning: pre-deploy code drift check failed: %v\n", hintScopedModeOn401Or403(err))
 			fmt.Fprintln(os.Stderr, "--force was passed, proceeding with deploy.")
 			return nil
 		}
