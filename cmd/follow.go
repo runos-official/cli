@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -34,6 +35,7 @@ still observing progress via stderr.`,
 
 func init() {
 	followCmd.Flags().BoolP("json", "j", false, "Emit terminal job status as a JSON envelope on stdout; route human progress lines to stderr")
+	addScopedModeFlag(followCmd)
 }
 
 func runFollow(cmd *cobra.Command, args []string) error {
@@ -50,13 +52,12 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	}
 
 	jsonOutput, _ := cmd.Flags().GetBool("json")
-	if !jsonOutput {
-		return jobs.FollowJob(jobID)
-	}
+	// Declared scoped mode (story 346, acceptance criterion 6; CR 26).
+	// The CLI never infers "scoped" from the job id or anything else
+	// about this invocation -- the caller states it, with --scoped or
+	// RUNOS_SCOPED=1.
+	scopedMode := scopedModeFromFlags(cmd)
 
-	// --json: human progress on stderr, final JobStatus as a single JSON
-	// document on stdout. Mirrors the post-#93 deploy --follow --json
-	// contract so CI consumers can pipe stdout into jq. Issue 99.
 	svc, err := jobs.NewService()
 	if err != nil {
 		return err
@@ -64,14 +65,53 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	final, followErr := jobs.FollowJobWithServiceToWriterResult(ctx, svc, jobID, os.Stderr)
+	followWriter := io.Writer(os.Stdout)
+	if jsonOutput {
+		followWriter = os.Stderr
+	}
 
-	// Emit the terminal response captured by the poll that ended follow.
-	// Unknown fields remain available without an extra status read.
-	if final == nil {
+	// Story 346 S4 (scoped) / default mode (unchanged from before this
+	// story): the follow primitive is chosen by the declared mode, not
+	// probed for. Scoped mode reads only GET
+	// /jobs/:jobId/deployment-progress, with every refusal final, first
+	// read and later poll alike -- never a retry through the general
+	// job/work-item/log follow. Default mode is exactly the plain
+	// general-route follow this command used before this story.
+	var progressResult *jobs.DeploymentProgress
+	var jobResult *jobs.JobStatus
+	var followErr error
+	switch {
+	case scopedMode:
+		progressResult, followErr = jobs.FollowDeploymentProgressToWriterResult(ctx, svc, jobID, followWriter)
+	case jsonOutput:
+		jobResult, followErr = jobs.FollowJobWithServiceToWriterResult(ctx, svc, jobID, followWriter)
+	default:
+		followErr = jobs.FollowJobWithServiceToWriter(ctx, svc, jobID, followWriter)
+	}
+
+	if !jsonOutput {
 		return followErr
 	}
-	out, mErr := json.MarshalIndent(final, "", "  ")
+
+	// --json: human progress already went to stderr above; the final
+	// JobStatus shape (id/type/status/progress/currentStep/error) still
+	// emits as a single JSON document on stdout, exactly as before
+	// (finding 1351: switching the underlying read to the sanitized
+	// progress endpoint must not change the published --json contract).
+	// jobs.ProgressToJobStatus maps a progress-served follow into that
+	// same shape; the raw DeploymentProgress fields are never emitted
+	// here. Mirrors the post-#93 deploy --follow --json contract so CI
+	// consumers can pipe stdout into jq. Issue 99.
+	var terminal *jobs.JobStatus
+	switch {
+	case progressResult != nil:
+		terminal = jobs.ProgressToJobStatus(progressResult)
+	case jobResult != nil:
+		terminal = jobResult
+	default:
+		return followErr
+	}
+	out, mErr := json.MarshalIndent(terminal, "", "  ")
 	if mErr != nil {
 		if followErr != nil {
 			return followErr

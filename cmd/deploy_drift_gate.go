@@ -85,7 +85,9 @@ func preDeployDriftCheck(cfg *config.Config, token, cid, configPath string, forc
 			fmt.Fprintln(os.Stderr, "     prepare step to surface its own 404; doesn't re-create the app).")
 			return fmt.Errorf("app deleted server-side; clear `id:` from yaml or pass --force")
 		}
-		fmt.Fprintf(os.Stderr, "Warning: pre-deploy drift check failed: %v\n", err)
+		// Finding 1447: same fail-open shape as the domain-removal
+		// gate's warning (cmd/deploy.go), so it gets the same hint.
+		fmt.Fprintf(os.Stderr, "Warning: pre-deploy drift check failed: %v\n", hintScopedModeOn401Or403(err))
 		fmt.Fprintf(os.Stderr, "Proceeding with deploy. Run 'runos apps diff %s' manually to verify.\n", configPath)
 		return nil
 	}

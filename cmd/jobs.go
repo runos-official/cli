@@ -44,5 +44,6 @@ Example:
 
 func init() {
 	jobsFollowCmd.Flags().BoolP("json", "j", false, "Emit terminal job status as a JSON envelope on stdout; route human progress lines to stderr")
+	addScopedModeFlag(jobsFollowCmd)
 	jobsCmd.AddCommand(jobsFollowCmd)
 }
