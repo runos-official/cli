@@ -164,6 +164,70 @@ func TestExecute_MalformedInventoryWithDecodableFirstValueIsRefused(t *testing.T
 	}
 }
 
+// Finding 1357 (repeat of 1323): guardCredentialResponse's boundary
+// whitespace check (findings 1323/1349, rework cycle 1) ran before the
+// guard ever tried to decode the body, so it refused a genuine
+// PLAIN-TEXT response (not JSON at all) whenever a non-breaking space
+// sat at either end, even though finding 1323 required the guard to
+// keep its existing policy for non-JSON text. Exercises the real
+// Executor.Execute path, in both output modes, with the loopback
+// account/api-keys/list response the review's own probe used.
+func TestExecute_PlainTextInventoryWithBoundaryWhitespace(t *testing.T) {
+	listCmd := manifest.Command{
+		Command:  "account/api-keys/list",
+		Method:   http.MethodGet,
+		Endpoint: "/:aid/api-keys",
+		Output:   &manifest.Output{Type: "object"},
+	}
+	const plainText = "credential inventory ready"
+	cases := []struct {
+		name          string
+		body          string
+		wantErr       bool
+		wantInStdout  string
+		wantNotStdout string
+	}{
+		{name: "plain text with no boundary whitespace prints", body: plainText, wantInStdout: plainText},
+		{name: "plain text with non-breaking-space boundary still prints", body: " " + plainText + " ", wantInStdout: plainText},
+		{name: "legal JSON whitespace boundary around a decodable value still prints", body: " \t{\"id\":\"k1\"}\r\n", wantInStdout: "k1"},
+		{name: "a trimSpace-only byte before a decodable value is refused before advisory output", body: "\v{\"id\":\"k1\"}", wantErr: true, wantNotStdout: "k1"},
+	}
+	for _, c := range cases {
+		for _, jsonOutput := range []bool{false, true} {
+			mode := "text"
+			if jsonOutput {
+				mode = "json"
+			}
+			t.Run(c.name+"/"+mode, func(t *testing.T) {
+				srv := warnStub(t, http.StatusOK, c.body)
+				warnEnv(t, localhostURL(srv.URL))
+				cmd := warnCmd(t, listCmd, jsonOutput, false)
+				exec := NewExecutor(localhostURL(srv.URL))
+
+				read := captureSplit(t)
+				err := exec.Execute(cmd, nil, listCmd)
+				stdout, stderr := read()
+
+				if c.wantErr {
+					if err == nil {
+						t.Fatalf("expected a refusal, got nil, stdout=%q", stdout)
+					}
+					if c.wantNotStdout != "" && (strings.Contains(stdout, c.wantNotStdout) || strings.Contains(stderr, c.wantNotStdout)) {
+						t.Errorf("a refusal must stop before advisory output, stdout=%q stderr=%q", stdout, stderr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Execute: %v", err)
+				}
+				if c.wantInStdout != "" && !strings.Contains(stdout, c.wantInStdout) {
+					t.Errorf("expected stdout to contain %q, got %q", c.wantInStdout, stdout)
+				}
+			})
+		}
+	}
+}
+
 func TestExecute_CredentialShapedETagIsRefused_JSONEnvelope(t *testing.T) {
 	showCmd := manifest.Command{
 		Command:  "account/personal-access-tokens/show",
