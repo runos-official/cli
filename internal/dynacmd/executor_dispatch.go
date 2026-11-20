@@ -43,7 +43,7 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 	// Finding 1431: checked first, before buildEndpoint, so a GET's
 	// query string is never even constructed with a bearer-shaped grant
 	// subject in it, and no request of any kind reaches the network.
-	if err := refuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
+	if err := RefuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
 		return nil, nil, err
 	}
 	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
@@ -69,7 +69,7 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 	// and a DELETE route never reads a query string. Pulled out here,
 	// after path-param filtering, so it applies uniformly regardless of
 	// method.
-	requestBody, headers := splitHeaderFields(requestBody, cmdDef)
+	requestBody, headers := SplitHeaderFields(requestBody, cmdDef)
 	// The deadline covers the response read as well, so the cancel stays
 	// live until this function has drained the body (A4).
 	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, body))

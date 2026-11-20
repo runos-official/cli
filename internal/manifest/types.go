@@ -54,7 +54,7 @@ type Field struct {
 	// finding 1151): Roid's handlers decode a strict body schema and
 	// refuse an unknown member, and a DELETE route never reads a query
 	// string, so either placement fails every request. See
-	// internal/dynacmd/executor_request.go's splitHeaderFields and
+	// internal/dynacmd/executor_request.go's SplitHeaderFields and
 	// headerNameFromFieldName for the field-name-to-header-name mapping.
 	Location string `yaml:"location,omitempty" json:"location,omitempty"`
 	// AllowEmpty opts a required string field out of the CLI's

@@ -11,7 +11,7 @@ import (
 )
 
 // Finding 1194 (CLI story 344 criterion 5): account/access/grants show and
-// add lost their response ETag because injectETagIntoCredentialResponse's
+// add lost their response ETag because InjectETagIntoCredentialResponse's
 // family registry excluded this family (credential_output.go), and the
 // published withdraw shape needed the same header-only-ifMatch proof story
 // 343 gave the typed credential families. The two fixtures below mirror
@@ -55,7 +55,7 @@ type grantDynamicPathCase struct {
 	args   []string
 	body   map[string]any
 	// wantETagInOutput proves the fix for add/show (Finding 1194, first
-	// half): injectETagIntoCredentialResponse must no longer exclude this
+	// half): InjectETagIntoCredentialResponse must no longer exclude this
 	// family, so the response's ETag header reaches the printed output.
 	wantETagInOutput bool
 	// wantIfMatchHeader proves the published withdraw DELETE shape
@@ -143,12 +143,12 @@ func TestAccountAccessGrantsDynamicPathTransport(t *testing.T) {
 			}
 
 			if tc.wantETagInOutput {
-				if err := guardCredentialResponse(tc.cmdDef, respBody); err != nil {
-					t.Fatalf("guardCredentialResponse refused an ordinary grant response: %v", err)
+				if err := GuardCredentialResponse(tc.cmdDef, respBody); err != nil {
+					t.Fatalf("GuardCredentialResponse refused an ordinary grant response: %v", err)
 				}
-				withETag, err := injectETagIntoCredentialResponse(tc.cmdDef, respBody, headers)
+				withETag, err := InjectETagIntoCredentialResponse(tc.cmdDef, respBody, headers)
 				if err != nil {
-					t.Fatalf("injectETagIntoCredentialResponse: %v", err)
+					t.Fatalf("InjectETagIntoCredentialResponse: %v", err)
 				}
 				var got map[string]any
 				if err := json.Unmarshal(withETag, &got); err != nil {

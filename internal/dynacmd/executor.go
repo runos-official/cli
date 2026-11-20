@@ -352,7 +352,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// never ran for it. Scan and, if needed, replace err with a generic
 		// refusal BEFORE any of the error-specific formatters below (or the
 		// --json error envelope) touch its body.
-		err = guardCredentialErrorBody(cmdDef, err)
+		err = GuardCredentialErrorBody(cmdDef, err)
 		// Conductor's services delete returns 409 with a structured
 		// dependents list when other apps/services reference the
 		// target. Render it as a multi-line message so the user
@@ -396,7 +396,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	}
 
 	// Story 343 / FCR2030: for a credential command family only (see
-	// guardCredentialResponse), refuse to let a secret-shaped bearer value
+	// GuardCredentialResponse), refuse to let a secret-shaped bearer value
 	// reach the terminal or a --json consumer from anywhere other than
 	// the one-shot issuance field, BEFORE any other handling of a
 	// successful response: the account-leave config write, the raw-DDL
@@ -404,7 +404,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// emit parts of respBody, and finding 1105 asks that none of them run
 	// ahead of this check on a credential response.
 	//
-	// Runs BEFORE injectETagIntoCredentialResponse below, not after
+	// Runs BEFORE InjectETagIntoCredentialResponse below, not after
 	// (finding 1265, instance 1): that function decodes one JSON value
 	// and RE-ENCODES it to splice the etag field in, which silently
 	// drops any trailing data the original respBody carried -- running
@@ -412,10 +412,10 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// trailing-data-forbidden response through whenever an ETag header
 	// happened to be present. Running the guard first means it still
 	// sees the ORIGINAL bytes, trailing data included.
-	// injectETagIntoCredentialResponse validates the ETag value on its
+	// InjectETagIntoCredentialResponse validates the ETag value on its
 	// own terms (finding 1215, G2) independent of this ordering, so
 	// nothing is lost by no longer re-scanning the etag-augmented body.
-	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
+	if err := GuardCredentialResponse(cmdDef, respBody); err != nil {
 		// I4-G parity: a guard refusal is a failure like any other on the
 		// --json path. Finding 1193: this used to `return err` directly,
 		// bypassing emitJSONErrorAndSilence, so a --json caller got a
@@ -433,7 +433,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 	// and for a list response (no per-item ETag exists). Validates the
 	// ETag itself and never panics on a non-object body (finding 1215,
 	// G2), independent of the guard having already run above.
-	respBody, err = injectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
+	respBody, err = InjectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
 	if err != nil {
 		if jsonOutput {
 			return emitJSONErrorAndSilence(cmd, err)
@@ -1097,7 +1097,7 @@ func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 // ignored: the caller got progress text on stdout and nothing to parse.
 // Regression target: goal 19 A3 / goal 21 B11.
 func renderFollowResponse(cmdDef manifest.Command, respBody []byte, jsonOutput bool) error {
-	if err := guardCredentialResponse(cmdDef, respBody); err != nil {
+	if err := GuardCredentialResponse(cmdDef, respBody); err != nil {
 		return err
 	}
 	return output.NewFormatter(jsonOutput).Format(respBody, cmdDef.Output)

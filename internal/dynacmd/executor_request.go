@@ -107,7 +107,7 @@ func headerFieldNames(cmdDef manifest.Command) map[string]bool {
 	return names
 }
 
-// splitHeaderFields moves every field cmdDef declares with Location
+// SplitHeaderFields moves every field cmdDef declares with Location
 // "header" (review finding 1151: Conductor's typed credential-lifecycle
 // commands mark idempotencyKey/ifMatch this way) out of body and into a
 // real http.Header, keyed by the field's canonical HTTP header name
@@ -115,7 +115,7 @@ func headerFieldNames(cmdDef manifest.Command) map[string]bool {
 // callers that go on to unflatten/JSON-encode body never see them.
 // Returns (body, nil) unchanged when cmdDef declares no header field, so
 // every existing command is unaffected.
-func splitHeaderFields(body map[string]any, cmdDef manifest.Command) (map[string]any, http.Header) {
+func SplitHeaderFields(body map[string]any, cmdDef manifest.Command) (map[string]any, http.Header) {
 	names := headerFieldNames(cmdDef)
 	if len(names) == 0 {
 		return body, nil
@@ -165,7 +165,7 @@ func headerNameFromFieldName(name string) string {
 
 // doRequest issues one authenticated request under ctx's deadline. ctx
 // must stay live until the caller has read the response body. headers
-// carries any Location:"header" field values (splitHeaderFields); nil
+// carries any Location:"header" field values (SplitHeaderFields); nil
 // or empty is the common case and adds nothing beyond Authorization/
 // Content-Type.
 func (e *Executor) doRequest(ctx context.Context, method, url string, body map[string]any, headers http.Header, token string, options requestOptions) (*http.Response, error) {

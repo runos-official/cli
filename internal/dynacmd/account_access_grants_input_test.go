@@ -84,44 +84,54 @@ func TestRefuseBearerSecretInGrantSubject_EveryFamilyInputIsScanned(t *testing.T
 			t.Fatalf("manifest command %q (from grantSubjectInputFields) has no case in grantSubjectInputCases", command)
 		}
 	}
-	for command, field := range grantSubjectInputFields {
+	for command, fields := range grantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
-		for _, canary := range []string{fakeTypedKey, fakeLegacyPAT, fakeRoidRK} {
-			t.Run(command+"/"+field, func(t *testing.T) {
-				err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, canary)
-				if err == nil {
-					t.Fatalf("a bearer secret in %s was accepted", field)
-				}
-				if strings.Contains(err.Error(), canary) {
-					t.Fatalf("error echoed the secret: %v", err)
-				}
-				if reached {
-					t.Errorf("the server received a request; want zero for a refused subject")
-				}
-			})
+		for _, field := range fields {
+			for _, canary := range []string{fakeTypedKey, fakeLegacyPAT, fakeRoidRK} {
+				t.Run(command+"/"+field, func(t *testing.T) {
+					err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, canary)
+					if err == nil {
+						t.Fatalf("a bearer secret in %s was accepted", field)
+					}
+					if strings.Contains(err.Error(), canary) {
+						t.Fatalf("error echoed the secret: %v", err)
+					}
+					if reached {
+						t.Errorf("the server received a request; want zero for a refused subject")
+					}
+				})
+			}
 		}
 	}
 }
 
-// A legitimate public id (add's subject.id) or filter (list's subject)
-// must still reach the server: the new check must not refuse ordinary
-// input (rework instruction: every new refusal gets a passing-case test).
+// A legitimate public id/enum value (add's subject.id, subject.kind) or
+// filter (list's subject) must still reach the server: the new check
+// must not refuse ordinary input (rework instruction: every new refusal
+// gets a passing-case test).
 func TestRefuseBearerSecretInGrantSubject_LegitimateValueStillReachesServer(t *testing.T) {
-	legitimate := map[string]string{
-		"account/access/grants/add":  "key_abc123",
-		"account/access/grants/list": "account_api_key:key_abc",
+	legitimate := map[string]map[string]string{
+		"account/access/grants/add": {
+			"subject.id":   "key_abc123",
+			"subject.kind": "account_api_key",
+		},
+		"account/access/grants/list": {
+			"subject": "account_api_key:key_abc",
+		},
 	}
-	for command, field := range grantSubjectInputFields {
+	for command, fields := range grantSubjectInputFields {
 		tc := grantSubjectInputCases[command]
-		t.Run(command, func(t *testing.T) {
-			err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, legitimate[command])
-			if err != nil {
-				t.Fatalf("legitimate %s value refused: %v", field, err)
-			}
-			if !reached {
-				t.Errorf("the server received no request; want exactly one for a legitimate subject")
-			}
-		})
+		for _, field := range fields {
+			t.Run(command+"/"+field, func(t *testing.T) {
+				err, reached := dispatchGrantSubjectCase(t, tc.cmdDef, tc.baseBody, field, legitimate[command][field])
+				if err != nil {
+					t.Fatalf("legitimate %s value refused: %v", field, err)
+				}
+				if !reached {
+					t.Errorf("the server received no request; want exactly one for a legitimate subject")
+				}
+			})
+		}
 	}
 }
 
