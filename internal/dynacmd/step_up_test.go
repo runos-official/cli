@@ -42,6 +42,12 @@ type stepUpCase struct {
 	isIssuance   bool
 	secretField  string
 	secretValue  string
+	// slowConfirmation makes the fake /cli/stepup/:id poller answer
+	// "pending" long enough that the accumulated real WaitForStepUp
+	// sleep exceeds apitimeout.Default, so the confirmed retry only
+	// succeeds if it runs under a deadline created AFTER the wait,
+	// never the challenged request's own (finding 1466).
+	slowConfirmation bool
 }
 
 var stepUpTestCases = []stepUpCase{
@@ -215,6 +221,16 @@ func TestStepUpAndLifecycleTransport(t *testing.T) {
 	}
 }
 
+// stepUpPendingPollsBeforeProven is the number of "pending" polls the
+// slowConfirmation server sends before "proven". DefaultStepUpWait's
+// interval is 2s, and WaitForStepUp sleeps BEFORE each retry poll, so
+// the Nth poll happens after (N-1)*interval of accumulated real sleep:
+// 16 pending polls put the 17th (proven) poll at ~32s elapsed, past
+// apitimeout.Default (30s) -- exactly the window finding 1466 needs to
+// distinguish a fresh retry deadline from the challenged request's
+// stale one.
+const stepUpPendingPollsBeforeProven = 16
+
 func runStepUpCase(t *testing.T, tc stepUpCase) {
 	t.Helper()
 	const stepUpID = "su_12345"
@@ -223,11 +239,20 @@ func runStepUpCase(t *testing.T, tc stepUpCase) {
 	var businessHeaders []http.Header
 	var businessBodies [][]byte
 	callCount := 0
+	stepUpPolls := 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/cli/stepup/") {
+			mu.Lock()
+			stepUpPolls++
+			n := stepUpPolls
+			mu.Unlock()
+			state := "proven"
+			if tc.slowConfirmation && n <= stepUpPendingPollsBeforeProven {
+				state = "pending"
+			}
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"state":"proven"}`))
+			_, _ = w.Write([]byte(`{"state":"` + state + `"}`))
 			return
 		}
 		mu.Lock()
@@ -333,6 +358,36 @@ func lifecycleResponseBody(tc stepUpCase) string {
 	}
 	encoded, _ := json.Marshal(obj)
 	return string(encoded)
+}
+
+// TestStepUpRetryUsesFreshDeadlineAfterSlowConfirmation is finding
+// 1466's closure test: completeStepUpIfRequired previously reused the
+// CHALLENGED request's own context (apitimeout.Default, 30s for every
+// step-up-eligible command) for the confirmed retry, created before the
+// human confirmation wait. A real confirmation routinely takes longer
+// than the residual budget left in that 30s window, so the retry failed
+// with a deadline-exceeded error even though the step-up had already
+// succeeded and been spent on Roid's side -- refusing legitimate,
+// already-confirmed work.
+//
+// Runs one step-up-eligible command (account/personal-access-tokens/add)
+// through a real, un-shortened WaitForStepUp: the fake /cli/stepup/
+// poller answers "pending" for stepUpPendingPollsBeforeProven (16) real
+// 2-second polls -- about 32s of actual elapsed time, past the 30s
+// apitimeout.Default -- before answering "proven". This test takes
+// about 32 seconds to run by design: that elapsed time IS the defect
+// window the fix must survive.
+//
+// Fails on the pre-fix code (the retry's deadline, inherited from the
+// challenged request, has already expired) and passes after it (the
+// retry gets its own fresh deadline, started after the wait returns).
+func TestStepUpRetryUsesFreshDeadlineAfterSlowConfirmation(t *testing.T) {
+	tc := stepUpTestCases[0] // account/personal-access-tokens/add
+	if tc.name != "account/personal-access-tokens/add" || !tc.challenged {
+		t.Fatalf("stepUpTestCases[0] is %q (challenged=%v); this test expects the PAT add row at index 0", tc.name, tc.challenged)
+	}
+	tc.slowConfirmation = true
+	runStepUpCase(t, tc)
 }
 
 // TestStepUpNeverAttemptedForIneligibleCommand proves S3 at the

@@ -92,7 +92,7 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 		// step-up-shaped one from an unlisted command, falls straight
 		// through unchanged.
 		if retryBody, retryHeaders, retryErr, handled := e.completeStepUpIfRequired(
-			ctx, cmdDef, endpoint, requestBody, headers, token, options, cfg, apiErr,
+			cmdDef, endpoint, requestBody, headers, token, options, cfg, apiErr,
 		); handled {
 			return retryBody, retryHeaders, retryErr
 		}

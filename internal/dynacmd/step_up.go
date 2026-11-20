@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/runos-official/cli/internal/api"
+	"github.com/runos-official/cli/internal/apitimeout"
 	"github.com/runos-official/cli/internal/config"
 	"github.com/runos-official/cli/internal/manifest"
 	"github.com/runos-official/cli/internal/roidapi"
@@ -53,7 +54,6 @@ var stepUpEligibleCommands = map[string]bool{
 // nothing here that simulates a human; it only reacts to what the
 // server actually sent.
 func (e *Executor) completeStepUpIfRequired(
-	ctx context.Context,
 	cmdDef manifest.Command,
 	endpoint string,
 	requestBody map[string]any,
@@ -86,6 +86,17 @@ func (e *Executor) completeStepUpIfRequired(
 		retryHeaders = http.Header{}
 	}
 	retryHeaders.Set("X-RunOS-Step-Up", su.ID)
+
+	// Finding 1466: the challenged request's own context (apitimeout.Default,
+	// 30s for every one of these commands) was created BEFORE the human
+	// step-up wait above, which can legitimately take minutes. Reusing
+	// that context here would fail the confirmed retry -- after the
+	// step-up already succeeded and was already spent on Roid's side --
+	// the moment the original 30s budget runs out, which is the normal
+	// case, not the exception. A fresh deadline, started now, after the
+	// human has already confirmed.
+	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, requestBody))
+	defer cancel()
 	resp, derr := e.doRequest(ctx, cmdDef.Method, endpoint, requestBody, retryHeaders, token, options)
 	if derr != nil {
 		return nil, nil, fmt.Errorf("request failed: %w", derr), true
