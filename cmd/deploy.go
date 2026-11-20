@@ -863,18 +863,19 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 // authz.conflicting_target); this is the response-side half the plan's
 // "Immutable target" section separately requires.
 func prepareDeployment(svc *deploy.Service, deployConfig *deploy.DeployConfig) (*deploy.PrepareResponse, error) {
-	var prepResp *deploy.PrepareResponse
-	var err error
-	if deployConfig.ID != "" && !deployConfig.NeedsBroadPreparation() {
-		prepResp, err = svc.PrepareExistingAppDeployment(deployConfig.ID, deployConfig)
-		if err != nil {
-			return nil, deploy.ExplainAppScopedPrepareRefusal(err)
-		}
-	} else {
-		prepResp, err = svc.PrepareDeployment(deployConfig)
-		if err != nil {
-			return nil, err
-		}
+	// Route selection reverted, pending change request (story 346,
+	// rework cycle 2, findings 1389/1408). cmd/deploy.go always calls
+	// the broad, cluster-scoped route, matching behavior from before
+	// this story, until a verified credential-type signal exists: see
+	// the change request text for the full evidence. D1 (app-scoped
+	// dispatch for a scoped credential) is NOT implemented by this
+	// submission. deploy.PrepareExistingAppDeployment (the Service
+	// method matching POST /:aid/:cid/apps/:id/prepare-cli-deployment)
+	// stays defined and tested; only the automatic selection of it is
+	// reverted.
+	prepResp, err := svc.PrepareDeployment(deployConfig)
+	if err != nil {
+		return nil, err
 	}
 	if err := deploy.ValidatePreparedTarget(deployConfig.ID, prepResp); err != nil {
 		return nil, err

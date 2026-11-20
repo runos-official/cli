@@ -167,14 +167,28 @@ func FollowAnyJobToWriterResult(ctx context.Context, svc *Service, jobID string,
 }
 
 // ProgressToJobStatus maps a DeploymentProgress snapshot into the
-// stable JobStatus shape (id/type/status/progress/currentStep/error)
-// that `runos follow --json` / `runos jobs follow --json` have always
+// JobStatus shape (id/type/status/progress/currentStep/error) that
+// `runos follow --json` / `runos jobs follow --json` have always
 // published, so switching the underlying read to the sanitized
-// endpoint does not change the document shape a CI consumer parses
-// (story 346, finding 1351). The mapping is necessarily lossy -- there
-// is no work-item list, no per-item log, no teardown block, because
-// the sanitized endpoint carries none of that by design -- but every
-// field this shape already promised keeps the same name and meaning.
+// endpoint keeps the same KEY SET a CI consumer parses (story 346,
+// finding 1351). Two values are not preserved exactly, named here and
+// in the CHANGELOG rather than left for a consumer to discover
+// (finding 1409):
+//
+//   - Type is the literal constant "deploy", not a real job type. The
+//     sanitized runos.deployment-progress.v1 contract carries no job
+//     type field at all (it does not even distinguish a CLI upload
+//     from a VCS deploy), so there is no real value to forward; a
+//     general-route-served follow's Type instead comes verbatim from
+//     Conductor.
+//   - Status can be "timed_out", a DeploymentProgress state the
+//     general route's JobStatus never published (JobStatus.IsTerminal
+//     does not recognise it). A consumer that switches on `.status`
+//     sees this one new member only for a progress-served follow.
+//
+// The mapping is also lossy in shape, not only value: there is no
+// work-item list, no per-item log, no teardown block, because the
+// sanitized endpoint carries none of that by design.
 func ProgressToJobStatus(p *DeploymentProgress) *JobStatus {
 	js := &JobStatus{
 		ID:     p.JobID,

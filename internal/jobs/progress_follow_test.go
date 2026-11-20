@@ -317,3 +317,82 @@ func TestFollowAnyJobToWriterResult_NeverFallsBackAfterProgressAdmits(t *testing
 		t.Errorf("a mid-follow scoped refusal must never fall back to a legacy route; paths = %v", log.paths)
 	}
 }
+
+// TestProgressToJobStatus is the colocated unit test finding 1409
+// asks for: a table over every published DeploymentProgress state
+// (running, completed, failed, cancelled, timed_out), asserting the
+// exact JobStatus fields the mapping produces. A mutation that dropped
+// ID or Status, or that stopped setting Error on a terminal failure
+// state, would fail one of these rows.
+func TestProgressToJobStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		progress   *DeploymentProgress
+		wantStatus string
+		wantError  string
+		wantStep   string
+		wantProg   string
+	}{
+		{
+			name:       "running, no stages yet",
+			progress:   &DeploymentProgress{JobID: testJobID, State: "running"},
+			wantStatus: "running",
+		},
+		{
+			name: "running with a stage",
+			progress: &DeploymentProgress{JobID: testJobID, State: "running", Stages: []ProgressStage{
+				{ID: "source_fetch", State: "completed", Message: "completed"},
+				{ID: "build_start", State: "running", Message: "started"},
+			}},
+			wantStatus: "running",
+			wantStep:   "build_start",
+			wantProg:   "started",
+		},
+		{
+			name:       "completed",
+			progress:   &DeploymentProgress{JobID: testJobID, State: "completed"},
+			wantStatus: "completed",
+		},
+		{
+			name:       "failed sets Error",
+			progress:   &DeploymentProgress{JobID: testJobID, State: "failed"},
+			wantStatus: "failed",
+			wantError:  "deployment failed",
+		},
+		{
+			name:       "cancelled sets Error",
+			progress:   &DeploymentProgress{JobID: testJobID, State: "cancelled"},
+			wantStatus: "cancelled",
+			wantError:  "deployment cancelled",
+		},
+		{
+			name:       "timed_out sets Error (a state JobStatus never otherwise publishes)",
+			progress:   &DeploymentProgress{JobID: testJobID, State: "timed_out"},
+			wantStatus: "timed_out",
+			wantError:  "deployment timed_out",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProgressToJobStatus(tc.progress)
+			if got.ID != testJobID {
+				t.Errorf("ID = %q, want %q", got.ID, testJobID)
+			}
+			if got.Type != "deploy" {
+				t.Errorf("Type = %q, want the synthesized constant %q", got.Type, "deploy")
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Error != tc.wantError {
+				t.Errorf("Error = %q, want %q", got.Error, tc.wantError)
+			}
+			if got.CurrentStep != tc.wantStep {
+				t.Errorf("CurrentStep = %q, want %q", got.CurrentStep, tc.wantStep)
+			}
+			if got.Progress != tc.wantProg {
+				t.Errorf("Progress = %q, want %q", got.Progress, tc.wantProg)
+			}
+		})
+	}
+}

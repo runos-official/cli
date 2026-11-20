@@ -36,17 +36,20 @@ func (r *requestLog) hit(path string) bool {
 	return false
 }
 
-// TestDeployDispatch_ExistingAppNeverUsesBroadClusterRoute is the
-// prepare/VCS half of story 346 criterion 6's dispatch matrix: for an
-// EXISTING app (deployConfig.ID already set, the shape cmd/deploy.go
-// resolves before calling into this package) native dispatch MUST use
-// the app-scoped preparation route for CLI uploads and the existing
-// app-scoped VCS deploy route, and MUST NEVER reach the broad,
-// cluster-scoped preparation route in either spelling
-// (/prepare-cli-deployment or /prepareCliDeployment) -- that route
-// stays reachable only from the separate new-app-creation path
-// (PrepareDeployment, exercised by the second subtest below), which a
-// minimal apps.deploy grant does not and should not cover.
+// TestDeployDispatch_ExistingAppNeverUsesBroadClusterRoute proves the
+// Service-level client methods for the app-scoped routes hit the
+// correct URLs: PrepareExistingAppDeployment calls the app-scoped
+// preparation route, never the broad cluster-scoped one in either
+// spelling, and DeployVCS calls its existing app-scoped route.
+//
+// As of story 346 rework cycle 2, cmd/deploy.go's own dispatch does
+// NOT call PrepareExistingAppDeployment automatically (see
+// cmd/prepareDeployment and the change request raised for findings
+// 1389/1408: the CLI has no way to learn its own credential's
+// verified semantic type, so automatic app-scoped routing broke
+// legacy deploys). This test still pins that the CLIENT METHOD itself
+// -- the HTTP binding to the published contract -- is correct and
+// ready for whatever the change request resolves to.
 func TestDeployDispatch_ExistingAppNeverUsesBroadClusterRoute(t *testing.T) {
 	log := &requestLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

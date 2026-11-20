@@ -594,6 +594,13 @@ func (s *Service) DeployVCS(appID, sha, configPath string, buildArgsCli []BuildA
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+	// Finding 1391: a 2xx with no jobId is not a usable acceptance --
+	// there is nothing to follow and nothing to attribute the
+	// deployment to. Refuse before the caller reports success or
+	// starts a follow.
+	if result.JobID == "" {
+		return nil, fmt.Errorf("VCS deploy response did not name a job")
+	}
 	return &result, nil
 }
 

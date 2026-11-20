@@ -113,11 +113,13 @@ func (s *Service) GetDeploymentProgress(jobID string) (*DeploymentProgress, erro
 	if err := json.Unmarshal(body, &progress); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	// Finding 1328: the endpoint resolves the job entirely from the
-	// path segment, so a response naming a different job id is never
-	// a legitimate answer to this request -- treat it as a protocol
-	// violation rather than trusting it into a caller's local state.
-	if progress.JobID != "" && progress.JobID != jobID {
+	// Findings 1328/1391: the endpoint resolves the job entirely from
+	// the path segment, so the published contract always echoes that
+	// exact job id back. A missing OR a mismatched job id is equally
+	// never a legitimate answer to this request -- treat either as a
+	// protocol violation rather than trusting it into a caller's local
+	// state. (A missing id previously passed this check silently.)
+	if progress.JobID != jobID {
 		return nil, fmt.Errorf("deployment progress response named job %q, requested %q", progress.JobID, jobID)
 	}
 	return &progress, nil
