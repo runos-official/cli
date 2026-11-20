@@ -245,6 +245,14 @@ cmd_advance() {
   if [[ "$head_branch" != "$record" && "$local_sha" != "$remote_sha" ]]; then
     die "$record local ($local_sha) and remote ($remote_sha) disagree after the advance"
   fi
+  local recorded_commit source_commit
+  recorded_commit="$(git rev-parse --verify "refs/remotes/origin/$record")"
+  source_commit="$(git rev-parse --verify "$source_ref^{commit}")"
+  [[ "$recorded_commit" == "$source_commit" ]] \
+    || die "$record on origin does not equal the requested source commit after the advance"
+  fm_fact record_branch "$record"
+  fm_fact record_after "$recorded_commit"
+  fm_fact record_matches_source true
 }
 
 # ---- the prod record: final-check and record ------------------------------

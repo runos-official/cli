@@ -1,0 +1,104 @@
+{
+  "targetVersions": {"clusterAgent": "1.2.5", "nodeAgent": "1.8.7"},
+  "clusters": [
+    {
+      "cid": "cluster-one",
+      "name": "cluster-one",
+      "status": "ok",
+      "clusterAgent": {
+        "online": false,
+        "version": "",
+        "updateAvailable": false,
+        "agentState": "offline",
+        "agentStateLabel": "Offline",
+        "agentStateDetail": "The cluster agent is not connected.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster agent must reconnect before an update can start."
+      },
+      "nodes": [
+        {
+          "nid": "node-offline",
+          "name": "node-offline",
+          "hostname": "node-offline.example.test",
+          "status": "no_heartbeat",
+          "isCp": true,
+          "isWorker": true,
+          "nodeAgentOnline": false,
+          "nodeAgentVersion": "",
+          "updateAvailable": false,
+          "agentState": "offline",
+          "agentStateLabel": "Offline",
+          "agentStateDetail": "The node agent is not connected.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent must reconnect before an update can start."
+        },
+        {
+          "nid": "node-versionless",
+          "name": "node-versionless",
+          "hostname": "node-versionless.example.test",
+          "status": "ready",
+          "isCp": false,
+          "isWorker": true,
+          "nodeAgentOnline": true,
+          "nodeAgentVersion": "",
+          "updateAvailable": false,
+          "agentState": "unknown",
+          "agentStateLabel": "Version unknown",
+          "agentStateDetail": "The node agent did not report a version.",
+          "updateActionAllowed": false,
+          "updateActionReason": "The node agent must report a version before an update can start."
+        },
+        {
+          "nid": "node-current",
+          "name": "node-current",
+          "hostname": "node-current.example.test",
+          "status": "ready",
+          "isCp": false,
+          "isWorker": true,
+          "nodeAgentOnline": true,
+          "nodeAgentVersion": "1.8.7",
+          "updateAvailable": false,
+          "agentState": "up_to_date",
+          "agentStateLabel": "Up to date",
+          "agentStateDetail": "The node agent runs the advertised version.",
+          "updateActionAllowed": true,
+          "updateActionReason": ""
+        },
+        {
+          "nid": "node-future",
+          "name": "node-future",
+          "hostname": "node-future.example.test",
+          "status": "ready",
+          "isCp": false,
+          "isWorker": true,
+          "nodeAgentOnline": true,
+          "nodeAgentVersion": "9.0.0",
+          "updateAvailable": false,
+          "agentState": "future_state",
+          "agentStateLabel": "A later server label",
+          "agentStateDetail": "A later server release supplied this sentence.",
+          "updateActionAllowed": false,
+          "updateActionReason": "A later server release supplied this reason."
+        },
+        {"nid": "node-unreported", "name": "node-unreported"}
+      ]
+    },
+    {
+      "cid": "cluster-two",
+      "name": "cluster-two",
+      "status": "timed_out",
+      "message": "The cluster agent did not answer before the timeout.",
+      "clusterAgent": {
+        "online": false,
+        "version": "",
+        "updateAvailable": false,
+        "agentState": "offline",
+        "agentStateLabel": "Offline",
+        "agentStateDetail": "The cluster agent is not connected.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster agent must reconnect before an update can start."
+      },
+      "nodes": []
+    }
+  ]
+}

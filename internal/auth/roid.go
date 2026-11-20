@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/url"
@@ -25,9 +26,13 @@ var openRoidStore = func() (securestore.Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	service := roidauth.StoreService
+	if os.Getenv("RUNOS_CONFIG_DIR") != "" {
+		service = fmt.Sprintf("%s-%x", service, sha256.Sum256([]byte(dir)))
+	}
 	pass := os.Getenv(PassphraseEnvVar)
 	return securestore.Open(securestore.Options{
-		Service:            roidauth.StoreService,
+		Service:            service,
 		AllowEncryptedFile: pass != "",
 		Passphrase:         []byte(pass),
 		FilePath:           filepath.Join(dir, "roid-credentials.enc"),
@@ -68,7 +73,8 @@ func RoidSession(cfg *config.Config) (*roidauth.Session, error) {
 	}
 	roidMu.Lock()
 	defer roidMu.Unlock()
-	cacheKey := cfg.AuthIssuer + "\x00" + person
+	scope := os.Getenv("RUNOS_CONFIG_DIR")
+	cacheKey := scope + "\x00" + cfg.AuthIssuer + "\x00" + person
 	if s, ok := roidSessions[cacheKey]; ok && (person == "" || s.SignedInPerson() == person) {
 		return s, nil
 	}

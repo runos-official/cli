@@ -30,6 +30,15 @@ func HomeDir() (string, error) {
 // Dir is the CLI's config directory (~/.runos). Exported because the MCP toolset cache, the
 // manifest cache and the update cache live in it.
 func Dir() (string, error) {
+	if dir := os.Getenv("RUNOS_CONFIG_DIR"); dir != "" {
+		if !filepath.IsAbs(dir) {
+			return "", fmt.Errorf("RUNOS_CONFIG_DIR must be an absolute directory")
+		}
+		if testguard.Active() && !testguard.UnderTempDir(dir) {
+			return "", fmt.Errorf("test binary: RUNOS_CONFIG_DIR must be under the temp directory")
+		}
+		return filepath.Clean(dir), nil
+	}
 	home, err := HomeDir()
 	if err != nil {
 		return "", err

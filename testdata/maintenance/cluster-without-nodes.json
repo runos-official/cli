@@ -1,0 +1,28 @@
+{
+  "aid": "aid01",
+  "generatedAt": "2026-11-08T22:05:00Z",
+  "clusters": [
+    {
+      "cid": "cc003",
+      "name": "cluster-three",
+      "clusterFactsFrom": "cache",
+      "collectedAt": "2026-11-08T19:00:00Z",
+      "clusterAgent": {
+        "agentState": "current",
+        "agentStateDetail": "The cluster agent runs the newest version RunOS installs.",
+        "updateActionAllowed": false,
+        "updateActionReason": "The cluster agent is already current.",
+        "version": "1.12.3"
+      },
+      "kubernetes": {
+        "currentPatch": "v1.31.6",
+        "newestPatchInMinor": "v1.31.6",
+        "desiredMinor": "v1.31",
+        "state": "current",
+        "detail": "The cluster runs the newest patch inside v1.31."
+      },
+      "autoUpdateUnits": { "masked": 0, "enabledOutsideRunos": 0, "unknown": 0 },
+      "nodes": []
+    }
+  ]
+}
