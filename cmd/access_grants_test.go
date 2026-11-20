@@ -105,13 +105,20 @@ func TestWithdrawalIsLocalToTheNamedAccountAndNeverCallsGlobalRevoke(t *testing.
 	}
 }
 
-// Finding 1334: a structured refusal from an ordinary (non-step-up,
-// non-412) grant mutation must keep its code, reason, action and scope
-// under --json, not only accessRefusal's human sentence.
+// Finding 1334/1361: a structured refusal from an ordinary (non-step-up,
+// non-412) grant mutation must keep its code, reason, action, scope,
+// requirement, decision_id and message under --json, not only
+// accessRefusal's human sentence.
 func TestAccessJSONErrorEnvelopePreservesStructuredFields(t *testing.T) {
-	err := &roidapi.APIError{Status: 403, Code: "delegation.escalation", Reason: "scope", Action: "apps.deploy", Scope: "acct/a1/cluster/c1"}
+	err := &roidapi.APIError{Status: 403, RefusalFields: roidapi.RefusalFields{
+		Code: "delegation.escalation", Reason: "scope", Action: "apps.deploy", Scope: "acct/a1/cluster/c1",
+		Requirement: "fresh_sign_in", DecisionID: "d_1", Message: "no grant covers this",
+	}}
 	env := accessJSONErrorEnvelope(err)
 	if env["code"] != "delegation.escalation" || env["reason"] != "scope" || env["action"] != "apps.deploy" || env["scope"] != "acct/a1/cluster/c1" {
+		t.Fatalf("envelope = %v", env)
+	}
+	if env["requirement"] != "fresh_sign_in" || env["decision_id"] != "d_1" || env["message"] != "no grant covers this" {
 		t.Fatalf("envelope = %v", env)
 	}
 	if env["status"] != 403 {
@@ -119,12 +126,28 @@ func TestAccessJSONErrorEnvelopePreservesStructuredFields(t *testing.T) {
 	}
 }
 
-// Finding 1334: a stale ETag (412) must keep the producer's code/reason
-// too, not collapse to the bare sentinel with no structured fields.
+// Finding 1334/1361: a stale ETag (412) must keep the producer's
+// code/reason too, not collapse to the bare sentinel with no structured
+// fields.
 func TestAccessJSONErrorEnvelopePreservesStaleFields(t *testing.T) {
-	err := &roidapi.StaleError{Code: "precondition_failed", Reason: "etag"}
+	err := &roidapi.StaleError{RefusalFields: roidapi.RefusalFields{Code: "precondition_failed", Reason: "etag"}}
 	env := accessJSONErrorEnvelope(err)
 	if env["code"] != "precondition_failed" || env["reason"] != "etag" || env["status"] != http.StatusPreconditionFailed {
+		t.Fatalf("envelope = %v", env)
+	}
+}
+
+// Finding 1361: a step-up challenge's own code and decision_id must
+// reach the --json envelope too, not only step_up_id/step_up_url/action.
+func TestAccessJSONErrorEnvelopePreservesStepUpFields(t *testing.T) {
+	err := &roidapi.StepUpRequiredError{ID: "su_1", URL: "https://id.example.com/stepup/su_1", RefusalFields: roidapi.RefusalFields{
+		Code: "authz.needs", Action: "apps.deploy", DecisionID: "d_3",
+	}}
+	env := accessJSONErrorEnvelope(err)
+	if env["code"] != "authz.needs" || env["action"] != "apps.deploy" || env["decision_id"] != "d_3" {
+		t.Fatalf("envelope = %v", env)
+	}
+	if env["step_up_id"] != "su_1" || env["step_up_url"] != "https://id.example.com/stepup/su_1" || env["requirement"] != "step_up" {
 		t.Fatalf("envelope = %v", env)
 	}
 }

@@ -157,57 +157,74 @@ func accessRefusal(err error) error {
 	return err
 }
 
+// addRefusalFields copies every applicable roidapi.RefusalFields member
+// into envelope. Shared across every refusal type below so none of them
+// can have a narrower --json contract than another (repeat finding 1361,
+// earlier 1334: APIError, StepUpRequiredError and StaleError each used
+// to list their OWN subset of fields here, and a field one branch forgot
+// was lost for every refusal of that type).
+func addRefusalFields(envelope map[string]any, f roidapi.RefusalFields) {
+	if f.Code != "" {
+		envelope["code"] = f.Code
+	}
+	if f.Reason != "" {
+		envelope["reason"] = f.Reason
+	}
+	if f.Detail != "" {
+		envelope["detail"] = f.Detail
+	}
+	if f.Action != "" {
+		envelope["action"] = f.Action
+	}
+	if f.Scope != "" {
+		envelope["scope"] = f.Scope
+	}
+	if f.Requirement != "" {
+		envelope["requirement"] = f.Requirement
+	}
+	if f.DecisionID != "" {
+		envelope["decision_id"] = f.DecisionID
+	}
+	if f.Message != "" {
+		envelope["message"] = f.Message
+	}
+	if len(f.Policies) > 0 {
+		envelope["policies"] = f.Policies
+	}
+}
+
 // accessJSONErrorEnvelope builds the machine-readable shape for a
-// refusal under --json: the identity service's own code, reason, detail,
-// and the refused action/scope when it gave them, never only the human
-// sentence accessRefusal composes (finding 1334). Field names mirror the
-// producer's own error envelope so a --json caller can treat this like
-// the raw server response.
+// refusal under --json: every applicable field the identity service
+// gave (code, reason, detail, action, scope, requirement, decision_id,
+// message, policies), never only the human sentence accessRefusal
+// composes (finding 1334/1361). Field names mirror the producer's own
+// error envelope so a --json caller can treat this like the raw server
+// response.
 func accessJSONErrorEnvelope(err error) map[string]any {
 	envelope := map[string]any{"error": err.Error()}
 	var apiErr *roidapi.APIError
 	if errors.As(err, &apiErr) {
 		envelope["status"] = apiErr.Status
-		envelope["code"] = apiErr.Code
-		if apiErr.Reason != "" {
-			envelope["reason"] = apiErr.Reason
-		}
-		if apiErr.Detail != "" {
-			envelope["detail"] = apiErr.Detail
-		}
-		if apiErr.Action != "" {
-			envelope["action"] = apiErr.Action
-		}
-		if apiErr.Scope != "" {
-			envelope["scope"] = apiErr.Scope
-		}
+		addRefusalFields(envelope, apiErr.RefusalFields)
 		return envelope
 	}
 	var stepUp *roidapi.StepUpRequiredError
 	if errors.As(err, &stepUp) {
 		envelope["status"] = http.StatusForbidden
-		envelope["requirement"] = "step_up"
 		envelope["step_up_id"] = stepUp.ID
-		if stepUp.Action != "" {
-			envelope["action"] = stepUp.Action
-		}
 		if stepUp.URL != "" {
 			envelope["step_up_url"] = stepUp.URL
+		}
+		addRefusalFields(envelope, stepUp.RefusalFields)
+		if _, ok := envelope["requirement"]; !ok {
+			envelope["requirement"] = "step_up"
 		}
 		return envelope
 	}
 	var stale *roidapi.StaleError
 	if errors.As(err, &stale) {
 		envelope["status"] = http.StatusPreconditionFailed
-		if stale.Code != "" {
-			envelope["code"] = stale.Code
-		}
-		if stale.Reason != "" {
-			envelope["reason"] = stale.Reason
-		}
-		if stale.Detail != "" {
-			envelope["detail"] = stale.Detail
-		}
+		addRefusalFields(envelope, stale.RefusalFields)
 		return envelope
 	}
 	return envelope

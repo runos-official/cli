@@ -221,7 +221,7 @@ func TestGrantBodyBuildsAccountAPIKeySubjectFromKeyFlag(t *testing.T) {
 }
 
 func TestStepUpRefusalSaysHowToConfirmAndRetry(t *testing.T) {
-	err := accessRefusal(&roidapi.StepUpRequiredError{ID: "su_42", Action: "access.grant"})
+	err := accessRefusal(&roidapi.StepUpRequiredError{ID: "su_42", RefusalFields: roidapi.RefusalFields{Action: "access.grant"}})
 	if err == nil || !strings.Contains(err.Error(), "--step-up su_42") || !strings.Contains(err.Error(), "security key") {
 		t.Fatalf("err = %v", err)
 	}
@@ -235,7 +235,7 @@ func TestStepUpPromptShowsThePageAndOpensTheBrowser(t *testing.T) {
 	var out strings.Builder
 	var opened string
 	show := stepUpPrompt(&out, func(u string) error { opened = u; return nil })
-	show(&roidapi.StepUpRequiredError{ID: "su_42", Action: "access.grant", URL: "https://id.example.test/stepup/su_42"})
+	show(&roidapi.StepUpRequiredError{ID: "su_42", URL: "https://id.example.test/stepup/su_42", RefusalFields: roidapi.RefusalFields{Action: "access.grant"}})
 	if opened != "https://id.example.test/stepup/su_42" {
 		t.Fatalf("opened %q", opened)
 	}
