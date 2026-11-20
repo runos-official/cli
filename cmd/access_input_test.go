@@ -28,6 +28,76 @@ func TestAccessSubjectParsesKindAndID(t *testing.T) {
 	}
 }
 
+// grantSubject is the subject resolver 'access grants create' uses: --key
+// selects the new account_api_key principal kind by its public id, never
+// inferred from a prefix; --subject keeps the existing person/group/key
+// compatibility path; the two are mutually exclusive ambiguous local input.
+func TestGrantSubjectSelectsAccountAPIKeyFromKeyFlag(t *testing.T) {
+	got, err := grantSubject(grantFlags{keyID: "key_abc123"})
+	if err != nil {
+		t.Fatalf("grantSubject: %v", err)
+	}
+	if got["kind"] != "account_api_key" || got["id"] != "key_abc123" {
+		t.Fatalf("got %v, want kind=account_api_key id=key_abc123", got)
+	}
+}
+
+func TestGrantSubjectRejectsSubjectAndKeyTogether(t *testing.T) {
+	_, err := grantSubject(grantFlags{subject: "person:p_1", keyID: "key_abc123"})
+	if err == nil || !strings.Contains(err.Error(), "--subject or --key") {
+		t.Fatalf("got %v, want a complaint naming --subject and --key", err)
+	}
+}
+
+func TestGrantSubjectRequiresSubjectOrKey(t *testing.T) {
+	_, err := grantSubject(grantFlags{})
+	if err == nil || !strings.Contains(err.Error(), "--subject or --key") {
+		t.Fatalf("got %v, want a complaint naming --subject and --key", err)
+	}
+}
+
+// Review finding 1082/1084's pattern (see TestValidatePublicCredentialIDMatchesThePublishedGrammarNotJustAPrefix):
+// --key must refuse a secret-shaped value with the same grammar check
+// --credential uses, never merely a prefix check, and never echo it back.
+func TestGrantSubjectRefusesASecretShapedKeyBeforeAnythingElse(t *testing.T) {
+	const canary = "CANARY-SECRET-VALUE-DO-NOT-PRINT"
+	_, err := grantSubject(grantFlags{keyID: "runos_key_" + canary})
+	if err == nil || !strings.Contains(err.Error(), "public id") {
+		t.Fatalf("got %v, want a complaint naming a public id", err)
+	}
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("error echoed the secret: %v", err)
+	}
+}
+
+// Legacy --subject key:<id> still selects the OLD "key" principal kind,
+// never the new account_api_key kind: the two are distinct, and nothing
+// infers one from the other's spelling.
+func TestGrantSubjectKeepsLegacySubjectKeyKindDistinctFromAccountAPIKey(t *testing.T) {
+	got, err := grantSubject(grantFlags{subject: "key:k_9"})
+	if err != nil {
+		t.Fatalf("grantSubject: %v", err)
+	}
+	if got["kind"] != "key" {
+		t.Fatalf("got kind=%q, want the legacy \"key\" kind unchanged", got["kind"])
+	}
+}
+
+// Granting to an Account API Key must never silently fall back to the
+// active account: its grants can live in any account. A person/group
+// grant keeps the existing default-to-active-account behaviour.
+func TestRequireExplicitAccountForAKey(t *testing.T) {
+	if err := requireExplicitAccountForAKey("key_abc123", ""); err == nil || !strings.Contains(err.Error(), "--account") {
+		t.Fatalf("got %v, want a complaint naming --account", err)
+	}
+	if err := requireExplicitAccountForAKey("key_abc123", "a1"); err != nil {
+		t.Fatalf("a real account was refused: %v", err)
+	}
+	if err := requireExplicitAccountForAKey("", ""); err != nil {
+		t.Fatalf("a person/group grant (no --key) must not require --account: %v", err)
+	}
+}
+
 func TestAccessScopeDefaultsToTheAccountAndPrefixesShortForms(t *testing.T) {
 	for _, tc := range []struct {
 		in, want string
@@ -98,6 +168,34 @@ func TestGrantBodyCarriesConditionsAndExpiry(t *testing.T) {
 	f = grantFlags{subject: "group:ops", role: "operator", sourceRanges: []string{"not-a-cidr"}}
 	if _, err := grantBody("a1", f, now); err == nil {
 		t.Fatal("a bad source range was accepted")
+	}
+}
+
+// grantBody must build the canonical account_api_key subject from --key,
+// never inventing a client-side role restriction: FPL413 requires the
+// server to be the one that refuses a role on a machine subject, so
+// grantBody passes --role through unchanged for the server to decide.
+func TestGrantBodyBuildsAccountAPIKeySubjectFromKeyFlag(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	f := grantFlags{keyID: "key_abc123", actions: []string{"apps.deploy"}, scope: "cluster/c1"}
+	body, err := grantBody("a1", f, now)
+	if err != nil {
+		t.Fatalf("grantBody: %v", err)
+	}
+	subject, _ := body["subject"].(map[string]string)
+	if subject["kind"] != "account_api_key" || subject["id"] != "key_abc123" {
+		t.Fatalf("subject = %v", subject)
+	}
+	if body["scope"] != "acct/a1/cluster/c1" {
+		t.Fatalf("scope = %v", body["scope"])
+	}
+
+	// A role with --key is not blocked client-side: the CLI sends it and
+	// lets Roid's own delegation/policy decision refuse it.
+	f = grantFlags{keyID: "key_abc123", role: "viewer"}
+	body, err = grantBody("a1", f, now)
+	if err != nil || body["role"] != "viewer" {
+		t.Fatalf("role grant to a key: %v, %v", body, err)
 	}
 }
 

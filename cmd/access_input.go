@@ -8,13 +8,53 @@ import (
 	"time"
 )
 
-// accessSubject parses kind:id for a grant's subject.
+// accessSubject parses kind:id for a grant's subject (person, group or the
+// legacy key kind). It never accepts account_api_key: that principal kind
+// is selected only through --key, which validates the public credential id
+// grammar instead of trusting a free-form kind:id pair (see grantSubject).
 func accessSubject(s string) (map[string]string, error) {
 	kind, id, ok := strings.Cut(s, ":")
 	if !ok || id == "" || (kind != "person" && kind != "group" && kind != "key") {
 		return nil, fmt.Errorf("subject %q: use person:<id>, group:<id> or key:<id>", s)
 	}
 	return map[string]string{"kind": kind, "id": id}, nil
+}
+
+// requireExplicitAccountForAKey refuses an Account API Key grant without
+// an explicit, non-blank --account: the key's grants can live in any
+// account, so (unlike a person or group subject, which keeps the existing
+// fall-back-to-active-account behaviour) the CLI never assumes the active
+// one for a machine credential. Mirrors validateExplainSelector's
+// equivalent check for 'access explain --credential' (review finding
+// 1081: Cobra reports Changed("account") as true for --account="", so
+// this inspects the resolved string value, never Changed()).
+func requireExplicitAccountForAKey(keyID, account string) error {
+	if keyID == "" || account != "" {
+		return nil
+	}
+	return errors.New("granting an Account API Key needs an explicit --account: its grants can live in any account, so the CLI never assumes the active one")
+}
+
+// grantSubject resolves a grant's subject from the flags: --key selects an
+// Account API Key by its public credential id (the canonical account_api_key
+// principal kind; never inferred from a runos_pat_/runos_key_/legacy
+// prefix), --subject keeps the existing person/group/key compatibility
+// path. The two are mutually exclusive: combining them is ambiguous local
+// input, refused before anything is sent.
+func grantSubject(f grantFlags) (map[string]string, error) {
+	switch {
+	case f.subject != "" && f.keyID != "":
+		return nil, errors.New("give --subject or --key, not both")
+	case f.keyID != "":
+		if err := validatePublicCredentialID(f.keyID); err != nil {
+			return nil, err
+		}
+		return map[string]string{"kind": "account_api_key", "id": f.keyID}, nil
+	case f.subject != "":
+		return accessSubject(f.subject)
+	default:
+		return nil, errors.New("give --subject or --key: who or what is this granting to?")
+	}
 }
 
 // accessScope turns a scope flag into a full scope in this account. Empty
@@ -60,17 +100,17 @@ func accessWindow(s string) (map[string]int, error) {
 
 // grantFlags is what 'access grants create' reads from its flags.
 type grantFlags struct {
-	subject, role, scope  string
-	actions, sourceRanges []string
-	window, minAssurance  string
-	requireMFA            bool
-	notBefore, expires    string
-	expiresIn             time.Duration
+	subject, keyID, role, scope string
+	actions, sourceRanges       []string
+	window, minAssurance        string
+	requireMFA                  bool
+	notBefore, expires          string
+	expiresIn                   time.Duration
 }
 
 // grantBody builds a grant request from the flags.
 func grantBody(acct string, f grantFlags, now time.Time) (map[string]any, error) {
-	subject, err := accessSubject(f.subject)
+	subject, err := grantSubject(f)
 	if err != nil {
 		return nil, err
 	}
