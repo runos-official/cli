@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 
+	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/jobs"
 )
@@ -49,4 +52,39 @@ func followDeployJob(ctx context.Context, svc *jobs.Service, jobID string, w io.
 		return err
 	}
 	return jobs.FollowJobWithServiceToWriter(ctx, svc, jobID, w)
+}
+
+// hintScopedModeOn401Or403 appends one line to err, when it carries a
+// 401 or 403 status, telling the caller that an app-scoped Account
+// API Key must run with --scoped or RUNOS_SCOPED=1. Story 346
+// acceptance criterion 6, DEFAULT MODE's one required addition
+// (finding 1435): the deploy that needs the declaration is exactly
+// the one that fails with 401/403 without it, so the refusal itself
+// is where the caller discovers the flag. Default-mode call sites
+// only (the broad preparation route and the three preflight reads);
+// one line, no retry, no mode switch -- scoped mode has already
+// declared itself, so there is nothing left to discover.
+func hintScopedModeOn401Or403(err error) error {
+	status, ok := apiErrorStatusCode(err)
+	if !ok || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+		return err
+	}
+	return fmt.Errorf("%w (if this credential is a scoped Account API Key, re-run with --scoped or set RUNOS_SCOPED=1)", err)
+}
+
+// apiErrorStatusCode extracts the HTTP status code from either of
+// this repo's typed API-error shapes that a default-mode deploy gate
+// can return: deploy.APIError (the deploy package's own reads and the
+// preparation routes) and apps.APIError (the drift/domain gates,
+// which call through internal/apps).
+func apiErrorStatusCode(err error) (int, bool) {
+	var deployErr *deploy.APIError
+	if errors.As(err, &deployErr) {
+		return deployErr.StatusCode, true
+	}
+	var appsErr *apps.APIError
+	if errors.As(err, &appsErr) {
+		return appsErr.StatusCode, true
+	}
+	return 0, false
 }

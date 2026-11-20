@@ -275,7 +275,10 @@ func (s *Service) GetAccountDomains() ([]Domain, error) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		// Typed, like every other GET in this file (finding 1435): the
+		// domain-removal gate's caller needs the status code to decide
+		// whether a scoped-mode hint applies to this refusal.
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	result, err := parseAccountDomainsResponse(body)

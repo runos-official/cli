@@ -207,16 +207,26 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			return fmt.Errorf("cluster ID required when using --app: pass --cid or set default with 'runos config set cid <cluster-id>'")
 		}
 		svc := deploy.NewService(cfg.GetAPIURL(), token, cid, cfg.AccountID)
-		// `--app` IS the pinned VCS intent (its own help text: "VCS-only:
-		// app ID to deploy"); dispatch straight to the VCS route under
-		// apps.deploy rather than spending a separate app-detail read to
-		// re-confirm it first. Story 346, finding 1327: that extra GET
-		// /apps/:id read needs its own authorization outside the deploy
-		// grant this story scopes CLI dispatch to, and the VCS deploy
-		// endpoint already validates the target itself (handbook 992's
-		// shared target-refusal guard). A caller who passes --app against
-		// a CLI-deploy app now gets the server's own refusal instead of
-		// this command's bespoke message.
+		// Finding 1434 (repeat of 1327/1329): acceptance criterion 6's
+		// DEFAULT MODE clause is "exactly the behaviour before this
+		// story", so the pre-story app-detail read and its two local
+		// refusals (not found; not VCS-shaped) stay in default mode.
+		// Scoped mode alone skips this read: --app IS the pinned VCS
+		// intent for that caller (S1), and S5 allows skipping reads
+		// outside the apps.deploy contract -- the VCS deploy endpoint
+		// still validates the target server-side either way.
+		if !scopedMode {
+			app, err := svc.GetApp(flagApp)
+			if err != nil {
+				return fmt.Errorf("failed to look up app %s: %w", flagApp, err)
+			}
+			if app == nil {
+				return fmt.Errorf("app %s not found on cluster %s", flagApp, cid)
+			}
+			if app.DeployType != "vcs" {
+				return fmt.Errorf("--app is only valid for VCS-deployed apps; %s has deployType=%q", flagApp, app.DeployType)
+			}
+		}
 		cmd.SilenceUsage = true
 		// CI mode: no yaml on disk, so we don't auto-derive configPath here.
 		// Conductor falls back to whatever the AppDocument has stored
@@ -301,18 +311,16 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	// the VCS flow. We trust deployConfig.DeployType when present (set by
 	// `apps pull` or a previous deploy); otherwise fall back to the server.
 	deployType := deployConfig.DeployType
+	// Finding 1434 (repeat of 1327/1329): acceptance criterion 6's
+	// DEFAULT MODE clause is "exactly the behaviour before this
+	// story", so a failed or denied lookup here keeps the pre-story
+	// tolerant form -- deployType stays empty and the deploy proceeds
+	// down the CLI-upload path -- rather than refusing. This block is
+	// unreachable in scoped mode: validateScopedDeployTarget above
+	// already required an explicit DeployType, so deployType is never
+	// "" here when scopedMode is true.
 	if deployType == "" && deployConfig.ID != "" {
-		// Finding 1327: a denied or failed lookup here must not fall
-		// through as "assume cli-deploy" -- for a VCS app that would
-		// silently misroute into the upload path. Refuse with guidance
-		// instead of guessing; a yaml that already carries deployType
-		// (the common case: written by `apps pull` or any prior deploy)
-		// never reaches this lookup at all.
-		app, getErr := svc.GetApp(deployConfig.ID)
-		if getErr != nil {
-			return fmt.Errorf("could not determine deployType for app %s: %w (add `deployType: cli` or `deployType: vcs` to %s to skip this lookup)", deployConfig.ID, getErr, configPath)
-		}
-		if app != nil {
+		if app, err := svc.GetApp(deployConfig.ID); err == nil && app != nil {
 			deployType = app.DeployType
 		}
 	}
@@ -388,7 +396,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 			// just visual noise on top of an already-rich refusal output.
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			return err
+			return hintScopedModeOn401Or403(err)
 		}
 		// Code drift gate: did anyone deploy via console / CI between this
 		// directory's last pull (or last deploy) and now? If so, refuse so
@@ -396,7 +404,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if err := preDeployCodeDriftCheck(cfg, token, cid, configPath, force, jsonOutput); err != nil {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			return err
+			return hintScopedModeOn401Or403(err)
 		}
 		// Domain-removal gate (I2-4e): if the local yaml drops a `domain:`
 		// or `servicePortMappings[].domains[].fqdn` that the server still
@@ -407,7 +415,7 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 		if err := preDeployDomainRemovalGate(svc, deployConfig, force, flagYes); err != nil {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			return err
+			return hintScopedModeOn401Or403(err)
 		}
 
 		// Pre-deploy sync: pulls server-side env vars DOWN into the local files
@@ -595,6 +603,14 @@ func runDeploy(cmd *cobra.Command, args []string) (rerr error) {
 	progress("Preparing deployment...\n")
 	prepResp, err := prepareDeployment(svc, deployConfig, scopedMode)
 	if err != nil {
+		if !scopedMode {
+			// Finding 1435: this is the one required default-mode
+			// addition in acceptance criterion 6 -- a 401/403 from the
+			// broad preparation route names --scoped as the fix.
+			// Scoped mode already declared itself; its own refusals go
+			// through deploy.ExplainAppScopedPrepareRefusal instead.
+			err = hintScopedModeOn401Or403(err)
+		}
 		return fmt.Errorf("failed to prepare deployment: %w", err)
 	}
 
@@ -1665,7 +1681,11 @@ func preDeployDomainRemovalGate(svc *deploy.Service, c *deploy.DeployConfig, for
 	}
 	serverDomains, err := svc.GetAppCustomDomains(c.ID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: domain-removal gate skipped (fetch failed: %v)\n", err)
+		// Finding 1435: a 401/403 here has the same "which flag fixes
+		// this" problem as the code-drift gate's fail-closed refusal,
+		// even though this gate itself is fail-open (a warning, not a
+		// hard stop) -- the credential still can't make this read.
+		fmt.Fprintf(os.Stderr, "Warning: domain-removal gate skipped (fetch failed: %v)\n", hintScopedModeOn401Or403(err))
 		return nil
 	}
 	if len(serverDomains) == 0 {
