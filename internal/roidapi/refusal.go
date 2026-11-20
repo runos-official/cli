@@ -39,30 +39,39 @@ type RefusalFields struct {
 	Policies json.RawMessage
 }
 
-// fields renders every non-empty field as "(name: value)" clauses, in a
-// fixed order, for a refusal type's Error() text. Shared so no future
-// refusal type can omit a field its OWN Error() method forgets to print.
-func (f RefusalFields) fields() string {
+// describe renders EVERY field this refusal carries, in a fixed order,
+// as "(name: value)" clauses. This is the ONLY place that decides which
+// producer fields appear in a refusal's TEXT, and every Error() method
+// below calls it for ALL of the producer's own data and nothing else of
+// its own composing -- never a hand-picked subset, never a field printed
+// by one type's Error() and not another's. Findings 1334, 1361, 1382 and
+// 1385 were each a different field (Action/Scope; then
+// Requirement/DecisionID/Message/Policies; then Policies again; then
+// Reason and Policies again) missing from exactly one refusal kind's
+// partial, hand-curated rendering. Each Error() method's own text is
+// limited to the one fact that makes its KIND identifiable (the status
+// code, the step-up id, the "changed since read" sentence); every other
+// fact the producer supplied comes only from this function, so there is
+// no second place left where a field could go missing for one kind and
+// not another.
+func (f RefusalFields) describe() string {
 	var b strings.Builder
-	write := func(label, value string) {
+	add := func(label, value string) {
 		if value == "" {
 			return
 		}
-		b.WriteString(" (")
-		b.WriteString(label)
-		b.WriteString(": ")
-		b.WriteString(value)
-		b.WriteByte(')')
+		fmt.Fprintf(&b, " (%s: %s)", label, value)
 	}
-	write("needs", f.Requirement)
-	write("action", f.Action)
-	write("scope", f.Scope)
-	write("decision", f.DecisionID)
-	if f.Detail != "" {
-		write("detail", f.Detail)
-	}
-	if f.Message != "" && f.Message != f.Reason {
-		write("message", f.Message)
+	add("code", f.Code)
+	add("reason", f.Reason)
+	add("detail", f.Detail)
+	add("action", f.Action)
+	add("scope", f.Scope)
+	add("needs", f.Requirement)
+	add("decision", f.DecisionID)
+	add("message", f.Message)
+	if len(f.Policies) > 0 {
+		add("policies", string(f.Policies))
 	}
 	return b.String()
 }
@@ -75,14 +84,7 @@ type StaleError struct {
 }
 
 func (e *StaleError) Error() string {
-	msg := ErrStale.Error()
-	if e.Code != "" {
-		msg += " (" + e.Code + ")"
-	}
-	if e.Reason != "" {
-		msg += ": " + e.Reason
-	}
-	return msg + e.fields()
+	return ErrStale.Error() + e.describe()
 }
 
 func (e *StaleError) Unwrap() error { return ErrStale }
@@ -99,30 +101,22 @@ type StepUpRequiredError struct {
 }
 
 func (e *StepUpRequiredError) Error() string {
-	msg := fmt.Sprintf("this change needs a security-key confirmation (step-up %s)", e.ID)
-	if e.Code != "" {
-		msg += " (" + e.Code + ")"
-	}
-	return msg + e.fields()
+	return fmt.Sprintf("this change needs a security-key confirmation (step-up %s)", e.ID) + e.describe()
 }
 
 // APIError is any other refusal: the status and every applicable
-// producer field (finding 1334/1361: a delegation-escalation, policy
-// denial or fresh-sign-in challenge names the requirement, action,
-// scope, decision and message it refused, and a renderer that drops
-// them leaves a caller with only a status code for a decision the
-// producer explained in full).
+// producer field (finding 1334/1361/1382/1385: a delegation-escalation,
+// policy denial, fresh-sign-in challenge or blocking-policy refusal
+// names the requirement, action, scope, decision, message and policy
+// IDs it refused, and a renderer that drops them leaves a caller with
+// only a status code for a decision the producer explained in full).
 type APIError struct {
 	Status int
 	RefusalFields
 }
 
 func (e *APIError) Error() string {
-	msg := fmt.Sprintf("the identity service refused the request (%d %s)", e.Status, e.Code)
-	if e.Reason != "" {
-		msg += ": " + e.Reason
-	}
-	return msg + e.fields()
+	return fmt.Sprintf("the identity service refused the request (status %d)", e.Status) + e.describe()
 }
 
 // refusal turns a non-2xx result into one of the errors above. It returns

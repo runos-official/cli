@@ -28,6 +28,88 @@ func TestAccessSubjectParsesKindAndID(t *testing.T) {
 	}
 }
 
+// Built by concatenation, never as one literal: scripts/leakcheck.py scans
+// source TEXT for these exact shapes, and a fixture matching one on a
+// single line would fail the public-repo leak gate on this file itself
+// (the same reason internal/dynacmd/credential_output_test.go splits its
+// fakes). The three shapes match finding 1383's own probe: the typed
+// account-api-key shape, the legacy Conductor PAT shape, and Roid's own
+// legacy rk_ shape.
+const (
+	canaryTypedKey  = "runos_key_" + "11111111-2222-3333-4444-555555555555." + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	canaryLegacyPAT = "runos_pat_" + "AbCdEfGhJk." + "AbCdAbCdAbCdAbCdAbCdAbCdAbCdAbCd"
+	canaryRoidRK    = "rk_" + "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+)
+
+var bearerSecretCanaries = []string{canaryTypedKey, canaryLegacyPAT, canaryRoidRK}
+
+// Finding 1383: accessSubject must refuse every published bearer shape,
+// whether it arrives bare (no ':', so the usual kind check would be the
+// first thing to fire -- and its message echoes the whole input) or as
+// a kind:id pair whose id is itself the secret (which the kind check
+// alone would accept as a legitimate person/group/key id).
+func TestAccessSubjectRefusesEveryPublishedBearerShape(t *testing.T) {
+	for _, canary := range bearerSecretCanaries {
+		for _, form := range []string{canary, "key:" + canary, "person:" + canary} {
+			t.Run(form[:12], func(t *testing.T) {
+				_, err := accessSubject(form)
+				if err == nil {
+					t.Fatalf("%q: a bearer secret was accepted as a subject", form)
+				}
+				if strings.Contains(err.Error(), canary) {
+					t.Fatalf("error echoed the secret: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// A legitimate request must still pass: the new check must not refuse
+// an ordinary, non-secret-shaped subject (regression guard per the
+// rework instruction that every new refusal gets a passing-case test).
+func TestAccessSubjectStillAcceptsLegitimateSubjects(t *testing.T) {
+	for _, in := range []string{"person:p_1", "group:ops", "key:k_9"} {
+		if _, err := accessSubject(in); err != nil {
+			t.Errorf("%q: legitimate subject refused: %v", in, err)
+		}
+	}
+}
+
+// Finding 1383's "create sends that value in the POST body" instance:
+// the same refusal must reach the caller through grantSubject/grantBody,
+// the path 'access grants create --subject' actually uses.
+func TestGrantBodyRefusesABearerSecretInSubject(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	f := grantFlags{subject: "key:" + canaryTypedKey, actions: []string{"apps.deploy"}}
+	_, err := grantBody("a1", f, now)
+	if err == nil {
+		t.Fatal("a bearer secret in --subject reached grantBody without refusal")
+	}
+	if strings.Contains(err.Error(), canaryTypedKey) {
+		t.Fatalf("error echoed the secret: %v", err)
+	}
+}
+
+// Finding 1383's list-filter instance: 'access grants list --subject'
+// forwards its filter to the query string with no grammar of its own
+// (unlike create's kind:id), so this is the one check it must clear.
+func TestValidateListSubjectFilterRefusesABearerSecret(t *testing.T) {
+	for _, canary := range bearerSecretCanaries {
+		if err := validateListSubjectFilter(canary); err == nil {
+			t.Errorf("%q: a bearer secret passed the list filter check", canary)
+		} else if strings.Contains(err.Error(), canary) {
+			t.Fatalf("error echoed the secret: %v", err)
+		}
+	}
+	// A legitimate filter, including the new account_api_key:<id> form,
+	// must still pass.
+	for _, in := range []string{"person:p_1", "account_api_key:key_abc123"} {
+		if err := validateListSubjectFilter(in); err != nil {
+			t.Errorf("%q: legitimate filter refused: %v", in, err)
+		}
+	}
+}
+
 // grantSubject is the subject resolver 'access grants create' uses: --key
 // selects the new account_api_key principal kind by its public id, never
 // inferred from a prefix; --subject keeps the existing person/group/key

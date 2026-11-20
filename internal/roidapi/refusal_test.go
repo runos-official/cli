@@ -103,4 +103,89 @@ func TestRefusal_OrdinaryDenial_CarriesMessageAndPolicies(t *testing.T) {
 	if len(ae.Policies) == 0 || !strings.Contains(string(ae.Policies), "acct-policy-1") {
 		t.Errorf("Policies = %q", ae.Policies)
 	}
+	if !strings.Contains(err.Error(), "no grant covers this action") {
+		t.Errorf("Error() = %q, want it to name the message too (text, not only the struct)", err.Error())
+	}
+	if !strings.Contains(err.Error(), "acct-policy-1") {
+		t.Errorf("Error() = %q, want it to name the blocking policy too (text, not only the struct)", err.Error())
+	}
+}
+
+// Finding 1385 (repeat of 1361, earlier 1334): one table, one shared
+// fixture body setting ALL NINE envelope fields, one row per refusal
+// kind refusal() can return. Asserts err.Error() names every one of the
+// nine values for every kind, closing the exact gap the review measured
+// at a0b6de7: StepUpRequiredError.Error() printed no Reason at all, and
+// no kind's Error() printed Policies. refusalKindsNeedingExhaustiveFieldCoverage
+// drives the loop, so a kind added there with no case below fails this
+// test immediately rather than silently carrying no coverage (the same
+// shape internal/dynacmd/account_access_grants_transport_test.go uses
+// for its verbs).
+const exhaustiveRefusalFixtureBody = `{"error":{` +
+	`"code":"c1","reason":"r1","detail":"d1","action":"a1","scope":"s1",` +
+	`"requirement":"step_up","decision_id":"dec1","message":"m1","policies":["p1","p2"],` +
+	`"step_up_id":"su_1","step_up_url":"https://id.example.com/stepup/su_1"}}`
+
+// exhaustiveRefusalFieldValues are the nine producer fields the fixture
+// body above sets; every row's Error() text must contain every one.
+var exhaustiveRefusalFieldValues = []string{"c1", "r1", "d1", "a1", "s1", "step_up", "dec1", "m1", "p1", "p2"}
+
+var refusalKindsNeedingExhaustiveFieldCoverage = []string{"stale_412", "step_up_403", "ordinary_404"}
+
+var exhaustiveRefusalCases = map[string]struct {
+	status int
+	check  func(t *testing.T, err error)
+}{
+	"stale_412": {
+		status: http.StatusPreconditionFailed,
+		check: func(t *testing.T, err error) {
+			var se *StaleError
+			if !errors.As(err, &se) {
+				t.Fatalf("err = %v, want *StaleError", err)
+			}
+			if !errors.Is(err, ErrStale) {
+				t.Errorf("errors.Is(err, ErrStale) failed: %v", err)
+			}
+		},
+	},
+	"step_up_403": {
+		status: http.StatusForbidden,
+		check: func(t *testing.T, err error) {
+			var su *StepUpRequiredError
+			if !errors.As(err, &su) {
+				t.Fatalf("err = %v, want *StepUpRequiredError", err)
+			}
+		},
+	},
+	"ordinary_404": {
+		status: http.StatusNotFound,
+		check: func(t *testing.T, err error) {
+			var ae *APIError
+			if !errors.As(err, &ae) {
+				t.Fatalf("err = %v, want *APIError", err)
+			}
+		},
+	},
+}
+
+func TestRefusal_EveryKindRendersEveryFieldInText(t *testing.T) {
+	for _, kind := range refusalKindsNeedingExhaustiveFieldCoverage {
+		tc, ok := exhaustiveRefusalCases[kind]
+		if !ok {
+			t.Fatalf("refusal kind %q has no exhaustive-field-coverage case", kind)
+		}
+		t.Run(kind, func(t *testing.T) {
+			err := refusal(&api.Result{StatusCode: tc.status, Body: []byte(exhaustiveRefusalFixtureBody)})
+			if err == nil {
+				t.Fatal("refusal returned nil for a non-2xx result")
+			}
+			tc.check(t, err)
+			text := err.Error()
+			for _, want := range exhaustiveRefusalFieldValues {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s: Error() = %q, missing field value %q", kind, text, want)
+				}
+			}
+		})
+	}
 }

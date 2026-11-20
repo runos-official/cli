@@ -8,12 +8,71 @@ import (
 	"time"
 )
 
+// containsABearerSecretShape reports whether v contains or matches any
+// currently published RunOS/Roid bearer secret shape: the typed
+// runos_pat_/runos_key_ shape and the legacy Conductor runos_pat_ shape
+// (the same unanchored substring check catches both), or Roid's own
+// legacy rk_ prefix. Finding 1383: --subject's generic kind:id form has
+// no positive grammar of its own to check a value against (unlike
+// --key's public-id grammar), so this is the one floor every value that
+// could become a grant subject id, selector, or list filter must still
+// clear, whatever kind it claims to be.
+func containsABearerSecretShape(v string) bool {
+	return strings.Contains(v, "runos_pat_") || strings.Contains(v, "runos_key_") || strings.HasPrefix(v, "rk_")
+}
+
+// containsABearerSecretShapeInSubject is containsABearerSecretShape for
+// a kind:id (or bare) subject value. The runos_pat_/runos_key_ shapes
+// never contain ':', so checking the whole value already catches them
+// wherever they sit; the rk_ check is deliberately ANCHORED to the
+// START of a value (validatePublicCredentialID's own public ids may
+// legitimately contain "rk_" mid-string, e.g. as part of a scope-like
+// segment), so a BARE rk_... value matches containsABearerSecretShape
+// directly, but "key:rk_..." or "person:rk_..." does not: the anchor
+// lands on "key"/"person", not on the secret after the colon. Checking
+// the part after a ':', if any, too is what catches that case.
+func containsABearerSecretShapeInSubject(v string) bool {
+	if containsABearerSecretShape(v) {
+		return true
+	}
+	if _, id, ok := strings.Cut(v, ":"); ok {
+		return containsABearerSecretShape(id)
+	}
+	return false
+}
+
+var errSubjectIsABearerSecret = errors.New("subject: takes a public id, never a bearer secret -- use --key for an Account API Key by its public id, or the id the identity service shows for a person or group")
+
+// validateListSubjectFilter refuses a bearer-secret-shaped --subject
+// filter on 'access grants list' before it reaches the query string
+// (finding 1383): the filter is a free-form passthrough (it also
+// carries the new "account_api_key:<id>" form, which has no fixed kind
+// list to validate against, unlike create's --subject kind:id), so
+// this is the one check every value must still clear.
+func validateListSubjectFilter(v string) error {
+	if containsABearerSecretShapeInSubject(v) {
+		return errSubjectIsABearerSecret
+	}
+	return nil
+}
+
 // accessSubject parses kind:id for a grant's subject (person, group or the
 // legacy key kind). It never accepts account_api_key: that principal kind
 // is selected only through --key, which validates the public credential id
 // grammar instead of trusting a free-form kind:id pair (see grantSubject).
+//
+// Checked, and refused with a canned message that never echoes the input,
+// before the parsed result is used to build any other error (finding
+// 1383): a bare bearer with no ':' used to fail only the kind check
+// below, whose error message echoes the whole input back; a kind:id
+// pair whose id was itself bearer-shaped used to pass straight through
+// as a legitimate person/group/key id, headed for the request body or a
+// query filter.
 func accessSubject(s string) (map[string]string, error) {
 	kind, id, ok := strings.Cut(s, ":")
+	if containsABearerSecretShapeInSubject(s) {
+		return nil, errSubjectIsABearerSecret
+	}
 	if !ok || id == "" || (kind != "person" && kind != "group" && kind != "key") {
 		return nil, fmt.Errorf("subject %q: use person:<id>, group:<id> or key:<id>", s)
 	}

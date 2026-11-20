@@ -25,8 +25,13 @@ var accessGrantsListCmd = &cobra.Command{
 		q := url.Values{}
 		for _, f := range []string{"subject", "role", "scope", "under", "cursor"} {
 			if v, _ := cmd.Flags().GetString(f); v != "" {
-				if f == "scope" || f == "under" {
+				switch f {
+				case "scope", "under":
 					if v, err = accessScope(t.acct, v); err != nil {
+						return err
+					}
+				case "subject":
+					if err := validateListSubjectFilter(v); err != nil {
 						return err
 					}
 				}

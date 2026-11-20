@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -113,6 +114,7 @@ func TestAccessJSONErrorEnvelopePreservesStructuredFields(t *testing.T) {
 	err := &roidapi.APIError{Status: 403, RefusalFields: roidapi.RefusalFields{
 		Code: "delegation.escalation", Reason: "scope", Action: "apps.deploy", Scope: "acct/a1/cluster/c1",
 		Requirement: "fresh_sign_in", DecisionID: "d_1", Message: "no grant covers this",
+		Policies: []byte(`["acct-policy-1"]`),
 	}}
 	env := accessJSONErrorEnvelope(err)
 	if env["code"] != "delegation.escalation" || env["reason"] != "scope" || env["action"] != "apps.deploy" || env["scope"] != "acct/a1/cluster/c1" {
@@ -120,6 +122,12 @@ func TestAccessJSONErrorEnvelopePreservesStructuredFields(t *testing.T) {
 	}
 	if env["requirement"] != "fresh_sign_in" || env["decision_id"] != "d_1" || env["message"] != "no grant covers this" {
 		t.Fatalf("envelope = %v", env)
+	}
+	// Finding 1382: Roid supplies blocking policy IDs under "policies"
+	// for a missing_context refusal (e.g. a policy an administrator must
+	// remove); the --json envelope must carry them too.
+	if !strings.Contains(string(env["policies"].(json.RawMessage)), "acct-policy-1") {
+		t.Fatalf("envelope policies = %v", env["policies"])
 	}
 	if env["status"] != 403 {
 		t.Fatalf("envelope status = %v", env["status"])
