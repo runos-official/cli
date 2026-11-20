@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -26,6 +28,47 @@ import (
 func (s *Service) PrepareExistingAppDeployment(appID string, config *DeployConfig) (*PrepareResponse, error) {
 	reqURL := fmt.Sprintf("%s/%s/%s/apps/%s/prepare-cli-deployment", s.baseURL, url.PathEscape(s.aid), url.PathEscape(s.cid), url.PathEscape(appID))
 	return s.postPrepareDeployment(reqURL, config)
+}
+
+// ExplainAppScopedPrepareRefusal recognizes the app-scoped preparation
+// route's documented refusal shapes (handbook article
+// conductor-api/apps-management/post-apps-prepare-cli-deployment,
+// "992") and appends an actionable hint instead of leaving the caller
+// with only a bare API error (story 346, S2; findings 1352, 1408).
+// Scoped mode never retries this refusal through the broad route: it
+// is final either way, with or without a hint.
+//
+// Finding 1408 (repeat of 1352): the first cut of this function
+// recognized three 403 `authz.*` codes and left every other status,
+// including the 400 the route answers when the cluster's build
+// configuration (the `buildkit` ConfigMap/Secret) has never been
+// provisioned, unexplained. Handbook 992 names no machine-readable
+// code for that 400 (it shares the status with plain yaml-validation
+// failures), so this function cannot assert which one occurred; it
+// names both possibilities and the admin command that resolves the
+// provisioning one, rather than mislabeling a generic validation
+// error.
+func ExplainAppScopedPrepareRefusal(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(apiErr.Body, &body)
+	switch {
+	case apiErr.StatusCode == 400 && body.Code == "":
+		return fmt.Errorf("%w (either runos.yaml has a malformed field, or this cluster's build configuration was never provisioned -- an app-scoped deploy grant never auto-provisions it; an account administrator must run `runos clusters configure-for-deployment` or `runos clusters ensure-deployment-ready` first)", err)
+	case body.Code == "authz.cannot_provision", body.Code == "authz.not_a_dependency":
+		return fmt.Errorf("%w (an app-scoped deploy grant can only redeploy an already-linked service; link or create it with a credential that holds broader authority, then add its id to runos.yaml's requires block)", err)
+	case body.Code == "authz.cannot_reconfigure":
+		return fmt.Errorf("%w (an app-scoped deploy grant cannot resize or reconfigure an existing linked service's class or config; make that change with a credential that holds broader authority)", err)
+	case body.Code == "authz.conflicting_target":
+		return fmt.Errorf("%w (the request named a different account, cluster or app than the one this credential is deploying)", err)
+	default:
+		return err
+	}
 }
 
 // ValidatePreparedTarget refuses a preparation response that does not

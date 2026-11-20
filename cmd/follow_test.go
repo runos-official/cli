@@ -17,6 +17,7 @@ import (
 func newFollowTestCmd() *cobra.Command {
 	c := &cobra.Command{Use: "follow"}
 	c.Flags().BoolP("json", "j", false, "")
+	addScopedModeFlag(c)
 	return c
 }
 
@@ -32,10 +33,12 @@ func TestRunFollow_JSONKeySet(t *testing.T) {
 
 	cases := []struct {
 		name    string
+		scoped  bool
 		handler http.HandlerFunc
 	}{
 		{
-			name: "deploy job, served by the sanitized progress endpoint",
+			name:   "scoped mode, deploy job, served by the sanitized progress endpoint",
+			scoped: true,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/jobs/"+jobID+"/deployment-progress" {
@@ -46,12 +49,11 @@ func TestRunFollow_JSONKeySet(t *testing.T) {
 			},
 		},
 		{
-			name: "non-deploy job, served by the general route",
+			name:   "default mode, served by the general route",
+			scoped: false,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
-				case "/jobs/" + jobID + "/deployment-progress":
-					http.NotFound(w, r)
 				case "/jobs/" + jobID:
 					w.Write([]byte(`{"id":"` + jobID + `","type":"app.deploy","status":"completed","progress":"done","currentStep":"finish"}`))
 				case "/jobs/" + jobID + "/workitems":
@@ -65,7 +67,11 @@ func TestRunFollow_JSONKeySet(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(tc.handler))
+			var paths []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				tc.handler(w, r)
+			}))
 			t.Cleanup(srv.Close)
 
 			t.Setenv("HOME", t.TempDir())
@@ -75,6 +81,11 @@ func TestRunFollow_JSONKeySet(t *testing.T) {
 			c := newFollowTestCmd()
 			if err := c.Flags().Set("json", "true"); err != nil {
 				t.Fatalf("set json flag: %v", err)
+			}
+			if tc.scoped {
+				if err := c.Flags().Set("scoped", "true"); err != nil {
+					t.Fatalf("set scoped flag: %v", err)
+				}
 			}
 
 			origStdout := os.Stdout
@@ -109,6 +120,27 @@ func TestRunFollow_JSONKeySet(t *testing.T) {
 			}
 			if doc["status"] != "completed" {
 				t.Errorf("status = %v, want %q", doc["status"], "completed")
+			}
+
+			// Story 346 S4 / default mode: the follow primitive is
+			// chosen by the declared mode alone, never probed for. A
+			// scoped follow must never touch the general job/work-item
+			// route; a default follow must never touch the sanitized
+			// progress route.
+			progressPath := "/jobs/" + jobID + "/deployment-progress"
+			legacyPath := "/jobs/" + jobID
+			if tc.scoped {
+				for _, p := range paths {
+					if p == legacyPath || p == legacyPath+"/workitems" {
+						t.Errorf("scoped follow must never hit the general job route; paths = %v", paths)
+					}
+				}
+			} else {
+				for _, p := range paths {
+					if p == progressPath {
+						t.Errorf("default follow must never hit the sanitized progress route; paths = %v", paths)
+					}
+				}
 			}
 		})
 	}

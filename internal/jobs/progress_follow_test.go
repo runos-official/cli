@@ -118,203 +118,57 @@ func TestFollowDeploymentProgressToWriterResult_UsesProgressEndpointOnly(t *test
 }
 
 // TestFollowDeploymentProgressToWriterResult_ScopedRefusalIsFinal
-// covers the "capability closed" half of criterion 6: a 503 from the
-// progress endpoint (the stage-recheck capability still closed, or
-// any other scoped denial) is refused immediately, with exactly one
-// request and zero legacy fallback requests -- never a retry through
-// a broader route, never advice to use another credential.
+// covers the "capability closed" half of criterion 6: EVERY refusal
+// from the progress endpoint -- 404 included -- is final in scoped
+// mode, with exactly one request and zero legacy fallback requests.
+// Story 346 S4 deliberately drops the old general-route's "404 is the
+// one documented ambiguous status" exception: that exception existed
+// only because the CLI used to have to guess whether a job was
+// scoped. Scoped mode is now DECLARED by the caller, so a 404 here
+// means exactly what it says (not found / no scoped binding) and gets
+// no more benefit of the doubt than a 403 or a 503. The 404 row is
+// the one a reintroduced fallback (the deleted FollowAnyJobToWriterResult
+// mechanism) would silently pass by retrying through the general
+// route instead of surfacing this refusal.
 func TestFollowDeploymentProgressToWriterResult_ScopedRefusalIsFinal(t *testing.T) {
-	log := &pathLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r.URL.Path)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"error":"deploy.upload_token_unavailable"}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	svc := &Service{baseURL: srv.URL, httpClient: srv.Client(), token: "t"}
-	var out bytes.Buffer
-	_, err := FollowDeploymentProgressToWriterResult(context.Background(), svc, testJobID, &out)
-	if err == nil {
-		t.Fatal("expected a refusal error, got nil")
-	}
-	var progressErr *ProgressError
-	if !errors.As(err, &progressErr) {
-		t.Fatalf("error = %v, want a *ProgressError", err)
-	}
-	if progressErr.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", progressErr.StatusCode)
-	}
-	if got := len(log.paths); got != 1 {
-		t.Errorf("request count = %d, want exactly 1 (no retry)", got)
-	}
-	if log.any(isLegacyJobRoute) {
-		t.Errorf("a scoped refusal must never fall back to a legacy route; paths = %v", log.paths)
-	}
-}
-
-// TestFollowAnyJobToWriterResult_FallsBackOnlyOnFirstRefusal exercises
-// the standalone `runos follow` entry point's documented exception: a
-// job the progress endpoint refuses on its VERY FIRST read (no scoped
-// binding -- legacy, human, or non-deploy job) falls back to the
-// general job follow, which has its own independent authorization.
-func TestFollowAnyJobToWriterResult_FallsBackOnlyOnFirstRefusal(t *testing.T) {
-	log := &pathLog{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/jobs/"+testJobID+"/deployment-progress":
-			http.NotFound(w, r) // no scoped binding: legacy job
-		case r.URL.Path == "/jobs/"+testJobID:
-			w.Write([]byte(`{"id":"` + testJobID + `","status":"completed"}`))
-		case r.URL.Path == "/jobs/"+testJobID+"/workitems":
-			w.Write([]byte(`{"jobId":"` + testJobID + `","workItems":[]}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	svc := &Service{baseURL: srv.URL, httpClient: srv.Client(), token: "t"}
-	var out bytes.Buffer
-	result, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
-	if err != nil {
-		t.Fatalf("FollowAnyJobToWriterResult: %v", err)
-	}
-	if result.Job == nil || result.Progress != nil {
-		t.Fatalf("expected a Job-shaped fallback result, got %#v", result)
-	}
-	if got := log.count("/jobs/" + testJobID + "/deployment-progress"); got != 1 {
-		t.Errorf("progress probe count = %d, want exactly 1 (no retry of the refused endpoint)", got)
-	}
-}
-
-// TestFollowAnyJobToWriterResult_FallbackGatedOn404Only is the table
-// test findings 1325/1350 ask for: FollowAnyJobToWriterResult's
-// fallback to the general job follow must fire for a 404 on the FIRST
-// progress read, and must NEVER fire for any other first-read
-// failure -- a 403 (revoked, expired, or a credential that does not
-// own this job), a 503 (the stage-recheck capability still closed, or
-// any other scoped denial), or a transport error. Each "final" row
-// asserts that isLegacyJobRoute is never hit: the general job,
-// work-item, raw-log, and job-list routes stay completely untouched.
-func TestFollowAnyJobToWriterResult_FallbackGatedOn404Only(t *testing.T) {
 	cases := []struct {
-		name         string
-		status       int
-		closeConn    bool
-		wantFallback bool
+		name   string
+		status int
 	}{
-		{name: "404 falls back", status: http.StatusNotFound, wantFallback: true},
-		{name: "403 is final", status: http.StatusForbidden, wantFallback: false},
-		{name: "503 is final", status: http.StatusServiceUnavailable, wantFallback: false},
+		{"404 not found / no scoped binding", http.StatusNotFound},
+		{"403 forbidden", http.StatusForbidden},
+		{"503 stage-recheck capability still closed", http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &pathLog{}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				log.record(r.URL.Path)
-				switch {
-				case r.URL.Path == "/jobs/"+testJobID+"/deployment-progress":
-					w.WriteHeader(tc.status)
-					w.Write([]byte(`{"error":"refused"}`))
-				case r.URL.Path == "/jobs/"+testJobID:
-					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(`{"id":"` + testJobID + `","status":"completed"}`))
-				case r.URL.Path == "/jobs/"+testJobID+"/workitems":
-					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(`{"jobId":"` + testJobID + `","workItems":[]}`))
-				default:
-					http.NotFound(w, r)
-				}
+				w.WriteHeader(tc.status)
+				w.Write([]byte(`{"error":"refused"}`))
 			}))
 			t.Cleanup(srv.Close)
 
 			svc := &Service{baseURL: srv.URL, httpClient: srv.Client(), token: "t"}
 			var out bytes.Buffer
-			result, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
-
-			if tc.wantFallback {
-				if err != nil {
-					t.Fatalf("expected the fallback to succeed, got error: %v", err)
-				}
-				if result == nil || result.Job == nil || result.Progress != nil {
-					t.Fatalf("expected a Job-shaped fallback result, got %#v", result)
-				}
-				return
-			}
-
+			_, err := FollowDeploymentProgressToWriterResult(context.Background(), svc, testJobID, &out)
 			if err == nil {
-				t.Fatal("expected the refusal to be final, got nil error")
+				t.Fatal("expected a refusal error, got nil")
 			}
 			var progressErr *ProgressError
-			if !errors.As(err, &progressErr) || progressErr.StatusCode != tc.status {
-				t.Fatalf("error = %v, want a *ProgressError with status %d", err, tc.status)
+			if !errors.As(err, &progressErr) {
+				t.Fatalf("error = %v, want a *ProgressError", err)
+			}
+			if progressErr.StatusCode != tc.status {
+				t.Errorf("status = %d, want %d", progressErr.StatusCode, tc.status)
+			}
+			if got := len(log.paths); got != 1 {
+				t.Errorf("request count = %d, want exactly 1 (no retry, no fallback)", got)
 			}
 			if log.any(isLegacyJobRoute) {
-				t.Errorf("a %d refusal must never fall back to a legacy route; paths = %v", tc.status, log.paths)
+				t.Errorf("a scoped refusal must never fall back to a legacy route; paths = %v", log.paths)
 			}
 		})
-	}
-
-	// Transport error (connection refused, not an HTTP status at all)
-	// must also be final, with the same zero-fallback guarantee.
-	t.Run("transport error is final", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-		listenURL := srv.URL
-		srv.Close() // closed before use: every request now hits a refused connection
-
-		svc := &Service{baseURL: listenURL, httpClient: srv.Client(), token: "t"}
-		var out bytes.Buffer
-		_, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
-		if err == nil {
-			t.Fatal("expected a transport error, got nil")
-		}
-		var progressErr *ProgressError
-		if errors.As(err, &progressErr) {
-			t.Fatalf("expected an unwrapped transport error, got a *ProgressError: %v", err)
-		}
-	})
-}
-
-// TestFollowAnyJobToWriterResult_NeverFallsBackAfterProgressAdmits
-// proves the standalone follow command's fallback is a FIRST-READ-ONLY
-// exception: once the progress endpoint has admitted the caller for
-// this job, a LATER refusal (revocation, expiry, or a stage-recheck
-// denial) is final and is never retried through the general route.
-func TestFollowAnyJobToWriterResult_NeverFallsBackAfterProgressAdmits(t *testing.T) {
-	log := &pathLog{}
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.record(r.URL.Path)
-		if r.URL.Path != "/jobs/"+testJobID+"/deployment-progress" {
-			http.NotFound(w, r)
-			return
-		}
-		calls++
-		if calls == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"version":"runos.deployment-progress.v1","jobId":"` + testJobID + `","appId":"app01","state":"running","startedAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`))
-			return
-		}
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"revoked"}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	orig := pollInterval
-	pollInterval = time.Millisecond
-	t.Cleanup(func() { pollInterval = orig })
-
-	svc := &Service{baseURL: srv.URL, httpClient: srv.Client(), token: "t"}
-	var out bytes.Buffer
-	_, err := FollowAnyJobToWriterResult(context.Background(), svc, testJobID, &out)
-	if err == nil {
-		t.Fatal("expected the second-call 403 to surface as an error")
-	}
-	if log.any(isLegacyJobRoute) {
-		t.Errorf("a mid-follow scoped refusal must never fall back to a legacy route; paths = %v", log.paths)
 	}
 }
 

@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,6 +115,82 @@ func TestValidatePreparedTarget(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Errorf("expected no refusal, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestExplainAppScopedPrepareRefusal covers every documented refusal
+// shape of the app-scoped preparation route (handbook 992; findings
+// 1352, 1408) plus the control case (an error ExplainAppScopedPrepareRefusal
+// does not recognize passes through unchanged, never invented).
+func TestExplainAppScopedPrepareRefusal(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantHint   string // substring the hint must add; "" means unchanged
+		wantNoHint bool
+	}{
+		{
+			name:     "400 with no code: missing build config or malformed yaml",
+			err:      &APIError{StatusCode: 400, Body: []byte(`{"error":"bad request"}`)},
+			wantHint: "configure-for-deployment",
+		},
+		{
+			name:     "403 authz.cannot_provision: requires entry with no id",
+			err:      &APIError{StatusCode: 403, Body: []byte(`{"code":"authz.cannot_provision"}`)},
+			wantHint: "can only redeploy an already-linked service",
+		},
+		{
+			name:     "403 authz.not_a_dependency: id not linked to this app",
+			err:      &APIError{StatusCode: 403, Body: []byte(`{"code":"authz.not_a_dependency"}`)},
+			wantHint: "can only redeploy an already-linked service",
+		},
+		{
+			name:     "403 authz.cannot_reconfigure: resize/reconfigure attempt",
+			err:      &APIError{StatusCode: 403, Body: []byte(`{"code":"authz.cannot_reconfigure"}`)},
+			wantHint: "cannot resize or reconfigure",
+		},
+		{
+			name:     "403 authz.conflicting_target",
+			err:      &APIError{StatusCode: 403, Body: []byte(`{"code":"authz.conflicting_target"}`)},
+			wantHint: "named a different account, cluster or app",
+		},
+		{
+			name:       "403 with an unrecognized code passes through unchanged",
+			err:        &APIError{StatusCode: 403, Body: []byte(`{"code":"authz.something_else"}`)},
+			wantNoHint: true,
+		},
+		{
+			name:       "404 passes through unchanged",
+			err:        &APIError{StatusCode: 404, Body: []byte(`{"error":"not found"}`)},
+			wantNoHint: true,
+		},
+		{
+			name:       "503 passes through unchanged",
+			err:        &APIError{StatusCode: 503, Body: []byte(`{"error":"deploy.upload_token_unavailable"}`)},
+			wantNoHint: true,
+		},
+		{
+			name:       "non-APIError passes through unchanged",
+			err:        errors.New("transport error"),
+			wantNoHint: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExplainAppScopedPrepareRefusal(tc.err)
+			if !errors.Is(got, tc.err) {
+				t.Fatalf("explained error does not wrap the original: %v", got)
+			}
+			if tc.wantNoHint {
+				if got.Error() != tc.err.Error() {
+					t.Errorf("expected the error unchanged, got: %v", got)
+				}
+				return
+			}
+			if !strings.Contains(got.Error(), tc.wantHint) {
+				t.Errorf("error %q does not contain expected hint %q", got.Error(), tc.wantHint)
 			}
 		})
 	}

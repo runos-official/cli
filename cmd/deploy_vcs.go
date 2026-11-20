@@ -114,7 +114,14 @@ func resolveVcsConfigPath(cfg *deploy.DeployConfig, configFileAbs string) string
 // Sibling to the CLI-deploy code in deploy.go: the two share the verb name
 // but no downstream logic. runDeployVCS is dispatched from runDeploy when
 // the resolved app's deployType is 'vcs'.
-func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput bool, buildArgsCli []deploy.BuildArgCliEntry) error {
+//
+// scopedMode is runDeploy's resolved --scoped / RUNOS_SCOPED=1
+// declaration (story 346, acceptance criterion 6): it gates the
+// follow primitive (S4) and the post-follow network-access read (S5),
+// the only two steps this function performs that the declared-mode
+// rule touches. runDeploy's own caller-side gate already refuses an
+// unpinned app before either VCS dispatch path reaches here.
+func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput, scopedMode bool, buildArgsCli []deploy.BuildArgCliEntry) error {
 	// Under --json, every human-readable line (preamble, configPath note,
 	// "Deployment initiated", follow progress, network-access tail) goes
 	// to stderr so stdout stays pure JSON for `jq` / MCP consumers. The
@@ -227,7 +234,7 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 		return err
 	}
 	followCtx, followCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	followResult, jobErr := jobs.FollowAnyJobToWriterResult(followCtx, followSvc, resp.JobID, human)
+	jobErr := followDeployJob(followCtx, followSvc, resp.JobID, human, scopedMode)
 	followCancel()
 	if inGitHubActions {
 		fmt.Fprintln(human, "::endgroup::")
@@ -241,16 +248,14 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	fmt.Fprintln(human, "\nDeployment completed successfully!")
 
 	// Network-access tail (mirror the CLI-deploy success path). Finding
-	// 1356: skipped when the sanitized progress endpoint served the
-	// follow -- a minimal apps.deploy grant may not hold the authority
-	// this read needs, and the sanitized progress contract carries no
-	// public-URL field to justify it. A legacy/human job that fell back
-	// to the general follow keeps today's behaviour unchanged. The
+	// 1356 / story 346 S5: skipped in scoped mode -- a minimal
+	// apps.deploy grant may not hold the authority this read needs, and
+	// the sanitized progress contract carries no public-URL field to
+	// justify it. Default mode keeps today's behaviour unchanged. The
 	// public URL also goes into a `::notice::` so it appears in the
 	// GitHub Actions run summary panel, not just buried in the log.
 	publicURL := ""
-	viaScopedProgress := followResult != nil && followResult.Progress != nil
-	if !viaScopedProgress {
+	if !scopedMode {
 		networkAccess, err := svc.GetNetworkAccess(appID)
 		if err == nil {
 			for _, access := range networkAccess {

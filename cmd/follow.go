@@ -35,6 +35,7 @@ still observing progress via stderr.`,
 
 func init() {
 	followCmd.Flags().BoolP("json", "j", false, "Emit terminal job status as a JSON envelope on stdout; route human progress lines to stderr")
+	addScopedModeFlag(followCmd)
 }
 
 func runFollow(cmd *cobra.Command, args []string) error {
@@ -51,17 +52,12 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	}
 
 	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// Declared scoped mode (story 346, acceptance criterion 6; CR 26).
+	// The CLI never infers "scoped" from the job id or anything else
+	// about this invocation -- the caller states it, with --scoped or
+	// RUNOS_SCOPED=1.
+	scopedMode := scopedModeFromFlags(cmd)
 
-	// Standalone follow carries only a job id, with no context about
-	// how the job was created. FollowAnyJobToWriterResult tries the
-	// sanitized deployment-progress endpoint first (so a scoped machine
-	// key following its own deploy job never needs broader job-read
-	// authority, story 346 D3) and falls back to the general
-	// job/work-item/log follow ONLY when that very first read answers
-	// the one documented ambiguous refusal (404: not found / no scoped
-	// binding / legacy job). Any other refusal (403, 503, a transport
-	// error) is final, exactly as it is for `deploy --follow`: see
-	// FollowAnyJobToWriterResult's doc comment for the full rule.
 	svc, err := jobs.NewService()
 	if err != nil {
 		return err
@@ -73,7 +69,25 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	if jsonOutput {
 		followWriter = os.Stderr
 	}
-	result, followErr := jobs.FollowAnyJobToWriterResult(ctx, svc, jobID, followWriter)
+
+	// Story 346 S4 (scoped) / default mode (unchanged from before this
+	// story): the follow primitive is chosen by the declared mode, not
+	// probed for. Scoped mode reads only GET
+	// /jobs/:jobId/deployment-progress, with every refusal final, first
+	// read and later poll alike -- never a retry through the general
+	// job/work-item/log follow. Default mode is exactly the plain
+	// general-route follow this command used before this story.
+	var progressResult *jobs.DeploymentProgress
+	var jobResult *jobs.JobStatus
+	var followErr error
+	switch {
+	case scopedMode:
+		progressResult, followErr = jobs.FollowDeploymentProgressToWriterResult(ctx, svc, jobID, followWriter)
+	case jsonOutput:
+		jobResult, followErr = jobs.FollowJobWithServiceToWriterResult(ctx, svc, jobID, followWriter)
+	default:
+		followErr = jobs.FollowJobWithServiceToWriter(ctx, svc, jobID, followWriter)
+	}
 
 	if !jsonOutput {
 		return followErr
@@ -90,10 +104,10 @@ func runFollow(cmd *cobra.Command, args []string) error {
 	// consumers can pipe stdout into jq. Issue 99.
 	var terminal *jobs.JobStatus
 	switch {
-	case result != nil && result.Progress != nil:
-		terminal = jobs.ProgressToJobStatus(result.Progress)
-	case result != nil && result.Job != nil:
-		terminal = result.Job
+	case progressResult != nil:
+		terminal = jobs.ProgressToJobStatus(progressResult)
+	case jobResult != nil:
+		terminal = jobResult
 	default:
 		return followErr
 	}
