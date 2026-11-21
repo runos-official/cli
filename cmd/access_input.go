@@ -125,7 +125,7 @@ func requireExplicitAccount(account string) error {
 // on 'access grants create'.
 func validatePublicCredentialIDForFlag(flag, v string) error {
 	if err := validatePublicCredentialID(v); err != nil {
-		return fmt.Errorf("--%s takes a public id (pat_... or key_...), never a secret: use the id the identity service shows for it, not the token itself", flag)
+		return fmt.Errorf("--%s takes a public id (a lowercase UUID), never a secret: use the id the identity service shows for it, not the token itself", flag)
 	}
 	return nil
 }

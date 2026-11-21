@@ -24,8 +24,8 @@ about yourself; asking about someone else needs access to read the
 account's access configuration.
 
 --credential explains one exact action and scope for a Personal Access
-Token or Account API Key, using its current public id (pat_... or
-key_...), never its secret: a value that is not a valid public id is
+Token or Account API Key, using its current public id (a lowercase
+UUID), never its secret: a value that is not a valid public id is
 refused before anything is sent. It always needs an explicit, non-empty
 --account (a credential's authority or grants can differ by account, so
 the CLI never assumes the active one) and an explicit --action. The
@@ -85,7 +85,7 @@ var accessActionsCmd = &cobra.Command{
 
 func init() {
 	accessExplainCmd.Flags().String("person", "", "The person id")
-	accessExplainCmd.Flags().String("credential", "", "A Personal Access Token or Account API Key's public id (pat_... or key_...), never a secret")
+	accessExplainCmd.Flags().String("credential", "", "A Personal Access Token or Account API Key's public id (a lowercase UUID), never a secret")
 	accessExplainCmd.Flags().String("scope", "", "The scope (default: the whole account)")
 	accessExplainCmd.Flags().String("action", "", "Only this action (required with --credential)")
 }
@@ -126,7 +126,7 @@ func validateExplainSelector(person, credential, action, account string) error {
 // characters, starting with a letter or digit, from a fixed charset.
 var publicCredentialIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]*$`)
 
-var errNotAPublicCredentialID = errors.New("--credential takes a public id (pat_... or key_...), never a secret: use the id the identity service shows for it, not the token itself")
+var errNotAPublicCredentialID = errors.New("--credential takes a public id (a lowercase UUID), never a secret: use the id the identity service shows for it, not the token itself")
 
 // validatePublicCredentialID enforces the exact published PublicId grammar
 // before a selector ever reaches a request, rather than a narrower
