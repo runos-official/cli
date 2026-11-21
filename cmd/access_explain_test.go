@@ -91,6 +91,21 @@ func TestValidatePublicCredentialIDMatchesThePublishedGrammarNotJustAPrefix(t *t
 	}
 }
 
+// Story 417: issued public credential ids are lowercase UUIDs (story 318),
+// not "pat_..." or "key_..." -- those are prefixes of the SECRET shape
+// (runos_pat_<id>.<secret>, runos_key_<id>.<secret>), never the public id.
+// The help and flag usage text must not confuse the two.
+func TestAccessExplainHelpDoesNotShowTheWrongPublicIDExample(t *testing.T) {
+	for _, bad := range []string{"pat_...", "key_..."} {
+		if strings.Contains(accessExplainCmd.Long, bad) {
+			t.Errorf("Long help text still contains %q", bad)
+		}
+		if strings.Contains(accessExplainCmd.Flags().Lookup("credential").Usage, bad) {
+			t.Errorf("--credential usage text still contains %q", bad)
+		}
+	}
+}
+
 func TestValidateExplainSelectorRefusesASecretShapedCredentialBeforeAnythingElse(t *testing.T) {
 	err := validateExplainSelector("", "runos_pat_x.y", "clusters.read", "a1")
 	if err == nil || !strings.Contains(err.Error(), "public id") {
