@@ -183,13 +183,39 @@ func TestAccessJSONErrorEnvelopePreservesStepUpFields(t *testing.T) {
 	}
 }
 
-// Criterion 5 / ruling R7-6 (objective plan FPL403): the CLI's own
-// security-key text for an Account API Key lives only here, byte-
-// identical to Console's standing note. The manifest help of the
-// create and preview commands is Conductor's, story 423 criterion 6.
-func TestAccessGrantsCreateHelpCarriesTheSecurityKeyStandingNote(t *testing.T) {
-	const standingNote = "Creating this credential needs a registered security key. If you have none, add one on your MFA page first."
-	if !strings.Contains(accessGrantsCreateCmd.Long, standingNote) {
-		t.Fatalf("access grants create help does not carry the R7-6 standing note verbatim:\n%s", accessGrantsCreateCmd.Long)
+// Criterion 5(a) / ruling R7-8 (objective plan FPL403, operator
+// addendum 169): a registered security key is NOT a platform
+// requirement for creating a machine key. It is an optional account
+// policy, off by default, so no CLI help may state the requirement;
+// only the server's own refusal (TestFormatRefusalHint in
+// internal/dynacmd) ever mentions a security key. The manifest help of
+// the Account API Key create and preview commands is Conductor's,
+// story 423 criterion 6, and the CLI adds none of its own.
+func TestAccessHelpNeverStatesASecurityKeyRequirement(t *testing.T) {
+	for _, help := range []struct {
+		name string
+		text string
+	}{
+		{name: "access grants create", text: accessGrantsCreateCmd.Long},
+		{name: "access", text: accessCmd.Long},
+	} {
+		lower := strings.ToLower(help.text)
+		for _, banned := range []string{"security key", "security-key"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("%s help states a security key requirement (%q):\n%s", help.name, banned, help.text)
+			}
+		}
+	}
+}
+
+// The same help must still say the things that are true: a grant is
+// bounded by what the granter holds, and a sensitive grant still needs
+// an extra confirmation (whatever factor the identity service asks
+// for). Removing the security-key claim must not remove the warning.
+func TestAccessGrantsCreateHelpStillWarnsAboutSensitiveGrants(t *testing.T) {
+	for _, want := range []string{"only hand out actions you hold yourself", "extra confirmation"} {
+		if !strings.Contains(accessGrantsCreateCmd.Long, want) {
+			t.Errorf("access grants create help no longer says %q:\n%s", want, accessGrantsCreateCmd.Long)
+		}
 	}
 }

@@ -383,8 +383,8 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 				err = fmt.Errorf("%s", msg)
 			}
 		}
-		// Story 427, ruling R7-6 and FCR 2720: a 403 closed until a
-		// security key is registered, or closed to every secret
+		// Story 427, ruling R7-8 and FCR 2720: a 403 an account's own
+		// security key policy closed, or one closed to every secret
 		// credential regardless of validity, gets the CLI's own
 		// sentence instead of conductor's bare one. applyRefusalHint
 		// rewrites only for a person, same as formatModuleNotEnabledError
