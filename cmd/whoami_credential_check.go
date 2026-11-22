@@ -52,14 +52,27 @@ func checkSecretCredential(cfg *config.Config, kind auth.CredentialKind) (map[st
 	}
 	switch {
 	case result.StatusCode == http.StatusOK:
+		// Review finding 1557: a 200 is not proof the body is the
+		// accounts envelope (a transparent proxy or a misrouted
+		// RUNOS_API_URL can answer 200 with something else entirely).
+		// A nil Accounts pointer is "the field is missing", not "no
+		// accounts" (the same guard internal/api.UserAccounts applies
+		// to this exact endpoint); either way, nothing judged the
+		// credential, so this is the unreachable state, not accepted.
 		var envelope struct {
-			Accounts []api.UserAccount `json:"accounts"`
+			Accounts *[]api.UserAccount `json:"accounts"`
 		}
-		_ = result.Decode(&envelope)
+		if err := result.Decode(&envelope); err != nil || envelope.Accounts == nil {
+			return map[string]any{
+				"verified":        false,
+				"verified_reason": verifiedUnreachable,
+				"note":            serverUnreachableNote,
+			}, nil
+		}
 		return map[string]any{
 			"verified":             true,
 			"verified_reason":      verifiedAccepted,
-			"accounts":             envelope.Accounts,
+			"accounts":             *envelope.Accounts,
 			"credential_type_note": "no endpoint names the type or the public id of the credential in use",
 		}, nil
 	case result.StatusCode == http.StatusUnauthorized:

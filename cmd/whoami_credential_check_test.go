@@ -44,6 +44,46 @@ func TestCheckSecretCredentialAccepted(t *testing.T) {
 	}
 }
 
+// Review finding 1557: a 200 is not proof the body is the accounts
+// envelope (a transparent proxy or captive portal, or a misrouted
+// RUNOS_API_URL, can answer 200 with something else entirely). Nothing
+// judged the credential in that case, so this must be the unreachable
+// state, not accepted.
+func TestCheckSecretCredentialNonEnvelope200IsUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html>proxy</html>`))
+	}))
+	defer server.Close()
+	cfg := credentialCheckTestConfig(t, server.URL)
+
+	extra, err := checkSecretCredential(cfg, auth.CredentialStoredKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if extra["verified"] != false || extra["verified_reason"] != verifiedUnreachable {
+		t.Fatalf("extra = %v, want verified=false/unreachable", extra)
+	}
+}
+
+// A 200 with valid JSON but no "accounts" field at all must be treated
+// the same way: the field is missing, not "no accounts".
+func TestCheckSecretCredential200WithNoAccountsFieldIsUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, http.StatusOK, `{"somethingElse":true}`)
+	}))
+	defer server.Close()
+	cfg := credentialCheckTestConfig(t, server.URL)
+
+	extra, err := checkSecretCredential(cfg, auth.CredentialStoredKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if extra["verified"] != false || extra["verified_reason"] != verifiedUnreachable {
+		t.Fatalf("extra = %v, want verified=false/unreachable", extra)
+	}
+}
+
 // T3: three refused rows (revoked, expired, no reason), checked through
 // the shared formatAuthError-backed renderer, exit 1.
 func TestCheckSecretCredentialRefused(t *testing.T) {

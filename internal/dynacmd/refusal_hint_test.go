@@ -51,6 +51,32 @@ func TestFormatRefusalHint(t *testing.T) {
 			t.Errorf("msg = %q, want %q", msg, consoleSecurityKeyRefusal)
 		}
 	})
+	// Review finding 1556: the repo's own already-shipped decoders for
+	// this Roid refusal (internal/roidapi/refusal.go,
+	// internal/kubeaccess/refusal.go) put the discriminator in
+	// `requirement`, not `reason`. Both field names must work, flat and
+	// nested, since this repo has no confirmed live sample of this
+	// exact route's wire shape.
+	t.Run("flat requirement security_key_required prints the R7-6 sentence", func(t *testing.T) {
+		body := []byte(`{"error":"Forbidden","code":"authz.needs","requirement":"security_key_required"}`)
+		msg, ok := formatRefusalHint(&APIError{StatusCode: 403, Body: body}, auth.CredentialRoid)
+		if !ok {
+			t.Fatal("expected ok=true")
+		}
+		if msg != consoleSecurityKeyRefusal {
+			t.Errorf("msg = %q, want %q", msg, consoleSecurityKeyRefusal)
+		}
+	})
+	t.Run("nested error.requirement security_key_required prints the same sentence", func(t *testing.T) {
+		body := []byte(`{"error":{"code":"authz.needs","requirement":"security_key_required"}}`)
+		msg, ok := formatRefusalHint(&APIError{StatusCode: 403, Body: body}, auth.CredentialRoid)
+		if !ok {
+			t.Fatal("expected ok=true")
+		}
+		if msg != consoleSecurityKeyRefusal {
+			t.Errorf("msg = %q, want %q", msg, consoleSecurityKeyRefusal)
+		}
+	})
 	t.Run("security_key_required applies for a secret credential too", func(t *testing.T) {
 		body := []byte(`{"error":"Forbidden","code":"authz.needs","reason":"security_key_required"}`)
 		_, ok := formatRefusalHint(&APIError{StatusCode: 403, Body: body}, auth.CredentialEnvKey)
@@ -88,4 +114,33 @@ func TestFormatRefusalHint(t *testing.T) {
 			t.Error("expected false for an unrelated 403")
 		}
 	})
+}
+
+// Review finding 1555: under --json the typed *APIError must survive so
+// BuildAPIErrorEnvelope can forward conductor's own `code`/`reason`
+// fields to a machine consumer, while the text path still gets the
+// R7-6 sentence.
+func TestApplyRefusalHintPreservesTheJSONEnvelope(t *testing.T) {
+	body := []byte(`{"error":"Forbidden","code":"authz.needs","reason":"security_key_required","decisionId":"d_3"}`)
+	apiErr := &APIError{StatusCode: 403, Body: body}
+
+	jsonErr := applyRefusalHint(apiErr, auth.CredentialRoid, true)
+	envelope := BuildAPIErrorEnvelope(jsonErr)
+	if envelope["statusCode"] != 403 {
+		t.Errorf("envelope[statusCode] = %v, want 403", envelope["statusCode"])
+	}
+	if envelope["code"] != "authz.needs" {
+		t.Errorf("envelope[code] = %v, want authz.needs", envelope["code"])
+	}
+	if envelope["reason"] != "security_key_required" {
+		t.Errorf("envelope[reason] = %v, want security_key_required", envelope["reason"])
+	}
+	if envelope["decisionId"] != "d_3" {
+		t.Errorf("envelope[decisionId] = %v, want d_3", envelope["decisionId"])
+	}
+
+	textErr := applyRefusalHint(apiErr, auth.CredentialRoid, false)
+	if textErr.Error() != consoleSecurityKeyRefusal {
+		t.Errorf("text error = %q, want the R7-6 sentence %q", textErr.Error(), consoleSecurityKeyRefusal)
+	}
 }
