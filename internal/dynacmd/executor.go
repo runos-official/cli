@@ -383,6 +383,15 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 				err = fmt.Errorf("%s", msg)
 			}
 		}
+		// Story 427, ruling R7-6 and FCR 2720: a 403 closed until a
+		// security key is registered, or closed to every secret
+		// credential regardless of validity, gets the CLI's own
+		// sentence instead of conductor's bare one. applyRefusalHint
+		// rewrites only for a person, same as formatModuleNotEnabledError
+		// above: under --json the envelope keeps `code` and `reason` (or
+		// `requirement`), which is what a machine consumer branches on
+		// (review finding 1555).
+		err = applyRefusalHint(err, auth.Kind(cfg), jsonOutput)
 		// I4-G: with --json set, errors must be machine-parseable
 		// stdout output too — pre-fix the error went to cobra's
 		// default plain-text "Error: ..." stderr path, breaking CI
