@@ -20,10 +20,14 @@ import (
 const humanOnlyAPIKeyMessage = "Forbidden: API keys cannot perform this action"
 
 // securityKeyRequiredReason is the value Roid's typed-credential create
-// routes send when the caller holds no registered security key: 403,
-// code authz.needs (objective plan FPL403 ruling R7-6; handbook topic
-// api-keys). Review finding 1556: the repo's own already-shipped
-// decoders for this exact Roid refusal (internal/roidapi/refusal.go:147,
+// routes send when an account's own policy requires a registered
+// security key and the caller holds none: 403, code authz.needs
+// (objective plan FPL403 ruling R7-8; operator addendum 169). That
+// policy is OPTIONAL and off by default, so this refusal is the only
+// thing that ever makes the CLI mention a security key: no CLI help
+// states the requirement. Review finding 1556: the repo's own
+// already-shipped decoders for this exact Roid refusal
+// (internal/roidapi/refusal.go:147,
 // internal/kubeaccess/refusal.go:108-117/token.go:117) all put the
 // discriminator in `requirement`, not `reason`; securityKeyRequired
 // checks both field names, flat and nested under "error", since
@@ -31,17 +35,19 @@ const humanOnlyAPIKeyMessage = "Forbidden: API keys cannot perform this action"
 // has no confirmed live sample of this exact route's wire shape.
 const securityKeyRequiredReason = "security_key_required"
 
-// consoleSecurityKeyRefusal is the R7-6 refusal sentence: byte-identical
-// across Console, conductor's manifest help (story 423 criterion 6) and
-// the CLI's own text (this file, and cmd/access_grants.go's help).
-const consoleSecurityKeyRefusal = "This action needs a registered security key. Add a security key on your MFA page, then try again."
+// consoleSecurityKeyRefusal is the R7-8 refusal sentence (R7-8 replaces
+// R7-6 after operator addendum 169): byte-identical across Console and
+// the CLI. It names the ACCOUNT's policy, because a security key is not
+// a platform requirement for creating a machine key; only an account
+// whose administrator switched the policy on ever sends this refusal.
+const consoleSecurityKeyRefusal = "This account requires a registered security key for this action. Add a security key on your MFA page, then try again."
 
 // formatRefusalHint renders a 403 the CLI's own surface can explain
-// better than conductor's bare sentence: a route closed until the
-// caller registers a security key (ruling R7-6), or a route closed to
-// every secret credential regardless of validity (FCR 2720). (_, false)
-// when neither shape matches, so the caller keeps the default
-// rendering.
+// better than conductor's bare sentence: a route an account's own
+// policy closes until the caller registers a security key (ruling
+// R7-8), or a route closed to every secret credential regardless of
+// validity (FCR 2720). (_, false) when neither shape matches, so the
+// caller keeps the default rendering.
 func formatRefusalHint(err error, credential auth.CredentialKind) (string, bool) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != http.StatusForbidden {

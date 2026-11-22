@@ -31,8 +31,9 @@ They need a sign-in through the identity service ('runos login').
 
 Changes to an existing role, group or grant are safe against concurrent
 edits: the CLI reads the current version first and the change fails if it
-changed in between. A change that hands out sensitive actions needs a
-security-key confirmation; the CLI says how.`,
+changed in between. A change that hands out sensitive actions needs an
+extra confirmation. The identity service decides which one, and the CLI
+says how.`,
 }
 
 func init() {
@@ -247,7 +248,7 @@ func accessEmitJSONErrorAndSilence(cmd *cobra.Command, err error) error {
 
 // writeFlags adds the flags every change takes.
 func writeFlags(c *cobra.Command, etag bool) {
-	c.Flags().String("step-up", "", "A completed security-key step-up id, to repeat a change that asked for one")
+	c.Flags().String("step-up", "", "A completed step-up confirmation id, to repeat a change that asked for one")
 	if etag {
 		c.Flags().String("if-match", "", "Change only this version (an ETag from 'show'); default: the version read just before the change")
 	}

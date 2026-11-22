@@ -6,12 +6,14 @@ import (
 	"github.com/runos-official/cli/internal/auth"
 )
 
-// Ruling R7-6 (objective plan FPL403): Console, conductor's manifest
-// help (story 423 criterion 6) and the CLI land the same bytes.
-func TestConsoleSecurityKeyRefusalMatchesRulingR76(t *testing.T) {
-	const ruling = "This action needs a registered security key. Add a security key on your MFA page, then try again."
+// Ruling R7-8 (objective plan FPL403, replacing R7-6 after operator
+// addendum 169): Console and the CLI land the same bytes, and the
+// sentence names the ACCOUNT's own policy rather than a platform
+// requirement, because a security key is optional and off by default.
+func TestConsoleSecurityKeyRefusalMatchesRulingR78(t *testing.T) {
+	const ruling = "This account requires a registered security key for this action. Add a security key on your MFA page, then try again."
 	if consoleSecurityKeyRefusal != ruling {
-		t.Fatalf("consoleSecurityKeyRefusal = %q, want the R7-6 ruling text %q", consoleSecurityKeyRefusal, ruling)
+		t.Fatalf("consoleSecurityKeyRefusal = %q, want the R7-8 ruling text %q", consoleSecurityKeyRefusal, ruling)
 	}
 }
 
@@ -29,9 +31,9 @@ func TestFormatRefusalHint(t *testing.T) {
 			t.Error("expected false for non-APIError")
 		}
 	})
-	// T8: ruling R7-6. Conductor relays Roid's typed-credential 403 as-is,
+	// T8: ruling R7-8. Conductor relays Roid's typed-credential 403 as-is,
 	// so both the flat and the Roid-native nested shape must be recognised.
-	t.Run("flat reason security_key_required prints the R7-6 sentence", func(t *testing.T) {
+	t.Run("flat reason security_key_required prints the R7-8 sentence", func(t *testing.T) {
 		body := []byte(`{"error":"Forbidden","code":"authz.needs","reason":"security_key_required"}`)
 		msg, ok := formatRefusalHint(&APIError{StatusCode: 403, Body: body}, auth.CredentialRoid)
 		if !ok {
@@ -57,7 +59,7 @@ func TestFormatRefusalHint(t *testing.T) {
 	// `requirement`, not `reason`. Both field names must work, flat and
 	// nested, since this repo has no confirmed live sample of this
 	// exact route's wire shape.
-	t.Run("flat requirement security_key_required prints the R7-6 sentence", func(t *testing.T) {
+	t.Run("flat requirement security_key_required prints the R7-8 sentence", func(t *testing.T) {
 		body := []byte(`{"error":"Forbidden","code":"authz.needs","requirement":"security_key_required"}`)
 		msg, ok := formatRefusalHint(&APIError{StatusCode: 403, Body: body}, auth.CredentialRoid)
 		if !ok {
@@ -119,7 +121,7 @@ func TestFormatRefusalHint(t *testing.T) {
 // Review finding 1555: under --json the typed *APIError must survive so
 // BuildAPIErrorEnvelope can forward conductor's own `code`/`reason`
 // fields to a machine consumer, while the text path still gets the
-// R7-6 sentence.
+// R7-8 sentence.
 func TestApplyRefusalHintPreservesTheJSONEnvelope(t *testing.T) {
 	body := []byte(`{"error":"Forbidden","code":"authz.needs","reason":"security_key_required","decisionId":"d_3"}`)
 	apiErr := &APIError{StatusCode: 403, Body: body}
@@ -141,6 +143,6 @@ func TestApplyRefusalHintPreservesTheJSONEnvelope(t *testing.T) {
 
 	textErr := applyRefusalHint(apiErr, auth.CredentialRoid, false)
 	if textErr.Error() != consoleSecurityKeyRefusal {
-		t.Errorf("text error = %q, want the R7-6 sentence %q", textErr.Error(), consoleSecurityKeyRefusal)
+		t.Errorf("text error = %q, want the R7-8 sentence %q", textErr.Error(), consoleSecurityKeyRefusal)
 	}
 }
