@@ -182,3 +182,14 @@ func TestAccessJSONErrorEnvelopePreservesStepUpFields(t *testing.T) {
 		t.Fatalf("envelope = %v", env)
 	}
 }
+
+// Criterion 5 / ruling R7-6 (objective plan FPL403): the CLI's own
+// security-key text for an Account API Key lives only here, byte-
+// identical to Console's standing note. The manifest help of the
+// create and preview commands is Conductor's, story 423 criterion 6.
+func TestAccessGrantsCreateHelpCarriesTheSecurityKeyStandingNote(t *testing.T) {
+	const standingNote = "Creating this credential needs a registered security key. If you have none, add one on your MFA page first."
+	if !strings.Contains(accessGrantsCreateCmd.Long, standingNote) {
+		t.Fatalf("access grants create help does not carry the R7-6 standing note verbatim:\n%s", accessGrantsCreateCmd.Long)
+	}
+}

@@ -19,7 +19,24 @@ var whoamiCmd = &cobra.Command{
 
 For an environment that signs in through the RunOS identity service, the
 person and their accounts come from the service, so the answer is live.
-For other credentials the answer is what this machine's config records.`,
+For other credentials the answer is what this machine's config records.
+
+For a secret credential (RUNOS_API_KEY or a key stored by 'runos login
+--api-key'), this command also asks the server whether it accepts the
+credential, and reports one of three states in "verified" /
+"verified_reason":
+  - accepted: the server accepted the credential. The account and role
+    it returned are printed; credential_type stays "unknown" unless a
+    future server response names it.
+  - human_sign_in_required: the server answered, but the check this
+    command makes needs a human sign-in; the credential itself was not
+    judged.
+  - unreachable: the server could not be reached; the credential itself
+    was not judged.
+Exit codes: exit 0 for accepted, human_sign_in_required and
+unreachable, because the command answered truthfully even when nothing
+judged the credential; exit 1 only for a 401 refusal of the credential
+itself.`,
 	RunE: runWhoami,
 }
 
@@ -93,7 +110,17 @@ func runWhoami(cmd *cobra.Command, args []string) error {
 		}
 		id = &live
 	}
-	body, err := json.Marshal(whoamiReport(cfg, kind, id))
+	report := whoamiReport(cfg, kind, id)
+	if kind.IsSecretCredential() {
+		extra, err := checkSecretCredential(cfg, kind)
+		if err != nil {
+			return err
+		}
+		for k, v := range extra {
+			report[k] = v
+		}
+	}
+	body, err := json.Marshal(report)
 	if err != nil {
 		return err
 	}

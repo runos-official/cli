@@ -118,6 +118,64 @@ func TestFormatAuthError(t *testing.T) {
 			t.Errorf("expected fallback message, got: %s", msg)
 		}
 	})
+	// Story 427, panel 61 finding 4 / FPL573 ruling 2.3: a 401 with no
+	// `reason` must never ASSERT revocation, rotation or expiry; it may
+	// only name a human-sign-in route as a possibility.
+	t.Run("401 with no reason does not assert revocation", func(t *testing.T) {
+		for _, kind := range []auth.CredentialKind{auth.CredentialEnvKey, auth.CredentialStoredKey} {
+			msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token"}`)}, kind)
+			if !ok {
+				t.Fatalf("%s: expected ok=true on 401", kind)
+			}
+			if contains(msg, "was it revoked, rotated or expired?") {
+				t.Errorf("%s: a no-reason 401 must not assert revocation, got:\n%s", kind, msg)
+			}
+			if !contains(msg, "the server did not say why") || !contains(msg, "human sign-in") {
+				t.Errorf("%s: expected the non-asserting hint, got:\n%s", kind, msg)
+			}
+		}
+	})
+	// A reason of "revoked" or "expired" is the server actually saying
+	// so, so the assertion stays.
+	t.Run("401 with reason=revoked still asserts revocation", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(`{"error":"Invalid token","reason":"revoked"}`)}, auth.CredentialEnvKey)
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		if !contains(msg, "was it revoked, rotated or expired?") {
+			t.Errorf("expected the asserting hint when reason=revoked, got:\n%s", msg)
+		}
+	})
+	// A body with no string "error" (a nested {code,reason} shape, or
+	// an empty body) is neither of conductor's two known 401 shapes
+	// (panel 61 finding 4 was not reproduced with manifest 49.107.1;
+	// the sender of that 401 is unknown). It must not get the asserting
+	// hint, and a nested code must still surface.
+	t.Run("401 with a nested error object prints the nested code, not an assertion", func(t *testing.T) {
+		body := []byte(`{"error":{"code":"gateway.denied","reason":"ignored"}}`)
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: body}, auth.CredentialEnvKey)
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		if !contains(msg, "gateway.denied") {
+			t.Errorf("expected the nested code to surface, got:\n%s", msg)
+		}
+		if contains(msg, "was it revoked, rotated or expired?") {
+			t.Errorf("a nested-error body must not assert revocation, got:\n%s", msg)
+		}
+	})
+	t.Run("401 with an empty body does not assert revocation", func(t *testing.T) {
+		msg, ok := formatAuthError(&APIError{StatusCode: 401, Body: []byte(``)}, auth.CredentialStoredKey)
+		if !ok {
+			t.Fatal("expected ok=true on 401")
+		}
+		if !contains(msg, "unauthorized") {
+			t.Errorf("expected the generic fallback message, got:\n%s", msg)
+		}
+		if contains(msg, "was it revoked, rotated or expired?") {
+			t.Errorf("an empty body must not assert revocation, got:\n%s", msg)
+		}
+	})
 }
 
 func TestFormatDependentsError(t *testing.T) {

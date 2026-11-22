@@ -77,6 +77,9 @@ explicit actions: an Account API Key cannot receive a role. Granting to a
 key needs an explicit --account; the CLI never assumes the active account
 for a machine credential, because its grants can live in any account.
 
+An Account API Key is created with 'runos account account-api-keys add' or in the Console.
+Creating this credential needs a registered security key. If you have none, add one on your MFA page first.
+
 You can only hand out actions you hold yourself. Handing out sensitive
 actions needs a security-key confirmation.`,
 	Args: cobra.NoArgs,

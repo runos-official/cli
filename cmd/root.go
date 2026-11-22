@@ -417,7 +417,7 @@ func registerDynamicCommands() error {
 	builder := dynacmd.NewBuilder(m, executor).
 		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd, accessCmd, kubeCmd)
 
-	for _, cmd := range builder.BuildCommands() {
+	for _, cmd := range filterShadowedCommands(rootCmd, builder.BuildCommands()) {
 		rootCmd.AddCommand(cmd)
 	}
 
