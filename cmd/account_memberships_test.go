@@ -25,19 +25,27 @@ func TestVerifyRequestedAccount(t *testing.T) {
 		requested     string
 		authenticated string
 		memberships   []api.UserAccount
+		omitted       string
 		want          string
 		wantError     string
 	}{
-		{"add takes the sign-in's account", "", "aaaaa", memberships("aaaaa", "bbbbb"), "aaaaa", ""},
-		{"the sign-in's own account passes", "aaaaa", "aaaaa", nil, "aaaaa", ""},
-		{"a member account passes and becomes active", "bbbbb", "aaaaa", memberships("aaaaa", "bbbbb"), "bbbbb", ""},
-		{"a non-member account is refused and names the memberships", "zzzzz", "aaaaa", memberships("aaaaa", "bbbbb"), "", "it is a member of: aaaaa, bbbbb"},
-		{"an unreadable list confirms only the sign-in's account", "bbbbb", "aaaaa", nil, "", "does not match"},
-		{"an empty list is a real answer", "bbbbb", "aaaaa", memberships(), "", "or of any account"},
+		{"add takes the sign-in's account", "", "aaaaa", memberships("aaaaa", "bbbbb"), "", "aaaaa", ""},
+		{"the sign-in's own account passes", "aaaaa", "aaaaa", nil, "", "aaaaa", ""},
+		{"a member account passes and becomes active", "bbbbb", "aaaaa", memberships("aaaaa", "bbbbb"), "", "bbbbb", ""},
+		{"a non-member account is refused and names the memberships", "zzzzz", "aaaaa", memberships("aaaaa", "bbbbb"), "", "", "it is a member of: aaaaa, bbbbb"},
+		{"an unreadable list confirms only the sign-in's account", "bbbbb", "aaaaa", nil, "", "", "does not match"},
+		{"an empty list is a real answer", "bbbbb", "aaaaa", memberships(), "", "", "or of any account"},
+		// Finding 1592: an omitted list (contract C-4) must be treated like an unreadable one, not
+		// like a real empty list -- never "not a member of ... or of any account".
+		{"an omitted list confirms only the sign-in's account, never 'or of any account'", "bbbbb", "aaaaa", memberships(), "typed_credential", "", "does not match"},
+		{"a requested account that is the sign-in's own still passes with an omitted list", "aaaaa", "aaaaa", memberships(), "typed_credential", "aaaaa", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := verifyRequestedAccount(tc.requested, tc.authenticated, tc.memberships)
+			got, err := verifyRequestedAccount(tc.requested, tc.authenticated, tc.memberships, tc.omitted)
+			if tc.omitted != "" && err != nil && strings.Contains(err.Error(), "or of any account") {
+				t.Fatalf("an omitted list must not be read as \"a member of no account\", got %q", err)
+			}
 			if tc.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 					t.Fatalf("error = %v, want one containing %q", err, tc.wantError)

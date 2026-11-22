@@ -157,6 +157,30 @@ func TestASwitchToATypedCredentialsOwnAccountIsNotTreatedAsNonMember(t *testing.
 	}
 }
 
+/*
+Finding 1592: shareActiveSessionWith also branches on the membership list (through hasMembership),
+and is gated to CredentialInteractive, so an omitted list is not reachable through any contract
+today. The documented, safe outcome either way is the same: it answers false (no session shared),
+never true, so a conductor that ever did omit the list here could not make this function wrongly
+claim a confirmed membership.
+*/
+func TestShareActiveSessionWithAnOmittedListDoesNotShare(t *testing.T) {
+	conductor := newFakeConductor(t)
+	fakeFirebase(t)
+	conductor.membershipsOmitted = "typed_credential"
+	cfg := membershipTestConfig(t, conductor.server.URL)
+	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY"}, "REFRESH", "2026-01-01T00:00:00Z")
+
+	shared := shareActiveSessionWith(cfg, "bbbbb")
+
+	if shared {
+		t.Fatal("an omitted list must never be read as a confirmed membership")
+	}
+	if cfg.HasStoredCredential("bbbbb") {
+		t.Fatal("shareActiveSessionWith stored a session for an account it could not confirm membership of")
+	}
+}
+
 // An unreadable list is not a refusal. Conductor still refuses a non-member on every request, and a
 // conductor without the list has nothing to read.
 func TestAnUnreadableMembershipListDoesNotBlockTheSwitch(t *testing.T) {

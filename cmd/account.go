@@ -115,8 +115,8 @@ func authenticateAndSwitchAccount(cmd *cobra.Command, requestedAccountID string)
 	// The sign-in lands on the login's DEFAULT account, which is often not the one asked for. A
 	// requested account the login is a member of is opened by the same session, so it becomes the
 	// active account instead of failing the switch.
-	memberships := sessionMemberships(cfg, session)
-	activeAccountID, err := verifyRequestedAccount(requestedAccountID, session.AccountID, memberships)
+	memberships, omitted := sessionMemberships(cfg, session)
+	activeAccountID, err := verifyRequestedAccount(requestedAccountID, session.AccountID, memberships, omitted)
 	if err != nil {
 		return err
 	}

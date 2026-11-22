@@ -42,17 +42,20 @@ func loadMemberships(cfg *config.Config, token string) ([]api.UserAccount, strin
 }
 
 // sessionMemberships reads the memberships of a sign-in that just completed, with the ID token the
-// sign-in already holds. Nil means the list could not be read, which is not the same as none.
+// sign-in already holds, and the omitted reason (finding 1592: threaded through, not discarded, so
+// a caller that branches on the list -- verifyRequestedAccount -- can tell "omitted" apart from "a
+// real empty list" instead of reading an empty slice as fact). Nil accounts means the list could not
+// be read, which is not the same as either.
 //
 // A browser sign-in is never a typed credential, so conductor never sends
-// api.AccountsOmittedTypedCredential here; this caller has no state to branch on and reads the list
-// as-is, same as before this story.
-func sessionMemberships(cfg *config.Config, session browserSession) []api.UserAccount {
-	accounts, _, err := loadMemberships(cfg, session.IDToken)
+// api.AccountsOmittedTypedCredential here in practice; this thread exists so that promise is checked
+// rather than merely asserted in a comment.
+func sessionMemberships(cfg *config.Config, session browserSession) (accounts []api.UserAccount, omitted string) {
+	accounts, omitted, err := loadMemberships(cfg, session.IDToken)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	return accounts
+	return accounts, omitted
 }
 
 // signedInMemberships reads the memberships of the active credential, or nil when the CLI is signed
@@ -106,14 +109,19 @@ memberships, and it becomes the active account.
 
 Nil memberships means the list could not be read. Then only the sign-in's own account is confirmed,
 which is the check this made before memberships existed.
+
+omitted (finding 1592) is api.AccountsOmittedTypedCredential-shaped: conductor deliberately did not
+look accounts up, so an empty list for that reason is treated exactly like an unreadable one, never
+as "this login is a member of no account" -- the one wrong refusal this function existed to prevent
+in the first place, now for the omitted case too.
 */
-func verifyRequestedAccount(requested, authenticated string, memberships []api.UserAccount) (string, error) {
+func verifyRequestedAccount(requested, authenticated string, memberships []api.UserAccount, omitted string) (string, error) {
 	switch {
 	case requested == "":
 		return authenticated, nil
 	case requested == authenticated || hasMembership(memberships, requested):
 		return requested, nil
-	case memberships == nil:
+	case memberships == nil || omitted != "":
 		return "", fmt.Errorf("authenticated account %q does not match requested account %q, and the CLI could not read which accounts this login is a member of", authenticated, requested)
 	case len(memberships) == 0:
 		return "", fmt.Errorf("the login you signed in with is not a member of account %q, or of any account", requested)
@@ -134,6 +142,11 @@ An API key never qualifies: it is scoped to one account, and its membership list
 the sign-in the config also holds.
 
 Reports whether it stored a session, which also means conductor already confirmed the membership.
+
+Gated to CredentialInteractive above: an interactive sign-in is never a typed credential, so
+conductor never omits the list here in practice. omitted is still checked (finding 1592), not
+assumed empty, so an omitted list is as unable to confirm membership as an unreadable one -- it
+answers false (no session shared), never true: the safe, conservative outcome either way.
 */
 func shareActiveSessionWith(cfg *config.Config, accountID string) bool {
 	if cfg.HasStoredCredential(accountID) || auth.Kind(cfg) != auth.CredentialInteractive || cfg.RefreshToken == "" {
@@ -143,10 +156,8 @@ func shareActiveSessionWith(cfg *config.Config, accountID string) bool {
 	if err != nil {
 		return false
 	}
-	// Gated to CredentialInteractive above: an interactive sign-in is never a typed credential, so
-	// conductor never omits the list here, and this caller has no state to branch on.
-	memberships, _, err := loadMemberships(cfg, token)
-	if err != nil || !hasMembership(memberships, accountID) {
+	memberships, omitted, err := loadMemberships(cfg, token)
+	if err != nil || omitted != "" || !hasMembership(memberships, accountID) {
 		return false
 	}
 	cfg.ShareSessionWithAccounts([]string{accountID}, cfg.Firebase, cfg.RefreshToken, cfg.SignedInAt)

@@ -34,12 +34,20 @@ var credentialTypeShapePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // credentialId }, present only for a key-authenticated caller) and decides
 // whether runos whoami may print it.
 //
-// sentToken is the bearer this CLI sent on the request that produced raw.
-// A reported id is refused when it equals, contains, or is contained in
-// that secret, on top of the published PublicId grammar and bearer-secret
-// shape check validatePublicCredentialID already enforces for `access
-// explain --credential` (cmd/access_explain.go): a type without a usable
-// id, or an id without a usable type, is never printed (all or nothing).
+// sentToken is the bearer this CLI sent on the request that produced raw. A
+// RunOS typed bearer deliberately carries its own public id in the clear,
+// before the final "." (runos_pat_<uuid>.<secret>, runos_key_<uuid>.<secret>;
+// internal/dynacmd/credential_output.go): finding 1591 found that refusing
+// on any substring relation between the whole bearer and the reported id
+// refused that honest id in every typed-credential case, since the id IS a
+// substring of the bearer by construction. The guard below checks only the
+// SECRET half, the part after the final "." (or the whole token when it has
+// no "."): a reported id is refused when it equals, contains, or is
+// contained in that secret half, on top of the published PublicId grammar
+// and bearer-secret shape check validatePublicCredentialID already enforces
+// for `access explain --credential` (cmd/access_explain.go). A type without
+// a usable id, or an id without a usable type, is never printed (all or
+// nothing).
 func verifiedCredentialReference(raw json.RawMessage, sentToken string) (credType, credID string, state credentialReferenceState) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
@@ -61,10 +69,22 @@ func verifiedCredentialReference(raw json.RawMessage, sentToken string) (credTyp
 	if err := validatePublicCredentialID(ref.CredentialID); err != nil {
 		return "", "", credentialReferenceRefused
 	}
-	if sentToken != "" && (ref.CredentialID == sentToken ||
-		strings.Contains(sentToken, ref.CredentialID) ||
-		strings.Contains(ref.CredentialID, sentToken)) {
+	if secretHalf := bearerSecretHalf(sentToken); secretHalf != "" &&
+		(ref.CredentialID == secretHalf ||
+			strings.Contains(ref.CredentialID, secretHalf) ||
+			strings.Contains(secretHalf, ref.CredentialID)) {
 		return "", "", credentialReferenceRefused
 	}
 	return ref.CredentialType, ref.CredentialID, credentialReferenceNamed
+}
+
+// bearerSecretHalf returns the part of a bearer that is actually secret: for
+// the typed/legacy "<prefix>.<secret>" shape, everything after the FINAL
+// ".", since the public id sits before it in the clear; for a bearer with
+// no ".", the whole value (nothing is known to be safe to disclose).
+func bearerSecretHalf(sentToken string) string {
+	if idx := strings.LastIndex(sentToken, "."); idx >= 0 {
+		return sentToken[idx+1:]
+	}
+	return sentToken
 }
