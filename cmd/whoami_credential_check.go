@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -37,6 +38,15 @@ const serverUnreachableNote = "The server was not reached. The credential itself
 // credential; earlier, it made none (see the CHANGELOG entry this
 // story adds). An unreachable server still answers and exits 0, so
 // offline and scripted use keeps working.
+//
+// Contract C-4 (story 439): an accepted 200 body may also carry an
+// optional "credential" field naming the caller's own verified
+// credential type and public id, and an optional "accountsOmitted"
+// field when conductor deliberately looked no accounts up for a typed
+// credential. Both are decoded here, never assumed: a "credential"
+// value this CLI cannot safely print leaves credential_type "unknown",
+// and "accounts" stays the only account list truth, with
+// accounts_omitted/accounts_note saying when it was not looked up.
 func checkSecretCredential(cfg *config.Config, kind auth.CredentialKind) (map[string]any, error) {
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
@@ -60,7 +70,9 @@ func checkSecretCredential(cfg *config.Config, kind auth.CredentialKind) (map[st
 		// to this exact endpoint); either way, nothing judged the
 		// credential, so this is the unreachable state, not accepted.
 		var envelope struct {
-			Accounts *[]api.UserAccount `json:"accounts"`
+			Accounts        *[]api.UserAccount `json:"accounts"`
+			AccountsOmitted string             `json:"accountsOmitted"`
+			Credential      json.RawMessage    `json:"credential"`
 		}
 		if err := result.Decode(&envelope); err != nil || envelope.Accounts == nil {
 			return map[string]any{
@@ -69,12 +81,30 @@ func checkSecretCredential(cfg *config.Config, kind auth.CredentialKind) (map[st
 				"note":            serverUnreachableNote,
 			}, nil
 		}
-		return map[string]any{
-			"verified":             true,
-			"verified_reason":      verifiedAccepted,
-			"accounts":             *envelope.Accounts,
-			"credential_type_note": "no endpoint names the type or the public id of the credential in use",
-		}, nil
+		fields := map[string]any{
+			"verified":        true,
+			"verified_reason": verifiedAccepted,
+			"accounts":        *envelope.Accounts,
+		}
+		// Contract C-4, ruling R8-5: for a typed credential conductor
+		// names only the credential's own verified identity and looks
+		// nothing up, so accounts is deliberately empty. accounts_omitted
+		// (and the plain sentence in accounts_note) says so, so the empty
+		// list never reads as "member of no account".
+		if envelope.AccountsOmitted != "" {
+			fields["accounts_omitted"] = envelope.AccountsOmitted
+			fields["accounts_note"] = "The account list is not shown for this credential type."
+		}
+		switch credType, credID, state := verifiedCredentialReference(envelope.Credential, token); state {
+		case credentialReferenceNamed:
+			fields["credential_type"] = credType
+			fields["credential_id"] = credID
+		case credentialReferenceRefused:
+			fields["credential_type_note"] = "the server named this credential in a form that this CLI does not print"
+		default: // credentialReferenceAbsent
+			fields["credential_type_note"] = "no endpoint names the type or the public id of the credential in use"
+		}
+		return fields, nil
 	case result.StatusCode == http.StatusUnauthorized:
 		return nil, fmt.Errorf("%s", dynacmd.FormatAuthRefusal(result.Body, kind))
 	case result.StatusCode >= http.StatusInternalServerError:

@@ -127,6 +127,60 @@ func TestAStoredSignInWhoseLoginLeftTheAccountDoesNotSwitch(t *testing.T) {
 	}
 }
 
+/*
+Contract C-4, ruling R8-5: a typed credential's GET /user/accounts deliberately omits the accounts
+lookup, and that is NOT "this credential is a member of no account". Before this story,
+confirmMembership read the resulting empty list as a real answer and refused the switch with "no
+longer a member", which would have blocked switching TO the very account a Personal Access Token or
+Account API Key is scoped to.
+*/
+func TestASwitchToATypedCredentialsOwnAccountIsNotTreatedAsNonMember(t *testing.T) {
+	conductor := newFakeConductor(t)
+	fakeFirebase(t)
+	conductor.membershipsOmitted = "typed_credential"
+	cfg := membershipTestConfig(t, conductor.server.URL)
+	cfg.ApplyAPIKeyLogin("aaaaa", "key-a", "2026-01-01T00:00:00Z")
+	cfg.ApplyAPIKeyLogin("bbbbb", "key-b", "2026-01-02T00:00:00Z")
+	command, daemon := switchTestCommandWithDaemon(t)
+
+	switched, err := switchWithStoredCredential(command, cfg, "aaaaa", "bbbbb")
+
+	if !switched || err != nil {
+		t.Fatalf("expected a switch, not a membership refusal, got switched=%v err=%v", switched, err)
+	}
+	assertHasCall(t, daemon.recorded(), "down")
+	if cfg.AccountID != "aaaaa" {
+		t.Fatalf("active = %q, want aaaaa", cfg.AccountID)
+	}
+	if stderr := command.ErrOrStderr().(*bytes.Buffer).String(); !strings.Contains(stderr, "not shown for this credential type") {
+		t.Errorf("the switch must say the list is not shown for this credential type, got %q", stderr)
+	}
+}
+
+/*
+Finding 1592: shareActiveSessionWith also branches on the membership list (through hasMembership),
+and is gated to CredentialInteractive, so an omitted list is not reachable through any contract
+today. The documented, safe outcome either way is the same: it answers false (no session shared),
+never true, so a conductor that ever did omit the list here could not make this function wrongly
+claim a confirmed membership.
+*/
+func TestShareActiveSessionWithAnOmittedListDoesNotShare(t *testing.T) {
+	conductor := newFakeConductor(t)
+	fakeFirebase(t)
+	conductor.membershipsOmitted = "typed_credential"
+	cfg := membershipTestConfig(t, conductor.server.URL)
+	cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY"}, "REFRESH", "2026-01-01T00:00:00Z")
+
+	shared := shareActiveSessionWith(cfg, "bbbbb")
+
+	if shared {
+		t.Fatal("an omitted list must never be read as a confirmed membership")
+	}
+	if cfg.HasStoredCredential("bbbbb") {
+		t.Fatal("shareActiveSessionWith stored a session for an account it could not confirm membership of")
+	}
+}
+
 // An unreadable list is not a refusal. Conductor still refuses a non-member on every request, and a
 // conductor without the list has nothing to read.
 func TestAnUnreadableMembershipListDoesNotBlockTheSwitch(t *testing.T) {
