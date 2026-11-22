@@ -26,22 +26,29 @@ the list would have saved.
 
 var errNoAPIURL = errors.New("no API URL is configured")
 
-// loadMemberships reads the accounts the login behind token is a member of.
-func loadMemberships(cfg *config.Config, token string) ([]api.UserAccount, error) {
+// loadMemberships reads the accounts the login behind token is a member of, and the
+// AccountsOmittedTypedCredential-shaped reason when conductor deliberately looked none up for a
+// typed credential (contract C-4, ruling R8-5): that is NOT "a member of no account", and every
+// caller below treats it as a distinct, named state rather than reading the empty list as such.
+func loadMemberships(cfg *config.Config, token string) ([]api.UserAccount, string, error) {
 	baseURL := cfg.GetAPIURLQuiet()
 	if baseURL == "" {
-		return nil, errNoAPIURL
+		return nil, "", errNoAPIURL
 	}
 	if token == "" {
-		return nil, auth.ErrNotAuthenticated
+		return nil, "", auth.ErrNotAuthenticated
 	}
 	return api.NewClient(baseURL).UserAccounts(token)
 }
 
 // sessionMemberships reads the memberships of a sign-in that just completed, with the ID token the
 // sign-in already holds. Nil means the list could not be read, which is not the same as none.
+//
+// A browser sign-in is never a typed credential, so conductor never sends
+// api.AccountsOmittedTypedCredential here; this caller has no state to branch on and reads the list
+// as-is, same as before this story.
 func sessionMemberships(cfg *config.Config, session browserSession) []api.UserAccount {
-	accounts, err := loadMemberships(cfg, session.IDToken)
+	accounts, _, err := loadMemberships(cfg, session.IDToken)
 	if err != nil {
 		return nil
 	}
@@ -49,20 +56,22 @@ func sessionMemberships(cfg *config.Config, session browserSession) []api.UserAc
 }
 
 // signedInMemberships reads the memberships of the active credential, or nil when the CLI is signed
-// out or the list could not be read. An API key answers with its own account only.
-func signedInMemberships(cfg *config.Config) []api.UserAccount {
+// out or the list could not be read. A legacy API key answers with its own account only; a typed
+// credential's list comes back empty with omitted set to api.AccountsOmittedTypedCredential, which
+// the caller must show as "not reported", never as "a member of no account".
+func signedInMemberships(cfg *config.Config) (accounts []api.UserAccount, omitted string) {
 	if !auth.HasCredentials(cfg) {
-		return nil
+		return nil, ""
 	}
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	accounts, err := loadMemberships(cfg, token)
+	accounts, omitted, err = loadMemberships(cfg, token)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	return accounts
+	return accounts, omitted
 }
 
 func memberAccountIDs(accounts []api.UserAccount) []string {
@@ -134,7 +143,9 @@ func shareActiveSessionWith(cfg *config.Config, accountID string) bool {
 	if err != nil {
 		return false
 	}
-	memberships, err := loadMemberships(cfg, token)
+	// Gated to CredentialInteractive above: an interactive sign-in is never a typed credential, so
+	// conductor never omits the list here, and this caller has no state to branch on.
+	memberships, _, err := loadMemberships(cfg, token)
 	if err != nil || !hasMembership(memberships, accountID) {
 		return false
 	}
@@ -153,11 +164,20 @@ success and the next command was refused.
 An unreadable list is NOT a refusal. It is reported on warn and the switch goes ahead, because
 conductor still refuses a non-member on every request, and a conductor without the list has nothing
 to read.
+
+A typed credential's OMITTED list (contract C-4, ruling R8-5) gets the same treatment, and for the
+same reason: conductor deliberately did not look accounts up for this credential type, so an empty
+list here is not "this credential is a member of no account" -- it is simply not reported, and must
+not be read as a refusal.
 */
 func confirmMembership(cfg *config.Config, token, accountID string, warn io.Writer) error {
-	memberships, err := loadMemberships(cfg, token)
+	memberships, omitted, err := loadMemberships(cfg, token)
 	if err != nil {
 		fmt.Fprintf(warn, "Could not confirm membership of %s, so switching anyway: %v\n", accountID, err)
+		return nil
+	}
+	if omitted != "" {
+		fmt.Fprintf(warn, "The account list is not shown for this credential type, so membership of %s could not be confirmed; switching anyway.\n", accountID)
 		return nil
 	}
 	if hasMembership(memberships, accountID) {

@@ -35,6 +35,11 @@ type accountListEntry struct {
 type accountListResult struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Accounts      []accountListEntry `json:"accounts"`
+	// AccountsOmitted names why Label/AccountRole/IsDefault could not be filled in from conductor's
+	// membership list (api.AccountsOmittedTypedCredential for a Personal Access Token or an Account
+	// API Key, contract C-4): empty whenever the list was read normally, including when it is
+	// genuinely empty. Never read the absence of membership data as "a member of no account".
+	AccountsOmitted string `json:"accountsOmitted,omitempty"`
 }
 
 func runAccountList(cmd *cobra.Command, _ []string) error {
@@ -52,11 +57,11 @@ func runAccountList(cmd *cobra.Command, _ []string) error {
 			identities[identity.AccountID] = identity
 		}
 	}
-	memberships := signedInMemberships(cfg)
+	memberships, omitted := signedInMemberships(cfg)
 	if memberships != nil && auth.Kind(cfg) == auth.CredentialInteractive {
 		known = dropAccountsTheLoginLeft(known, memberships, cfg.RefreshToken)
 	}
-	result := accountListResult{SchemaVersion: 1, Accounts: mergeAccountList(known, cfg.AccountID, memberships)}
+	result := accountListResult{SchemaVersion: 1, Accounts: mergeAccountList(known, cfg.AccountID, memberships), AccountsOmitted: omitted}
 	for i := range result.Accounts {
 		identity, present := identities[result.Accounts[i].AccountID]
 		result.Accounts[i].VPNIdentityPresent = present
@@ -66,7 +71,12 @@ func runAccountList(cmd *cobra.Command, _ []string) error {
 			result.Accounts[i].VPNSessionExpiresAt = &expires
 		}
 	}
-	return emitAccountResult(cmd, result, func() { printAccountList(cmd.OutOrStdout(), result.Accounts) })
+	return emitAccountResult(cmd, result, func() {
+		if result.AccountsOmitted != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), "The account list is not shown for this credential type.")
+		}
+		printAccountList(cmd.OutOrStdout(), result.Accounts)
+	})
 }
 
 /*

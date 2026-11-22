@@ -75,6 +75,10 @@ type fakeConductor struct {
 	memberships []string
 	// membershipStatus, when non-zero, replaces the 200 so a test can make the list unreadable.
 	membershipStatus int
+	// membershipsOmitted, when non-empty, is sent as accountsOmitted alongside an empty accounts
+	// list (contract C-4, ruling R8-5): a test sets this to simulate a typed credential, whose own
+	// GET /user/accounts deliberately omits the lookup rather than reporting a real empty list.
+	membershipsOmitted string
 
 	// calls records every request as "verb aid[/detail]", in the order they arrived.
 	calls []string
@@ -108,8 +112,8 @@ func newFakeConductor(t *testing.T) *fakeConductor {
 	mux.HandleFunc("/user/accounts", func(w http.ResponseWriter, r *http.Request) {
 		c.record("user-accounts")
 		c.mu.Lock()
-		status, members := c.membershipStatus, c.memberships
-		if members == nil {
+		status, members, omitted := c.membershipStatus, c.memberships, c.membershipsOmitted
+		if members == nil && omitted == "" {
 			members = []string{c.signInAccount}
 		}
 		c.mu.Unlock()
@@ -123,7 +127,11 @@ func newFakeConductor(t *testing.T) *fakeConductor {
 				`{"aid":%q,"name":"Account %s","companyName":"","accountRole":"admin","isDefault":%t}`, aid, aid, i == 0,
 			))
 		}
-		respondJSON(w, http.StatusOK, `{"accounts":[`+strings.Join(rows, ",")+`]}`)
+		omittedField := ""
+		if omitted != "" {
+			omittedField = fmt.Sprintf(`,"accountsOmitted":%q`, omitted)
+		}
+		respondJSON(w, http.StatusOK, `{"accounts":[`+strings.Join(rows, ",")+`]`+omittedField+`}`)
 	})
 
 	mux.HandleFunc("/auth/device/initiate", func(w http.ResponseWriter, r *http.Request) {

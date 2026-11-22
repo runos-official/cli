@@ -20,7 +20,7 @@ func TestUserAccounts(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		accounts, err := NewClient(srv.URL).UserAccounts("id-token")
+		accounts, omitted, err := NewClient(srv.URL).UserAccounts("id-token")
 		if err != nil {
 			t.Fatalf("UserAccounts: %v", err)
 		}
@@ -29,6 +29,9 @@ func TestUserAccounts(t *testing.T) {
 		}
 		if gotAuth != "Bearer id-token" {
 			t.Errorf("Authorization = %q", gotAuth)
+		}
+		if omitted != "" {
+			t.Errorf("omitted = %q, want empty for a real membership list", omitted)
 		}
 		if len(accounts) != 2 {
 			t.Fatalf("got %d accounts, want 2", len(accounts))
@@ -48,7 +51,7 @@ func TestUserAccounts(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, err := NewClient(srv.URL).UserAccounts("t")
+		_, _, err := NewClient(srv.URL).UserAccounts("t")
 		if err == nil || !strings.Contains(err.Error(), "Invalid token") || !strings.Contains(err.Error(), "401") {
 			t.Fatalf("error = %v, want conductor's message and the status", err)
 		}
@@ -60,20 +63,37 @@ func TestUserAccounts(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		if _, err := NewClient(srv.URL).UserAccounts("t"); err == nil {
+		if _, _, err := NewClient(srv.URL).UserAccounts("t"); err == nil {
 			t.Fatal("expected an error for a body with no accounts field")
 		}
 	})
 
-	t.Run("an empty list is a real answer", func(t *testing.T) {
+	t.Run("an empty list with no accountsOmitted is a real answer", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, `{"accounts":[]}`)
 		}))
 		defer srv.Close()
 
-		accounts, err := NewClient(srv.URL).UserAccounts("t")
+		accounts, omitted, err := NewClient(srv.URL).UserAccounts("t")
+		if err != nil || len(accounts) != 0 || omitted != "" {
+			t.Fatalf("accounts = %v, omitted = %q, err = %v; want an empty list, no omitted reason and no error", accounts, omitted, err)
+		}
+	})
+
+	// Contract C-4, ruling R8-5: a typed credential's own GET /user/accounts
+	// names why the list is empty. This is NOT "a member of no account".
+	t.Run("a typed credential's empty list names why", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"accounts":[],"accountsOmitted":"typed_credential"}`)
+		}))
+		defer srv.Close()
+
+		accounts, omitted, err := NewClient(srv.URL).UserAccounts("t")
 		if err != nil || len(accounts) != 0 {
 			t.Fatalf("accounts = %v, err = %v; want an empty list and no error", accounts, err)
+		}
+		if omitted != AccountsOmittedTypedCredential {
+			t.Fatalf("omitted = %q, want %q", omitted, AccountsOmittedTypedCredential)
 		}
 	})
 }

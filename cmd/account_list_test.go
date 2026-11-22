@@ -95,6 +95,121 @@ func TestPrintAccountList(t *testing.T) {
 }
 
 /*
+Contract C-4, ruling R8-5: `runos account list` for a typed credential (a Personal Access Token or
+an Account API Key) must say in one plain sentence that the account list is not shown for this
+credential type, in both --json (accountsOmitted) and human output, so an empty list never reads as
+"member of no account". A legacy key and a human session must read byte-for-byte as before this
+story: neither carries accountsOmitted, and neither prints the new sentence.
+*/
+func TestAccountListReportsAccountsOmittedForATypedCredential(t *testing.T) {
+	t.Run("typed credential: accounts omitted", func(t *testing.T) {
+		conductor := newFakeConductor(t)
+		fakeFirebase(t)
+		conductor.membershipsOmitted = "typed_credential"
+		cfg := membershipTestConfig(t, conductor.server.URL)
+		cfg.ApplyAPIKeyLogin("kkkkk", "pat-k", "2026-01-01T00:00:00Z")
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+
+		jsonCommand := switchTestCommand()
+		_ = jsonCommand.Flags().Set("json", "true")
+		_ = jsonCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var jsonOut bytes.Buffer
+		jsonCommand.SetOut(&jsonOut)
+		if err := runAccountList(jsonCommand, nil); err != nil {
+			t.Fatalf("account list --json: %v", err)
+		}
+		var result accountListResult
+		if err := json.Unmarshal(jsonOut.Bytes(), &result); err != nil {
+			t.Fatalf("parse %q: %v", jsonOut.String(), err)
+		}
+		if result.AccountsOmitted != "typed_credential" {
+			t.Errorf("accountsOmitted = %q, want %q", result.AccountsOmitted, "typed_credential")
+		}
+
+		textCommand := switchTestCommand()
+		_ = textCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var textOut bytes.Buffer
+		textCommand.SetOut(&textOut)
+		if err := runAccountList(textCommand, nil); err != nil {
+			t.Fatalf("account list: %v", err)
+		}
+		if !strings.Contains(textOut.String(), "not shown for this credential type") {
+			t.Errorf("human output = %q, want one sentence saying the account list is not shown for this credential type", textOut.String())
+		}
+	})
+
+	t.Run("legacy key: unchanged", func(t *testing.T) {
+		conductor := newFakeConductor(t)
+		fakeFirebase(t)
+		conductor.memberships = []string{"kkkkk"}
+		cfg := membershipTestConfig(t, conductor.server.URL)
+		cfg.ApplyAPIKeyLogin("kkkkk", "pat-k", "2026-01-01T00:00:00Z")
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+
+		jsonCommand := switchTestCommand()
+		_ = jsonCommand.Flags().Set("json", "true")
+		_ = jsonCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var jsonOut bytes.Buffer
+		jsonCommand.SetOut(&jsonOut)
+		if err := runAccountList(jsonCommand, nil); err != nil {
+			t.Fatalf("account list --json: %v", err)
+		}
+		if strings.Contains(jsonOut.String(), "accountsOmitted") {
+			t.Errorf("a legacy key's --json output must not carry accountsOmitted, got %s", jsonOut.String())
+		}
+
+		textCommand := switchTestCommand()
+		_ = textCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var textOut bytes.Buffer
+		textCommand.SetOut(&textOut)
+		if err := runAccountList(textCommand, nil); err != nil {
+			t.Fatalf("account list: %v", err)
+		}
+		if strings.Contains(textOut.String(), "not shown for this credential type") {
+			t.Errorf("a legacy key's human output must not print the new sentence, got %q", textOut.String())
+		}
+	})
+
+	t.Run("human session: unchanged", func(t *testing.T) {
+		conductor := newFakeConductor(t)
+		fakeFirebase(t)
+		conductor.memberships = []string{"aaaaa"}
+		cfg := membershipTestConfig(t, conductor.server.URL)
+		cfg.ApplySessionLogin("aaaaa", &config.FirebaseConfig{APIKey: "KEY"}, "REFRESH", "2026-01-01T00:00:00Z")
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+
+		jsonCommand := switchTestCommand()
+		_ = jsonCommand.Flags().Set("json", "true")
+		_ = jsonCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var jsonOut bytes.Buffer
+		jsonCommand.SetOut(&jsonOut)
+		if err := runAccountList(jsonCommand, nil); err != nil {
+			t.Fatalf("account list --json: %v", err)
+		}
+		if strings.Contains(jsonOut.String(), "accountsOmitted") {
+			t.Errorf("a human session's --json output must not carry accountsOmitted, got %s", jsonOut.String())
+		}
+
+		textCommand := switchTestCommand()
+		_ = textCommand.Flags().Set("socket", filepath.Join(t.TempDir(), "no-daemon.sock"))
+		var textOut bytes.Buffer
+		textCommand.SetOut(&textOut)
+		if err := runAccountList(textCommand, nil); err != nil {
+			t.Fatalf("account list: %v", err)
+		}
+		if strings.Contains(textOut.String(), "not shown for this credential type") {
+			t.Errorf("a human session's human output must not print the new sentence, got %q", textOut.String())
+		}
+	})
+}
+
+/*
 A login that left an account, from this CLI or from the console, kept seeing it in `account list`,
 and switching to it was refused. When the signed-in login's membership list is read, it speaks for
 the accounts that login's session opens.

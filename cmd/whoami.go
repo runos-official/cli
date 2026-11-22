@@ -26,8 +26,15 @@ For a secret credential (RUNOS_API_KEY or a key stored by 'runos login
 credential, and reports one of three states in "verified" /
 "verified_reason":
   - accepted: the server accepted the credential. The account and role
-    it returned are printed; credential_type stays "unknown" unless a
-    future server response names it.
+    it returned are printed. credential_type and credential_id report
+    the server's own verified name for the credential when it names
+    one; otherwise credential_type stays "unknown" and credential_id is
+    not printed. For a Personal Access Token or an Account API Key, the
+    server may also deliberately not look accounts up: then "accounts"
+    is empty and accounts_omitted names why, with one plain sentence in
+    accounts_note saying the account list is not shown for this
+    credential type, so the empty list never reads as "member of no
+    account".
   - human_sign_in_required: the server answered, but the check this
     command makes needs a human sign-in; the credential itself was not
     judged.
@@ -54,12 +61,13 @@ func whoamiNotSignedIn() error {
 // whoamiReport builds the answer. It names credentials by source only
 // and never includes a token, key or secret.
 //
-// "credential_type" is always "unknown" for a secret-sourced credential
-// (env or stored): no trusted server response reaches this command
-// today that could tell a Personal Access Token from an Account API
-// Key, and Story 343 / FCR2030 forbids guessing that from the source or
-// a prefix. The field still appears, honestly, rather than being left
-// to imply a certainty the CLI does not have.
+// "credential_type" defaults to "unknown" for a secret-sourced
+// credential (env or stored): Story 343 / FCR2030 forbids guessing the
+// type from the source or a prefix. runWhoami's merge of
+// checkSecretCredential's fields overwrites this default only when
+// conductor's own response named the credential (contract C-4, story
+// 439); otherwise it stays "unknown", honestly, rather than implying a
+// certainty the CLI does not have.
 func whoamiReport(cfg *config.Config, kind auth.CredentialKind, id *roidauth.Identity) map[string]any {
 	desc := auth.DescribeSource(kind)
 	report := map[string]any{
