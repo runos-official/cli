@@ -29,31 +29,45 @@ func (a UserAccount) Label() string {
 	return a.Name
 }
 
-// UserAccounts lists every account the caller's login is a member of.
+// AccountsOmittedTypedCredential is the accountsOmitted value conductor
+// sends when the caller authenticated with a typed credential (a
+// Personal Access Token or an Account API Key): contract C-4, ruling
+// R8-5. Conductor names only the credential's own verified identity for
+// that caller and looks no accounts up, so UserAccounts' list is empty
+// on purpose, not because the credential belongs to no account.
+const AccountsOmittedTypedCredential = "typed_credential"
+
+// UserAccounts lists every account the caller's login is a member of, and
+// reports whether conductor omitted that lookup instead of actually
+// finding none.
 //
-// GET /user/accounts. An API key is scoped to one account, so an API key
-// caller gets exactly that account back.
-func (c *Client) UserAccounts(token string) ([]UserAccount, error) {
+// GET /user/accounts. A legacy API key is scoped to one account, so a
+// legacy key caller gets exactly that account back, with omitted empty.
+// A typed credential (contract C-4) gets an empty list with omitted set
+// to AccountsOmittedTypedCredential: that is NOT "a member of no
+// account", and a caller of this function must not read it that way.
+func (c *Client) UserAccounts(token string) (accounts []UserAccount, omitted string, err error) {
 	result, err := c.Do(http.MethodGet, "/user/accounts", token, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !result.OK() {
 		if msg := result.ErrorMessage(); msg != "" {
-			return nil, fmt.Errorf("%s (HTTP %d)", msg, result.StatusCode)
+			return nil, "", fmt.Errorf("%s (HTTP %d)", msg, result.StatusCode)
 		}
-		return nil, fmt.Errorf("could not read the account list (HTTP %d)", result.StatusCode)
+		return nil, "", fmt.Errorf("could not read the account list (HTTP %d)", result.StatusCode)
 	}
 	var envelope struct {
-		Accounts *[]UserAccount `json:"accounts"`
+		Accounts        *[]UserAccount `json:"accounts"`
+		AccountsOmitted string         `json:"accountsOmitted"`
 	}
 	if err := result.Decode(&envelope); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// A 200 without the field is not "no accounts". Reading it as an empty
 	// list would turn every membership check into a refusal.
 	if envelope.Accounts == nil {
-		return nil, fmt.Errorf("the account list response has no accounts field (HTTP %d)", result.StatusCode)
+		return nil, "", fmt.Errorf("the account list response has no accounts field (HTTP %d)", result.StatusCode)
 	}
-	return *envelope.Accounts, nil
+	return *envelope.Accounts, envelope.AccountsOmitted, nil
 }

@@ -1,0 +1,32 @@
+{
+  "default": "prod",
+  "environments": {
+    "prod": {
+      "domains": {
+        "console": "https://console.prod.example.test",
+        "api": "https://api.prod.example.test",
+        "conductor": "https://api.prod.example.test"
+      },
+      "auth": {
+        "provider": "roid",
+        "issuer": "https://id.prod.example.test"
+      }
+    },
+    "beta": {
+      "domains": {
+        "console": "https://console.beta.example.test",
+        "conductor": "https://api.beta.example.test"
+      }
+    },
+    "dev": {
+      "domains": {
+        "console": "https://console.dev.example.test",
+        "api": "https://api.dev.example.test"
+      },
+      "auth": {
+        "provider": "roid",
+        "issuer": "https://id.dev.example.test"
+      }
+    }
+  }
+}

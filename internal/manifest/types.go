@@ -45,6 +45,18 @@ type Field struct {
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`
 	Format      string   `yaml:"format,omitempty" json:"format,omitempty"`         // e.g., "key_value" for tags
 	Positional  bool     `yaml:"positional,omitempty" json:"positional,omitempty"` // true = positional arg, not flag
+	// Location says where the executor must place this field's value on
+	// the wire: "" or "body" (the default: a JSON body member, nested
+	// under "flags" for a flag value, exactly as before this field
+	// existed) or "header" (a real HTTP header, never the JSON body or
+	// the query string). Conductor sets this on the typed credential-
+	// lifecycle commands' idempotencyKey/ifMatch fields (FPL434, review
+	// finding 1151): Roid's handlers decode a strict body schema and
+	// refuse an unknown member, and a DELETE route never reads a query
+	// string, so either placement fails every request. See
+	// internal/dynacmd/executor_request.go's SplitHeaderFields and
+	// headerNameFromFieldName for the field-name-to-header-name mapping.
+	Location string `yaml:"location,omitempty" json:"location,omitempty"`
 	// AllowEmpty opts a required string field out of the CLI's
 	// empty-required gate (validateInputValues). Used when empty-string
 	// carries semantic meaning (e.g. `nodes/rename --name ""` clears

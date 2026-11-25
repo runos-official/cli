@@ -31,7 +31,11 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 	baseURL := cfg.GetAPIURL()
 	if baseURL == "" {
-		return nil, fmt.Errorf("no API URL configured; run 'runos config env <environment>'")
+		// Lesson cli-config-env-is-not-user-facing (finding 1100): say
+		// 'runos login', never 'runos config env', in user-facing recovery
+		// text. 'runos login' re-bootstraps a default config, API URL
+		// included, before it runs (cmd/root.go's PersistentPreRunE).
+		return nil, fmt.Errorf("no API URL configured; run 'runos login'")
 	}
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
@@ -64,21 +68,30 @@ func (c *Client) Kind() auth.CredentialKind { return c.kind }
 // no role makes a stored secret into a person. The recovery is a
 // different credential, so that is what this says.
 func (c *Client) RefuseStoredSecret(act string) error {
-	if !c.kind.IsPAT() {
+	if !c.kind.IsSecretCredential() {
 		return nil
 	}
 	where := "the RUNOS_API_KEY environment variable"
-	if c.kind == auth.CredentialStoredPAT {
-		where = "a personal access token stored by 'runos login --api-key'"
+	// Finding 1107: RUNOS_API_KEY overrides any interactive sign-in
+	// (auth.ResolveToken's priority order), so this remedy must say to
+	// unset it too; otherwise the retry it asks for still resolves the
+	// same env-var bearer. A stored secret has no such override to
+	// mention: 'runos login' alone replaces it (ApplySessionLogin clears
+	// cfg.APIKey).
+	retry := "Sign in interactively with 'runos login' and retry."
+	if c.kind == auth.CredentialStoredKey {
+		where = "a credential stored by 'runos login --api-key'"
+	} else {
+		retry = "Unset RUNOS_API_KEY, sign in interactively with 'runos login', and retry."
 	}
 	return fmt.Errorf(
-		"a personal access token cannot %s.\n\n"+
+		"a stored credential cannot %s.\n\n"+
 			"This session authenticates with %s. A stored secret is evidence of possession, never of a\n"+
 			"person being present, and releasing a control is the direction that restores the ability\n"+
 			"to mutate, so it is the half a stored secret does not reach.\n\n"+
-			"This is not a permission problem. Sign in interactively with 'runos login' and retry.\n"+
-			"(Approving, rejecting, revoking and invoking all stay available under a PAT.)",
-		act, where)
+			"This is not a permission problem. %s\n"+
+			"(Approving, rejecting, revoking and invoking all stay available under a stored credential.)",
+		act, where, retry)
 }
 
 func (c *Client) clusterPath(cid, suffix string) string {

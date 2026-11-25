@@ -68,6 +68,7 @@ strings differ, so a restart (a new service process from the new binary) makes t
 | `sessionExpired` | bool | no | optional |
 | `sessionExpiresAt` | time | no | ignored |
 | `authMethod` | string | no | ignored |
+| `credentialType` | string (always `"unknown"` today; only for a secret-sourced credential, env or stored) | no | ignored |
 | `signedInAt` | string | no | ignored |
 | `environment` | string | no | ignored |
 | `apiUrl` | string | no | ignored |
@@ -138,12 +139,19 @@ reads those replies and prints the table above anyway: a missing list becomes `[
 | `cli.currentVersion` | string | no | optional |
 | `cli.version` | string | no | optional |
 | `cli.message` | string | no | optional |
+| `cli.force` | bool | no | ignored |
+| `cli.previousVersion` | string | no | ignored |
+| `cli.newVersion` | string | no | ignored |
 | `desktop` | object | no | optional |
 | `desktop.updated` | bool | yes | required |
 | `desktop.updateAvailable` | bool | yes | optional |
 | `desktop.currentVersion` | string | no | optional |
 | `desktop.version` | string | no | optional |
 | `desktop.message` | string | no | optional |
+
+`cli.force`, `cli.previousVersion` and `cli.newVersion` are sent only by `runos update --force`. `force` is
+`true`, `previousVersion` is the build that was running, and `newVersion` is the published release it
+was (or, with `--check`, would be) replaced by. An ordinary update never sends them.
 
 `desktop.*` is always sent when `desktop` is present. `desktop` is absent when Desktop is not installed.
 
@@ -152,6 +160,12 @@ reads those replies and prints the table above anyway: a missing list becomes `[
 One JSON object per line on stdout, flushed as it happens. Desktop ignores an `event` it does not
 know. Known events: `device_code` (`deviceId`, `url`), `browser_opened` (`browserOpened`), `pending`,
 `authorized`, `notice` (`reason`, `message`), `error` (`reason`, `message`).
+
+Reasons Desktop may see: a `notice` with `reason` `identity_service_enabled` (the stored sign-in address was empty and the CLI filled it in, so this sign-in goes through the RunOS identity service), a `notice` with `reason` `environment_retired` (the stored environment no
+longer exists, so the CLI moved to the default one and ended the old sign-in; sign in again), and an
+`error` with `reason` `update_required` (RunOS refused this CLI version; run `runos update`). Every
+other command that RunOS refuses for the same cause exits 1 with `Error: ` and the same sentence on
+stderr, and in `--json` mode prints the JSON error with `code` `cli.update_required`.
 
 | Key | Type | Always sent | Desktop |
 | --- | --- | --- | --- |

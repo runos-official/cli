@@ -13,6 +13,28 @@ not only the ones the first version thought of. Each row names the secret that m
 var pemBlock = strings.Repeat("-", 5) + "BEGIN PRIVATE KEY" + strings.Repeat("-", 5) + "\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n" +
 	strings.Repeat("-", 5) + "END PRIVATE KEY" + strings.Repeat("-", 5)
 
+// Built by concatenation, never as one literal, for the same reason pemBlock is built at run
+// time: scripts/leakcheck.py scans source TEXT for this exact id-dot-secret shape, and a test
+// fixture matching it on one line would fail the public-repo leak gate on this file itself.
+var (
+	// Legacy shape requires EXACTLY 10, then EXACTLY 32, characters from the unambiguous charset
+	// (no 0, 1, i, l, o, I, O): Conductor's KEY_ID_LENGTH/SECRET_LENGTH/UNAMBIGUOUS_CHARS
+	// (apiKeys.ts) and Roid's legacyChars (secretshape.go) agree on this exact set. There is no
+	// legacy "runos_key_": Conductor's legacy route mints runos_pat_ for every key, personal or
+	// account-role (apiKeys.ts PAT_PREFIX).
+	fakeRunosPAT = "runos_pat_" + "AbCdEfGhJk." + "AbCdAbCdAbCdAbCdAbCdAbCdAbCdAbCd"
+	// Typed shape: runos_(pat|key)_<uuid>.<43-char unpadded base64url>. Account API Keys exist
+	// only in this typed shape, minted by Roid (accountapikeys.go), never the legacy route.
+	fakeRunosKey = "runos_key_" + "11111111-2222-3333-4444-555555555555." +
+		"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	// Roid's own legacy personal-key secret, rk_<43-char unpadded base64url> (still minted by
+	// roid/internal/server/personalkeys.go and accounts.go). No dot, no id half to mask.
+	fakeRunosRK = "rk_" + "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	// Notify API key, same id/secret shape as the legacy PAT with a different prefix (handbook
+	// article 220: "runos_ntk_<id>.<secret>, 53 characters long"). Review finding 1150.
+	fakeNotifyKey = "runos_ntk_" + "AbCdEfGhJk." + "AbCdAbCdAbCdAbCdAbCdAbCdAbCdAbCd"
+)
+
 func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 	cases := []struct {
 		name, in, secret string
@@ -47,6 +69,31 @@ func TestRedactTextCatchesTheCommonCredentialShapes(t *testing.T) {
 		}
 		if !strings.Contains(out, redacted) {
 			t.Errorf("%s: nothing was marked redacted in %q", c.name, out)
+		}
+	}
+}
+
+// Story 343 / FCR2030: the whole RunOS/Roid credential (prefix AND the public id before the dot,
+// where there is one) must be masked as one unit for every supported shape, not only the trailing
+// secret half. Pre-fix, only the bare opaque-token pattern caught these, which redacts the 32+
+// char secret but leaves "runos_pat_<id>." (or "runos_key_<id>.") visible in a daemon report.
+func TestRedactTextMasksTheWholeRunosCredential(t *testing.T) {
+	for _, c := range []struct {
+		name, secret, revealingPrefix string
+	}{
+		{"legacy personal access token", fakeRunosPAT, "runos_pat_AbCdEfGhJk."},
+		{"typed account API key", fakeRunosKey, "runos_key_11111111-2222-3333-4444-555555555555."},
+		{"roid legacy rk_ secret", fakeRunosRK, "rk_"},
+		{"notify API key", fakeNotifyKey, "runos_ntk_AbCdEfGhJk."},
+	} {
+		in := "token exchange failed for " + c.secret
+		out := redactText(in)
+		if strings.Contains(out, c.secret) {
+			t.Fatalf("%s: the secret %q survived in %q", c.name, c.secret, out)
+		}
+		// The prefix+id half (everything before the secret bytes) must not survive either.
+		if strings.Contains(out, c.revealingPrefix) {
+			t.Fatalf("%s: %q survived in %q (only the secret half was masked)", c.name, c.revealingPrefix, out)
 		}
 	}
 }

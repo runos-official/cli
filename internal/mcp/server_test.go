@@ -22,10 +22,6 @@ func (m *mockExecutor) Execute(toolName string, args map[string]any) (string, er
 	return m.result, m.err
 }
 
-func (m *mockExecutor) ExecuteRaw(method, endpoint string, body map[string]any, cid string) (string, error) {
-	return m.result, m.err
-}
-
 func makeToolCallRequest(name string) *Request {
 	params, _ := json.Marshal(CallToolParams{Name: name})
 	return &Request{

@@ -118,7 +118,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 
 	// The workspace is named by the caller's own id, the same one the console uses, so both
 	// surfaces open the SAME workspace rather than two that look alike.
-	uid := auth.ExtractFirebaseUID(token)
+	uid := auth.PersonID(cfg, token)
 	if uid == "" {
 		return errors.New("runos shell needs a browser sign-in, because a workspace belongs to a person rather than to a key. Run 'runos login' and try again; an API key cannot open one")
 	}

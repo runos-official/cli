@@ -49,7 +49,7 @@ type Executor struct {
 func NewExecutor(baseURL string) *Executor {
 	return &Executor{
 		baseURL:    baseURL,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: api.NewTransport()},
 	}
 }
 
@@ -90,6 +90,10 @@ func (e *APIError) Error() string {
 // cmd/apps_pull.go's emitJSONError so every --json failure path lands
 // on the same shape.
 func BuildAPIErrorEnvelope(err error) map[string]any {
+	var gate *api.UpdateRequiredError
+	if errors.As(err, &gate) {
+		return gate.Envelope()
+	}
 	envelope := map[string]any{"error": err.Error()}
 	var apiErr *APIError
 	for unwrapped := err; unwrapped != nil; {
@@ -251,7 +255,7 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		if uidProvided(args, cmdDef, body, "uid") {
 			// User-supplied; honour it verbatim and let conductor's
 			// docId-or-uid lookup handle the resolution.
-		} else if extracted := auth.ExtractFirebaseUID(token); extracted != "" {
+		} else if extracted := auth.PersonID(cfg, token); extracted != "" {
 			body["uid"] = extracted
 		}
 	}
@@ -340,8 +344,15 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
-	respBody, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
+	respBody, respHeaders, err := e.dispatch(cmdDef, args, body, cid, cfg, token)
 	if err != nil {
+		// Story 343 / FCR2030, finding 1150: a credential command's ERROR
+		// response can carry a secret-shaped canary too (an auxiliary field,
+		// an embedded validation detail), and the success-path guard below
+		// never ran for it. Scan and, if needed, replace err with a generic
+		// refusal BEFORE any of the error-specific formatters below (or the
+		// --json error envelope) touch its body.
+		err = GuardCredentialErrorBody(cmdDef, err)
 		// Conductor's services delete returns 409 with a structured
 		// dependents list when other apps/services reference the
 		// target. Render it as a multi-line message so the user
@@ -368,16 +379,71 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		// / etc), not their RUNOS PAT. The conductor's APIError body already
 		// carries the provider message; let it through verbatim.
 		if !is401UpstreamProxyCommand(cmdDef) {
-			if msg, ok := formatAuthError(err, auth.Kind(cfg).IsPAT()); ok {
+			if msg, ok := formatAuthError(err, auth.Kind(cfg)); ok {
 				err = fmt.Errorf("%s", msg)
 			}
 		}
+		// Story 427, ruling R7-8 and FCR 2720: a 403 an account's own
+		// security key policy closed, or one closed to every secret
+		// credential regardless of validity, gets the CLI's own
+		// sentence instead of conductor's bare one. applyRefusalHint
+		// rewrites only for a person, same as formatModuleNotEnabledError
+		// above: under --json the envelope keeps `code` and `reason` (or
+		// `requirement`), which is what a machine consumer branches on
+		// (review finding 1555).
+		err = applyRefusalHint(err, auth.Kind(cfg), jsonOutput)
 		// I4-G: with --json set, errors must be machine-parseable
 		// stdout output too — pre-fix the error went to cobra's
 		// default plain-text "Error: ..." stderr path, breaking CI
 		// pipelines that pipe stdout into jq. Print the structured
 		// envelope, suppress cobra's print, return the original error
 		// so the exit code stays non-zero.
+		if jsonOutput {
+			return emitJSONErrorAndSilence(cmd, err)
+		}
+		return err
+	}
+
+	// Story 343 / FCR2030: for a credential command family only (see
+	// GuardCredentialResponse), refuse to let a secret-shaped bearer value
+	// reach the terminal or a --json consumer from anywhere other than
+	// the one-shot issuance field, BEFORE any other handling of a
+	// successful response: the account-leave config write, the raw-DDL
+	// cache warning, and the advisory-warnings print below all touch or
+	// emit parts of respBody, and finding 1105 asks that none of them run
+	// ahead of this check on a credential response.
+	//
+	// Runs BEFORE InjectETagIntoCredentialResponse below, not after
+	// (finding 1265, instance 1): that function decodes one JSON value
+	// and RE-ENCODES it to splice the etag field in, which silently
+	// drops any trailing data the original respBody carried -- running
+	// the guard on the laundered, re-encoded body let an otherwise
+	// trailing-data-forbidden response through whenever an ETag header
+	// happened to be present. Running the guard first means it still
+	// sees the ORIGINAL bytes, trailing data included.
+	// InjectETagIntoCredentialResponse validates the ETag value on its
+	// own terms (finding 1215, G2) independent of this ordering, so
+	// nothing is lost by no longer re-scanning the etag-augmented body.
+	if err := GuardCredentialResponse(cmdDef, respBody); err != nil {
+		// I4-G parity: a guard refusal is a failure like any other on the
+		// --json path. Finding 1193: this used to `return err` directly,
+		// bypassing emitJSONErrorAndSilence, so a --json caller got a
+		// plain-text "Error: ..." line instead of the structured envelope
+		// every other failure in this function produces.
+		if jsonOutput {
+			return emitJSONErrorAndSilence(cmd, err)
+		}
+		return err
+	}
+
+	// Review finding 1151: surface the response's ETag (Roid's If-Match
+	// precondition value for a later update/rotate/revoke) on a typed
+	// credential's single-object response. No-op for every other command
+	// and for a list response (no per-item ETag exists). Validates the
+	// ETag itself and never panics on a non-object body (finding 1215,
+	// G2), independent of the guard having already run above.
+	respBody, err = InjectETagIntoCredentialResponse(cmdDef, respBody, respHeaders)
+	if err != nil {
 		if jsonOutput {
 			return emitJSONErrorAndSilence(cmd, err)
 		}
@@ -511,7 +577,13 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 
 	formatter := output.NewFormatter(jsonOutput)
 
-	err = formatter.Format(respBody, cmdDef.Output)
+	// Finding 1150: a credential issuance command's one-shot secret field
+	// used to render twice in text mode -- once as an ordinary table/
+	// object row from the generic formatter, again from the banner below.
+	// sanitizeForTableRender strips the field from what the FORMATTER
+	// sees only; the banner call further down still reads the original,
+	// unmodified respBody.
+	err = formatter.Format(sanitizeForTableRender(cmdDef, respBody, jsonOutput), cmdDef.Output)
 	if err != nil {
 		return err
 	}
@@ -530,23 +602,20 @@ func (e *Executor) Execute(cmd *cobra.Command, args []string, cmdDef manifest.Co
 		}
 	}
 
-	// `account api-keys add` returns a one-shot bearer token that can
-	// never be retrieved again. The default key:value formatter rendered
-	// the token and warning as just two more aligned lines, easy to scan
-	// past in a busy terminal. Print an ASCII-framed banner under the
-	// table so the user sees the warning visually before they exit the
-	// shell. JSON consumers already get a structured field. Regression
-	// target: I11-F.
-	if cmdDef.Command == "account/api-keys/add" && !jsonOutput {
-		printApiKeyTokenBanner(cmd.OutOrStdout(), respBody)
-	}
-
-	// `account notify-keys add` mirrors api-keys/add: the keyValue is
-	// shown once and the server stores only a hash. Same banner so
-	// terminal users don't miss it. JSON consumers already get a
-	// structured `keyValue` field. Regression target: I12-H.
-	if cmdDef.Command == "account/notify-keys/add" && !jsonOutput {
-		printNotifyKeyBanner(cmd.OutOrStdout(), respBody)
+	// A credential issuance command (account/api-keys/add and
+	// add-personal, account/notify-keys/add, and the typed families once
+	// published) returns a one-shot bearer secret that can never be
+	// retrieved again. The default key:value formatter rendered it and
+	// the warning as just two more aligned lines, easy to scan past in a
+	// busy terminal; sanitizeForTableRender above now removes that row
+	// entirely, so this banner is the ONLY place it renders in text mode.
+	// JSON consumers already get the structured field untouched.
+	// Regression target: I11-F, I12-H. Driven by the same
+	// credentialCommandFamilies registry the guard reads (finding 1150:
+	// hardcoding "account/api-keys/add" alone left "add-personal" with no
+	// banner once its row was suppressed).
+	if !jsonOutput {
+		printOneShotBanner(cmd.OutOrStdout(), cmdDef, respBody)
 	}
 
 	// Print footer note for clusters/list (only in plain text mode to a terminal)
@@ -612,65 +681,6 @@ func jobsCancelExitGate(respBody []byte) error {
 		return fmt.Errorf("jobs cancel: job is in terminal status %q and was not cancelled", resp.Status)
 	}
 	return fmt.Errorf("jobs cancel: job was not cancelled")
-}
-
-// printApiKeyTokenBanner prints an ASCII-framed reminder under the
-// formatter's table output for `account api-keys add`. Surfaces the
-// one-shot token + warning so terminal users don't miss them in a busy
-// session. Silently no-ops when the response body lacks a token (e.g.
-// when the conductor returned a partial response shape) to avoid
-// blowing up the call site. Regression target: I11-F.
-func printApiKeyTokenBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
-		return
-	}
-	token, _ := item["token"].(string)
-	if token == "" {
-		return
-	}
-	warning, _ := item["warning"].(string)
-	if warning == "" {
-		warning = "This token will not be shown again. Store it in a secret manager."
-	}
-	const bar = "============================================================"
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT TOKEN - save it now, it cannot be retrieved")
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+token)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+warning)
-	fmt.Fprintln(w, bar)
-}
-
-// printNotifyKeyBanner prints the same banner shape as
-// printApiKeyTokenBanner for `account notify-keys add`. Notify keys are
-// the symmetric notification-webhook credential and have the same
-// store-the-hash, return-the-secret-once contract. Silently no-ops
-// when the response body lacks `keyValue` so a partial conductor shape
-// can't blow up the call site. Regression target: I12-H (mirror of
-// I11-F for PATs).
-func printNotifyKeyBanner(w io.Writer, respBody []byte) {
-	var item map[string]any
-	if err := json.Unmarshal(respBody, &item); err != nil {
-		return
-	}
-	keyValue, _ := item["keyValue"].(string)
-	if keyValue == "" {
-		return
-	}
-	const bar = "============================================================"
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w, "  ONE-SHOT NOTIFY KEY - save it now, it cannot be retrieved")
-	fmt.Fprintln(w, bar)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+keyValue)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  This key will not be shown again. Store it in a secret manager.")
-	fmt.Fprintln(w, bar)
 }
 
 // extractLogsDiagnostic recognises the conductor's synthetic
@@ -927,7 +937,7 @@ func (e *Executor) followPodLogs(cmd *cobra.Command, cmdDef manifest.Command, ar
 		case <-ticker.C:
 		}
 
-		respBody, err := e.dispatch(cmdDef, args, pollBody, cid, cfg, token)
+		respBody, _, err := e.dispatch(cmdDef, args, pollBody, cid, cfg, token)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: follow poll failed: %v\n", err)
 			continue
@@ -1096,6 +1106,9 @@ func (e *Executor) followJob(respBody []byte, progress io.Writer) error {
 // ignored: the caller got progress text on stdout and nothing to parse.
 // Regression target: goal 19 A3 / goal 21 B11.
 func renderFollowResponse(cmdDef manifest.Command, respBody []byte, jsonOutput bool) error {
+	if err := GuardCredentialResponse(cmdDef, respBody); err != nil {
+		return err
+	}
 	return output.NewFormatter(jsonOutput).Format(respBody, cmdDef.Output)
 }
 

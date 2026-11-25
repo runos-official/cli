@@ -373,6 +373,37 @@ paths:
                 $ref: '#/components/schemas/EffectiveAccess'
         default:
           $ref: '#/components/responses/Error'
+  /v1/accounts/{acct}/access/explain:
+    post:
+      operationId: explainCredential
+      summary: What a Personal Access Token or Account API Key can do for one action and scope, and why, evaluated through the real policy engine (story 321, FCR2030). Never a synthetic session; missing context answers conditional, never a synthetic permit.
+      description: |
+        Requires access.read in acct, except that a PAT's owner may explain
+        their own PAT in its authority account without it. An Account API
+        Key is also visible from any resource account that holds an
+        account_api_key grant for it, even when that account is not its
+        custodian. A legacy credential (legacy_personal_pat,
+        legacy_account_api_key) never reaches the engine: it always answers
+        deny/legacy_not_authoritative. Every refusal for an absent,
+        wrong-type, unrelated, or invisible credential is the identical 404.
+        Read-only: no credential, grant, policy, or resource state changes.
+      parameters:
+        - $ref: '#/components/parameters/acct'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'scoped-credentials.yaml#/components/schemas/ExplainRequest'
+      responses:
+        '200':
+          description: The real decision for this credential, action, and scope.
+          content:
+            application/json:
+              schema:
+                $ref: 'scoped-credentials.yaml#/components/schemas/ExplainResponse'
+        default:
+          $ref: '#/components/responses/Error'
 components:
   securitySchemes:
     session:

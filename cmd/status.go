@@ -18,40 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// authMethod names the credential the CLI would use for outgoing
-// requests, in auth.ResolveToken's priority order. authNone means no
-// credential is present.
-type authMethod string
-
-const (
-	authNone      authMethod = "none"
-	authPATEnv    authMethod = "pat-env"    // RUNOS_API_KEY
-	authPATStored authMethod = "pat-stored" // cfg.APIKey, set by `runos login --api-key`
-	authRoid      authMethod = "roid"       // browser sign-in through roid
-	authFirebase  authMethod = "firebase"   // interactive refresh-token session
-)
-
-// resolveAuthMethod reports which credential the CLI would use, mirroring
-// auth.ResolveToken's priority (RUNOS_API_KEY -> stored PAT -> Firebase)
-// without any network round-trip, so `runos status` recognises a PAT as
-// authenticated instead of only honouring the Firebase fields. apiKeyEnv
-// is passed in (the RUNOS_API_KEY value) to keep the helper pure.
-func resolveAuthMethod(cfg *config.Config, apiKeyEnv string) authMethod {
-	if strings.TrimSpace(apiKeyEnv) != "" {
-		return authPATEnv
-	}
-	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
-		return authPATStored
-	}
-	if cfg.HasRoidSignIn() {
-		return authRoid
-	}
-	if cfg != nil && cfg.RefreshToken != "" && cfg.Firebase != nil {
-		return authFirebase
-	}
-	return authNone
-}
-
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show CLI status and authentication info",
@@ -114,14 +80,21 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 		status["defaultClusterId"] = defaultCID
 	}
 
-	// Check authentication and get token info. A stored PAT or
-	// RUNOS_API_KEY counts as authenticated by presence (the same
+	// Check authentication and get token info. A stored secret credential
+	// or RUNOS_API_KEY counts as authenticated by presence (the same
 	// credential ordinary commands use via auth.ResolveToken); only the
 	// Firebase path needs a network refresh to confirm the session.
 	switch method := resolveAuthMethod(cfg, os.Getenv(auth.APIKeyEnvVar)); method {
-	case authPATEnv, authPATStored:
+	case authEnvKey, authStoredKey:
 		status["authenticated"] = true
 		status["authMethod"] = string(method)
+		// Story 343 / FCR2030: this command has no trusted response that
+		// verifies whether the secret is a Personal Access Token or an
+		// Account API Key, so it says exactly that instead of guessing
+		// from the source. See statusCredentialType.
+		if credType := statusCredentialType(method); credType != "" {
+			status["credentialType"] = string(credType)
+		}
 		if cfg.SignedInAt != "" {
 			status["signedInAt"] = cfg.SignedInAt
 		}
@@ -163,7 +136,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 
 			// A refresh proves Firebase still knows the user; it does NOT prove conductor still
 			// accepts the sign-in, because the session bound lives there. See probeSession.
-			if probe, known := probeSession(cfg); known {
+			probe, known, gate := probeSession(cfg)
+			if gate != nil {
+				return statusRefused(cmd, jsonOutput, gate)
+			}
+			if known {
 				switch {
 				case !probe.accepted:
 					status["authenticated"] = false
@@ -189,7 +166,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 	// cluster's name. Best-effort: a network or auth failure just leaves
 	// the fields out so `runos status` keeps working offline.
 	if authenticated, _ := status["authenticated"].(bool); authenticated {
-		if profile := fetchAccountProfile(cfg); profile != nil {
+		profile, profileErr := fetchAccountProfile(cfg)
+		if gate := gateOf(profileErr); gate != nil {
+			return statusRefused(cmd, jsonOutput, gate)
+		}
+		if profile != nil {
 			if profile.CompanyName != "" {
 				status["companyName"] = profile.CompanyName
 			}
@@ -198,7 +179,11 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if defaultCID != "" {
-			if clusters, err := fetchClusters(cfg); err == nil {
+			clusters, err := fetchClusters(cfg)
+			if gate := gateOf(err); gate != nil {
+				return statusRefused(cmd, jsonOutput, gate)
+			}
+			if err == nil {
 				found := false
 				for _, c := range clusters {
 					if c.CID == defaultCID {
@@ -309,12 +294,28 @@ func runCLIStatus(cmd *cobra.Command, args []string) error {
 			} else {
 				fmt.Printf("  Signed in:  %s\n", t.Local().Format("2006-01-02 15:04:05"))
 			}
-		} else if method == string(authPATEnv) || method == string(authPATStored) {
-			fmt.Printf("  Signed in:  via personal access token\n")
+		} else if isSecretMethod(authMethod(method)) {
+			// Story 343 / FCR2030: this credential's semantic type is not
+			// verified here (see statusCredentialType), so the line must
+			// not claim "personal access token" for what may be an
+			// Account API Key.
+			fmt.Printf("  Signed in:  via a stored API credential\n")
 		} else {
 			fmt.Printf("  Signed in:  Unknown (logged in before CLI update)\n")
 		}
-		fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		// Finding 1109: measured against an invalid RUNOS_API_KEY, this line
+		// unconditionally said "Expires: Never" beside "Authentication: ✓
+		// Logged in" above, which together read as a verified, healthy
+		// session. For a secret credential this command never contacts the
+		// server to verify (by design: status must work offline), so the
+		// honest claim is about LOCAL storage only -- this CLI does not
+		// locally expire a stored or env-sourced secret -- never a claim
+		// about whether the server still accepts it.
+		if isSecretMethod(authMethod(method)) {
+			fmt.Printf("  Expires:    not tracked locally (the CLI does not verify a stored credential's validity; run 'runos logout' to clear it)\n")
+		} else {
+			fmt.Printf("  Expires:    Never (run 'runos logout' to sign out)\n")
+		}
 	}
 
 	return nil
@@ -346,7 +347,7 @@ func statusGetJSON(cfg *config.Config, path string, out any) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: api.NewTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -394,21 +395,22 @@ type sessionProbe struct {
 	expired bool
 }
 
-func probeSession(cfg *config.Config) (sessionProbe, bool) {
+func probeSession(cfg *config.Config) (sessionProbe, bool, error) {
 	aid := cfg.GetAccountID()
 	baseURL := cfg.GetAPIURL()
 	if aid == "" || baseURL == "" {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	token, err := auth.ResolveToken(cfg)
 	if err != nil {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	result, err := api.NewClient(baseURL).Do(
 		http.MethodGet, "/"+url.PathEscape(aid)+"/account/profile", token, nil,
 	)
 	if err != nil {
-		return sessionProbe{}, false
+		// Unreachable is not expired, but the version gate is a refusal of this CLI, not a network fact.
+		return sessionProbe{}, false, gateOf(err)
 	}
 	var envelope struct {
 		Code string `json:"code"`
@@ -416,7 +418,7 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 	_ = result.Decode(&envelope)
 	accepted, known := sessionProbeVerdict(result.StatusCode)
 	if !known {
-		return sessionProbe{}, false
+		return sessionProbe{}, false, nil
 	}
 	if !accepted {
 		expired := envelope.Code == api.SessionExpiredCode
@@ -424,9 +426,9 @@ func probeSession(cfg *config.Config) (sessionProbe, bool) {
 		if !expired {
 			message = refusedCredentialMessage(message, baseURL)
 		}
-		return sessionProbe{accepted: false, message: message, expired: expired}, true
+		return sessionProbe{accepted: false, message: message, expired: expired}, true, nil
 	}
-	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true
+	return sessionProbe{accepted: true, expiresAt: result.SessionExpiresAt()}, true, nil
 }
 
 /*
@@ -511,17 +513,18 @@ func refusedCredentialMessage(conductorMessage, apiURL string) string {
 }
 
 // fetchAccountProfile reads the account's company profile. Returns nil
-// when the account id is missing or the request fails.
-func fetchAccountProfile(cfg *config.Config) *accountProfile {
+// when the account id is missing or the request fails; the caller treats
+// every failure but the version gate as "leave the fields out".
+func fetchAccountProfile(cfg *config.Config) (*accountProfile, error) {
 	aid := cfg.GetAccountID()
 	if aid == "" {
-		return nil
+		return nil, nil
 	}
 	var profile accountProfile
 	if err := statusGetJSON(cfg, "/"+url.PathEscape(aid)+"/account/profile", &profile); err != nil {
-		return nil
+		return nil, err
 	}
-	return &profile
+	return &profile, nil
 }
 
 // statusClusterRow is the cid+name subset of a `/:aid/clusters` row
@@ -544,20 +547,4 @@ func fetchClusters(cfg *config.Config) ([]statusClusterRow, error) {
 		return nil, err
 	}
 	return envelope.Clusters, nil
-}
-
-// authMethodLabel renders the parenthetical credential hint for the
-// "Logged in" line. Empty for the legacy/unknown case so the line is
-// unchanged when no method was recorded.
-func authMethodLabel(v any) string {
-	switch v {
-	case string(authPATEnv):
-		return fmt.Sprintf(" (PAT via %s)", auth.APIKeyEnvVar)
-	case string(authPATStored):
-		return " (PAT)"
-	case string(authFirebase):
-		return ""
-	default:
-		return ""
-	}
 }

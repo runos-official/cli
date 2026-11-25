@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/runos-official/cli/internal/apitimeout"
@@ -30,14 +31,24 @@ func appendMergeQuery(endpoint string) string {
 // ExecuteWithInput. It builds the endpoint, filters out path-param fields
 // from the body, sends the request, and reads the response. Non-2xx
 // responses are returned as *APIError so callers can branch on status.
-func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string) ([]byte, error) {
+// The returned http.Header is the response's headers (review finding
+// 1151: Roid's typed credential-lifecycle responses carry the ETag a
+// later update/rotate/revoke's If-Match must present, as a header, never
+// a body field); callers that don't need it simply ignore it.
+func (e *Executor) dispatch(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string) ([]byte, http.Header, error) {
 	return e.dispatchWithOptions(cmdDef, args, body, cid, cfg, token, requestOptions{})
 }
 
-func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string, options requestOptions) ([]byte, error) {
+func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, body map[string]any, cid string, cfg *config.Config, token string, options requestOptions) ([]byte, http.Header, error) {
+	// Finding 1431: checked first, before buildEndpoint, so a GET's
+	// query string is never even constructed with a bearer-shaped grant
+	// subject in it, and no request of any kind reaches the network.
+	if err := RefuseBearerSecretInGrantSubject(cmdDef, body); err != nil {
+		return nil, nil, err
+	}
 	endpoint, err := e.buildEndpoint(cmdDef.Endpoint, args, cmdDef, cfg, cid, body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// I4-K CLI follow-up: `apps update` is a partial-PATCH command (the
 	// user supplies a few fields, e.g. `--replicas 3`). Without
@@ -51,21 +62,41 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 		endpoint = appendMergeQuery(endpoint)
 	}
 	requestBody := filterPathParamsFromBody(body, cmdDef)
+	// Review finding 1151: a field the manifest marks Location:"header"
+	// (Conductor's typed credential-lifecycle idempotencyKey/ifMatch)
+	// must never reach the JSON body or the query string -- Roid's
+	// handlers decode a strict body schema and refuse an unknown member,
+	// and a DELETE route never reads a query string. Pulled out here,
+	// after path-param filtering, so it applies uniformly regardless of
+	// method.
+	requestBody, headers := SplitHeaderFields(requestBody, cmdDef)
 	// The deadline covers the response read as well, so the cancel stays
 	// live until this function has drained the body (A4).
 	ctx, cancel := context.WithTimeout(context.Background(), apitimeout.For(cmdDef, body))
 	defer cancel()
-	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, requestBody, token, options)
+	resp, err := e.doRequest(ctx, cmdDef.Method, endpoint, requestBody, headers, token, options)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		apiErr := &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		// Story 347 S1 (finding 1194): Conductor documents request-bound
+		// step-up for the typed credential-lifecycle commands that
+		// stepUpEligibleCommands names. Only those commands ever reach
+		// the human confirmation flow; every other refusal, including a
+		// step-up-shaped one from an unlisted command, falls straight
+		// through unchanged.
+		if retryBody, retryHeaders, retryErr, handled := e.completeStepUpIfRequired(
+			cmdDef, endpoint, requestBody, headers, token, options, cfg, apiErr,
+		); handled {
+			return retryBody, retryHeaders, retryErr
+		}
+		return nil, resp.Header, apiErr
 	}
 	// Defensive: some conductor handlers wrap their own error in the 200
 	// response body instead of letting the framework's error middleware
@@ -76,9 +107,9 @@ func (e *Executor) dispatchWithOptions(cmdDef manifest.Command, args []string, b
 	// CI pipelines. Synthesise an *APIError from the embedded statusCode
 	// so the standard error path runs and the exit code is non-zero.
 	if apiErr := apiErrorFromBody(resp.StatusCode, respBody); apiErr != nil {
-		return nil, apiErr
+		return nil, resp.Header, apiErr
 	}
-	return respBody, nil
+	return respBody, resp.Header, nil
 }
 
 // apiErrorFromBody recognises the conductor's error-envelope shape

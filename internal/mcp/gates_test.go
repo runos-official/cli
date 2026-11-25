@@ -26,10 +26,6 @@ func (s *scriptedExecutor) Execute(toolName string, args map[string]any) (string
 	return s.result, nil
 }
 
-func (s *scriptedExecutor) ExecuteRaw(method, endpoint string, body map[string]any, cid string) (string, error) {
-	return s.result, nil
-}
-
 func toolCallResult(t *testing.T, resp *Response) CallToolResult {
 	t.Helper()
 	result, ok := resp.Result.(CallToolResult)

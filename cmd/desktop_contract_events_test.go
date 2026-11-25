@@ -50,7 +50,7 @@ func TestDesktopContractUpdateJSONMatchesTheDesktopContract(t *testing.T) {
 	desktopcontract.Populate(populated)
 	cases := map[string]combinedUpdateResult{
 		"zero":      {},
-		"cli only":  {SchemaVersion: 1, CLI: updateComponentResult{CurrentVersion: "1.22.2", Version: "1.23.0", UpdateAvailable: true, Message: "A CLI update is available."}},
+		"cli only":  {SchemaVersion: 1, CLI: cliUpdateResult{updateComponentResult: updateComponentResult{CurrentVersion: "1.22.2", Version: "1.23.0", UpdateAvailable: true, Message: "A CLI update is available."}}},
 		"populated": *populated,
 	}
 	for name, result := range cases {

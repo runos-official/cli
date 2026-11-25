@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/manifest"
 )
 
@@ -123,7 +124,7 @@ func FetchToolsets(m *manifest.Manifest, baseURL, accountID, token string, timeo
 		return ts
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout, Transport: api.NewTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ts

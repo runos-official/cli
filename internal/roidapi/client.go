@@ -83,7 +83,7 @@ func (c *Client) Do(call Call) (*api.Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := refusal(res); err != nil {
+	if err := Refusal(res); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -99,7 +99,7 @@ func (c *Client) etag(readOp string, params map[string]string, tok string) (stri
 	if err != nil {
 		return "", err
 	}
-	if err := refusal(res); err != nil {
+	if err := Refusal(res); err != nil {
 		return "", err
 	}
 	etag := res.Header.Get("ETag")

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 var grantFields = []string{"id", "subject", "role", "actions", "scope", "expires_at", "granted_by"}
 
-var accessGrantsCmd = &cobra.Command{Use: "grants", Short: "List, create and revoke grants, and read a grant's audit trail"}
+var accessGrantsCmd = &cobra.Command{Use: "grants", Short: "List, create and withdraw grants, and read a grant's audit trail"}
 
 var accessGrantsListCmd = &cobra.Command{
 	Use: "list", Short: "List grants, optionally filtered", Args: cobra.NoArgs,
@@ -24,8 +25,13 @@ var accessGrantsListCmd = &cobra.Command{
 		q := url.Values{}
 		for _, f := range []string{"subject", "role", "scope", "under", "cursor"} {
 			if v, _ := cmd.Flags().GetString(f); v != "" {
-				if f == "scope" || f == "under" {
+				switch f {
+				case "scope", "under":
 					if v, err = accessScope(t.acct, v); err != nil {
+						return err
+					}
+				case "subject":
+					if err := validateListSubjectFilter(v); err != nil {
 						return err
 					}
 				}
@@ -62,19 +68,23 @@ var accessGrantsCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Grant a role, or a list of actions, at a scope",
 	Long: `Grant a role (--role) or a list of actions (--action) to a person,
-group or machine key (--subject kind:id) at a scope (--scope, default the
-whole account; a short form such as cluster/c1 is placed under the account).
+group or legacy key (--subject kind:id), or to an Account API Key
+(--key <public-id>), at a scope (--scope, default the whole account; a
+short form such as cluster/c1 is placed under the account).
+
+--key takes the key's public id only (never its secret) and always grants
+explicit actions: an Account API Key cannot receive a role. Granting to a
+key needs an explicit --account; the CLI never assumes the active account
+for a machine credential, because its grants can live in any account.
 
 You can only hand out actions you hold yourself. Handing out sensitive
-actions needs a security-key confirmation.`,
+actions needs an extra confirmation. The identity service decides which
+one, and the CLI says how.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		t, err := accessSession(cmd)
-		if err != nil {
-			return err
-		}
 		var f grantFlags
 		f.subject, _ = cmd.Flags().GetString("subject")
+		f.keyID, _ = cmd.Flags().GetString("key")
 		f.role, _ = cmd.Flags().GetString("role")
 		f.actions, _ = cmd.Flags().GetStringSlice("action")
 		f.scope, _ = cmd.Flags().GetString("scope")
@@ -85,6 +95,14 @@ actions needs a security-key confirmation.`,
 		f.notBefore, _ = cmd.Flags().GetString("not-before")
 		f.expires, _ = cmd.Flags().GetString("expires")
 		f.expiresIn, _ = cmd.Flags().GetDuration("expires-in")
+		account, _ := cmd.Flags().GetString("account")
+		if err := requireExplicitAccountForAKey(f.keyID, account); err != nil {
+			return err
+		}
+		t, err := accessSession(cmd)
+		if err != nil {
+			return err
+		}
 		body, err := grantBody(t.acct, f, time.Now())
 		if err != nil {
 			return err
@@ -97,9 +115,29 @@ actions needs a security-key confirmation.`,
 	},
 }
 
-var accessGrantsRevokeCmd = &cobra.Command{
-	Use: "revoke <grant>", Short: "Revoke a grant", Args: cobra.ExactArgs(1),
+var accessGrantsWithdrawCmd = &cobra.Command{
+	Use:     "withdraw <grant>",
+	Aliases: []string{"revoke"},
+	Short:   "Withdraw a grant from this account (local only; never revokes the credential itself)",
+	Long: `Withdraw one grant from this account only. Always needs an explicit
+--account: the CLI never assumes the active account for a grant mutation.
+
+This is a LOCAL operation: it removes this account's own grant. It does
+not change the credential's lifecycle state (expiry, global revocation)
+and does not touch its grants in any other account.
+
+To end a typed Account API Key or Personal Access Token everywhere, its
+own global revoke command is 'runos account account-api-keys revoke' or
+'runos account personal-access-tokens revoke' -- not yet published while
+Conductor holds the typed lifecycle commands back. 'runos account
+api-keys revoke' is the separate LEGACY command: it only reaches a
+pre-existing legacy row, never a typed credential.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		account, _ := cmd.Flags().GetString("account")
+		if err := requireExplicitAccount(account); err != nil {
+			return err
+		}
 		t, err := accessSession(cmd)
 		if err != nil {
 			return err
@@ -107,7 +145,7 @@ var accessGrantsRevokeCmd = &cobra.Command{
 		if _, err := t.do(writeCall(cmd, roidapi.Call{Op: "revokeGrant", Params: map[string]string{"grant": args[0]}})); err != nil {
 			return err
 		}
-		return t.done("Revoked grant " + args[0] + ".")
+		return t.done(fmt.Sprintf("Withdrew grant %s from account %s. This does not change the credential's lifecycle state or its grants in any other account.", args[0], t.acct))
 	},
 }
 
@@ -128,7 +166,7 @@ var accessGrantsAuditCmd = &cobra.Command{
 
 func init() {
 	l := accessGrantsListCmd.Flags()
-	l.String("subject", "", "Only grants to this subject (person:<id>, group:<id> or key:<id>)")
+	l.String("subject", "", "Only grants to this subject (person:<id>, group:<id>, key:<id> or account_api_key:<public-id>)")
 	l.String("role", "", "Only grants of this role")
 	l.String("scope", "", "Only grants at exactly this scope")
 	l.String("under", "", "Grants at this scope and every scope below it")
@@ -137,7 +175,7 @@ func init() {
 
 	c := accessGrantsCreateCmd.Flags()
 	c.String("subject", "", "Who gets it: person:<id>, group:<id> or key:<id>")
-	_ = accessGrantsCreateCmd.MarkFlagRequired("subject")
+	c.String("key", "", "Grant to an Account API Key by its public id (never a secret); not with --subject")
 	c.String("role", "", "A role id")
 	c.StringSlice("action", nil, "An action id instead of a role (repeatable)")
 	c.String("scope", "", "Where it applies (default: the whole account)")
@@ -149,7 +187,7 @@ func init() {
 	c.String("expires", "", "Ends at this time (RFC 3339)")
 	c.Duration("expires-in", 0, "Ends after this long, for example 8h")
 	writeFlags(accessGrantsCreateCmd, false)
-	writeFlags(accessGrantsRevokeCmd, true)
+	writeFlags(accessGrantsWithdrawCmd, true)
 
-	accessGrantsCmd.AddCommand(accessGrantsListCmd, accessGrantsShowCmd, accessGrantsCreateCmd, accessGrantsRevokeCmd, accessGrantsAuditCmd)
+	accessGrantsCmd.AddCommand(accessGrantsListCmd, accessGrantsShowCmd, accessGrantsCreateCmd, accessGrantsWithdrawCmd, accessGrantsAuditCmd)
 }

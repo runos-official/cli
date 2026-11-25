@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/runos-official/cli/internal/deploy"
 	"github.com/runos-official/cli/internal/git"
@@ -112,7 +114,14 @@ func resolveVcsConfigPath(cfg *deploy.DeployConfig, configFileAbs string) string
 // Sibling to the CLI-deploy code in deploy.go: the two share the verb name
 // but no downstream logic. runDeployVCS is dispatched from runDeploy when
 // the resolved app's deployType is 'vcs'.
-func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput bool, buildArgsCli []deploy.BuildArgCliEntry) error {
+//
+// scopedMode is runDeploy's resolved --scoped / RUNOS_SCOPED=1
+// declaration (story 346, acceptance criterion 6): it gates the
+// follow primitive (S4) and the post-follow network-access read (S5),
+// the only two steps this function performs that the declared-mode
+// rule touches. runDeploy's own caller-side gate already refuses an
+// unpinned app before either VCS dispatch path reaches here.
+func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty, follow, skipPrompt, jsonOutput, scopedMode bool, buildArgsCli []deploy.BuildArgCliEntry) error {
 	// Under --json, every human-readable line (preamble, configPath note,
 	// "Deployment initiated", follow progress, network-access tail) goes
 	// to stderr so stdout stays pure JSON for `jq` / MCP consumers. The
@@ -186,8 +195,12 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	// regardless so stdout stays pure JSON.)
 	resp, err := svc.DeployVCS(appID, sha, configPath, buildArgsCli)
 	if err != nil {
+		// Finding 1329: a GitHub Actions annotation is log decoration,
+		// not the JSON response; it must route like every other
+		// human-readable line here (stderr under --json) so it never
+		// lands on stdout ahead of the JSON error envelope.
 		if inGitHubActions {
-			fmt.Printf("::error::Failed to trigger deploy: %v\n", err)
+			fmt.Fprintf(human, "::error::Failed to trigger deploy: %v\n", err)
 		}
 		return fmt.Errorf("failed to trigger VCS deploy: %w", err)
 	}
@@ -216,32 +229,44 @@ func runDeployVCS(svc *deploy.Service, appID, sha, configPath string, allowDirty
 	} else {
 		fmt.Fprintln(human, "\nFollowing job progress...")
 	}
-	jobErr := jobs.FollowJobToWriter(resp.JobID, human)
+	followSvc, err := jobs.NewService()
+	if err != nil {
+		return err
+	}
+	followCtx, followCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	jobErr := followDeployJob(followCtx, followSvc, resp.JobID, human, scopedMode)
+	followCancel()
 	if inGitHubActions {
 		fmt.Fprintln(human, "::endgroup::")
 	}
 	if jobErr != nil {
 		if inGitHubActions {
-			fmt.Printf("::error::Deployment failed: %v\n", jobErr)
+			fmt.Fprintf(human, "::error::Deployment failed: %v\n", jobErr)
 		}
 		return fmt.Errorf("deployment failed: %w", jobErr)
 	}
 	fmt.Fprintln(human, "\nDeployment completed successfully!")
 
-	// Network-access tail (mirror the CLI-deploy success path). The public
-	// URL also goes into a `::notice::` so it appears in the GitHub Actions
-	// run summary panel, not just buried in the log.
+	// Network-access tail (mirror the CLI-deploy success path). Finding
+	// 1356 / story 346 S5: skipped in scoped mode -- a minimal
+	// apps.deploy grant may not hold the authority this read needs, and
+	// the sanitized progress contract carries no public-URL field to
+	// justify it. Default mode keeps today's behaviour unchanged. The
+	// public URL also goes into a `::notice::` so it appears in the
+	// GitHub Actions run summary panel, not just buried in the log.
 	publicURL := ""
-	networkAccess, err := svc.GetNetworkAccess(appID)
-	if err == nil {
-		for _, access := range networkAccess {
-			if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
-				publicURL = access.Link
-				fmt.Fprintf(human, "\nApp available at: %s\n", access.Link)
-				if inGitHubActions {
-					fmt.Printf("::notice::App available at %s\n", access.Link)
+	if !scopedMode {
+		networkAccess, err := svc.GetNetworkAccess(appID)
+		if err == nil {
+			for _, access := range networkAccess {
+				if strings.HasPrefix(access.Type, "RUNOS_PUBLIC") {
+					publicURL = access.Link
+					fmt.Fprintf(human, "\nApp available at: %s\n", access.Link)
+					if inGitHubActions {
+						fmt.Fprintf(human, "::notice::App available at %s\n", access.Link)
+					}
+					break
 				}
-				break
 			}
 		}
 	}

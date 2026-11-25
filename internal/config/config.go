@@ -75,7 +75,7 @@ type Config struct {
 	AccountID        string          `json:"account_id,omitempty"`
 	DefaultClusterID string          `json:"default_cluster_id,omitempty"`
 	RefreshToken     string          `json:"refresh_token,omitempty"`
-	APIKey           string          `json:"api_key,omitempty"` // stored PAT; set by `runos login --api-key`, takes precedence over Firebase, overridden by the RUNOS_API_KEY env var
+	APIKey           string          `json:"api_key,omitempty"` // stored secret credential (a Personal Access Token or an Account API Key); set by `runos login --api-key`, takes precedence over Firebase, overridden by the RUNOS_API_KEY env var
 	Firebase         *FirebaseConfig `json:"firebase,omitempty"`
 	SignedInAt       string          `json:"signed_in_at,omitempty"` // RFC3339 timestamp of login
 	KnownAccounts    []KnownAccount  `json:"known_accounts,omitempty"`
@@ -86,14 +86,15 @@ type Config struct {
 }
 
 // ApplySessionLogin records a Firebase refresh-token session on the
-// config and clears any stored PAT (c.APIKey). Both non-PAT login paths
-// (interactive browser `runos login`, device `runos login preauth`)
-// call this so exactly one credential is live afterward. The APIKey
-// clear is the load-bearing part: ResolveToken ranks a stored PAT above
-// the Firebase refresh session, so a leftover key from a prior
-// `runos login --api-key` would shadow the fresh login and every call
-// would 401 with "Invalid token" despite login reporting success. This
-// is the mirror of loginWithAPIKey clearing RefreshToken in reverse.
+// config and clears any stored secret credential (c.APIKey). Both
+// non-secret login paths (interactive browser `runos login`, device
+// `runos login preauth`) call this so exactly one credential is live
+// afterward. The APIKey clear is the load-bearing part: ResolveToken
+// ranks a stored secret above the Firebase refresh session, so a
+// leftover key from a prior `runos login --api-key` would shadow the
+// fresh login and every call would 401 with "Invalid token" despite
+// login reporting success. This is the mirror of loginWithAPIKey
+// clearing RefreshToken in reverse.
 func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, refreshToken, signedInAt string) {
 	c.forgetDefaultClusterOnAccountChange(accountID)
 	c.AccountID = accountID
@@ -107,11 +108,16 @@ func (c *Config) ApplySessionLogin(accountID string, firebase *FirebaseConfig, r
 }
 
 /*
-ApplyAPIKeyLogin stores a personal access token for one account, clearing the Firebase credential so
-exactly one is live and `runos logout` has a single thing to clear.
+ApplyAPIKeyLogin stores a secret credential (a Personal Access Token or an Account API Key) for
+one account, clearing the Firebase credential so exactly one is live and `runos logout` has a
+single thing to clear.
 
-Separate from ApplySessionLogin because a PAT is not a session: it carries no sign-in time and no
-refresh token. It shares the account-change rule, because a PAT is account-scoped too.
+Separate from ApplySessionLogin because a secret credential is not a session: it carries no
+sign-in time and no refresh token. It shares the account-change rule because accountID here is the
+CLI's default request target, not necessarily the full extent of the credential's own authority:
+a Personal Access Token's authority IS that one account, but an Account API Key can independently
+hold grants in several accounts, and switching the default target still means the cluster default
+from the PREVIOUS target is stale (finding 1109).
 */
 func (c *Config) ApplyAPIKeyLogin(accountID, apiKey, signedInAt string) {
 	c.forgetDefaultClusterOnAccountChange(accountID)
@@ -206,12 +212,20 @@ func configPath() (string, error) {
 // no env-var fallback is in play. CI runners using RUNOS_API_KEY +
 // RUNOS_ACCOUNT_ID + RUNOS_API_URL won't trip this.
 // ErrConfigNotFound carries two recovery paths. The interactive path
-// (`runos config env <environment>` then `runos login`) is for human
-// developers. The CI / PAT path (RUNOS_API_URL + RUNOS_API_KEY +
-// RUNOS_ACCOUNT_ID) is for runners with no on-disk config. I25-F:
-// pre-fix only the interactive path was named, so PAT-driven CI users
-// got pushed toward a Firebase login they didn't need.
-var ErrConfigNotFound = fmt.Errorf("config not found. Interactive: run 'runos config env <environment>' then 'runos login'. CI / PAT: set RUNOS_API_URL + RUNOS_API_KEY + RUNOS_ACCOUNT_ID and re-run")
+// (`runos login`, which re-bootstraps a default config from the CDN
+// before it runs: see cmd/root.go's PersistentPreRunE) is for human
+// developers. The CI / credential path (RUNOS_API_URL + RUNOS_API_KEY +
+// RUNOS_ACCOUNT_ID) is for runners with no on-disk config, using either
+// a Personal Access Token or an Account API Key. I25-F: pre-fix only
+// the interactive path was named, so a credential-driven CI user got
+// pushed toward a Firebase login they didn't need. Story 343 / FCR2030
+// (lesson cli-config-env-is-not-user-facing, finding 1100): the message
+// used to say "CI / PAT" (misnaming the path for an Account API Key
+// too) AND told a user to run 'runos config env <environment>' first,
+// a local-dev affordance this repo's accepted lesson keeps out of every
+// user-facing recovery hint. 'runos login' alone is the correct
+// instruction: the command re-creates the config file itself.
+var ErrConfigNotFound = fmt.Errorf("config not found. Run 'runos login' to sign in, or set RUNOS_API_URL + RUNOS_API_KEY + RUNOS_ACCOUNT_ID for CI and re-run")
 
 // LoadLocal reads and parses the config file from disk and nothing else: no network, whatever the
 // environment holds. A missing file is ErrConfigNotFound. Use it where a network wait is not
@@ -369,7 +383,13 @@ func FetchRemoteConfig() (*RemoteConfig, error) {
 		}
 		return &rc, nil
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	return FetchRemoteConfigWithin(10 * time.Second)
+}
+
+// FetchRemoteConfigWithin is FetchRemoteConfig with the caller's deadline, for a fetch that
+// must not hold up what the person asked for.
+func FetchRemoteConfigWithin(timeout time.Duration) (*RemoteConfig, error) {
+	client := &http.Client{Timeout: timeout} // no CLI user agent: the CDN, not conductor
 
 	resp, err := client.Get(remoteConfigURL)
 	if err != nil {

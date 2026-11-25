@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/apps"
 	"github.com/runos-official/cli/internal/auth"
 	"github.com/runos-official/cli/internal/config"
@@ -68,6 +69,9 @@ func runClustersDefault(cmd *cobra.Command, args []string) error {
 	}
 
 	ids, fetchErr := fetchClusterIDs(cfg)
+	if gate := gateOf(fetchErr); gate != nil {
+		return gate
+	}
 	if fetchErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not verify cluster %q exists on the account (%v); setting anyway. Run 'runos clusters list' once authenticated to confirm.\n", cid, fetchErr)
 	} else if !slices.Contains(ids, cid) {
@@ -128,7 +132,7 @@ func fetchClusterIDs(cfg *config.Config) ([]string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: api.NewTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

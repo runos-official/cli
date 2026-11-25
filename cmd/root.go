@@ -256,8 +256,12 @@ func Execute() {
 	// Captured before cobra runs, because the raw line is what names the
 	// command the operator meant.
 	typed := os.Args[1:]
+	installGateObserver(rootCmd)
 	executed, err := rootCmd.ExecuteC()
 	if err != nil {
+		if printGateRefusal(executed, rootCmd, err, os.Stderr) {
+			os.Exit(1)
+		}
 		// The init-time manifest failure silences the root, so cobra
 		// swallows every error line. Print the suppressed line once,
 		// before the explainer helpers so today ordering survives.
@@ -413,7 +417,7 @@ func registerDynamicCommands() error {
 	builder := dynacmd.NewBuilder(m, executor).
 		WithExistingCommands(clustersCmd, servicesCmd, appsCmd, jobsCmd, configCmd, deployCmd, mcpCmd, vmsCmd, vpnCmd, accountCmd, accessCmd, kubeCmd)
 
-	for _, cmd := range builder.BuildCommands() {
+	for _, cmd := range filterShadowedCommands(rootCmd, builder.BuildCommands()) {
 		rootCmd.AddCommand(cmd)
 	}
 

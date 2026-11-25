@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runos-official/cli/internal/api"
 	"github.com/runos-official/cli/internal/deploy"
 )
 
@@ -97,10 +98,12 @@ func NewService(baseURL, token, aid, cid string) *Service {
 		aid:     aid,
 		cid:     cid,
 		prepareHTTP: &http.Client{
-			Timeout: prepareTimeout,
+			Timeout:   prepareTimeout,
+			Transport: api.NewTransport(),
 		},
 		uploadHTTP: &http.Client{
-			Timeout: uploadTimeout,
+			Timeout:   uploadTimeout,
+			Transport: api.NewTransport(),
 			// Never follow a redirect on the upload: the request carries
 			// the upload bearer token in a header, and a 3xx to another
 			// host would otherwise leak it. Return the redirect response
@@ -170,7 +173,7 @@ func (s *Service) UploadContext(uploadURL, uploadToken string, data io.Reader) e
 	req.Header.Set("Content-Type", "application/gzip")
 	req.Header.Set("Authorization", "Bearer "+uploadToken)
 
-	resp, err := s.uploadHTTP.Do(req)
+	resp, err := api.ForTarget(s.uploadHTTP, s.baseURL, fullURL).Do(req)
 	if err != nil {
 		return fmt.Errorf("upload request failed: %w", err)
 	}

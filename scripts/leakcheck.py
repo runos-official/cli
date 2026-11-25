@@ -60,7 +60,7 @@ import re
 import subprocess
 import sys
 
-LEAKCHECK_VERSION = "1.2.1"
+LEAKCHECK_VERSION = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Credential shapes. Kept in step with CREDENTIAL in scripts/release.sh.
@@ -76,11 +76,56 @@ LEAKCHECK_VERSION = "1.2.1"
 # id-dot-secret shape, so a doc placeholder like `runos_pat_<id>.<secret>` does
 # not trip it. No public repo contained the string at all when this was added,
 # so it introduced no false positive.
+#
+# 1.4.0 (Story 343 / FCR2030, review finding 1106): the 1.2.0/1.3.0 shape
+# (`[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,}`) missed the credential it was meant to
+# catch whenever the id or secret used a character outside plain alnum, which
+# is the common case, not the exception:
+#   - the NEW typed PAT/Account API Key bearer is
+#     `runos_(pat|key)_<canonical lowercase UUID>.<43-char unpadded base64url>`
+#     (FPL411, contract 1.0.1) -- a real UUID always has hyphens, which the old
+#     `[A-Za-z0-9]` id class rejected, and a real base64url secret frequently
+#     has `-`/`_`, which the old secret class also rejected.
+#   - the EXISTING legacy Conductor shape is exactly
+#     `runos_pat_<10-char unambiguous>.<32-char unambiguous>` (apiKeys.ts
+#     KEY_ID_LENGTH/SECRET_LENGTH/UNAMBIGUOUS_CHARS); there is no legacy
+#     `runos_key_`, only the new typed one.
+#   - Roid's OWN legacy personal-key secret, still minted today
+#     (roid/internal/server/personalkeys.go, accounts.go), is
+#     `rk_<43-char unpadded base64url>`, a different prefix and shape this
+#     checker never covered.
+#
+# 1.5.0 (review finding 1150): added the Notify API key shape,
+# `runos_ntk_<10-char unambiguous>.<32-char unambiguous>`, 53 characters
+# total (handbook article 220, create-notify-key: "keyValue is a token of
+# the form runos_ntk_<id>.<secret>, 53 characters long"). A notify key is
+# not a RunOS auth credential, but it is a bearer secret this CLI's own
+# commands mint and display (account/notify-keys/add), so it belongs in
+# the same floor.
+#
+# These shapes are ported verbatim from Roid's own authoritative
+# definition (roid/internal/secretshape/secretshape.go, commit
+# da5fdcbd97c4) rather than re-derived, so this checker and the producer's
+# own redaction never drift apart. Roid's secretshape.go also recognises a
+# family of other short-prefixed internal bearer shapes (at_, rt_, mcp_,
+# oat_, xat_, prq_, prd_, prr_, rrt_: Roid's own session/exchange/approval
+# tokens, never a credential a CLI user holds). Deliberately NOT added
+# here: measured against this repo's own tracked tree, those 2-4 character
+# prefixes false-positive inside ordinary long Go identifiers in test
+# files (a test named ...Report_Local... contains "rt_", each immediately
+# followed by 43+ further identifier characters that satisfy the
+# base64url class). rk_ is kept on its own because it is the one shape
+# finding 1106 confirmed still reaches a RunOS credential a person could
+# hold. See the mirrored comment on runosSecretPattern in
+# internal/dynacmd/credential_output.go.
 # ---------------------------------------------------------------------------
 CREDENTIAL_RE = re.compile(
     r"(gh[pousr]_[A-Za-z0-9]{20,})"
     r"|(github_pat_[A-Za-z0-9_]{20,})"
-    r"|(runos_pat_[A-Za-z0-9]{6,}\.[A-Za-z0-9]{20,})"
+    r"|(runos_(?:pat|key)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43})"
+    r"|(runos_pat_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32})"
+    r"|(runos_ntk_[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{10}\.[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789]{32})"
+    r"|(rk_[A-Za-z0-9_-]{43})"
     r"|(xox[baprs]-[A-Za-z0-9-]{10,})"
     r"|(AKIA[0-9A-Z]{16})"
     r"|(-----BEGIN [A-Z ]*PRIVATE KEY-----)"

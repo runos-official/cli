@@ -43,7 +43,7 @@ func TestDispatchPreservesBodylessRequests(t *testing.T) {
 			t.Cleanup(srv.Close)
 			command := manifest.Command{Command: tc.command, Method: tc.method, Endpoint: tc.endpoint, Input: &manifest.Input{Fields: tc.fields}}
 			cfg := &config.Config{AccountID: "acct1", DefaultClusterID: "cluster1"}
-			_, err := NewExecutor(srv.URL).dispatchWithOptions(command, nil, tc.input, "cluster1", cfg, "test-token", tc.options)
+			_, _, err := NewExecutor(srv.URL).dispatchWithOptions(command, nil, tc.input, "cluster1", cfg, "test-token", tc.options)
 			if err != nil || calls != 1 {
 				t.Fatalf("dispatch calls = %d, error = %v", calls, err)
 			}

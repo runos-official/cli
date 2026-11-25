@@ -29,11 +29,17 @@ network call to render itself.
 */
 func sessionNextStep(credential auth.CredentialKind) string {
 	switch {
-	// A PAT can never mint a VPN session: a tunnel is a person's 24-hour sign-in and a stored
-	// secret is evidence of possession, so `vpn up` refuses it as its first act. Naming that
-	// command here is the same defect this line was rewritten to remove, left standing for the one
-	// credential that can never satisfy it, and on a PAT-only machine it was the permanent answer.
-	case credential.IsPAT():
+	// A stored secret (a Personal Access Token OR an Account API Key) can never mint a VPN
+	// session: a tunnel is a person's 24-hour sign-in and a stored secret is evidence of
+	// possession, so `vpn up` refuses it as its first act. Naming that command here is the same
+	// defect this line was rewritten to remove, left standing for the one credential that can
+	// never satisfy it, and on a secret-only machine it was the permanent answer.
+	// Finding 1107: RUNOS_API_KEY overrides any interactive sign-in, so a holder of the env-var
+	// form needs to unset it too, or the next command keeps resolving the env var instead of the
+	// sign-in this line just told them to do.
+	case credential == auth.CredentialEnvKey:
+		return "unset RUNOS_API_KEY, then run 'runos login' to sign in as a person, then 'runos vpn up'"
+	case credential == auth.CredentialStoredKey:
 		return "run 'runos login' to sign in as a person, then 'runos vpn up'"
 	case credential == auth.CredentialInteractive:
 		return "run 'runos vpn up'"
