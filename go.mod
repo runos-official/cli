@@ -2,7 +2,7 @@ module github.com/runos-official/cli
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/coder/websocket v1.8.15
